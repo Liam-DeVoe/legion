@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# packages/envoy/scripts/approve-check.sh
+#
+# A person's approvals through Cipher's proxy, checked on the local stack `dev-stack.sh --approve`
+# stands up: the stack's broker with its proxy port and the dpop block DISPATCH_APPROVE_TOKEN,
+# bound to dispatch.approve.test and sent through BROKER_PROXY_PRIVATE_UPSTREAM to Dispatch built
+# from this tree, whose issuer of broker tokens is that broker. A person signs in on a box of the
+# run (`agent-secrets login` at the stack's issuer, the machine's identity from the metadata
+# stand-in), and the agent session on that box is scripts/approve/session.ts, the TypeScript client
+# a session runs.
+#
+# Four stacks, one after the other:
+#
+#   1. --approve. (a) the session trades the sign-in for an approve grant and approves the spec of
+#      an issue of the person's through the proxy port (reviewArtifact); the review's author is the
+#      person, and the grant's row names the session and the person, the scope approve, no secret,
+#      no profile, no approver, and ends 15 minutes after it began. (b) the same review with the
+#      box's own Dispatch token, direct, is refused 403. (c) a comment and (d) a personal token's
+#      mint and change, each with the approve placeholder through the proxy port, are refused by
+#      the proxy naming its rule, and Dispatch records no comment and no token. Controls: (b) the
+#      box's token posts a comment, so it is live; (a) with the sign-in's credential revoked, the
+#      same review on the same placeholder is refused 407. (e) the scan of every file the session
+#      and the sign-in wrote, and of the session's environment, finds no candidate whose SHA-256 is
+#      a minted token's the broker logged, and no private key whose thumbprint is a logged binding.
+#   2. --approve --approve-allow-all: the allow list off. (i) the comment and the token mint reach
+#      Dispatch, which refuses them APPROVE_ONLY_TOKEN and records no comment; (ii) the review is
+#      recorded with the person as its author.
+#   3. as 2, with Dispatch built with the approve-only refusal removed
+#      (approve/dispatch-without-approve-only-refusal.patch): the comment of (i) is recorded.
+#   4. --approve with a broker built to write each approve token it mints, the token endpoint's
+#      answer naming it, and its pod key into files the session reads
+#      (approve/broker-plants-approve-tokens.patch), and a token lifetime of 60 seconds: of three
+#      approve tokens, one expired and one revoked at the broker before the scan, the scan finds
+#      all three by hash, and the pod key by its thumbprint; the DPoP diagnostic's answers are
+#      printed and decide nothing.
+#
+# It prints one line per step, "approve-check: <step>: PASS|FAIL|UNKNOWN <what it read>", and
+# exits 0 when every step passed, 1 when one failed, 2 on a usage error and 3 when a stack did not
+# start. The Postgres server is LEGION_TEST_PG_DSN, else DATABASE_URL, as dev-stack.sh reads them.
+# It needs what dev-stack.sh needs, and bun, openssl and patch.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
+if [ -z "${LEGION_TEST_PG_DSN:-}${DATABASE_URL:-}" ]; then
+  echo "approve-check: set LEGION_TEST_PG_DSN or DATABASE_URL to a Postgres server dev-stack.sh may create databases on" >&2
+  exit 2
+fi
+for tool in bun go python3 psql curl jq openssl patch setsid; do
+  command -v "$tool" >/dev/null || {
+    echo "approve-check: $tool is required on PATH" >&2
+    exit 2
+  }
+done
+# The real binaries, ahead of any version manager's shims: the stack starts its processes with a
+# HOME of their own, where a shim reads no configuration of this user's.
+PYTHON_DIR="$(dirname "$(python3 -c 'import sys; print(sys.executable)')")"
+BUN_BIN="$(bun -e 'process.stdout.write(process.execPath)')"
+GO_DIR="$(go env GOROOT)/bin"
+PATH="$GO_DIR:$PYTHON_DIR:$(dirname "$BUN_BIN"):$PATH"
+export PATH
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/approve-check.XXXXXX")"
+FAILED=0
+UNKNOWN=0
+STACK_PID=""
+METADATA_PID=""
+cleanup() {
+  [ -z "$METADATA_PID" ] || kill "$METADATA_PID" 2>/dev/null || true
+  if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
+    kill -TERM "$STACK_PID" 2>/dev/null || true
+    wait "$STACK_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+echo "approve-check: work directory $WORK" >&2
+
+result() { # <step> <PASS|FAIL|UNKNOWN> <what it read>
+  printf 'approve-check: %s: %s %s\n' "$1" "$2" "$3"
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$WORK/results.tsv"
+  case "$2" in
+    FAIL) FAILED=1 ;;
+    UNKNOWN) UNKNOWN=1 ;;
+  esac
+}
+
+# --- The two control builds, from this tree with one patch each, through go build's -overlay so
+# the tree is never written. ---
+build_with_patch() { # <patch> <out> <package>
+  local patch="$1" out="$2" package="$3" scratch overlay file
+  scratch="$(mktemp -d "$WORK/overlay.XXXXXX")"
+  overlay="$scratch/overlay.json"
+  local replace="{}"
+  while IFS= read -r file; do
+    mkdir -p "$scratch/tree/$(dirname "$file")"
+    cp "$REPO_ROOT/$file" "$scratch/tree/$file"
+    replace="$(jq -c --arg from "$REPO_ROOT/$file" --arg to "$scratch/tree/$file" '. + {($from): $to}' <<<"$replace")"
+  done < <(sed -n 's|^+++ b/\([^[:space:]]*\).*|\1|p' "$patch")
+  patch -s -p1 -d "$scratch/tree" <"$patch"
+  jq -n --argjson replace "$replace" '{Replace: $replace}' >"$overlay"
+  (cd "$ENVOY_DIR" && go build -overlay "$overlay" -o "$out" "$package")
+}
+echo "approve-check: building the two control builds..." >&2
+build_with_patch "$SCRIPT_DIR/approve/dispatch-without-approve-only-refusal.patch" "$WORK/control/dispatch" ./cmd/dispatch
+build_with_patch "$SCRIPT_DIR/approve/broker-plants-approve-tokens.patch" "$WORK/control/broker" ./cmd/cipherd
+
+# --- One stack: started in a session of its own, its banner's exports read into this shell. ---
+start_stack() { # <name> <dev-stack.sh options>...
+  local name="$1"
+  shift
+  STACK_DIR="$WORK/$name"
+  mkdir -p "$STACK_DIR"
+  setsid bash "$SCRIPT_DIR/dev-stack.sh" "$@" >"$STACK_DIR/stack.log" 2>&1 &
+  STACK_PID=$!
+  local waited=0
+  until grep -q '^dev-stack: ready\.$' "$STACK_DIR/stack.log" 2>/dev/null; do
+    if ! kill -0 "$STACK_PID" 2>/dev/null || [ "$waited" -ge 1800 ]; then
+      result "$name stack" UNKNOWN "dev-stack.sh $* did not start; see $STACK_DIR/stack.log"
+      exit 3
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  sed -n 's/^  export \([A-Z_0-9]*\)=\(.*\)$/\1=\2/p' "$STACK_DIR/stack.log" | grep -v '^PATH=' >"$STACK_DIR/exports"
+  while IFS='=' read -r variable value; do
+    printf -v "$variable" '%s' "$value"
+  done <"$STACK_DIR/exports"
+  BIN_DIR="$DEV_STACK_DIR/bin"
+  BROKER_LOG="$DEV_STACK_DIR/logs/broker.log"
+  # The two databases the stack created, by the names its banner prints.
+  local admin="${LEGION_TEST_PG_DSN:-${DATABASE_URL:-}}" database
+  for database in broker dispatch; do
+    local database_name url
+    database_name="$(sed -n "s/^  databases:  .*\(dev_stack_${database}_[a-z0-9]*\).*/\1/p" "$STACK_DIR/stack.log" | head -n1)"
+    url="${admin%%\?*}"
+    url="${url%/*}/$database_name"
+    [[ "$admin" != *\?* ]] || url="$url?${admin#*\?}"
+    if [ "$database" = broker ]; then BROKER_DB_URL="$url"; else DISPATCH_DB_URL="$url"; fi
+  done
+  echo "approve-check: $name stack up: $DEV_STACK_DIR" >&2
+}
+
+stop_stack() {
+  [ -z "$METADATA_PID" ] || kill "$METADATA_PID" 2>/dev/null || true
+  METADATA_PID=""
+  if [ -n "$STACK_PID" ]; then
+    kill -TERM "$STACK_PID" 2>/dev/null || true
+    wait "$STACK_PID" 2>/dev/null || true
+  fi
+  STACK_PID=""
+}
+
+# --- The person's box on the stack: its machine's metadata stand-in, and the person's sign-in. ---
+PERSON="ada@example.com"
+sign_in_box() {
+  BOX="$STACK_DIR/box"
+  mkdir -p "$BOX/home" "$BOX/keys" "$BOX/signins" "$BOX/session"
+  chmod 700 "$BOX" "$BOX"/*
+  env -i PATH="$PATH" HOME="$BOX/home" DEV_STACK_METADATA_PORT_FILE="$BOX/metadata-port" \
+    python3 "$DEV_STACK_METADATA_SCRIPT" >"$STACK_DIR/metadata.log" 2>&1 &
+  METADATA_PID=$!
+  local waited=0
+  until [ -s "$BOX/metadata-port" ] || [ "$waited" -ge 120 ]; do
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  METADATA_HOST="127.0.0.1:$(tr -dc '0-9' <"$BOX/metadata-port")"
+  : >"$BOX/login.out"
+  : >"$BOX/login.err"
+  env -i PATH="$BIN_DIR:$PATH" HOME="$BOX/home" AGENT_SECRETS_URL="$AGENT_SECRETS_URL" \
+    AGENT_SECRETS_MACHINE_IDENTITY=metadata AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine GCE_METADATA_HOST="$METADATA_HOST" \
+    AGENT_SECRETS_SIGNIN_ISSUER="$AGENT_SECRETS_SIGNIN_ISSUER" AGENT_SECRETS_SIGNIN_CLIENT_ID="$AGENT_SECRETS_SIGNIN_CLIENT_ID" \
+    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE="$AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE" \
+    AGENT_SECRETS_SIGNIN_DIR="$BOX/signins" AGENT_SECRETS_KEY_DIR="$BOX/keys" AGENT_SECRETS_HELPER_SOCK= \
+    agent-secrets login >"$BOX/login.out" 2>"$BOX/login.err" &
+  local login=$! code=""
+  for _ in $(seq 240); do
+    code="$(sed -n 's/.*type the code \([^ ]*\).*/\1/p' "$BOX/login.err" | head -n1)"
+    [ -z "$code" ] || break
+    kill -0 "$login" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ -z "$code" ]; then
+    result "sign-in" UNKNOWN "agent-secrets login printed no code: $(tr '\n' ' ' <"$BOX/login.err")"
+    exit 3
+  fi
+  curl -sf -X POST "$DEV_STACK_ISSUER_URL/_dev/sign-in-as" -H 'Content-Type: application/json' \
+    -d "$(jq -cn --arg p "$PERSON" '{sub: $p, email: $p, email_verified: true, hd: ($p | split("@")[1])}')" >/dev/null
+  curl -sf -X POST "$DEV_STACK_ISSUER_URL/_dev/approve-device-code" -H 'Content-Type: application/json' \
+    -d "$(jq -cn --arg c "$code" '{user_code: $c}')" >/dev/null
+  wait "$login" || true
+  if ! grep -qF -- "$PERSON is signed in" "$BOX/login.out"; then
+    result "sign-in" UNKNOWN "$PERSON's agent-secrets login did not sign in: $(tr '\n' ' ' <"$BOX/login.err")"
+    exit 3
+  fi
+  # The person's own sign-in to Dispatch, which a project's default assignee needs: the stack's
+  # Dispatch serves no sign-in route under its https origin (dev sign-in takes a loopback origin
+  # alone), so the row a browser sign-in writes is written here.
+  psql "$DISPATCH_DB_URL" -v ON_ERROR_STOP=1 -Atqc "insert into people (email) values ('$PERSON') on conflict do nothing" >/dev/null
+}
+
+# session runs one step of the agent session on the box, with the variables a session there has
+# and no Dispatch bearer, so its credential is the broker credential of the person's sign-in.
+session() {
+  env -i PATH="$BIN_DIR:$PATH" HOME="$BOX/home" TMPDIR="$BOX/session" AGENT_SECRETS_URL="$AGENT_SECRETS_URL" \
+    AGENT_SECRETS_MACHINE_IDENTITY=metadata AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine GCE_METADATA_HOST="$METADATA_HOST" \
+    AGENT_SECRETS_SIGNIN_ISSUER="$AGENT_SECRETS_SIGNIN_ISSUER" AGENT_SECRETS_SIGNIN_CLIENT_ID="$AGENT_SECRETS_SIGNIN_CLIENT_ID" \
+    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE="$AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE" \
+    AGENT_SECRETS_SIGNIN_DIR="$BOX/signins" AGENT_SECRETS_KEY_DIR="$BOX/keys" AGENT_SECRETS_HELPER_SOCK= \
+    DISPATCH_URL="$DEV_STACK_DISPATCH_SERVER_URL" APPROVE_CHECK_DISPATCH_LOCAL="$DISPATCH_URL" \
+    APPROVE_CHECK_STATE="$STACK_DIR/state.json" APPROVE_CHECK_REVOKE_COMMAND="${REVOKE_COMMAND:-}" \
+    "$BUN_BIN" "$SCRIPT_DIR/approve/session.ts" "$@" 2>>"$STACK_DIR/session.err"
+}
+
+broker_sql() { psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
+
+# --- Stack 1: the approve route as it ships. ---
+start_stack approve --approve
+sign_in_box
+setup="$(session setup)"
+echo "approve-check: $setup" >&2
+approved="$(session approve)"
+reviews="$(session reviews)"
+author="$(jq -r '[.body | if type == "array" then .[] else (.reviews // [])[] end | (.actor.person // .actor.email // .actor // empty)] | map(tostring) | join(",")' <<<"$reviews")"
+grant="$(broker_sql "select session, extra->>'person', array_to_string(scopes, ','), extract(epoch from expires_at - created_at)::int from approve_grants order by created_at desc limit 1")"
+columns="$(broker_sql "select string_agg(column_name, ',' order by ordinal_position) from information_schema.columns where table_name = 'approve_grants'")"
+if [ "$(jq -r .recorded <<<"$approved")" = true ] && [[ "$author" == *"$PERSON"* ]] &&
+  [[ "$grant" == *"|$PERSON|approve|900" ]] && [[ "$columns" != *secret* ]] && [[ "$columns" != *profile* ]] && [[ "$columns" != *approver* ]]; then
+  result "1a review through the proxy" PASS "review $(jq -c '{recorded, state, version, actor}' <<<"$approved"), reviews' authors [$author], grant session|person|scopes|seconds = $grant, its columns $columns"
+else
+  result "1a review through the proxy" FAIL "review $approved; reviews $reviews; grant $grant; columns $columns"
+fi
+state="$(cat "$STACK_DIR/state.json")"
+artifact="$(jq -r .artifact <<<"$state")"
+version="$(jq -r .version <<<"$state")"
+issue="$(jq -r .issue <<<"$state")"
+box_review="$(session box POST "/api/v1/artifacts/$artifact/versions/$version/reviews" '{"state":"approved"}')"
+if [ "$(jq -r .status <<<"$box_review")" = 403 ]; then
+  result "1b the box's token reviews" PASS "403 $(jq -r .code <<<"$box_review")"
+else
+  result "1b the box's token reviews" FAIL "$(jq -c 'del(.body)' <<<"$box_review")"
+fi
+comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"A comment the approve placeholder must not write."}')"
+mint="$(session proxy POST /api/v1/me/agent-tokens '{"name":"from-the-proxy","scopes":["person","approve"]}')"
+change="$(session proxy PATCH /api/v1/me/agent-tokens/5f070414-1a7c-43a3-8818-cf76eded9806 '{"scopes":["person","approve"]}')"
+comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
+tokens="$(session agent-tokens | jq '[.body | if type == "array" then .[] else (.tokens // [])[] end] | length')"
+for step in "1c comment:$comment" "1d token mint:$mint" "1d token change:$change"; do
+  name="${step%%:*}"
+  answer="${step#*:}"
+  if [ "$(jq -r .status <<<"$answer")" = 403 ] && [ "$(jq -r .proxy_code <<<"$answer")" != null ] && [ "$(jq -r .forwarded <<<"$answer")" != true ]; then
+    result "$name through the proxy" PASS "403 $(jq -r .proxy_code <<<"$answer"): $(jq -r .error <<<"$answer")"
+  else
+    result "$name through the proxy" FAIL "$(jq -c 'del(.body)' <<<"$answer")"
+  fi
+done
+if [ "$comments" = 0 ] && [ "$tokens" = 0 ]; then
+  result "1c,1d nothing written" PASS "comments on $issue: $comments; the person's agent tokens: $tokens"
+else
+  result "1c,1d nothing written" FAIL "comments on $issue: $comments; agent tokens: $tokens"
+fi
+box_comment="$(session box POST "/api/v1/issues/$issue/comments" '{"body":"The box token is live."}')"
+if [[ "$(jq -r .status <<<"$box_comment")" == 2?? ]]; then
+  result "1b control: the box's token comments" PASS "$(jq -r .status <<<"$box_comment"), so the token is live and its 403 on the review comes from its scope"
+else
+  result "1b control: the box's token comments" FAIL "$(jq -c 'del(.body)' <<<"$box_comment")"
+fi
+scan="$(session scan "$BROKER_LOG" "$BOX")"
+read -r candidates logged bindings hashes keys < <(jq -r '[.candidates, .logged_hashes, .logged_bindings, (.hash_matches | length), (.key_matches | length)] | @tsv' <<<"$scan")
+if [ "$candidates" = 0 ] || [ "$logged" = 0 ] || [ "$bindings" = 0 ]; then
+  result "1e scan" UNKNOWN "it read $candidates candidates, $logged logged token hashes and $bindings logged bindings: an empty side compares nothing"
+elif [ "$hashes" = 0 ] && [ "$keys" = 0 ]; then
+  result "1e scan" PASS "$(jq -c '{files_read, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic}' <<<"$scan")"
+else
+  result "1e scan" FAIL "$(jq -c . <<<"$scan")"
+fi
+REVOKE_COMMAND="psql '$BROKER_DB_URL' -Atqc \"update launcher_credentials set revoked_at = now() where id = (select credential_id from approve_grants order by created_at desc limit 1)\""
+revoked="$(session approve-then-revoked)"
+if [[ "$(jq -r .first.status <<<"$revoked")" == 2?? ]] && [ "$(jq -r .second.status <<<"$revoked")" = 407 ]; then
+  result "1a control: the grant revoked" PASS "the review $(jq -r .first.status <<<"$revoked"), then on the same placeholder after the sign-in's credential was revoked 407 $(jq -r .second.proxy_code <<<"$revoked")"
+else
+  result "1a control: the grant revoked" FAIL "$(jq -c 'del(.second.body)' <<<"$revoked")"
+fi
+REVOKE_COMMAND=""
+stop_stack
+
+# --- Stack 2: the allow list off. ---
+start_stack allow-all --approve --approve-allow-all
+sign_in_box
+session setup >/dev/null
+issue="$(jq -r .issue <"$STACK_DIR/state.json")"
+comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"A comment the approve-only token must not write."}')"
+mint="$(session proxy POST /api/v1/me/agent-tokens '{"name":"from-the-proxy","scopes":["person","approve"]}')"
+comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
+approved="$(session approve)"
+if [ "$(jq -r .status <<<"$comment")" = 403 ] && [ "$(jq -r .code <<<"$comment")" = APPROVE_ONLY_TOKEN ] && [ "$comments" = 0 ]; then
+  result "2i comment with the allow list off" PASS "Dispatch answered 403 APPROVE_ONLY_TOKEN (forwarded $(jq -r .forwarded <<<"$comment")), comments on $issue: $comments"
+else
+  result "2i comment with the allow list off" FAIL "$(jq -c 'del(.body)' <<<"$comment"); comments $comments"
+fi
+if [ "$(jq -r .status <<<"$mint")" = 403 ] && [ "$(jq -r .code <<<"$mint")" = APPROVE_ONLY_TOKEN ]; then
+  result "1c,1d control: the refusals come from the allow list" PASS "with it off the comment and the token mint reach Dispatch (its 403 APPROVE_ONLY_TOKEN)"
+else
+  result "1c,1d control: the refusals come from the allow list" FAIL "$(jq -c 'del(.body)' <<<"$mint")"
+fi
+if [ "$(jq -r .recorded <<<"$approved")" = true ]; then
+  result "2ii review with the allow list off" PASS "$(jq -c '{recorded, state, version, actor}' <<<"$approved")"
+else
+  result "2ii review with the allow list off" FAIL "$approved"
+fi
+stop_stack
+
+# --- Stack 3: Dispatch without its approve-only refusal. ---
+start_stack no-refusal --approve --approve-allow-all --dispatch-bin "$WORK/control/dispatch"
+sign_in_box
+session setup >/dev/null
+issue="$(jq -r .issue <"$STACK_DIR/state.json")"
+comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"Recorded only without the approve-only refusal."}')"
+comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
+if [[ "$(jq -r .status <<<"$comment")" == 2?? ]] && [ "$comments" = 1 ]; then
+  result "2 control: Dispatch without the approve-only refusal" PASS "the comment of (i) was recorded ($(jq -r .status <<<"$comment"), comments on $issue: $comments), so the refusal in 2i comes from that check"
+else
+  result "2 control: Dispatch without the approve-only refusal" FAIL "$(jq -c 'del(.body)' <<<"$comment"); comments $comments"
+fi
+stop_stack
+
+# --- Stack 4: a broker that plants what the scan looks for. ---
+BROKER_ACCESS_TOKEN_SECONDS=60 start_stack planted --approve --broker-bin "$WORK/control/broker"
+sign_in_box
+session setup >/dev/null
+session approve >/dev/null
+planted="$DEV_STACK_DIR/planted-approve-tokens"
+expired="$(sed -n 1p "$planted" 2>/dev/null || true)"
+echo "approve-check: waiting 65 s for the first approve token to expire..." >&2
+sleep 65
+session approve >/dev/null
+session approve >/dev/null
+live="$(sed -n 3p "$planted" 2>/dev/null || true)"
+revoked_token="$(sed -n 5p "$planted" 2>/dev/null || true)"
+revoke_status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AGENT_SECRETS_URL/v1/oauth/revoke" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") \
+  --data-urlencode "token@"<(printf '%s' "$revoked_token") --data-urlencode client_id=dispatch-token-exchange)"
+scan="$(session scan "$BROKER_LOG" "$BOX" "$planted" "$DEV_STACK_DIR/planted-binding-key.pem")"
+# The broker's own answer for each planted token, at its introspection route as the caller
+# "dispatch": Dispatch caches a live answer it read, so its diagnostic of a token it saw live a
+# moment ago can still read live; the broker's is the one that says whether the token is.
+introspected() { # <token>
+  curl -s -X POST "$AGENT_SECRETS_URL/v1/oauth/introspect" \
+    -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") \
+    --data-urlencode "token@"<(printf '%s' "$1") | jq -r '.active'
+}
+active="expired $(introspected "$expired"), revoked $(introspected "$revoked_token"), live $(introspected "$live")"
+want=()
+for token in "$expired" "$live" "$revoked_token"; do
+  [ -z "$token" ] || want+=("$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)")
+done
+found=0
+for hash in "${want[@]}"; do
+  jq -e --arg h "$hash" 'any(.hash_matches[]; .sha256 == $h)' <<<"$scan" >/dev/null && found=$((found + 1))
+done
+if [ "${#want[@]}" = 3 ] && [ "$found" = 3 ] && [ "$(jq '.key_matches | length' <<<"$scan")" -ge 1 ] && [ "$revoke_status" = 200 ] &&
+  [ "$active" = "expired false, revoked false, live true" ]; then
+  result "1e control: planted credentials and key" PASS "the scan found 3 of 3 planted approve tokens by hash (one expired, one revoked at the broker: $revoke_status, one live; the broker introspects them as $active) and $(jq '.key_matches | length' <<<"$scan") planted binding key by thumbprint; Dispatch's diagnostic of the matches, which decides nothing: $(jq -c .diagnostic_of_matches <<<"$scan"); of all candidates: $(jq -c .diagnostic <<<"$scan")"
+else
+  result "1e control: planted credentials and key" FAIL "planted ${#want[@]} tokens, found $found, revoke $revoke_status, broker introspection $active; $(jq -c '{candidates, logged_hashes, hash_matches, key_matches, diagnostic_of_matches}' <<<"$scan")"
+fi
+stop_stack
+
+if [ "$FAILED" = 1 ]; then exit 1; fi
+if [ "$UNKNOWN" = 1 ]; then exit 3; fi
+echo "approve-check: every step passed; results in $WORK/results.tsv" >&2

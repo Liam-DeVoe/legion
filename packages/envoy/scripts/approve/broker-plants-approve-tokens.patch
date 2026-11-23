@@ -1,0 +1,69 @@
+--- a/packages/envoy/internal/cipher/oauth/minted.go	2026-11-23 12:41:01.967431476 +0000
++++ b/packages/envoy/internal/cipher/oauth/minted.go	2026-11-23 12:42:21.814952124 +0000
+@@ -4,9 +4,12 @@
+ 	"context"
+ 	"crypto/sha256"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"errors"
+ 	"log/slog"
+ 	"maps"
++	"os"
++	"path/filepath"
+ 	"time"
+ 
+ 	"authelia.com/provider/oauth2"
+@@ -59,5 +62,12 @@
+ 	sum := sha256.Sum256([]byte(token))
+ 	slog.Info("broker: minted a grant's token", "grant", grant.ID, "session", grant.Session,
+ 		"token_sha256", hex.EncodeToString(sum[:]), "jkt", jkt, "expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339))
++	// approve-check's control build: every minted token, and a token endpoint's answer naming it,
++	// written beside the fake secrets file, a file the session reads.
++	if plant, err := os.OpenFile(filepath.Join(filepath.Dir(os.Getenv("BROKER_FAKE_SECRETS_FILE")), "planted-approve-tokens"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
++		answer, _ := json.Marshal(map[string]any{"access_token": token, "token_type": "DPoP", "expires_in": int64(time.Until(grant.ExpiresAt) / time.Second)})
++		_, _ = plant.WriteString(token + "\n" + string(answer) + "\n")
++		_ = plant.Close()
++	}
+ 	return token, nil
+ }
+--- a/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-23 12:41:01.968070551 +0000
++++ b/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-23 12:42:54.193282953 +0000
+@@ -2,14 +2,30 @@
+ 
+ import (
+ 	"crypto/ecdsa"
++	"crypto/x509"
++	"encoding/pem"
+ 	"errors"
+ 	"net/http"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 
+ 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
+ 	"github.com/sjawhar/envoy/internal/dpopproof"
+ )
+ 
++// plantBindingKey is approve-check's control build: the pod's DPoP key, which every minted token
++// is bound to, written once as PEM beside the fake secrets file, a file the session reads.
++func plantBindingKey(key *ecdsa.PrivateKey) {
++	path := filepath.Join(filepath.Dir(os.Getenv("BROKER_FAKE_SECRETS_FILE")), "planted-binding-key.pem")
++	if _, err := os.Stat(path); err == nil || key == nil {
++		return
++	}
++	if der, err := x509.MarshalECPrivateKey(key); err == nil {
++		_ = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o644)
++	}
++}
++
+ // mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
+ // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
+ // process of the command ever holds the access token or the key it is bound to. serveBound has
+@@ -59,6 +75,7 @@
+ 		closeBody(r)
+ 		return nil, errNoDPoPKey
+ 	}
++	plantBindingKey(t.key)
+ 	proof, err := dpopproof.Sign(t.key, r.Method, t.origin+r.URL.EscapedPath(), "", dpopproof.TokenHash(token))
+ 	if err != nil {
+ 		closeBody(r)

@@ -1,0 +1,11 @@
+--- a/packages/envoy/internal/dispatch/api/server.go	2026-11-23 12:41:01.966696499 +0000
++++ b/packages/envoy/internal/dispatch/api/server.go	2026-11-23 12:42:01.181997698 +0000
+@@ -1520,7 +1520,7 @@
+ // WWW-Authenticate challenge, since no scope makes such a route the token's to call. A server
+ // register did not build holds no refusal, and wrapping a route of it panics.
+ func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+-	if listed {
++	if true { // approve-check's control build: the approve-only refusal is removed
+ 		return next
+ 	}
+ 	refusal := s.approveOnlyRefusal
