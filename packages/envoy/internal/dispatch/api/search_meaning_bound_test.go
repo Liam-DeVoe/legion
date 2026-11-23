@@ -2,13 +2,21 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -259,5 +267,178 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
+	}
+}
+
+// backendStatement is one statement a traced pool started and the backend process it ran on
+// (conn.PgConn().PID()). storetest.StatementRecorder records the text alone, and which
+// transaction a statement ran in is a fact of the backend it ran on.
+type backendStatement struct {
+	pid uint32
+	sql string
+}
+
+// backendStatements records every statement started on the pool it traces (storetest.Traced),
+// in the order they started, each with its backend.
+type backendStatements struct {
+	mu   sync.Mutex
+	seen []backendStatement
+}
+
+func (b *backendStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seen = append(b.seen, backendStatement{pid: conn.PgConn().PID(), sql: data.SQL})
+	return ctx
+}
+
+func (b *backendStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// statements is a copy of what b has recorded so far.
+func (b *backendStatements) statements() []backendStatement {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.seen)
+}
+
+// The two settings R1 holds the transaction of every search statement to: the server's own
+// bound on the statement, and the interval at which Postgres checks, while the statement runs,
+// that its client is still connected.
+const (
+	searchBoundSetting           = `statement_timeout = '15s'`
+	searchConnectionCheckSetting = `client_connection_check_interval = '1s'`
+)
+
+// unboundedBecause says why the statement at position at of seen did not run inside a
+// transaction that, after its begin, ran a setting statement holding both searchBoundSetting and
+// searchConnectionCheckSetting, and is empty when it did. It reads the statements its own
+// backend ran before it, newest first: a commit or a rollback met before any begin is a statement
+// run outside any transaction, and a begin met before any such setting statement is a
+// transaction that set neither. A rollback to a savepoint ends no transaction.
+func unboundedBecause(seen []backendStatement, at int) string {
+	pid := seen[at].pid
+	set := false
+	for earlier := at - 1; earlier >= 0; earlier-- {
+		if seen[earlier].pid != pid {
+			continue
+		}
+		text := strings.ToLower(strings.TrimSpace(seen[earlier].sql))
+		switch {
+		case text == "commit" || text == "rollback" || text == "end" || text == "abort":
+			return fmt.Sprintf("it ran on backend %d in no transaction: the last one there ended (%s) before it and none began after",
+				pid, text)
+		case text == "begin" || strings.HasPrefix(text, "begin ") || strings.HasPrefix(text, "start transaction"):
+			if !set {
+				return fmt.Sprintf("it ran on backend %d in a transaction that ran no statement holding both %q and %q after its begin",
+					pid, searchBoundSetting, searchConnectionCheckSetting)
+			}
+			return ""
+		case strings.Contains(text, searchBoundSetting) && strings.Contains(text, searchConnectionCheckSetting):
+			set = true
+		}
+	}
+	return fmt.Sprintf("it ran on backend %d, which began no transaction before it", pid)
+}
+
+// refusingQueryEmbedder is fakeEmbedder with one query it answers no embedding for, as a model
+// service that did not answer: a search for that text is answered by keywords alone and stamped
+// degraded, on the same server whose other searches run the meaning statements.
+type refusingQueryEmbedder struct {
+	*fakeEmbedder
+	refused string
+}
+
+func (e refusingQueryEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	if inputType == embed.InputQuery && slices.Contains(texts, e.refused) {
+		return nil, errors.New("the model service did not answer")
+	}
+	return e.fakeEmbedder.Embed(ctx, texts, inputType)
+}
+
+// TestEverySearchStatementRunsInsideItsBoundedTransaction holds R1 over its class. Each of the
+// four statements a search runs - searchQuery and the three meaning statements
+// meaningStatementFor picks from - runs inside a transaction that, after its begin, ran a
+// setting statement holding both the server's 15 s bound and the 1 s check that the client is
+// still connected. It holds that in one search of each shape a search takes: keywords only;
+// keywords because no embedder answered; meaning over every project; meaning over one project
+// once the embeddings project_key fill is done; meaning joined, for a filtered search; and a
+// broadened run of a keyword and of a meaning search, whose second statement is held to the
+// same as its first. Which transaction a statement ran in is a fact of the backend it ran on, so
+// the tracer records each statement's backend process, and each statement is read against what
+// its backend ran before it (unboundedBecause).
+//
+// Each shape is also held to the statement it names and the number of times it runs it, and to
+// the answer that says which shape it was (degraded, broadened), so a fixture that stopped
+// reaching a shape fails rather than passing on statements it never ran.
+func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
+	t.Parallel()
+	// degradedQuery is the one query the embedder refuses. broadenedQuery holds a word no item
+	// holds, so no item holds every word of it; its embedding is at cosine 0 to every stored
+	// vector (defaultVector), so the meaning list answers nothing for it either, and the search
+	// runs again over its rarest words.
+	const degradedQuery, broadenedQuery = "lighthouse keeper", "lighthouse zzzabsent"
+	embedder := refusingQueryEmbedder{
+		fakeEmbedder: &fakeEmbedder{vectors: map[string][]float32{broadenedQuery: queryVector()}},
+		refused:      degradedQuery,
+	}
+	statements := &backendStatements{}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, tracer: statements})
+	issue := createInteractionIssue(t, handler, "BOUND", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
+	searchComment(t, handler, issue.Key, "alice", "The lighthouse keeper logs the tide at dawn.")
+	processAllPending(t, database, embedder)
+	RefreshEverySearchTermStats(context.Background(), database.Pool)
+	recordEmbeddingProjectKeyFill(t, database, true)
+
+	texts := map[string]string{
+		searchQuery:              "searchQuery",
+		searchQueryMeaning:       "searchQueryMeaning",
+		searchQueryMeaningScoped: "searchQueryMeaningScoped",
+		searchQueryMeaningJoined: "searchQueryMeaningJoined",
+	}
+	for _, shape := range []struct {
+		name, path          string
+		query               url.Values
+		statement           string
+		runs                int
+		degraded, broadened bool
+	}{
+		{"keyword, keywords only", "/api/v1/search/results",
+			url.Values{"q": {"lighthouse"}, "keywords_only": {"true"}}, searchQuery, 1, false, false},
+		{"keyword, degraded because no embedder answered", "/api/v1/search",
+			url.Values{"q": {degradedQuery}}, searchQuery, 1, true, false},
+		{"meaning, every project", "/api/v1/search",
+			url.Values{"q": {"lighthouse"}}, searchQueryMeaning, 1, false, false},
+		{"meaning, one project with the fill done", "/api/v1/search",
+			url.Values{"q": {"lighthouse"}, "project": {"BOUND"}}, searchQueryMeaningScoped, 1, false, false},
+		{"meaning, joined for a filtered search", "/api/v1/search/results",
+			url.Values{"q": {"lighthouse"}, "author": {"alice"}}, searchQueryMeaningJoined, 1, false, false},
+		{"keyword, broadened", "/api/v1/search/results",
+			url.Values{"q": {broadenedQuery}, "keywords_only": {"true"}}, searchQuery, 2, false, true},
+		{"meaning, broadened", "/api/v1/search",
+			url.Values{"q": {broadenedQuery}}, searchQueryMeaning, 2, false, true},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			mark := len(statements.statements())
+			response := searchResponseOn(t, handler, shape.path, shape.query.Encode())
+			if (response.Degraded != "") != shape.degraded || response.Query.Broadened != shape.broadened {
+				t.Fatalf("the search answered degraded=%q broadened=%v, want degraded %v and broadened %v: the fixture no longer reaches this shape",
+					response.Degraded, response.Query.Broadened, shape.degraded, shape.broadened)
+			}
+			seen := statements.statements()
+			ran := map[string]int{}
+			for at := mark; at < len(seen); at++ {
+				name, ok := texts[seen[at].sql]
+				if !ok {
+					continue
+				}
+				ran[name]++
+				if why := unboundedBecause(seen, at); why != "" {
+					t.Errorf("%s, run %d of this search: %s", name, ran[name], why)
+				}
+			}
+			if want := map[string]int{texts[shape.statement]: shape.runs}; !maps.Equal(ran, want) {
+				t.Fatalf("the search ran %v of the four statements, want %v", ran, want)
+			}
+		})
 	}
 }
