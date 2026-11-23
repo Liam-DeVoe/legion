@@ -25,6 +25,7 @@ import (
 // load. Holding the owner lock here must therefore stop the upload before the room lock, leaving
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
+	t.Parallel()
 	ctx := uploadLockContext(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -267,6 +268,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // doc_updates' foreign key: while the owner lock was a `for update` row lock that key share
 // conflicted and the two deadlocked. The owner's advisory lock takes no row lock at all.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
+	t.Parallel()
 	ctx := uploadLockContext(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

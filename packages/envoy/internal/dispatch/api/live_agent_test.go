@@ -55,6 +55,7 @@ func (c *socketClient) subscribeAgent(t *testing.T, sub, session string) {
 }
 
 func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -86,6 +87,7 @@ func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
 // every release that can stream answers the control subject, and none that cannot does. The
 // relay says so on the wire rather than leaving a viewer waiting on a turn that cannot arrive.
 func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -108,6 +110,7 @@ func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
 // answer delivers the history without the page subscribing again. Once it has answered, a re-arm
 // only tells the session the viewer is still there.
 func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, agentWatchInterval: 50 * time.Millisecond}, nil)
@@ -131,6 +134,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 }
 
 func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -160,6 +164,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 // asked about. What a credential that does resolve may watch is the scope it holds, which
 // TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt below decides.
 func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 
@@ -181,6 +186,7 @@ func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
 // frame naming the scope it lacks. /ws/live is one socket serving every view, so this check is
 // the view's own and not the route table's.
 func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -217,6 +223,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 }
 
 func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
@@ -227,6 +234,7 @@ func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
 // naming either would subscribe a single viewer to every armed session on the bus. The view is
 // refused anything that is not a session uuid before it touches NATS at all.
 func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -252,6 +260,7 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 
 // An agent view names its kind and its session and nothing else.
 func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -291,6 +300,7 @@ func agentFrameOf(t *testing.T, stream *gatedStream, event string) string {
 // subscription here waits for room as a socket's does while its page reads nothing, so it drains
 // nothing of what the session publishes until the test lets it.
 func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		frames int
@@ -331,6 +341,7 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 // tool call reading "running…" with nothing later to correct it. Ending the subscription costs
 // the page a subscribe, and the subscribe rebuilds from the session's own replay.
 func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
@@ -374,6 +385,7 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 // subscription as dropped, and the socket stays open: the page subscribes again at once, and that
 // subscription rebuilds from the session's replay.
 func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"first-replay"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -445,6 +457,7 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 // One page's socket carries every agent view it shows: each subscription relays its own session
 // alone, and one that stops leaves the session's frames while the other goes on.
 func TestTwoAgentViewsShareOneSocket(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"planner-replay"}`))
 	source.SetResponder(reviewerSessionID, true)
@@ -547,6 +560,7 @@ func (r *heldReplay) endedWith() error {
 // replay has ended, and a view that waits its request out never ends it cancelled, so either
 // fails at the test binary's deadline, naming the last attempt.
 func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
+	t.Parallel()
 	memory := agentstream.NewMemory()
 	memory.SetResponder(plannerSessionID, true)
 	memory.SetResponder(reviewerSessionID, true)
@@ -668,6 +682,7 @@ func (s *sendStampedStream) firstAsked() time.Time {
 // viewer. The second is read off the view's own calls, from the relay's answer of its failure to
 // the view's ask to send its end.
 func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
+	t.Parallel()
 	for name, source := range map[string]*failingSource{
 		"its subscribe": {Memory: agentstream.NewMemory(), subscribe: errors.New("nats: connection closed")},
 		"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
@@ -698,6 +713,7 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 // GET /api/v1/agents/{session_id}/stream is gone; the test hook that feeds the in-memory relay
 // stays, since the browser suite's agent views read from it.
 func TestTheAgentStreamRouteIsGone(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: source}, nil)
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/agents/"+plannerSessionID+"/stream", nil, "alice"); response.Code != http.StatusNotFound {
@@ -715,6 +731,7 @@ func TestTheAgentStreamRouteIsGone(t *testing.T) {
 // (decodeJSONTestHook): a browser row that misspells `responding` would otherwise be answered 200
 // with the session's verdict left as it was.
 func TestTheResponderTestHookRefusesAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()}, nil)
 	hook := "/api/v1/agents/" + plannerSessionID + "/stream/_test/publish?as=responder"
 	refused := dispatchRequest(t, rig.handler, http.MethodPost, hook, map[string]any{"responding": true, "respondng": true}, "alice")

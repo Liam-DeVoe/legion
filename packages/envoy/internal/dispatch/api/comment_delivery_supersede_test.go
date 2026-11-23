@@ -111,6 +111,7 @@ func sendsOfTheQueuedComment(listener *mentionListener) int {
 // The control the paths below are read against: with no Retry at all, the queued attempt is the
 // only one of its mention, and its lane sends it once the send ahead of it lands.
 func TestTheQueuedAttemptIsSentWhenNoRetryOvertakesIt(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "")
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -134,6 +135,7 @@ func TestTheQueuedAttemptIsSentWhenNoRetryOvertakesIt(t *testing.T) {
 // reproduction of INFRA-606: before this the lane settled the attempt superseded without sending
 // it, and s1 got the comment from nothing at all.)
 func TestAFailedRetryLeavesTheQueuedAttemptToItsLane(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "")
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -167,6 +169,7 @@ func TestAFailedRetryLeavesTheQueuedAttemptToItsLane(t *testing.T) {
 // good: the lane settles the attempt it overtook superseded, gives its claim back and sends
 // nothing, the sweep owes that attempt no more, and s1 is handed the Retry's copy alone.
 func TestARetryThatIsSentSupersedesTheAttemptItOvertook(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "")
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -228,6 +231,7 @@ func aRetryStillInFlightWhenTheLaneArrives(
 // the Retry fails, and the delivery sweep sends it once it has waited a lease. s1 gets the
 // comment, once.
 func TestARetryInFlightThatFailsLeavesTheQueuedAttemptToTheSweep(t *testing.T) {
+	t.Parallel()
 	lane, releaseRetry, answered := aRetryStillInFlightWhenTheLaneArrives(t)
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -261,6 +265,7 @@ func TestARetryInFlightThatFailsLeavesTheQueuedAttemptToTheSweep(t *testing.T) {
 // Retry's own sender settles the attempt the lane stood down from superseded
 // (supersedeOvertakenAttempts), so it is left neither pending nor sent, and s1 is handed one copy.
 func TestARetryInFlightThatIsSentSupersedesTheAttemptTheLaneStoodDownFrom(t *testing.T) {
+	t.Parallel()
 	lane, releaseRetry, answered := aRetryStillInFlightWhenTheLaneArrives(t)
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -291,6 +296,7 @@ func TestARetryInFlightThatIsSentSupersedesTheAttemptTheLaneStoodDownFrom(t *tes
 // comment when its lane reaches it: s1 gets the comment once, from the attempt its first request
 // opened.
 func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -347,6 +353,7 @@ func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
 // it resumed rather than abandoned, and the delivery sweep owes and sends it once its claim has
 // lapsed: s1 gets the comment once, a lease after the kill.
 func TestTheSweepSendsTheAttemptAFailedRetryOvertookOnceItsClaimLapses(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "")
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, lane.deps, published)
@@ -414,6 +421,7 @@ func framesOfTheQueuedComment(listener *mentionListener) (sends int, keys []stri
 // ATTEMPT's mode in the key the two frames went under different keys and s1 was handed the
 // comment twice.
 func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) {
+	t.Parallel()
 	const sendWindow = 2 * time.Second
 	lane := aMentionQueuedWithinASendWindow(t, "", sendWindow)
 	lane.listener.dropRepeats()
@@ -470,6 +478,7 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 // attempt would stay pending for good. The delivery sweep settles it superseded instead, as it
 // settles the owed attempts nothing can send.
 func TestTheSweepSettlesAnOvertakenAttemptNoSenderSettled(t *testing.T) {
+	t.Parallel()
 	lane, releaseRetry, answered := aRetryStillInFlightWhenTheLaneArrives(t)
 	lane.listener.refuseSends("s1")
 	releaseRetry()

@@ -437,6 +437,7 @@ func presentedHeaders(presented *http.Request) http.Header {
 // closes a refused socket fails too. The heartbeat is two seconds, more than heartbeatSlack, so
 // skipping a tick is told apart from a late tick.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 2 * time.Second
 	for _, beside := range []struct {
 		name   string
@@ -504,6 +505,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -554,6 +556,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // tick is told apart from a late tick, and the client's pong meets the pong deadline on a loaded
 // runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	t.Parallel()
 	meter := startStallMeter(t)
 	const heartbeat = 2 * time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat)

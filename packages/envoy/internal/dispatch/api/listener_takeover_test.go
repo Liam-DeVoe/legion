@@ -184,6 +184,7 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 // of its own, which still fits every try a case's take-over takes: a receipt timeout's 300 ms try
 // and its retry, and the starting gate's two retries 250 ms and 750 ms after the first try.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{
 		envoyURL: listener.server.URL, envoyTimeout: 300 * time.Millisecond, takeoverWindow: 3 * time.Second,
@@ -287,6 +288,7 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // product records the attempt's times but states no bound on how soon an attempt with no listener
 // settles, so a delay before the first try is not this test's to see.
 func TestASendWithNoListenerConfiguredSettlesOnItsFirstTry(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	claims := countAttemptClaims(t, database)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
@@ -352,6 +354,7 @@ func countAttemptClaims(t *testing.T, database *store.Store) func() int {
 // three renewals. The server's window is 3 s: it still admits that fourth try with over a second
 // to spare, and the production twelve would only lengthen a failure.
 func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, table, column, receipt, path string
 		body                               map[string]any

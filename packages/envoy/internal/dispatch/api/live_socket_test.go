@@ -766,6 +766,7 @@ func (c *spannedConn) record(moment *time.Time, ok bool) {
 }
 
 func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)
 	now := time.Now().UTC()
@@ -789,6 +790,7 @@ func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
 }
 
 func TestAnUnauthenticatedUpgradeIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	for name, header := range map[string]http.Header{
 		"no credential":     nil,
@@ -804,6 +806,7 @@ func TestAnUnauthenticatedUpgradeIsRefused(t *testing.T) {
 }
 
 func TestAForeignOriginIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	foreign := asUser("alice")
 	foreign.Set("Origin", "https://other.example")
@@ -820,6 +823,7 @@ func TestAForeignOriginIsRefused(t *testing.T) {
 }
 
 func TestABearerMayReadTheSocket(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)
 	minted := mintAgentToken(t, rig.handler)
@@ -838,6 +842,7 @@ func TestABearerMayReadTheSocket(t *testing.T) {
 // writes, has a heartbeat to meet the pong deadline on a loaded runner: the socket must last until
 // the revocation, and a pong timeout would end it first.
 func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
 	minted := mintAgentToken(t, rig.handler)
@@ -867,6 +872,7 @@ func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 // out: a subscribe frame carrying them is answered with its snapshot. A frame type or a view kind
 // this build cannot serve is still refused, so the page reconnects to another process.
 func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)
 	client := rig.dial(t, asUser("alice"))
@@ -881,6 +887,7 @@ func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
 }
 
 func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	for _, test := range []struct {
@@ -921,6 +928,7 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 }
 
 func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	// The server's pong deadline, twice the heartbeat, would end the transfer: a frame holds the
 	// client's write lock until it is written, and gorilla's ping handler drops a pong it waited 1 s
 	// for that lock. A heartbeat past the run leaves the test binary's deadline the one bound.
@@ -959,6 +967,7 @@ func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
 // limit counts a message's frames together: the frame that takes the message past 8 MiB closes the
 // socket with 1009, though the message never finishes.
 func TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	// A heartbeat past the run, as TestAFrameOverTheReadLimitClosesTheSocket's: the transfer holds
 	// back the client's pongs.
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun}, nil)
@@ -983,6 +992,7 @@ func TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket(t *testing.T) {
 }
 
 func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)
 	client := rig.dial(t, asUser("alice"))
@@ -999,6 +1009,7 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 }
 
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
 	client := rig.open(t, smallReadDialer(), asUser("alice"))
 
@@ -1025,6 +1036,7 @@ func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
 }
 
 func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
 	seedHubSettings(t, rig.database)
@@ -1059,6 +1071,7 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 }
 
 func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
+	t.Parallel()
 	const age = 200 * time.Millisecond
 	spans := &servedSpans{}
 	rig := newLiveSocketRig(t, testServerOptions{liveSocketAge: func() time.Duration { return age }}, spans.listen)
@@ -1082,6 +1095,7 @@ func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
 }
 
 func TestEachSocketsAgeFallsInItsWindow(t *testing.T) {
+	t.Parallel()
 	served := &server{}
 	drawn := map[time.Duration]struct{}{}
 	for range 1000 {
@@ -1125,14 +1139,17 @@ func requireTheHookClosesEverySocket(t *testing.T, hook string, code int, reason
 }
 
 func TestTheRotateHookClosesEverySocketWithMaxAge(t *testing.T) {
+	t.Parallel()
 	requireTheHookClosesEverySocket(t, "/api/v1/live/_test/rotate", contracts.LiveSocketMaxAgeClose, "max age")
 }
 
 func TestTheDisconnectHookClosesEverySocketWithServiceRestart(t *testing.T) {
+	t.Parallel()
 	requireTheHookClosesEverySocket(t, "/api/v1/live/_test/disconnect", gws.CloseServiceRestart, "")
 }
 
 func TestTheLiveTestHooksAreMountedOnlyUnderTestHooks(t *testing.T) {
+	t.Parallel()
 	t.Run("without test hooks", func(t *testing.T) {
 		rig := newLiveSocketRig(t, testServerOptions{}, nil)
 		client := rig.dial(t, asUser("alice"))
@@ -1156,6 +1173,7 @@ func TestTheLiveTestHooksAreMountedOnlyUnderTestHooks(t *testing.T) {
 // back the hub's frames nor overflows the hub's queue: the hub's queue fills beside it, and once
 // the writer writes again every hub frame is written ahead of the stream frames still queued.
 func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
+	t.Parallel()
 	busy := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
 	// A heartbeat past the run: the page reads nothing while the writer is held, so it answers no
@@ -1212,6 +1230,7 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 // heartbeats after the socket opened, and a loaded runner that delays it most of a heartbeat still
 // meets it. A page that answers no ping, which a short heartbeat ends quickly, is the next test's.
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
 	answering := rig.open(t, gws.DefaultDialer, asUser("alice"))
@@ -1243,6 +1262,7 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 // which starts the backoff over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would
 // say its caller no longer resolves.
 func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 200 * time.Millisecond
 	spans := &servedSpans{}
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, spans.listen)
@@ -1280,6 +1300,7 @@ func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 }
 
 func TestAnIdleDeliverySocketIsSentAHeartbeat(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 300 * time.Millisecond
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
 	client := rig.dial(t, asUser("alice"))
