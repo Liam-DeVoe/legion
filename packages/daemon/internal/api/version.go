@@ -3447,6 +3447,9 @@ package api
 // that base and `gh pr edit <n> --base <base>`, and nothing is recorded. An issue with no plan
 // rows reads no base. A plugin of an earlier contract shows the code and its text as it shows any
 // refusal of the daemon.
+// A completion of a task of a plan sent again is answered `409 HANDOFF_ALREADY_RECORDED` in words
+// that name the task beside its phase (`phase <phase> of task <id>`), since the pass they count is
+// that task's own; an issue with no plan rows is answered in the words it was before.
 // `GET /legion/v1/state` serves each task of an issue's plan in a new key,
 // `issues.<key>.tasks`, in task id order (`api.TaskView`): its `id`, its `state`, the tasks it
 // `needs`, the `kind` and the `position` of the act it stands at and that act's `phase`, its

@@ -11,14 +11,15 @@
     "caller": 224
   },
   "admission": {
-    "cap": 6,
+    "cap": 7,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-240"
+      "LEGION-240",
+      "LEGION-241"
     ],
     "waiting": [
       "LEGION-212",
@@ -30,7 +31,9 @@
       "LEGION-211",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "blocked": [
       {
