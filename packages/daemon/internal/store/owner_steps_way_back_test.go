@@ -60,9 +60,10 @@ func runPlanRolesWayBack(t *testing.T, store *Store) {
 }
 
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
-// this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
-// three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
-// no step_stop. Both are copies because that release's code is not in the tree. Its list of the
+// this rollback goes back to (its validNoticeKinds): every kind of this release's list but the four
+// the plan roles' release and this one add, task-stopped, plan-not-taken, retro-held and
+// owner-step. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
+// neither step_stop nor slot_credential. Both are copies because that release's code is not in the tree. Its list of the
 // kinds for the controller alone is this release's (controllerOnlyNoticeKind), unchanged.
 var (
 	noticeKindsBeforeOwnerSteps = []record.NoticeKind{
