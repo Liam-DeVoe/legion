@@ -160,8 +160,9 @@ import (
 // it adds issues.holds_gate, set on every record whose key is its stored tree, and touches no
 // outbox_kind_check. Its issue facts (20261122154645) stand above that one and are applied last:
 // they add the columns and the tables each issue's own facts live in, open an issue lifecycle for
-// each issue a live claim names under an open tree lifecycle, and restate the basis seeds' kinds
-// with retention_end, so they are the last word of outbox_kind_check.
+// each issue a live claim names under an open tree lifecycle, set claims.holds_gate on every claim
+// whose issue is its stored tree, and restate the basis seeds' kinds with retention_end, so they
+// are the last word of outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

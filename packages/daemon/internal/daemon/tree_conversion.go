@@ -26,12 +26,13 @@ import (
 // last step writes when the conversion ended (converted_at), which the state reports. The record is
 // the project's own, since several projects' daemons can share one database.
 //
-// The order is the decision's. The steps that read only the store (1 to 6) run right after the
-// store migrates and before anything decodes a queued row (convertStore, before
-// openUncountedRuns): the release before queued its rows with no fence, which step 1 gives them.
+// The order is the decision's, with the claims' marks (7) after its steps that read only the
+// store. The steps that read only the store (1 to 7) run right after the store migrates and before
+// anything decodes a queued row (convertStore, before openUncountedRuns), and before supervision
+// reads the claims: the release before queued its rows with no fence, which step 1 gives them.
 // Then the boot's reconcile reads the listing and fills the copy of Dispatch's issues in a
-// transaction of its own, runs the steps that read the listing or the copy (7 to 9) and the record
-// (10), and only then the first admission pass (convertListed). A boot whose conversion is finished
+// transaction of its own, runs the steps that read the listing or the copy (8 to 10) and the record
+// (11), and only then the first admission pass (convertListed). A boot whose conversion is finished
 // runs the reconcile's one transaction, as every later boot does.
 const (
 	// convertFences stamps the fence of each row the release before queued without one
@@ -53,6 +54,9 @@ const (
 	// convertTreeDraws copies each tree's tree-unit draws onto its started issues
 	// (record.CarryTreeDraws).
 	convertTreeDraws
+	// convertClaimGates marks each claim whose issue holds its own gate as holding it
+	// (markClaimsOfGateHolders).
+	convertClaimGates
 	// convertHandOvers finishes each hand-over whose write landed and cancels the rest
 	// (convertHandOvers).
 	convertHandOvers
@@ -73,7 +77,7 @@ type conversionStep struct {
 	run  func(ctx context.Context, tx pgx.Tx) error
 }
 
-// storeConversionSteps are the steps that read only the store, 1 to 6, in order.
+// storeConversionSteps are the steps that read only the store, 1 to 7, in order.
 func (w *workflowRuntime) storeConversionSteps() []conversionStep {
 	return []conversionStep{
 		{convertFences, "fence the rows the release before queued", func(ctx context.Context, tx pgx.Tx) error {
@@ -102,11 +106,12 @@ func (w *workflowRuntime) storeConversionSteps() []conversionStep {
 			w.logConverted(ctx, "draws carried", carried)
 			return err
 		}},
+		{convertClaimGates, "mark each claim whose issue holds its own gate", w.markClaimsOfGateHolders},
 	}
 }
 
-// listedConversionSteps are the steps that read the listing and the copy it filled, 7 to 9, and
-// the record, 10, in order. listing is the boot's listing of the project, by key.
+// listedConversionSteps are the steps that read the listing and the copy it filled, 8 to 10, and
+// the record, 11, in order. listing is the boot's listing of the project, by key.
 func (w *workflowRuntime) listedConversionSteps(listing map[string]dispatch.IssueSummary) []conversionStep {
 	return []conversionStep{
 		{convertHandOvers, "finish or cancel each hand-over", func(ctx context.Context, tx pgx.Tx) error {
@@ -144,7 +149,7 @@ func (w *workflowRuntime) readConversion(ctx context.Context) (record.TreeConver
 	return conversion, err
 }
 
-// convertStore runs the steps of the conversion that read only the store (1 to 6) that the record
+// convertStore runs the steps of the conversion that read only the store (1 to 7) that the record
 // does not hold yet, and leaves the runtime converting (w.converting) until the boot's reconcile
 // has run the rest (convertListed). A project whose conversion is finished runs nothing. run calls
 // it once the store has migrated and the workflow is open, before anything decodes a queued row.
@@ -164,7 +169,7 @@ func (w *workflowRuntime) convertStore(ctx context.Context) error {
 
 // convertListed is the boot's reconcile of a project whose conversion is not finished: the copy of
 // Dispatch's issues is filled from issues, the boot's listing, in a transaction of its own; the
-// steps that read the listing or the copy and the record run (7 to 10) where the record does not
+// steps that read the listing or the copy and the record run (8 to 11) where the record does not
 // hold them yet; and then the first admission pass, in a transaction of its own. A retry of the
 // reconcile reads the record again, so it runs no step twice. It answers the keys that pass
 // refused (admitListing).
@@ -249,7 +254,7 @@ func (w *workflowRuntime) runConversionStep(ctx context.Context, step conversion
 // (record.ReserveIssuesOfTreeCleanups), and what finishes each is queued
 // (queueReservedCleanups). An issue whose hand-over the release before would still apply once its
 // write landed (handOverStands) is left out, with its lifecycle opened: whether it carries on as a
-// root of its own is step 7's, which reads the listing, and that step reserves it where it does
+// root of its own is step 8's, which reads the listing, and that step reserves it where it does
 // not (convertHandOvers). A reservation would hold such an issue's start and every launch of its
 // claims until a cleanup that its next run fences out confirms, which none ever does.
 func (w *workflowRuntime) reserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx) error {
@@ -284,7 +289,7 @@ func (w *workflowRuntime) reserveIssuesOfTreeCleanups(ctx context.Context, tx pg
 
 // queueReservedCleanups queues what finishes each reservation the conversion made of an issue a
 // tree cleanup of the release before covered. That release finished such a cleanup through its
-// tree's close rows, which step 8 deletes, so for each issue the workflow reserved and records,
+// tree's close rows, which step 9 deletes, so for each issue the workflow reserved and records,
 // each claim of it that has not retired is closed (an issue_close row, which retires it with its
 // session kept, as the tree's close did) and its own cleanup is queued (an issue_suspend row, whose
 // executor finishes a reserved cleanup once every claim of the issue has retired: it deletes the
@@ -353,7 +358,32 @@ func (w *workflowRuntime) liveRoles(ctx context.Context, tx pgx.Tx, key string) 
 	return live, nil
 }
 
-// convertHandOvers is step 7: the listing's reading of each hand-over's issue decides it. Where
+// markClaimsOfGateHolders is step 7: each claim no start of this release has marked takes the mark
+// that its issue holds its own gate (record.MarkClaimsOfGateHolders), by the issue's record or by
+// the release before's rule for a root, a claim whose issue is the tree it stores. supervise's
+// treeRoot reads the mark, so an architect left unmarked is no tree's root: an operator's close of
+// its tree is refused, and its stop and close act on it as on a member. The migration of
+// 20261122154645 marks each claim it finds by the release before's rule, and the workflow's start
+// writes the mark again from the Dispatch chain at each launch (supervise.Machine.MarkLaunch). But
+// a claim the release before wrote while a rollback held takes the mark's default, false, and the
+// workflow never starts an operator's claim, so nothing else would ever mark such a claim; this
+// step runs again on the first boot after a rollback whose way back deleted the record.
+//
+// It reads only the store because supervision reads every claim before the boot's reconcile runs
+// the steps that read the listing (openSupervision), and builds its machines from that reading: a
+// claim a later step marked would be built unmarked, and its first write would store it unmarked
+// again. So no claim of a root a landed hand-over makes, which step 8 marks as holding its own
+// gate, is marked here: its architect's claim is made by the start the first admission pass
+// queues for it (workflow.Engine.StartArchitect, from admit's promotion of a queued root), which
+// reads the gate on the Dispatch chain and writes the mark (the outbox's start, launchOf), and
+// each start of a claim it carried marks that claim the same way.
+func (w *workflowRuntime) markClaimsOfGateHolders(ctx context.Context, tx pgx.Tx) error {
+	marked, err := record.MarkClaimsOfGateHolders(ctx, tx, w.dispatchProject)
+	w.logConverted(ctx, "claims marked as holding their issue's gate", marked)
+	return err
+}
+
+// convertHandOvers is step 8: the listing's reading of each hand-over's issue decides it. Where
 // the hand-over's write landed — Dispatch shows the issue todo with the label, which is what the
 // release before's own outbox read to apply it, and the release before would still have applied
 // it (handOverStands) — the issue is made the root of its own the release before's
@@ -419,7 +449,7 @@ func (w *workflowRuntime) handOverLanded(ctx context.Context, tx pgx.Tx, issue r
 // handOverStands says whether handover, of issue, is one the release before would still have
 // applied once its write landed: its fence is not cancelled, the issue still stands in the tree it
 // names, and that tree's root still lingers at the generation it names. Only the listing decides
-// such a hand-over (handOverLanded), so step 5 leaves its issue to step 7
+// such a hand-over (handOverLanded), so step 5 leaves its issue to step 8
 // (reserveIssuesOfTreeCleanups).
 func (w *workflowRuntime) handOverStands(ctx context.Context, tx pgx.Tx, issue record.Issue, handover record.ReleaseBeforeHandover) (bool, error) {
 	if handover.Cancelled || issue.Tree != handover.Tree {
@@ -565,7 +595,7 @@ func (w *workflowRuntime) carriedGate(ctx context.Context, tx pgx.Tx, key string
 	return &gate, nil
 }
 
-// tellRootsUnderParents is step 9 (R21 of dispatch://INFRA-3320): each recorded issue the release
+// tellRootsUnderParents is step 10 (R21 of dispatch://INFRA-3320): each recorded issue the release
 // before ran as a root of its own (its stored tree is its own key) whose Dispatch parent, in the
 // copy the boot's listing filled, is in Legion's work is told R18's notice through the path a
 // change of parent takes (workflow.Engine.TellParentAtFirstBoot): the mark of the parent it was

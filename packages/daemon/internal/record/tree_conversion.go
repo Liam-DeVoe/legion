@@ -357,6 +357,29 @@ func CarryTreeDraws(ctx context.Context, tx pgx.Tx, project string) (int64, erro
 	return tag.RowsAffected(), nil
 }
 
+// MarkClaimsOfGateHolders marks as holding its gate (supervise.Claim.HoldsGate) each claim of
+// project that no start of this release has marked (its launch_tree is empty, as
+// supervise.Claim.LaunchedTree reads it) and whose issue holds its own gate: the issue's record
+// holds the mark (Issue.HoldsGate), or the claim names its issue as the tree it stores, the release
+// before's rule for a root (claim.IsTreeRoot). The claim's stored tree counts beside the record
+// because a record the release before wrote while a rollback held takes the mark's default, false,
+// even where that release ran it as a root. The project controller's claim names no issue and is
+// left as it is. It marks and never clears, so a claim already marked, and one a start of this
+// release wrote (its launch_tree set), is written nothing. It answers how many claims it marked.
+func MarkClaimsOfGateHolders(ctx context.Context, tx pgx.Tx, project string) (int64, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return 0, fmt.Errorf("mark the claims of %s whose issue holds its own gate: %w", project, err)
+	}
+	tag, err := tx.Exec(ctx, `update claims c set holds_gate = true
+		where c.project = $1 and c.issue <> '' and c.launch_tree = '' and not c.holds_gate
+			and (c.issue = c.tree or exists (select 1 from issues i where i.key = c.issue and i.holds_gate))`, token)
+	if err != nil {
+		return 0, fmt.Errorf("mark the claims of %s whose issue holds its own gate: %w", project, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ReleaseBeforeHandover is one hand-over the release before had in flight (its handovers table):
 // the child it handed to Legion as a root of its own, the tree it left, the generation of the
 // linger whose close handed it over, and whether a return of that tree's root cancelled it.

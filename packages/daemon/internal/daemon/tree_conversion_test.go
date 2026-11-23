@@ -21,7 +21,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // conversionIssue is a record of the project CAPTURE as the release before left it: key stored in
@@ -117,16 +119,16 @@ func rowsOfKind(t *testing.T, pool *store.Pool, kind record.OutboxKind) []record
 
 // The first boot on this release tells R18's notice of each issue the release before ran as a root
 // of its own whose Dispatch parent, in the copy the boot's listing fills, is in Legion's work (R21
-// of dispatch://INFRA-3320, step 9 of decision 21 of dispatch://INFRA-4730). CAPTURE-500 is
-// recorded as its own tree under CAPTURE-300, a root at work, and the release before already told
-// it under that parent (told_parent): after the boot it owes one re-parent seed naming CAPTURE-300
-// as its new parent and no old parent, and the seed's read tells its own architect and CAPTURE-300's
-// one reparented notice each. CAPTURE-650 is recorded as its own tree under CAPTURE-700, which the
-// daemon does not record and which is in Dispatch's backlog: nothing of it is told. A later
-// listing, and a later event, that repeat CAPTURE-500's parent tell nobody again. The boot runs the
-// conversion as the daemon does: its steps that read the store, then the boot's reconcile, which
-// fills the copy from the listing, runs the steps that read it, records the conversion and makes
-// the first admission pass.
+// of dispatch://INFRA-3320, step 10 of the first boot's conversion, decision 21 of
+// dispatch://INFRA-4730). CAPTURE-500 is recorded as its own tree under CAPTURE-300, a root at
+// work, and the release before already told it under that parent (told_parent): after the boot it
+// owes one re-parent seed naming CAPTURE-300 as its new parent and no old parent, and the seed's
+// read tells its own architect and CAPTURE-300's one reparented notice each. CAPTURE-650 is
+// recorded as its own tree under CAPTURE-700, which the daemon does not record and which is in
+// Dispatch's backlog: nothing of it is told. A later listing, and a later event, that repeat
+// CAPTURE-500's parent tell nobody again. The boot runs the conversion as the daemon does: its
+// steps that read the store, then the boot's reconcile, which fills the copy from the listing,
+// runs the steps that read it, records the conversion and makes the first admission pass.
 func TestTheFirstBootTellsEachRootUnderAParentAtWork(t *testing.T) {
 	ctx := context.Background()
 	const parent, told, apart, outside = "CAPTURE-300", "CAPTURE-500", "CAPTURE-650", "CAPTURE-700"
@@ -499,7 +501,7 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 	if err := bootConversionStoppedAt(ctx, w, convertRecord); !errors.Is(err, errStoppedAfterStep) {
 		t.Fatalf("the boot that converts the store ended with %v, want it to reach the last step", err)
 	}
-	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 10 t"}) {
+	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 11 t"}) {
 		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
 	}
 	rows, err := st.Pool().Query(ctx, `select concat_ws(' ', state, published_since is null, unpublished_since is null) from claims
@@ -521,18 +523,19 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 }
 
 // A hand-over the release before had in flight in a tree whose cleanup it reserved is decided by
-// the listing, not by the reservation (R22 of dispatch://INFRA-3320, steps 5 and 7 of decision 21
-// of dispatch://INFRA-4730). CAPTURE-60 lingers at generation 2 with its tree cleanup reserved;
-// CAPTURE-61 and CAPTURE-62, members in implementing whose implementers still work, were handed
-// over, and CAPTURE-63 is a done member whose suspended implementer the cleanup waits for. The
-// listing shows CAPTURE-61's write landed (todo with the label) and CAPTURE-62's not. After the
-// first boot's conversion and its first admission pass, CAPTURE-61 carries on as a root of its own:
-// its lifecycle is open, its implementer is bound to it, nothing closes or cleans it up, and it
-// takes one of the free slots. CAPTURE-62, whose hand-over is cancelled, and CAPTURE-63 are
-// reserved as the tree's cleanup covered them, with what finishes each queued. Negative control,
-// run when this was written, failing this test and then reverted: with step 5 reserving every
-// issue the tree cleanup covers, its hand-overs too, CAPTURE-61's cleanup is reserved, which no
-// row of its new run ever confirms, and admission leaves it waiting for that cleanup.
+// the listing, not by the reservation (R22 of dispatch://INFRA-3320, steps 5 and 8 of the first
+// boot's conversion, decision 21 of dispatch://INFRA-4730). CAPTURE-60 lingers at generation 2
+// with its tree cleanup reserved; CAPTURE-61 and CAPTURE-62, members in implementing whose
+// implementers still work, were handed over, and CAPTURE-63 is a done member whose suspended
+// implementer the cleanup waits for. The listing shows CAPTURE-61's write landed (todo with the
+// label) and CAPTURE-62's not. After the first boot's conversion and its first admission pass,
+// CAPTURE-61 carries on as a root of its own: its lifecycle is open, its implementer is bound to
+// it, nothing closes or cleans it up, and it takes one of the free slots. CAPTURE-62, whose
+// hand-over is cancelled, and CAPTURE-63 are reserved as the tree's cleanup covered them, with what
+// finishes each queued. Negative control, run when this was written, failing this test and then
+// reverted: with step 5 reserving every issue the tree cleanup covers, its hand-overs too,
+// CAPTURE-61's cleanup is reserved, which no row of its new run ever confirms, and admission leaves
+// it waiting for that cleanup.
 func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T) {
 	ctx := context.Background()
 	const root, landed, cancelled, done = "CAPTURE-60", "CAPTURE-61", "CAPTURE-62", "CAPTURE-63"
@@ -624,6 +627,122 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 	}
 }
 
+// The first boot's conversion marks each claim whose issue holds its own gate before supervision
+// reads a claim (step 7, markClaimsOfGateHolders), and the start the first admission pass queues
+// marks the architect of a root that a landed hand-over made. CAPTURE-70 is a root of its own whose
+// record the release before wrote while a rollback held, so it holds the mark's default, false,
+// and its architect is the operator's claim, written by that release with no mark and no launch
+// tree, which the workflow never starts. After the steps that read the store, that claim holds the
+// mark in the claims the boot's supervision reads (openSupervision), and in the machine the boot's
+// restore builds from them (supervisor.restore). CAPTURE-61 is a member of CAPTURE-60's tree whose
+// hand-over landed: step 8 makes it a root that holds its own gate, the first admission pass queues
+// its architect's start (workflow.Engine.StartArchitect, which admit's promotion of a queued root
+// calls), and that start, run by the outbox, makes the architect's claim with the mark it reads on
+// the Dispatch chain (the outbox's start, launchOf). Negative control, run when this was written,
+// failing this test and then reverted: with step 7 left out of the steps that read the store, the
+// operator's claim reads unmarked in the store and in its machine.
+func TestTheConversionMarksAnOperatorsRootClaimBeforeSupervisionReadsIt(t *testing.T) {
+	ctx := context.Background()
+	const root, landed, operated = "CAPTURE-60", "CAPTURE-61", "CAPTURE-70"
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	lingering := conversionIssue(root, root, phase.Done, "done", 2)
+	deadline := time.Now().Add(48 * time.Hour).UTC()
+	lingering.LingerUntil = &deadline
+	// The release before records a root with its key as its tree and the mark at its default.
+	rolledBack := conversionIssue(operated, operated, phase.Implementing, "in_progress", 1)
+	rolledBack.HoldsGate = false
+	for _, issue := range []record.Issue{lingering, conversionIssue(landed, root, phase.Implementing, "in_progress", 1), rolledBack} {
+		putOutboxIssue(t, pool, records, issue)
+	}
+	seedConversionClaim(t, pool, landed, claim.RoleImplementer, root, "working", "")
+	seedConversionClaim(t, pool, operated, claim.RoleArchitect, operated, "idle", "")
+	for _, statement := range []string{
+		`insert into tree_lifecycles (project, tree, epoch, authority, cleanup_started) values ('capture', 'CAPTURE-60', 1, 'workflow', true)`,
+		`insert into tree_lifecycles (project, tree, epoch, authority) values ('capture', 'CAPTURE-70', 1, 'operator')`,
+		`insert into handovers (issue, tree, linger_generation) values ('CAPTURE-61', 'CAPTURE-60', 2)`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("seed what the release before left: %v", err)
+		}
+	}
+	operator, err := claim.NewToken("capture", operated, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marked bool
+	if err := pool.QueryRow(ctx, `select holds_gate from claims where token = $1`, string(operator)).Scan(&marked); err != nil || marked {
+		t.Fatalf("the operator's claim %s holds the mark %t (%v) before the conversion, want false: the fixture is not a claim the release before wrote", operator, marked, err)
+	}
+	board := &copyBoard{listing: []map[string]any{
+		conversionSummary(root, "done", 3, ""),
+		conversionSummary(landed, "todo", 3, root, "legion"),
+		conversionSummary(operated, "in_progress", 3, ""),
+	}}
+	w := copyRuntime(t, pool, board, 3)
+	w.projectID = "capture"
+	w.consumers = bootClaimConsumers(t, pool)
+	if err := w.convertStore(ctx); err != nil {
+		t.Fatalf("the conversion's steps that read the store: %v", err)
+	}
+
+	// The claims as the boot's supervision reads them, before it builds any machine.
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	read, err := st.Claims(ctx)
+	if err != nil {
+		t.Fatalf("read the claims as supervision does at boot: %v", err)
+	}
+	read = ofProject(read, "capture")
+	stored := slices.IndexFunc(read, func(c supervise.Claim) bool { return c.Token == operator })
+	if stored < 0 {
+		t.Fatalf("the claims supervision reads at boot hold no %s", operator)
+	}
+	if !read[stored].HoldsGate {
+		t.Fatalf("the claims supervision reads at boot hold %s on %s in the tree of %s with no mark, want it holding its gate: the operator's claim on a root is its tree's root",
+			operator, read[stored].Issue, read[stored].Tree)
+	}
+	sup, _ := newOutboxSupervisor(t, "capture", t.TempDir())
+	if _, err := sup.restore(ctx, read); err != nil {
+		t.Fatalf("restore the claims as the boot does: %v", err)
+	}
+	machine, found := sup.Machine(operator)
+	if !found || !machine.Claim().HoldsGate {
+		t.Fatalf("the boot's restore built %s: %t, holding its gate: %t; want a machine of the claim that holds its gate", operator, found, found && machine.Claim().HoldsGate)
+	}
+
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("the first boot's reconcile: %v", err)
+	}
+	var start record.OutboxRow
+	if err := pool.QueryRow(ctx, `select id, payload from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = 'architect'`, landed).Scan(&start.ID, &start.Payload); err != nil {
+		t.Fatalf("read the architect's start the first admission pass queued for %s: %v", landed, err)
+	}
+	start.Issue, start.Kind, start.NextAt = landed, record.OutboxKindSupervise, time.Now()
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "CAPTURE", records: records, supervisor: sup,
+		tokens: outboxTokens{}, project: "capture", stateDir: t.TempDir(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + landed}, nil
+		},
+	}
+	if err := runner.execute(ctx, start); err != nil {
+		t.Fatalf("run the start of %s's architect: %v", landed, err)
+	}
+	architect, err := claim.NewToken("capture", landed, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, found := sup.Machine(architect)
+	if !found || !started.Claim().HoldsGate {
+		t.Fatalf("the start of %s's architect made a claim: %t, holding its gate: %t; want the claim of a root that holds its own gate, marked by its start",
+			landed, found, found && started.Claim().HoldsGate)
+	}
+}
+
 // errStoppedAfterStep is what the test's hook stops a boot with after the step it names.
 var errStoppedAfterStep = errors.New("the test stopped the boot after a step of its conversion")
 
@@ -638,8 +757,9 @@ var errStoppedAfterStep = errors.New("the test stopped the boot after a step of 
 //     write landed (Dispatch shows it todo with the label), and CAPTURE-4, one whose write did not
 //     (Dispatch shows it in progress), each with its hand-over status row.
 //   - CAPTURE-6, a root a hand-over made at generation 1 with its gate, which the operator holds;
-//     CAPTURE-5, a root of its own whose Dispatch parent is CAPTURE-6; and a notice to CAPTURE-6's
-//     architect queued with no fence.
+//     CAPTURE-5, a root of its own whose Dispatch parent is CAPTURE-6; a notice to CAPTURE-6's
+//     architect queued with no fence; and the architects of both, written as the release before
+//     writes a claim, with no mark that its issue holds its gate.
 func conversionScenario(t *testing.T, pool *store.Pool) *copyBoard {
 	t.Helper()
 	ctx := context.Background()
@@ -703,7 +823,7 @@ func conversionDump(t *testing.T, pool *store.Pool) map[string][]string {
 		"outbox": `select concat_ws(' ', kind, issue, payload::text, case when kind = 'retention_end' then next_at::text end) from outbox
 			order by kind, issue, payload::text`,
 		"issue_lifecycles":       `select concat_ws(' ', project, issue, epoch, authority, cleanup_started) from issue_lifecycles order by issue`,
-		"claims":                 `select concat_ws(' ', token, tree, tree_epoch, issue_epoch, state) from claims order by token`,
+		"claims":                 `select concat_ws(' ', token, tree, tree_epoch, issue_epoch, holds_gate, state) from claims order by token`,
 		"experiment_assignments": `select concat_ws(' ', issue_key, experiment, unit, variant, carried) from experiment_assignments order by 1`,
 		"handovers":              `select issue from handovers order by issue`,
 		"handed_over_roots":      `select concat_ws(' ', issue, generation, gate_carried) from handed_over_roots order by issue`,
@@ -775,7 +895,7 @@ func TestASecondConversionAndAnInterruptedOneChangeNothingMore(t *testing.T) {
 		return conversionDump(t, pool), w, pool
 	}
 	whole, w, pool := converted(t, convertRecord)
-	if got := whole["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 10 t"}) {
+	if got := whole["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 11 t"}) {
 		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
 	}
 	// The premise: each step found something of the scenario to convert.
@@ -790,11 +910,12 @@ func TestASecondConversionAndAnInterruptedOneChangeNothingMore(t *testing.T) {
 			and exists (select 1 from outbox where kind = 'issue_suspend' and issue = 'CAPTURE-2')
 			and exists (select 1 from outbox where kind = 'supervise' and issue = 'CAPTURE-2' and payload->>'op' = 'issue_close')`,
 		"a tree's draw carried onto a started issue (6)": `select count(*) from experiment_assignments where issue_key = 'CAPTURE-4' and carried`,
-		"a landed hand-over finished (7)": `select count(*) from issues where key = 'CAPTURE-3' and tree = 'CAPTURE-1' and generation = 2
+		"a claim marked as holding its issue's gate (7)": `select count(*) from claims where issue in ('CAPTURE-5', 'CAPTURE-6') and holds_gate`,
+		"a landed hand-over finished (8)": `select count(*) from issues where key = 'CAPTURE-3' and tree = 'CAPTURE-1' and generation = 2
 			and carried_generation = 2 and taken_back and status = 'todo' and holds_gate`,
-		"the rows only the release before runs deleted (8)": `select count(*) where not exists (select 1 from outbox where kind in ('linger_close', 'workspace_remove')
+		"the rows only the release before runs deleted (9)": `select count(*) where not exists (select 1 from outbox where kind in ('linger_close', 'workspace_remove')
 			or (kind = 'supervise' and payload->>'op' = 'tree_close') or payload->>'kind' = 'hand-over') and not exists (select 1 from handovers)`,
-		"a root under a parent at work told (9)": `select count(*) from outbox where kind = 'reparent_seed' and issue = 'CAPTURE-5'`,
+		"a root under a parent at work told (10)": `select count(*) from outbox where kind = 'reparent_seed' and issue = 'CAPTURE-5'`,
 	} {
 		var n int
 		if err := pool.QueryRow(ctx, query).Scan(&n); err != nil || n == 0 {

@@ -187,7 +187,7 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		values ('other-other-other-7-architect', 'other', $1, $1, 'architect', 1, '', '', 'working', 0, 0, 0, 0, 1, $1,
 			now() - interval '1 hour', now() - interval '2 hours')`, other)
 	for _, project := range []string{"LEGION", "OTHER"} {
-		exec("record the conversion of "+project, `insert into tree_conversions (project, step, converted_at) values ($1, 10, now())`, project)
+		exec("record the conversion of "+project, `insert into tree_conversions (project, step, converted_at) values ($1, 11, now())`, project)
 	}
 	// The held writes. The literal list of statuses the way back's SQL calls out of the workflow
 	// is held to record.OutOfWorkflowStatuses by one record at each of them, so the two cannot

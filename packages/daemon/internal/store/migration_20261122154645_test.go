@@ -27,8 +27,11 @@ const issueFactsVersion = 20261122154645
 // that tree's authority — the workflow's for an issue whose claims stand under trees of both — and
 // every claim of such an issue binds it, a retired one among them, so each passes its launch
 // check. An issue whose only claim retired, one under a tree whose cleanup is reserved, and the
-// project controller's claim open and bind nothing. A record written before reads back with none
-// of its new facts, and every kind the outbox took before is taken still, with retention_end.
+// project controller's claim open and bind nothing. Every claim whose issue is its stored tree,
+// retired or not, holds its gate, and every other claim, the controller's among them, holds none
+// (TestTheIssueFactsMigrationMarksEveryClaimOnARootOfTheReleaseBefore). A record written before
+// reads back with none of its new facts, and every kind the outbox took before is taken still,
+// with retention_end.
 func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -128,9 +131,11 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 		t.Fatalf("the store read %d claims after the migration, want the %d seeded", len(loaded), len(wantEpochs))
 	}
 	for _, c := range loaded {
-		if c.IssueEpoch != wantEpochs[c.Token] || c.LaunchTree != "" || c.HoldsGate {
-			t.Errorf("claim %s after the migration = issue epoch %d, launch tree %q, gate %t; want issue epoch %d, no launch tree and no gate",
-				c.Token, c.IssueEpoch, c.LaunchTree, c.HoldsGate, wantEpochs[c.Token])
+		// A claim on its tree's root holds its gate after the migration; the controller's, on no issue, does not.
+		wantGate := c.Issue != "" && claim.IsTreeRoot(c.Issue, c.Tree)
+		if c.IssueEpoch != wantEpochs[c.Token] || c.LaunchTree != "" || c.HoldsGate != wantGate {
+			t.Errorf("claim %s after the migration = issue epoch %d, launch tree %q, gate %t; want issue epoch %d, no launch tree and gate %t",
+				c.Token, c.IssueEpoch, c.LaunchTree, c.HoldsGate, wantEpochs[c.Token], wantGate)
 		}
 		if c.IssueEpoch == 0 || c.State == supervise.StateRetired {
 			continue
@@ -181,5 +186,60 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into tree_conversions (project, step) values ('legion', 1)`); err != nil {
 		t.Fatalf("record the first step of a conversion: %v", err)
+	}
+}
+
+// The release before keeps no mark that a claim holds its tree's gate: it reads a claim whose
+// issue is the tree it stores as that tree's root (claim.IsTreeRoot). 20261122154645 adds
+// claims.holds_gate and marks by that same rule every claim it finds, since supervise.Claim's
+// treeRoot reads the mark, and the workflow writes the mark again only when it starts a claim,
+// which it never does for an operator's: a root's architect left unmarked would read as no tree's
+// root, and an operator's close of its tree would be refused. Before the migration the claims
+// table has no such column, which is the negative control read first. After it the root's
+// architect and the phase worker on the root hold the gate, and the architect of a member of that
+// tree holds none.
+func TestTheIssueFactsMigrationMarksEveryClaimOnARootOfTheReleaseBefore(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, issueFactsVersion-1)
+	want := map[claim.Token]bool{}
+	for _, c := range []struct {
+		token       claim.Token
+		tree, issue string
+		role        claim.Role
+		holdsGate   bool
+	}{
+		{"legion-legion-legion-208-architect", "LEGION-208", "LEGION-208", claim.RoleArchitect, true},     // the root's architect
+		{"legion-legion-legion-208-implementer", "LEGION-208", "LEGION-208", claim.RoleImplementer, true}, // a phase worker on the root
+		{"legion-legion-legion-209-architect", "LEGION-208", "LEGION-209", claim.RoleArchitect, false},    // the architect of a member
+	} {
+		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ($1, 'legion', $2, $3, $4, 1, '', '', 'idle', 0, 0, 0, 0)`,
+			string(c.token), c.tree, c.issue, string(c.role)); err != nil {
+			t.Fatalf("seed claim %s as the release before writes it: %v", c.token, err)
+		}
+		want[c.token] = c.holdsGate
+	}
+	if _, err := store.Pool().Exec(ctx, "select holds_gate from claims"); err == nil || !strings.Contains(err.Error(), "holds_gate") {
+		t.Fatalf("reading claims.holds_gate before the migration = %v, want the column to be unknown: the fixture is not the old shape", err)
+	}
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the issue facts: %v", err)
+	}
+
+	loaded, err := store.Claims(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(want) {
+		t.Fatalf("the store read %d claims after the migration, want the %d seeded", len(loaded), len(want))
+	}
+	for _, c := range loaded {
+		if c.HoldsGate != want[c.Token] {
+			t.Errorf("claim %s on %s in the tree of %s holds its gate = %t after the migration, want %t: a claim whose issue is its stored tree is on that tree's root and holds its gate, and a claim on a member holds none",
+				c.Token, c.Issue, c.Tree, c.HoldsGate, want[c.Token])
+		}
 	}
 }

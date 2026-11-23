@@ -329,12 +329,12 @@ func (r *ownerRig) setClaimCrossings(issue string, role claim.Role, state superv
 }
 
 // convertedAt records that the project's first boot on this release finished its conversion at at
-// (tree_conversions, its last step, 10), the time the repair judges a claim against where no
+// (tree_conversions, its last step, 11), the time the repair judges a claim against where no
 // crossing has stamped it (record.RoleHolderAt.PublishedAt).
 func (r *ownerRig) convertedAt(at time.Time) {
 	r.t.Helper()
 	inTx(r.t, r.pool, func(tx pgx.Tx) {
-		if err := record.RecordTreeConversionStep(context.Background(), tx, testProject, 10, &at); err != nil {
+		if err := record.RecordTreeConversionStep(context.Background(), tx, testProject, 11, &at); err != nil {
 			r.t.Fatal(err)
 		}
 	})

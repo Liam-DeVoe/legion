@@ -42,8 +42,11 @@
 -- tree's authority, the workflow's where its claims' trees differ in it, and every claim of an issue
 -- that now has a lifecycle binds epoch one; without that, the first relaunch of a live claim would
 -- be refused as unbound. An issue of a tree whose cleanup is reserved opens none here: the first
--- boot's conversion moves that reservation onto each of its issues. The project controller's
--- claim, on no issue, opens and binds nothing.
+-- boot's conversion moves that reservation onto each of its issues. Every claim whose issue is the
+-- tree it stores, a claim on a root of the release before, holds its gate (holds_gate), retired or
+-- not, so a root's architect is its tree's root from the upgrade on rather than from the
+-- workflow's next start of it, which an operator's claim never gets. The project controller's
+-- claim, on no issue, opens and binds nothing and holds no gate.
 --
 -- The conversion's record. tree_conversions holds, for each project the first boot converted, the
 -- last numbered step of the conversion that committed, and when the last step ran (converted_at,
@@ -222,6 +225,16 @@ alter table claims
     add column holds_gate boolean not null default false,
     add column published_since timestamptz,
     add column unpublished_since timestamptz;
+
+-- holds_gate is set on every claim the release before recorded on its tree's root, a claim whose
+-- issue is the tree it stores: that release's own rule for a root (claim.IsTreeRoot), the one
+-- 20261122154644 marks the issues by. supervise.Claim's treeRoot reads the mark, so a root's
+-- architect left unmarked would be no tree's root: an operator's close of its tree would be
+-- refused, and the stop and the close would act on it as on a member. The workflow's start writes
+-- the mark again from the Dispatch chain at each launch (supervise.Machine.MarkLaunch), but the
+-- workflow never starts an operator's claim, so nothing else would mark one. The project
+-- controller's claim names no issue and stays unmarked.
+update claims set holds_gate = true where issue <> '' and issue = tree;
 
 create table issue_lifecycles (
     project text not null,
