@@ -506,17 +506,10 @@
       },
       {
         "file": "packages/envoy/internal/redact/answer.go",
-        "function": "github.com/sjawhar/envoy/internal/redact.unreached",
+        "function": "github.com/sjawhar/envoy/internal/redact.refusal",
         "operands": [],
         "records_boxes": true,
-        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds what encoding/json would fill that no record of the answer reaches, reading each struct field encoding/json decodes, a box's none among them, so it descends into no box and reads no box's storage"
-      },
-      {
-        "file": "packages/envoy/internal/redact/answer.go",
-        "function": "github.com/sjawhar/envoy/internal/redact.plainMember",
-        "operands": [],
-        "records_boxes": true,
-        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds a member encoding/json would fill with the answer's text as it came, reading each struct field encoding/json fills, and goes into no type that decodes its JSON itself, the box among them, so it descends into no box and reads no box's storage"
+        "why": "Answer.Decode's one walk of the value a caller decodes an answer into, before it decodes: it finds what Decode refuses there - a member encoding/json would fill with the answer's text as it came, a box in a map's key or behind an embedded field of an unexported name, an embedded pointer a decoder is promoted through - reading each struct field a decode can fill, a box's none among them, so it descends into no box and reads no box's storage"
       },
       {
         "file": "packages/daemon/internal/store/storetext/strings.go",
@@ -2576,8 +2569,8 @@
       "requirement": "r2-held",
       "package": "./internal/redact",
       "test": "TestDecodeRefusesADestinationWhoseMapKeyHoldsABox",
-      "production": "redact Answer.Decode: a destination whose map's key holds a box, which encoding/json fills through UnmarshalText and no record reaches, is refused before anything is decoded (unreached, unreachedType)",
-      "function": "github.com/sjawhar/envoy/internal/redact.unreachedType",
+      "production": "redact Answer.Decode: a destination whose map's key holds a box, which encoding/json fills through UnmarshalText and no record reaches, is refused before anything is decoded (refusal)",
+      "function": "github.com/sjawhar/envoy/internal/redact.refusal",
       "capture": "redact.answer-box-key/map",
       "mutation": {
         "file": "packages/envoy/internal/redact/answer.go",
@@ -2590,14 +2583,42 @@
       "requirement": "r2-held",
       "package": "./internal/redact",
       "test": "TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember",
-      "production": "redact Answer.Decode: a destination that holds a byte slice, a json.RawMessage or an interface value the caller did not set to a pointer, at any depth encoding/json decodes to, which it would fill with the answer's text as it came, is refused before anything is decoded (plainMember, plainMemberType)",
-      "function": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode",
+      "production": "redact Answer.Decode: a destination that holds a byte slice, a json.RawMessage or an interface value the caller did not set to a pointer, at any depth encoding/json decodes to, which it would fill with the answer's text as it came, is refused before anything is decoded (refusal, plainText)",
+      "function": "github.com/sjawhar/envoy/internal/redact.refusal",
       "capture": "redact.answer-plain-member/raw",
       "mutation": {
         "file": "packages/envoy/internal/redact/answer.go",
-        "preimage": "if held := plainMember(rv, map[followed]bool{}); held != \"\" {",
-        "replacement": "if held := \"\"; held != \"\" {"
+        "preimage": "if held := plainText(t); json && held != \"\" && (t.Kind() != reflect.Interface || !pointsAt(v)) {",
+        "replacement": "if held := \"\"; held != \"\" && (t.Kind() != reflect.Interface || !pointsAt(v)) {"
       }
+    },
+    {
+      "id": "answer-decode-promoted",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember",
+      "production": "redact Answer.Decode: a struct whose decoder is promoted from an embedded json.RawMessage is read through that field, so the destination such a struct, a member of that type, a struct that embeds it in turn, or one that embeds the RawMessage under an unexported name, is refused before anything is decoded (refusal, promotes)",
+      "function": "github.com/sjawhar/envoy/internal/redact.refusal",
+      "capture": "redact.answer-plain-member/promoted",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "fills := json && (itself && promotes(f) || !itself && filled(f))",
+        "replacement": "fills := json && !itself && filled(f)"
+      }
+    },
+    {
+      "id": "answer-decode-unreached-embedded",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeRefusesABoxEmbeddedUnderAnUnexportedName",
+      "production": "redact Answer.Decode: a destination that embeds the box under an unexported name, by value or behind a pointer the caller set, is refused before anything is decoded, whether or not the answer's request carried a credential, and the box stays empty (refusal, unreachedBox)"
+    },
+    {
+      "id": "answer-decode-promoted-pointer",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeRefusesAnEmbeddedPointerADecoderIsPromotedThrough",
+      "production": "redact Answer.Decode: a destination that embeds a pointer a decoder is promoted through - a *RemoteText, a *time.Time, in a list's item, set by the caller or nil - or an embedded interface value of a decoder's methods, is refused before anything is decoded, where encoding/json panicked (refusal)"
     },
     {
       "id": "listener-build-unsubscribe",
@@ -9750,6 +9771,22 @@
       "site": "Answer.Decode refused a destination that takes the body whole at its top level only, so Dispatch's event log, decoded into a []json.RawMessage, took each event as it came with no record of the answer, and the daemon's decoders printed the bearer an event echoed",
       "source": "the review of #4368 at de683f95d2, finding 1",
       "guard": "answer-decode-plain-member"
+    },
+    {
+      "site": "Answer.Decode passed over every type whose method set holds a JSON decoder, a promoted one included, so a struct that embeds a json.RawMessage, or a member of such a type, took the answer as it came through the RawMessage's own UnmarshalJSON",
+      "source": "the review of #4368 at df9ce51fa0, round 7's finding 4",
+      "guard": "answer-decode-promoted"
+    },
+    {
+      "site": "Answer.Decode refused a box embedded under an unexported name only after encoding/json had filled it, and only where the answer's request carried a credential, so the same destination was accepted with none: one of four walks of the destination that read different fields",
+      "source": "round 7's code-quality review of #4368 at df9ce51fa0 (finding 2)",
+      "guard": "answer-decode-unreached-embedded"
+    },
+    {
+      "site": "Answer.Decode panicked on a destination that embeds a *RemoteText, through which encoding/json calls the box's decoder while the pointer is nil",
+      "source": "round 7's code-quality review of #4368 at df9ce51fa0 (finding 1)",
+      "guard": "answer-decode-promoted-pointer",
+      "note": "not a leak: a panic; the class, any decoder promoted through an embedded pointer (a *time.Time, an embedded interface value), is held by the same row"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",
