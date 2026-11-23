@@ -11,6 +11,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
 runs:
   using: composite
   steps:

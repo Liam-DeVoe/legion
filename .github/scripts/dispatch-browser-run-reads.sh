@@ -63,14 +63,14 @@
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the step "Reading one, the
-# rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds - and never
+# rows" sets GH_TOKEN in its `env:` - and never
 # from an argument, which every process of the runner can read on the command line.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows" for the
 # `jobs` mode and at the step "Report a refused blob download as a refused read" for
-# `blobs-refused`, and its tests in ci.yaml's test job.
+# `blobs-refused`, and its tests in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

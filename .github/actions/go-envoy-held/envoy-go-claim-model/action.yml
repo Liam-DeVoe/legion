@@ -8,6 +8,7 @@ description: >-
   (TestTheClaimModelsRulesAreTheSQLsRules), which opens the store (storetest.Open) and skips
   without DISPATCH_TEST_DATABASE_URL, the job's Postgres, which the job gives every step. The leg
   runs on ubuntu-24.04.
+# why: .github/ci-notes/ci.md#the-mention-senders-claim-model-alone-on-a-runner-of-its-own
 runs:
   using: composite
   steps:
@@ -28,11 +29,10 @@ runs:
         restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
     - uses: ./.github/actions/install-gotestsum
     # Both tests carry `//go:build !race`, since the detector slows the search about sevenfold, so
-    # the race leg of this package does not build them, and .github/scripts/ci_job_reads.py's
-    # CLAIM_MODEL_TESTS builds this -run and leaves exactly these two out of envoy-go's plain step.
+    # the race leg of this package does not build them, and envoy-go's plain step leaves exactly
+    # these two out by name (check-ci-layout.sh's rule 22 holds the two lists to the same tests).
     # gotestsum's standard-verbose format prints the model's table of states and checks to the log.
-    # The -timeout is twice the 19 min 18 s the step took on this runner (CLAIM_MODEL_TIMEOUT in
-    # ci_job_reads.py).
+    # The -timeout is twice the 19 min 18 s the step took on this runner.
     - name: Search every order of the mention sender's claims
       shell: bash
       working-directory: packages/envoy

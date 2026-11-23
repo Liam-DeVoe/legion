@@ -13,7 +13,7 @@
 # answers that read and records the body of each PATCH it is sent.
 #
 # Run from anywhere: .github/scripts/ci-ok-reconcile.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

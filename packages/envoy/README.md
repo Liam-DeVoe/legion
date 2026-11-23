@@ -106,8 +106,8 @@ skip.
 Build tags hold the slow and live suites, which `go test ./...` does not build: among them
 `natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
 `multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
-(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
-the repository root show how CI runs each.
+(`cmd/dispatch/README.md`, "Tests"). The jobs of `.github/workflows/ci.yaml` and the composite
+actions under `.github/actions/` at the repository root show how CI runs each.
 
 `internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
 `pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they

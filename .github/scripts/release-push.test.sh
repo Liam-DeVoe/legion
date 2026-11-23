@@ -109,7 +109,7 @@
 # run with a stub changie that fails if anything reaches it.
 #
 # Run from anywhere: .github/scripts/release-push.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Hermetic: the developer's global/system git config (commit.gpgsign,
 # core.hooksPath, rerere, rebase.*) must not reach the seed repos or the script
@@ -2212,8 +2212,8 @@ if command -v changie >/dev/null; then
   echo "Case: fold-notes renders a package with the shipped packages/pi-legion/.changie.yaml"
   # The configurations above are this file's own, minimal ones; this one is the shipped file
   # itself, copied in beside fragments carrying the custom Issue field it requires, so a bad edit
-  # to a real .changie.yaml fails here rather than in a release's build job. ci.yaml's test filter
-  # and .github/scripts/ci_job_reads.py name that file for this copy.
+  # to a real .changie.yaml fails here rather than in a release's build job. ci.yaml's scripts
+  # area names that file for this copy.
   sc="$work/fold-shipped-config"
   mkdir -p "$sc/packages/shipped/$u"
   git init -q -b main "$sc"

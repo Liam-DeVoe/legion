@@ -274,7 +274,7 @@ Without those files the file proxy answers a version query with a 404, and the q
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
-`.github/scripts/check-action-pins.sh`, `check-bun-version.sh`, `check-ci-images.sh`, `check-image-trigger-paths.sh`, `check-release-credentials.sh`, and `check-ci-filters.sh` through `ci_filter_coverage.py`.
+`.github/scripts/check-action-pins.sh`, `check-bun-version.sh`, `check-ci-images.sh`, `check-image-trigger-paths.sh`, `check-release-credentials.sh`, and `check-ci-layout.sh` through `ci_layout.py`.
 A role runs those gates on its own change, so an image without PyYAML fails every one of them.
 Debian's package is the route rather than `pip`, because the image installs system packages in one `apt` step and trixie marks its `python3` externally managed (PEP 668).
 

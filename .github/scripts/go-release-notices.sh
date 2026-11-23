@@ -42,10 +42,7 @@ cd "$(dirname "$0")/../.."
 # CGO_ENABLED it exports, and the cd below, end with it, so no target's build reaches the next.
 # Those three are exported rather than written in front of the command, and each go command names
 # its module with `go -C` rather than being run from inside it, so that every one of these lines
-# is a bare go command .github/scripts/check-ci-filters.sh can read: it reduces neither a line
-# that sets a name choosing the files go compiles nor one wrapped in a cd-ing subshell, and an
-# unreduced line would count as reading every Go file of the repository. The Run pinning each line
-# in .github/scripts/ci_job_reads.py declares that target's three names instead. The notices
+# is a bare go command a reader can take as written. The notices
 # script is the one command still run from inside its module: it reads the module of the directory
 # it runs in (`go list -m`, and go-licenses over the packages it is given), and takes no -C.
 for target in $(jq -r '.legion[]' .github/go-release-targets.json); do

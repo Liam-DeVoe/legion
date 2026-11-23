@@ -17,7 +17,7 @@
 # for each stop (clean_stop_recorded, below).
 #
 # The agent-harness job's tmux-scripts part runs it as a step
-# (.github/workflows/ci-job-agent-harness.yaml):
+# (.github/actions/agent-harness):
 #
 #   LEGION_TEST_OMP=… LEGION_TEST_CLAUDE=… LEGION_TEST_PG_DSN=… \
 #     bash scripts/e2e/clean-session-stop-tmux.sh

@@ -339,18 +339,20 @@ runs:
       shell: bash
       run: bun test scripts/e2e/lib
 
-    # After setup-go: its fixtures run go list over a scratch module.
-    - name: Test the CI filter check
+    # After setup-go: the darwin vet case runs go list over a module of its own, and every case
+    # reads this checkout's workflows, actions and Go tests.
+    - name: Test the CI layout check
       shell: bash
-      run: .github/scripts/check-ci-filters.test.sh
+      run: .github/scripts/check-ci-layout.test.sh
 
-    # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
-    # program with a stand-in bunx.
-    - name: Test the TypeScript filter check
+    # The shellcheck of the actionlint image .github/ci-images.yaml pins, as lint's step runs it.
+    - name: Test the action shell check
       shell: bash
-      run: .github/scripts/check-ts-filters.test.sh
+      env:
+        SHELLCHECK: docker run --rm -i --entrypoint shellcheck ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      run: .github/scripts/check-action-shell.test.sh
 
-    # Beside the two checks above, and needing no Go either: every case is text, read by the
+    # Needing no Go of its own: every case is text, read by the
     # step reader of .github/scripts/go_test_steps.py (over every go test step of ci.yaml, the
     # workflows its jobs call and the actions its steps use, so a step it would refuse fails
     # here), or the hash of a script that file's AUDITED_SCRIPTS pins. The expansion's own run

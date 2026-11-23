@@ -35,7 +35,7 @@
 # The private-name check of the build is not here. Every job that runs this script runs
 # dependency code, so none holds the deployment's term list, which that check reads. A job of its
 # own runs it over the packed tarball's dist/ and legion/, the very bytes this script tars, after
-# the job that packed it: ci-job-claude-envoy.yaml's private-names and release.yaml's
+# the job that packed it: .github/actions/pi/claude-envoy's private-names and release.yaml's
 # claude_envoy_names.
 #
 # Run from packages/claude-envoy: bun run verify-build <tar outside the repository>

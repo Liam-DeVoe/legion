@@ -6,7 +6,7 @@ description: >-
   step of ci.yaml it follows, and the steps of that name below run. `steps` is that job's
   `toJSON(steps)`, read for the outcome of the case `after` names and, after the installs with
   nowhere to go, for their outcomes and the marks before them.
-# why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
+# why: .github/ci-notes/tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
 inputs:
   after:
     description: >-
@@ -27,19 +27,19 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome "$OUTCOME" --row jj --expect-source github-release
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-mises-install-directory-is-taken-away-again
+    # why: .github/ci-notes/tool-fallback.md#why-mises-install-directory-is-taken-away-again
     - name: Take mise's install away again, so the faulted install must read the copy
       if: inputs.after == 'jj-primary'
       shell: bash
       run: rm -rf "$HOME/.local/share/mise"
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-stand-in-curl-what-it-shortens-and-why-it-is-installed-at-this-position
+    # why: .github/ci-notes/tool-fallback.md#the-stand-in-curl-what-it-shortens-and-why-it-is-installed-at-this-position
     - name: Shorten the ladder of every fetch this job arranges to fail
       if: inputs.after == 'jj-primary'
       shell: bash
       run: .github/scripts/ci-tools-proof.sh shorten-ladder
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-fault-and-the-routing-of-every-later-step-through-it
+    # why: .github/ci-notes/tool-fallback.md#the-fault-and-the-routing-of-every-later-step-through-it
     - name: Start the fault in front of GitHub's release assets
       if: inputs.after == 'jj-primary'
       shell: bash
@@ -47,18 +47,18 @@ runs:
 
     # The steps of ci.yaml after this one are the negative control: each install of the merge
     # base's actions with nowhere to go, and a mark of the clock before each.
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-each-install-with-nowhere-to-go-carries-a-mark-step
-    # why: .github/ci-notes/ci-job-tool-fallback.md#which-seam-sends-uvs-control-to-a-dead-port
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-docker-provider-plugins-control-and-why-it-does-not-expire
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-pulumi-clis-control-and-the-two-proxy-spellings-it-carries
+    # why: .github/ci-notes/tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+    # why: .github/ci-notes/tool-fallback.md#why-each-install-with-nowhere-to-go-carries-a-mark-step
+    # why: .github/ci-notes/tool-fallback.md#which-seam-sends-uvs-control-to-a-dead-port
+    # why: .github/ci-notes/tool-fallback.md#the-docker-provider-plugins-control-and-why-it-does-not-expire
+    # why: .github/ci-notes/tool-fallback.md#the-pulumi-clis-control-and-the-two-proxy-spellings-it-carries
     - name: Read the fault before any install meets it
       if: inputs.after == 'jj-primary'
       shell: bash
       run: .github/scripts/ci-tools-proof.sh probe github.com
 
     # ------------------------------------------------------------------ after base-bun
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
+    # why: .github/ci-notes/tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
     - name: Take elan away, so the control installs rather than finds one
       if: inputs.after == 'base-bun'
       shell: bash
@@ -68,8 +68,8 @@ runs:
     # The steps of ci.yaml after this one are the head's own installs under the fault. The crane
     # install is the one case that keeps the pinned ladder (CI_TOOLS_PROOF_FULL_LADDER), and the
     # ladder-report step at the end of the leg reads the measurement it leaves.
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-control-step-reads-the-clock-as-well
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-heads-own-installs-under-the-fault
+    # why: .github/ci-notes/tool-fallback.md#why-the-control-step-reads-the-clock-as-well
+    # why: .github/ci-notes/tool-fallback.md#the-heads-own-installs-under-the-fault
     - name: Check all eight installs with nowhere to go failed, and failed in their own time
       if: inputs.after == 'nowhere'
       shell: bash
@@ -95,10 +95,10 @@ runs:
     # ------------------------------------------------------------------ after head-bun
     # The installs of ci.yaml after this one: elan, then uv, the docker provider plugin and the
     # Pulumi CLI, each under the fault.
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-uv-install-reads-the-wheel-pypi-serves
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-docker-provider-plugin-install-reads-getpulumicom
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-pulumi-clis-own-fallback-and-why-the-origin-serves-its-second-source
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-elan-install-must-read-the-copy
+    # why: .github/ci-notes/tool-fallback.md#why-the-faulted-uv-install-reads-the-wheel-pypi-serves
+    # why: .github/ci-notes/tool-fallback.md#why-the-faulted-docker-provider-plugin-install-reads-getpulumicom
+    # why: .github/ci-notes/tool-fallback.md#the-pulumi-clis-own-fallback-and-why-the-origin-serves-its-second-source
+    # why: .github/ci-notes/tool-fallback.md#why-the-faulted-elan-install-must-read-the-copy
     - name: Take elan away, so the faulted install must read the copy
       if: inputs.after == 'head-bun'
       shell: bash
@@ -112,7 +112,7 @@ runs:
         TARBALL: ${{ fromJSON(inputs.steps).docker-plugin.outputs.tarball }}
       run: .github/scripts/tool-fallback-installed-versions.sh "$TARBALL"
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#the-sixteen-corrupted-payloads-and-case-1-of-them
+    # why: .github/ci-notes/tool-fallback.md#the-sixteen-corrupted-payloads-and-case-1-of-them
     - name: Corrupt crane for its primary case
       if: inputs.after == 'head'
       shell: bash
@@ -169,7 +169,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome "$OUTCOME" --row changie --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-16-and-what-the-case-before-it-left
+    # why: .github/ci-notes/tool-fallback.md#case-6-of-16-and-what-the-case-before-it-left
     - name: Corrupt the jj copy for its second-source case
       if: inputs.after == 'changie-second-source'
       shell: bash
@@ -191,7 +191,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome "$OUTCOME" --row jj --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-7-of-16-and-the-branch-setup-bun-takes-for-it
+    # why: .github/ci-notes/tool-fallback.md#case-7-of-16-and-the-branch-setup-bun-takes-for-it
     - name: Corrupt nothing at the origin for the bun-primary case
       if: inputs.after == 'jj-second-source'
       shell: bash
@@ -219,7 +219,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome "$OUTCOME" --row bun-linux-x64 --expect-source github-release
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-8-of-16-and-why-it-takes-the-bun-pair-away-itself
+    # why: .github/ci-notes/tool-fallback.md#case-8-of-16-and-why-it-takes-the-bun-pair-away-itself
     - name: Take any Bun away, so the second source must serve this case
       if: inputs.after == 'bun-primary'
       shell: bash
@@ -277,7 +277,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome "$OUTCOME" --row elan --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-11-of-16-and-the-digest-the-changed-byte-trips
+    # why: .github/ci-notes/tool-fallback.md#case-11-of-16-and-the-digest-the-changed-byte-trips
     - name: Corrupt uv for its primary case
       if: inputs.after == 'elan-second-source'
       shell: bash
@@ -291,7 +291,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome "$OUTCOME" --row uv --expect-source github-release --expect-untried pypi
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-12-of-16-where-the-changed-byte-is-and-how-each-archive-refuses-it
+    # why: .github/ci-notes/tool-fallback.md#case-12-of-16-where-the-changed-byte-is-and-how-each-archive-refuses-it
     - name: Corrupt uv for its second-source case
       if: inputs.after == 'uv-primary'
       shell: bash
@@ -320,7 +320,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome "$OUTCOME" --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-14-of-16-and-the-one-payload-the-origin-serves-on-two-routes
+    # why: .github/ci-notes/tool-fallback.md#case-14-of-16-and-the-one-payload-the-origin-serves-on-two-routes
     - name: Corrupt the docker provider plugin for its second-source case
       if: inputs.after == 'pulumi-docker-primary'
       shell: bash
@@ -334,7 +334,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome "$OUTCOME" --row pulumi-docker --expect-source pulumi-releases
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-15-of-16-and-why-the-untried-reading-is-a-reading
+    # why: .github/ci-notes/tool-fallback.md#case-15-of-16-and-why-the-untried-reading-is-a-reading
     - name: Corrupt the Pulumi CLI for its primary case
       if: inputs.after == 'pulumi-docker-second-source'
       shell: bash
@@ -348,7 +348,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome "$OUTCOME" --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-16-of-16-and-why-it-is-a-dead-port-rather-than-the-fault
+    # why: .github/ci-notes/tool-fallback.md#case-16-of-16-and-why-it-is-a-dead-port-rather-than-the-fault
     - name: Corrupt the Pulumi CLI for its second-source case
       if: inputs.after == 'pulumi-cli-primary'
       shell: bash
@@ -362,13 +362,13 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome "$OUTCOME" --row pulumi-cli --expect-source github-release
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals
+    # why: .github/ci-notes/tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals
     - name: Print what every tool answers now
       if: inputs.after == 'pulumi-cli-second-source'
       shell: bash
       run: .github/scripts/tool-fallback-final-state.sh
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-reading-of-the-stand-in-curl-refuses
+    # why: .github/ci-notes/tool-fallback.md#what-the-reading-of-the-stand-in-curl-refuses
     - name: Read what the stand-in curl measured of every fetch
       if: inputs.after == 'pulumi-cli-second-source'
       shell: bash

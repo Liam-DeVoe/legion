@@ -5,7 +5,7 @@ description: >-
   in for all four sources (its four base URLs are this action's outputs), the machine watch, and
   case 5 of 16, which runs before the fault. Every install of the proof is a step of ci.yaml with
   its own 11-minute bound; .github/actions/tool-fallback/x64 holds the steps between them.
-# why: .github/ci-notes/ci-job-tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-a-file-of-their-own
+# why: .github/ci-notes/tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-a-file-of-their-own
 # The job holds the router's own scopes and no packages scope:
 # why: .github/ci-notes/ci.md#why-the-tool-fallback-job-needs-no-packages-scope
 outputs:
@@ -24,7 +24,7 @@ outputs:
 runs:
   using: composite
   steps:
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-merge-base-is-checked-out
+    # why: .github/ci-notes/tool-fallback.md#why-the-merge-base-is-checked-out
     - name: Check out the merge base the negative control installs from
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -32,12 +32,12 @@ runs:
         path: base
         persist-credentials: false
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-packages-blob-is-read-for-every-mirrored-row
+    # why: .github/ci-notes/tool-fallback.md#why-the-packages-blob-is-read-for-every-mirrored-row
     - name: Check the package holds the blob of every mirrored row
       shell: bash
       run: .github/scripts/tool-fallback-package-blobs.sh
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-every-row-is-printed-beside-the-two-call-sites-that-read-its-digest
+    # why: .github/ci-notes/tool-fallback.md#why-every-row-is-printed-beside-the-two-call-sites-that-read-its-digest
     - name: Print every row beside the two call sites that read its digest
       shell: bash
       run: .github/scripts/tool-fallback-row-call-sites.sh
@@ -51,12 +51,12 @@ runs:
       shell: bash
       run: .github/scripts/ci-tools-proof.sh origin-start
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
+    # why: .github/ci-notes/tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
     - name: Start the machine watch over every faulted install
       shell: bash
       run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
-    # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-16-and-why-it-runs-before-the-fault
+    # why: .github/ci-notes/tool-fallback.md#case-5-of-16-and-why-it-runs-before-the-fault
     - name: Corrupt nothing at the origin for the jj-primary case
       shell: bash
       run: .github/scripts/ci-tools-proof.sh corrupt

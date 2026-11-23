@@ -3,7 +3,7 @@
 # a real Claude Code session exactly once, also when it was published while the session, its NATS
 # connection, either listener or Dispatch was down, and when it was stored for a session before that
 # session first registered. The agent-harness job's session-scripts part runs it as a step
-# (.github/workflows/ci-job-agent-harness.yaml).
+# (.github/actions/agent-harness).
 #
 # The stack runs on the machine the script runs on, every part of it built from a checkout: natsd
 # (packages/envoy/internal/testnats/cmd/natsd, JetStream on a store directory of the run's own),

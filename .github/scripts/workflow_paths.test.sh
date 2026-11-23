@@ -6,7 +6,7 @@
 # guess, and the walk of the repository's files.
 #
 # Only what the model does. What each checker makes of it — its verdicts, its reading of a
-# workflow — stays in that checker's own suite: check-ci-filters.test.sh,
+# workflow — stays in that checker's own suite: check-ci-layout.test.sh,
 # check-image-trigger-paths.test.sh and check-ci-images.test.sh, each of which symlinks this same
 # module rather than reimplementing it.
 #
@@ -15,7 +15,7 @@
 # PyYAML, which the events cases parse their workflow with.
 #
 # Run from anywhere: .github/scripts/workflow_paths.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

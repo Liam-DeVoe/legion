@@ -6,6 +6,7 @@ description: >-
   on ubuntu-24.04 and starts no Postgres service. ENVOY_SMOKE_IMAGE is the listener image the smoke
   test runs, and ENVOY_SMOKE_HELD_PORT_IMAGE the image envoy-infra's live tests run, built on top of
   it; each step that builds or reads them names them in its env.
+# why: .github/ci-notes/ci.md#why-the-container-smoke-test-is-a-job-of-its-own
 runs:
   using: composite
   steps:

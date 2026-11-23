@@ -10,7 +10,7 @@
 # fail its case instead of hanging the job.
 #
 # Run from anywhere: .github/scripts/merge-group-cancels.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

@@ -324,7 +324,7 @@ LADDER_CEILING=150
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
 # That variable is set at exactly one step's `env:` in
-# .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
+# .github/workflows/ci.yaml, the tool-fallback job's head install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
 # release asset behind the fault, which ci_tools__fetch_release reads
 # (.github/scripts/ci-tools.sh:1152), and then the pull token, the blob request to the package
@@ -1756,7 +1756,7 @@ ladder_report() {
   # measurement is also out of window would otherwise take one of those arms and say nothing
   # of the records at all.
   if [ "$bypass_records" -gt "$LADDER_RECORDS" ]; then
-    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: in .github/workflows/ci-job-tool-fallback.yaml and nowhere else, so a second step's env: that carries it is what to read that file for. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script. Move .github/scripts/ci-tools-proof.test.sh with it: that file writes this number in the text of every case that reads the count and builds its fixture on a kept case of three records, so a bound moved alone reddens it, which is the reading that asks for the measurement." >&2
+    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: of the tool-fallback job in .github/workflows/ci.yaml and nowhere else, so a second step's env: that carries it is what to read that file for. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script. Move .github/scripts/ci-tools-proof.test.sh with it: that file writes this number in the text of every case that reads the count and builds its fixture on a kept case of three records, so a bound moved alone reddens it, which is the reading that asks for the measurement." >&2
     problems=$((problems + 1))
   fi
   if [ -n "$unrecognised" ]; then

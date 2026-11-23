@@ -8,6 +8,7 @@ description: >-
   TestTheModelReadsAHostlessEntryWithGuidance skip
   (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build step
   checks the binary is there before those runs read it.
+# why: .github/ci-notes/ci.md#the-lean-model-of-the-airlock-and-why-its-fuzz-run-is-two-minutes
 runs:
   using: composite
   steps:

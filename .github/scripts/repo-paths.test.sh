@@ -14,7 +14,7 @@
 # case, so what is tested is what a workflow step gets.
 #
 # Run from anywhere: .github/scripts/repo-paths.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

@@ -1,6 +1,6 @@
 // The live proof that the work of a phase entry reaches the worker that entry names, on a running
 // daemon (dispatch://INFRA-2800's R3, R4, R5, R6 and R9). The test runs in CI's daemon-live job
-// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// (.github/actions/daemon-live), on the job's PostgreSQL and the package's test NATS
 // server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
 // without.
 //

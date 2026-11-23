@@ -5,6 +5,7 @@ description: >-
   against the job's Postgres (BROKER_TEST_DATABASE_URL). The leg runs on ubuntu-24.04-arm. The
   airlock's check k9 and its lease test, which ran in this job's steps on a merge group or a pull
   request labelled `full-ci`, are ci.yaml's airlock-arm job, held to those events by its own gate.
+# why: .github/ci-notes/ci.md#the-secrets-brokers-two-process-tests
 runs:
   using: composite
   steps:

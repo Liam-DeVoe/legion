@@ -14,7 +14,7 @@
 # answers.
 #
 # Run from anywhere: .github/scripts/edited-migrations-base.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

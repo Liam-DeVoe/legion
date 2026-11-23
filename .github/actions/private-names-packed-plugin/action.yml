@@ -7,7 +7,7 @@ description: >-
   packages/claude-envoy/dist/envoy-channel.js), and runs .github/scripts/check-private-names.sh
   over the two from the checkout's root with the deployment's term list. It runs that shell
   script, tar and mkdir and nothing else, so the job that calls it runs no dependency code
-  (.github/scripts/check-release-credentials.sh reads these steps). ci-job-claude-envoy.yaml's
+  (.github/scripts/check-release-credentials.sh reads these steps). ci.yaml's claude-envoy-names
   private-names job and release.yaml's claude_envoy_names call it; each keeps its own needs,
   conditions, permissions, checkout of the .github cone and ci-ok report. Pull-request CI packs
   the Codex plugin's tarball into the same artifact, and this action passes over it: its dist/ is

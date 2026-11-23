@@ -152,13 +152,13 @@
 # tree is a git checkout, and by a walk of the tree otherwise.
 #
 # Run from anywhere: .github/scripts/check-test-reach.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
 # The step reader is .github/scripts/go_test_steps.py, beside this script in the repository it
-# checks, which PYTHONPATH names, with the helpers of ci_filter_coverage.py and go_build_tags.py it
+# checks, which PYTHONPATH names, with the helpers of ci_layout.py and go_build_tags.py it
 # and this search import. PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in
 # the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
@@ -178,7 +178,7 @@ from pathlib import Path
 import yaml
 
 import go_test_steps as steps
-from ci_filter_coverage import script_lines, squash, step_workdir
+from ci_layout import script_lines, squash, step_workdir
 from go_build_tags import EXTRA_ARCH, EXTRA_OS, go_skips_dir, is_tag
 
 ROOT = Path.cwd()

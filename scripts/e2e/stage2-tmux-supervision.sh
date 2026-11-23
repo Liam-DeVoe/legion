@@ -5,7 +5,7 @@
 # listener and NATS and a real Postgres. Every gate behaviour is one named check, which prints what
 # it observed and then `CHECK <name>: PASS`; the first check that does not hold prints
 # `CHECK <name>: FAIL: <why>` and ends the run with exit 1. The agent-harness job's tmux-scripts
-# part runs it as a step (.github/workflows/ci-job-agent-harness.yaml).
+# part runs it as a step (.github/actions/agent-harness).
 #
 # Stage 1's discipline holds: the cleanup cannot fail, every wait is bounded, a process that
 # ignores its stop is SIGKILLed, and everything the run takes is its own — its mktemp work

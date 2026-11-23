@@ -4,18 +4,16 @@ The source of the site GitHub Pages serves this repository at, <https://cybermon
 today and derived from the repository the build runs in (`repo-paths.ts`, from
 `.github/scripts/repo-paths.sh`): an [Astro Starlight](https://starlight.astro.build/)
 site covering Legion, Dispatch and the Secrets Broker. The `docs` job of `.github/workflows/ci.yaml`
-builds it on every pull request and merge group whose change its `docs` filter matches.
-`.github/workflows/docs-pages.yaml` builds it on a push to `main` whose change the same list
-matches (its `paths:`, which `.github/scripts/check-ci-filters.sh` holds equal to the `docs` filter)
-and publishes that build to GitHub Pages.
+builds it on every pull request and merge group whose change its `docs` area of
+`.github/ci-areas.yaml` matches.
+`.github/workflows/docs-pages.yaml` builds it on every push to `main`, with no path filter, and
+publishes that build to GitHub Pages.
 
-Of the docs-selecting pushes to `main` waiting at once, only the newest builds: the workflow's runs
+Of the pushes to `main` waiting at once, only the newest builds: the workflow's runs
 share one concurrency group keyed on the ref, which runs one at a time, keeps one run waiting and
 replaces that waiting run with the next arrival. The site loses nothing by that, since each build
-covers the whole tree and so ends at the newest docs-selecting commit. A `paths:` filter skips a
-push whose diff holds more than 3,000 files when none of the first 3,000 matches, so a push can go
-unbuilt. If a push is dropped or its build fails, the site stays at the last one published until
-the next docs-selecting push deploys it again.
+covers the whole tree and so ends at the newest commit. If a push's build fails, the site stays at
+the last one published until the next push to `main` deploys it again.
 
 ## Run it
 

@@ -20,11 +20,9 @@
 # Both jobs' comments give their times over the fifteen guides this list held on 2026-11-18, about
 # 3.6 MB then. It holds fifteen, about 2.2 MB, so those times still bound it; a change that adds a
 # guide or takes the list past 3.6 MB measures the jobs again.
-# Both jobs' filters name this file and every path in it (the repository_markdown group of
-# .github/ci-filters.yaml, which envoy_go and envoy_go_race_docs name), and
-# .github/scripts/ci_job_reads.py reads the paths from this file as the two jobs' reads, so a change
-# to one of these guides starts the jobs that read it. A path added here is a path that group must
-# name too.
+# Both jobs' areas of .github/ci-areas.yaml select a change to this file and to every path in it, so
+# a change to one of these guides starts the jobs that read it. A path added here is a path those
+# areas must select too.
 docs/site/src/content/docs/dispatch/delivery.md
 docs/site/src/content/docs/dispatch/issues-and-projects.md
 docs/site/src/content/docs/legion/concepts.md

@@ -10,6 +10,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#the-cleanup-detector-run-of-the-document-service
 runs:
   using: composite
   steps:
@@ -59,8 +60,8 @@ runs:
     # tests have run: the count of services the tests left alive is the half of this leg that no
     # detector of Go's reports. The -skip is this package's TestStatementTimings, which times
     # statements on the seeded measurement database alone: the envoy-go legs' statement-timing step
-    # runs it there, so a run of it here was its second in one run (ci_job_reads.py's
-    # STATEMENT_TIMING_TESTS). The -timeout 49m is the smallest whole minute at which the slowest
+    # runs it there, so a run of it here was its second in one run (TestStatementTimings). The
+    # -timeout 49m is the smallest whole minute at which the slowest
     # package time measured, 1744 s with the corpus tests' growth, is at most 60 % of it, and the
     # leg's timeout-minutes is six minutes above that.
     - name: Test the document service under the cleanup detector

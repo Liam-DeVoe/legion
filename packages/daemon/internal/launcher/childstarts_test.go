@@ -2,7 +2,7 @@
 // over the whole program, twice: without the race detector the test took 24 s at a 1.95 GB peak on
 // a development host and 66 s at 2.34 GB in a pod, and the detector multiplies both. So the race
 // build leaves this file out, and daemon-go's plain step for what the race build cannot run runs
-// its test by name (.github/scripts/ci_job_reads.py).
+// its test by name (.github/actions/go-daemon).
 
 //go:build !race
 

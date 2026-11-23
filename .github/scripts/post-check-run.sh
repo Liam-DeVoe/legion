@@ -48,7 +48,7 @@
 #
 # Run from anywhere: HEAD_SHA=... CHECK_NAME=... CONCLUSION=... TITLE=... SUMMARY_FILE=...
 #   DETAILS_URL=... EXTERNAL_ID=... .github/scripts/post-check-run.sh
-# Its tests are in ci-ok-report.test.sh, which ci.yaml's test job runs.
+# Its tests are in ci-ok-report.test.sh, which ci.yaml's scripts job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

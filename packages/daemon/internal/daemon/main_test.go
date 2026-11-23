@@ -15,7 +15,7 @@ import (
 // a workspace, remote or credential not their own (fixtureenv.MustGuard), keeping the three the
 // kept-decision property test reads: LEGION_KEPT_PROPERTY_SEED, which replays one run, and
 // LEGION_KEPT_PROPERTY_RUNS and LEGION_KEPT_PROPERTY_STEPS, its two counts. CI's pull-request
-// lane reduces the runs (.github/workflows/ci-job-daemon-go.yaml) and leaves the steps at the
+// lane reduces the runs (.github/actions/go-daemon) and leaves the steps at the
 // test's own default; the guard keeps all three, so a developer may set any of them by hand. It
 // drops the migrated template isolatedOutboxPool clones its databases from (testpg.Main), makes
 // the one database this run's tests write in (testdb.RunDatabaseMain), removes the directory the

@@ -6,7 +6,7 @@
 // (record.PullRequest.StateReadAt), when GitHub last moved the pull request, how many of the
 // fence's check runs are the head's own, and the head and state the architect and the reviewer
 // were told the round was stuck at. The test runs in CI's daemon-live job
-// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// (.github/actions/daemon-live), on the job's PostgreSQL and the package's test NATS
 // server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
 // without.
 //

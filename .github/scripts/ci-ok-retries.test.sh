@@ -7,7 +7,7 @@
 # tests passed and passed the rerun that ran no test.
 #
 # Run from anywhere: .github/scripts/ci-ok-retries.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

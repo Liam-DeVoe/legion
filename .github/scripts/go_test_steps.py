@@ -36,9 +36,9 @@ commands read it. A line that is neither, and holds no command this module reads
 rather than skipped: a `go test` silently passed over would leave both readers wrong about what a
 step runs.
 
-It needs PyYAML, and the helpers of ci_filter_coverage.py beside it (`called_workflows`,
-`script_lines`, `step_workdir`), so the readers and check-ci-filters.sh agree on which files a
-job's steps live in, which lines a script holds and which directory a step runs in.
+It needs PyYAML, and the helpers of ci_layout.py beside it (`called_workflows`, `script_lines`,
+`step_workdir`), so the readers and check-ci-layout.sh agree on which files a job's steps live in,
+which lines a script holds and which directory a step runs in.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from ci_layout import called_workflows, script_lines, step_workdir
 
 # The repository holding this file: its own path, not resolved through a symlink, so a fixture
 # tree that links this file in is the repository it reads.
@@ -62,7 +62,7 @@ ROOT = Path(__file__).absolute().parents[2]
 WORKFLOW = ".github/workflows/ci.yaml"
 # The three Go modules whose steps are read. packages/daemon joined them with the first pair of
 # steps in this repository that share a package through a `-run` and a `-skip` naming the same
-# tests (ci-job-plugin-pack.yaml and ci-job-daemon-go.yaml's race step): the pairing is what makes
+# tests (plugin-pack's step and go-daemon's race step): the pairing is what makes
 # each of them run exactly once, and a reader that cannot see both steps cannot see it.
 MODULE_DIRS = ("packages/envoy", "packages/envoy/infra", "packages/daemon")
 
@@ -133,8 +133,8 @@ class AuditedScript:
 
 
 # The tests envoy-go's "Count the store-form rows on each backend" names, in the order its run:
-# passes them to backend-count.sh; ci_job_reads.BACKEND_COUNT_TESTS, which the unit and
-# database-skips steps' skips of them are built from, holds the same names by package.
+# passes them to backend-count.sh; the unit and database-skips steps' -skip lists name the same
+# tests by package.
 BACKEND_COUNT_TESTS = (
     "TestEverySecretFormNamesTheSourceItUses",
     "TestNoSecretFormAsksTheBrokerForACredential",
@@ -158,7 +158,7 @@ AUDITED_SCRIPTS = {
     # other), then counts the skips in the jsonfile. With no package argument it
     # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
     # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
-    # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
+    # race lane's packages under the tree), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
     # `--timeout D` sets the -timeout, and `--var NAME` and `--jsonfile NAME` decide only whether it
@@ -185,7 +185,7 @@ AUDITED_SCRIPTS = {
                 "go test -json -count=1 -race -run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 26m "
                 "./internal/dispatch/api/",
         },
-        sha256="c1eb4ef3970b09b25700aa81a2c94943700b5a46ab31324d4495e030293eecba",
+        sha256="8de239fb2624ed2464f8be90c2bafbd8e0e14fc973eb3abcbc4b4fad76acc496",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one
     # .github/scripts/go-test.sh over the packages before its `--`, which runs gotestsum, whose
@@ -214,7 +214,7 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -json -count=1 -race",
         },
-        sha256="37f140fa3c272e04f9871ed47bd262a793776f9e4b7e0f4bc6a0993be5467d5d",
+        sha256="dfdc0e381fdc4b737010127fa1d115178b12e88bd5eb49e25ec0c7afdff21dc5",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -234,7 +234,7 @@ VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cp
                "-o", "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode",
                "-p")
 # The one `-skip` shape this module reads: the anchored alternation of whole test names
-# ci_job_reads.py builds for every step of this repository that carries one, `^(Name|Name|…)$`.
+# every step of this repository that carries a -skip writes, `^(Name|Name|…)$`.
 # Its names are read off the pattern's own text, and every other pattern is refused by name,
 # because `go test` runs the real `-skip` through Go's regexp: a Python `re` matched against a
 # listing would be a second engine, and two engines that agree on every pattern anyone wrote
@@ -325,13 +325,13 @@ def expand(text: str, variables: dict[str, str]) -> str:
 
 
 def documents() -> dict:
-    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path. A job of
-    ci.yaml keeps its id, its `needs: changes` and its whole `if:` there and holds its steps in the
-    `ci-job-<id>.yaml` its `uses:` names, so ci.yaml alone holds none of the `go test` steps. The
-    set is the one check-ci-filters.sh reads, derived with that check's own `called_workflows`;
-    it is loaded here rather than through `ci_filter_coverage`'s `workflow_documents`, which
-    roots itself at the current working directory and appends to the checker's problem list,
-    because this module roots itself at its own path and refuses instead."""
+    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path: a job of
+    ci.yaml holds its steps itself, through the composite actions they use, or in the workflow its
+    `uses:` names (dispatch-browser.yaml, docs-site.yaml, the image builds). The set is the one
+    check-ci-layout.sh reads, derived with that check's own `called_workflows`; it is loaded here
+    rather than through `ci_layout`'s `workflow_documents`, which roots itself at the current
+    working directory and appends to the checker's problem list, because this module roots itself
+    at its own path and refuses instead."""
     found = {WORKFLOW: yaml.safe_load((ROOT / WORKFLOW).read_text()) or {}}
     for path, job_id in called_workflows(found[WORKFLOW]).items():
         if not (ROOT / path).is_file():
@@ -346,8 +346,8 @@ def steps_of(found: dict) -> list[Step]:
     directory is one of the three modules, and every step that runs an AUDITED_SCRIPTS script or
     a script script_step reads: once for each leg of its job's matrix and each job that calls its
     workflow, through the local composite action it uses. The directory and the comment-free
-    lines are read with check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir,
-    script_lines), so the readers and the gate agree on what a step runs and where. Two legs, two
+    lines are read with check-ci-layout.sh's own helpers (ci_layout.step_workdir, script_lines),
+    so the readers and the layout check agree on what a step runs and where. Two legs, two
     callers or two action steps that read the same are one step."""
     steps: list[Step] = []
     inputs = call_inputs(found)
@@ -824,7 +824,7 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
                 if skip_names(value) is None:
                     raise Refused(f"{step.label}: `{text}` skips by `{value}`, and this reader "
                                   "reads only the anchored alternation of whole test names, "
-                                  "`^(Name|Name|…)$`, that ci_job_reads.py writes")
+                                  "`^(Name|Name|…)$`, that every -skip of this repository writes")
                 command.skip = value
             elif flag == "-tags":
                 command.tags = value

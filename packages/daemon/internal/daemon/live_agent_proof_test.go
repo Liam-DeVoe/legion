@@ -6,7 +6,7 @@
 // log handler those reads of the daemon's own decisions go through. The five are
 // provider_error_retry_live_test.go, claim_compaction_live_test.go, role_prompt_rule_live_test.go,
 // late_completion_live_test.go and busy_relaunch_live_test.go, which CI's agent-harness job runs
-// by name (.github/workflows/ci-job-agent-harness.yaml, its pane-drivers part). What belongs
+// by name (.github/actions/agent-harness, its pane-drivers part). What belongs
 // to one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh
 // My Pi profile and operator overlay its panes run under.
 //

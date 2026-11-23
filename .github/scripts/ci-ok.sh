@@ -76,7 +76,7 @@
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
 #                      skip, a cancellation or an absence fails. ci.yaml's env names them in
-#                      CI_OK_ALWAYS_RUN, and check-ci-filters.sh holds every job of that file to
+#                      CI_OK_ALWAYS_RUN, and check-ci-layout.sh holds every job of that file to
 #                      exactly one of the three classes this list, SELECTED_BY and CI_OK_EXEMPT
 #                      make.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script

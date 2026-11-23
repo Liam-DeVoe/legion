@@ -62,7 +62,7 @@ test("a resend whose URL setting carries user info of any length prints no comma
 })
 
 /** Whether this host lacks the zsh the zsh row runs the resend command under, the one on PATH.
- *  GitHub Actions' claude-envoy job installs one (`ci-job-claude-envoy.yaml`), and there a missing
+ *  GitHub Actions' claude-envoy job installs one (`.github/actions/pi/claude-envoy`), and there a missing
  *  zsh fails the file rather than skipping the row (@legion/test-fixtures/host-tools). */
 const withoutZsh = skipWithout(["zsh"], "claude-envoy")
 

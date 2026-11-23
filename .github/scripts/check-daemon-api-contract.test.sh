@@ -17,7 +17,7 @@
 # this file, so a bump of the real declaration changes nothing in these cases.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

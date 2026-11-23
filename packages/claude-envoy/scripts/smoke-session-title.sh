@@ -72,8 +72,7 @@ bun "${package_dir}/scripts/build.ts" --out "$plugin_dir" >"${workdir}/build.log
 
 # NATS is packages/envoy's natsd (internal/testnats/cmd/natsd), the nats-server this module pins
 # in one process, which e2e-local.sh and e2e-refill.sh run too. Each go command stands on a line of
-# its own, which is how .github/scripts/check-ci-filters.sh reads what a script's go command
-# compiles.
+# its own, so a reader of the script reads what each compiles.
 (
   cd "${repo_root}/packages/envoy"
   go build -o "${workdir}/natsd" ./internal/testnats/cmd/natsd

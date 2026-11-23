@@ -75,7 +75,7 @@
 #     excludes. Any other quantifier (`every` among them), and a pattern holding a brace, which
 #     picomatch expands, are refused. The filters are read where the action reads them: from
 #     the file a step's `filters` input names, .github/ci-areas.yaml for the changes job of
-#     ci.yaml's layout by package area (.github/ci-filters.yaml while that job still names it),
+#     ci.yaml,
 #     once however many gates it decides, and a file that is absent, refuses the open, is not
 #     valid YAML or holds no mapping is refused, naming the file. One more term is
 #     admitted beside the filters, in a job's `if:` only: a
@@ -191,7 +191,7 @@
 # read green locally.
 #
 # Run from anywhere: .github/scripts/check-image-trigger-paths.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -610,7 +610,7 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         "action and of the BuildKit image it runs in. Two more of its paths decide whether "
         "this job runs and reach nothing the build receives: .github/workflows/ci.yaml, which "
         "holds the job's `if:` and hands it one input, ci-ok-changes, which reaches the ci-ok "
-        "report, and .github/ci-filters.yaml, the file the filter itself lives in. What the "
+        "report, and .github/ci-areas.yaml, the file the filter itself lives in. What the "
         "trigger exists to guarantee, that a change "
         "to a build input produces the image the row pins, is therefore already true wherever "
         "the build is skipped, and this gate cannot hide a changed input, because the hash of "
@@ -2106,8 +2106,8 @@ def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
     """True when every job of the workflow is a job whose only purpose is an image build
     (builds_only), or transitively needs one, so whatever starts the workflow starts an image
     build and nothing else. It is builds_only's test and not a looser one of its own, because a
-    job is the same job wherever its steps are written: ci.yaml's jobs hold their steps in a
-    called workflow each (.github/workflows/ci-job-<id>.yaml), so a workflow whose one job
+    job is the same job wherever its steps are written: some of ci.yaml's jobs hold their steps in
+    a called workflow (worker-image.yaml, browser-image.yaml), so a workflow whose one job
     builds an image and then runs a suite against it would read as building only, and its
     caller's filter - which owes that suite's files - would be refused for matching them."""
     jobs = documents[workflow].get("jobs") or {}

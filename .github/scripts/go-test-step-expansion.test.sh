@@ -18,12 +18,12 @@
 # commands in the go-envoy-held legs' actions now: `RACE_MEM_LIMIT_KB=… go-test.sh --race-memory …`,
 # read as the gotestsum command it runs, and `go-test.sh … -exec 'env GODEBUG=checkfinalizers=1'`.
 #
-# The modules are imported from the directory they live in, the way check-ci-filters.sh imports
+# The modules are imported from the directory they live in, the way check-ci-layout.sh imports
 # its own (PYTHONPATH, no bytecode), so the code under test is the file a person and CI run. It
 # needs a python3 with PyYAML, which the modules import.
 #
 # Run from anywhere: .github/scripts/go-test-step-expansion.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -154,7 +154,7 @@ done
 # the steps as written; an argument list the entry does not list is refused, since what the script
 # runs then is a reading nobody made.
 echo "case: a step that runs an audited script is read through its entry, by its argument list"
-read_audited() { py 'import ci_filter_coverage, pathlib, yaml
+read_audited() { py 'import ci_layout, pathlib, yaml
 document = yaml.safe_load(pathlib.Path(steps.ROOT / sys.argv[1]).read_text())
 if "runs" in document:
     found = [(None, step) for step in document["runs"]["steps"] if step.get("name") == sys.argv[2]]
@@ -163,7 +163,7 @@ else:
              if step.get("name") == sys.argv[2]]
 job, step = found[0]
 workdir = (steps.action_workdir(step, {}) if job is None
-           else ci_filter_coverage.step_workdir(document, job, step))
+           else ci_layout.step_workdir(document, job, step))
 try:
     read = steps.audited_step(sys.argv[1], "(a job)", sys.argv[2], workdir, step["run"] + sys.argv[3])
 except steps.Refused:
@@ -402,30 +402,17 @@ check "an input the job that calls the workflow gives is read into the step" \
 # refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
 # the pull request that edits an audited script: #2856 changed database-skips.sh's
 # EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
-# ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
-# that pull request. It also holds each audited script, and each workflow the step reader reads,
-# to the reads ci_job_reads.py declares for this harness's gate, which ci-filters holds to that
-# filter, so a new AUDITED_SCRIPTS entry or called workflow fails here until its file selects this
-# harness. Both lists are read into variables first: a failed read then stops the harness under
-# `set -e`, where a process substitution's failure would leave the loop with nothing to check.
+# The scripts job runs this harness, and a file no area of .github/ci-areas.yaml names selects
+# every job, so this case runs on that pull request. The list is read into a variable first: a
+# failed read then stops the harness under `set -e`, where a process substitution's failure
+# would leave the loop with nothing to check.
 echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
 pins=$(py 'for path, audited in steps.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
 check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
-declared=$(cd "$repo" && py 'import ci_job_reads
-print("\n".join(read.glob for gate in ci_job_reads.SCRIPT_TEST_GATES
-                if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
 while IFS=$'\t' read -r path pinned; do
   actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
   check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go_test_steps.py)" \
     "$(is "$actual" "$pinned")"
-  check "$path is among the reads ci_job_reads.py declares for the go_test_step_expansion_test gate (add it there and to that ci.yaml filter)" \
-    "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
 done <<<"$pins"
-unread=$(py 'import workflow_paths
-globs = sys.argv[1].splitlines()
-print(" ".join(path for path in steps.documents()
-               if not any(workflow_paths.glob_regex(glob).fullmatch(path) for glob in globs)))' "$declared")
-check "each workflow the step reader reads is among those reads${unread:+ (add it there and to that ci.yaml filter): $unread}" \
-  "$(is "$unread" "")"
 
 summary "go_test_steps.py reads a go command behind the variables a step writes"

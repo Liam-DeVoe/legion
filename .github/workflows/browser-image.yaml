@@ -476,6 +476,7 @@ jobs:
   # script and reads no file of its own (.github/scripts/check-release-credentials.sh).
   # `!cancelled()` is worker-image.yaml's, and the build's result is tested beside it.
   attest:
+    name: ${{ 'attest' }}
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.build.outputs.published == 'true' }}
     runs-on: ubuntu-24.04

@@ -41,7 +41,7 @@ kind: # kind-image and kind. build: kind-image builds worker.Dockerfile as worke
   # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml;
   # own
   [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di,
-   &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**, *wiw]
+   &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**]
 go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun

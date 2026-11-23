@@ -27,7 +27,7 @@
 # the Send and the Aside at attempt 1, the carded Send at its retry, and nothing else. Each check
 # prints `== <name>`, what it observed, and `CHECK <name>: PASS`; the first that fails prints
 # `CHECK <name>: FAIL: <why>` and ends the run with exit 1. The agent-harness job's session-scripts
-# part runs it as a step (.github/workflows/ci-job-agent-harness.yaml).
+# part runs it as a step (.github/actions/agent-harness).
 #
 # Run it as `bash scripts/e2e/dispatch-user-turns.sh` from a checkout, with two inputs, both
 # required and both set by that job: LEGION_TEST_OMP, the Oh My Pi the session runs (the build

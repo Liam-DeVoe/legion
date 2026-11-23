@@ -13,7 +13,7 @@
 # lib/dispatch-session-settings.ts's: each prints `== <name>`, what it observed and
 # `CHECK <name>: PASS`, and the first that fails prints `CHECK <name>: FAIL: <why>` and ends the run
 # with exit 1. The agent-harness job's session-settings part runs it as a step
-# (.github/workflows/ci-job-agent-harness.yaml). Run it from a checkout on a Linux host with go,
+# (.github/actions/agent-harness). Run it from a checkout on a Linux host with go,
 # bun, jq, curl, psql, tar and python3, no docker, tmux or root needed, as
 #
 #   LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \

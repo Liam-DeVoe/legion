@@ -16,7 +16,7 @@
 # output is the CI log; the last case runs the guard over that captured log.
 #
 # Run from anywhere: .github/scripts/check-private-names-keys.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 # No tracing: a traced run would print every term the cases below expand.

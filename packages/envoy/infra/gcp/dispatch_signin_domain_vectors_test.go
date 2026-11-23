@@ -21,8 +21,8 @@ import (
 // signInDomain and each signInWorkspaceDomains entry to copies of Dispatch's rules, the trim
 // included, and Dispatch's own test (packages/envoy/cmd/dispatch/signin_domain_vectors_test.go)
 // reads the same file, so neither copy of a rule changes without a test failing.
-// .github/scripts/ci_job_reads.py declares this read, so a change to the file alone runs this
-// module's job too.
+// The envoy-infra-go area of .github/ci-areas.yaml names the file, so a change to the file alone
+// runs this module's job too.
 type dispatchDomainVectors struct {
 	SignInDomain     dispatchDomainVectorSet `json:"signInDomain"`
 	WorkspaceDomains dispatchDomainVectorSet `json:"workspaceDomains"`

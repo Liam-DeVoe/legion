@@ -53,7 +53,7 @@
 #
 # Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Take the newest attempt of each
-# leg's blob report", and its tests in ci.yaml's test job, at "Test the browser lane's blob
+# leg's blob report", and its tests in ci.yaml's scripts job, at "Test the browser lane's blob
 # attempt selection".
 set -euo pipefail
 shopt -s inherit_errexit

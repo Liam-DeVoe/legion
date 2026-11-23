@@ -25,6 +25,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector
 runs:
   using: composite
   steps:

@@ -4074,8 +4074,8 @@ The `pulumilive` tests need the `pulumi` CLI, `ENVOY_SMOKE_HELD_PORT_IMAGE` and
 `ENVOY_INFRA_DOCKER_PLUGIN`; without them a test fails and prints the commands that build both.
 Keep `-count=1`: the test cache cannot see a rebuilt image behind a fixed tag.
 
-CI runs the unit and `natslive` tests in `.github/workflows/ci-job-envoy-infra-go.yaml` at the
-repository root, and the `pulumilive` tests in the `envoy-smoke` job (`ci-job-envoy-smoke.yaml`).
+CI runs the unit and `natslive` tests in `.github/actions/go-envoy/envoy-infra-go` at the
+repository root, and the `pulumilive` tests in the `envoy-smoke` job (`.github/actions/go-envoy-held/envoy-smoke`).
 
 A plugin release is cut by a commit that changes a file in a package directory that
 `go list -deps ./cmd/...` reaches, Envoy's own packages included, or another input of the build

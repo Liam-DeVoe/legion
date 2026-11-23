@@ -18,9 +18,8 @@
 # reads, and nothing fails: the step compiles them from nothing on every run. The jsonfile's name
 # is the one step's that runs this mode, envoy-infra-go's unit step, which go-test.sh leaves for
 # that job's upload step.
-# .github/scripts/ci_job_reads.py pins the step to `scripts/race-unit.sh run` and refuses an
-# EXCLUDE other than its INFRA_PLAIN_PATTERN, which its coverage model of the step is built from;
-# .github/scripts/ci_workflow_rules.py's check_race_fill_scripts holds the fill to
+# The envoy-infra-go leg runs `scripts/race-unit.sh run`, whose EXCLUDE leaves out the text-check
+# package; check-ci-layout.sh's rule 16 (ci_workflow_rules.py's check_race_fill_scripts) holds the fill to
 # `scripts/race-unit.sh compile` and to no race build of its own.
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits

@@ -204,7 +204,7 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
 fi
 
 # The Postgres both paths name, read once from the DSN with urllib.parse, so no step reads
-# $pgport, which CI never sets (its service is localhost:5432, ci-job-daemon-go.yaml). The host
+# $pgport, which CI never sets (its service is localhost:5432, .github/actions/go-daemon). The host
 # comes back twice: bare, for the proxy's socket.create_connection (step 2), and in the address,
 # host:port, that step 1's DSN writes and its grep reads, with a host that holds a colon in
 # brackets, since urlsplit's hostname drops an IPv6 host's brackets and the daemon's refusal names

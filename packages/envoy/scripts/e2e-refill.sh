@@ -228,8 +228,7 @@ rm -rf "$bin_dir" "$nats_store_dir" "${out_dir}/reread" "${out_dir}/interrupt-st
 mkdir -p "$bin_dir"
 
 say "building refillrig, and the listener and natsd unless given"
-# Each go command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
-# reads what a script's go command compiles.
+# Each go command stands on a line of its own, so a reader of the script reads what each compiles.
 (
   cd "$envoy_dir"
   go build -o "$rig" ./internal/testnats/cmd/refillrig

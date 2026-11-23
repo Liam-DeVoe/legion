@@ -10,7 +10,7 @@
 // and that, its pane killed, the implementer comes back with `claude --resume` into the same
 // session, its transcript's earlier bytes unchanged and its earlier turns in the context it sends.
 // CI's agent-harness job runs it by name in its tmux-scripts part
-// (.github/workflows/ci-job-agent-harness.yaml), which installs tmux and Claude Code
+// (.github/actions/agent-harness), which installs tmux and Claude Code
 // (LEGION_TEST_CLAUDE), over the PostgreSQL that job gives it and the package's test NATS server.
 // It replaces the devbox script that ran the same path against real models, real GitHub Apps and
 // a smoke repository.

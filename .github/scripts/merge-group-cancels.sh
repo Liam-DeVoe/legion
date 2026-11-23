@@ -48,7 +48,7 @@
 #
 # Run from anywhere:
 #   RUN_ID=... HEAD_BRANCH=... RUNS=... .github/scripts/merge-group-cancels.sh
-# Its tests are in merge-group-cancels.test.sh, which ci.yaml's test job runs.
+# Its tests are in merge-group-cancels.test.sh, which ci.yaml's scripts job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

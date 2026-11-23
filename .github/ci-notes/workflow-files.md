@@ -16,7 +16,7 @@ can always read it.
 The check's own header says what an oversized workflow file does: above GitHub's cap it starts
 no run at all, and it says so with a run that holds no jobs, no annotation and no error. Turn
 that on ci.yaml itself and the pull request is stuck with nothing to read. ci.yaml carries this
-check in its `ci-filters` job, but a ci.yaml that crossed the cap starts no run, so that job
+check in its lint job, but a ci.yaml that crossed the cap starts no run, so that job
 never runs, `ci-ok` is never reported, main's ruleset holds the pull request on a check that
 will never arrive, and nothing on the pull request says why. A check that lives only inside the
 file it measures cannot report on the one change that breaks it. This workflow is a few
@@ -33,7 +33,7 @@ this check has to speak on.
 
 No `merge_group` trigger. .github/scripts/ci_workflow_rules.py's
 check_one_merge_group_workflow holds ci.yaml to be the only workflow of this repository that
-runs on a merge group, and a merge group runs ci.yaml, whose `ci-filters` job carries this same
+runs on a merge group, and a merge group runs ci.yaml, whose lint job carries this same
 check. So a group is covered already, and a run here would both repeat that check and be the
 second merge-group workflow that rule refuses.
 
@@ -55,5 +55,5 @@ of the tree and writes nothing, here or anywhere.
 ## What the check step measures, and with which copy of the check
 
 A pull request's merge ref is this run's checkout, so a pull request that changes the
-check is measured by its own copy of it, as ci.yaml's `ci-filters` job is. The script
+check is measured by its own copy of it, as ci.yaml's lint job is. The script
 reports every fault of every file in one run; its header says what each fault is.

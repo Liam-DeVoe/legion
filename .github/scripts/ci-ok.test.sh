@@ -29,7 +29,7 @@
 # annotations from files the case writes.
 #
 # Run from anywhere: .github/scripts/ci-ok.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -425,7 +425,7 @@ check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutd
 
 echo "case: a job whose continue-on-error steps failed on purpose, then the shutdown"
 # The limit of reading the exit codes rather than the steps. The tool-fallback job
-# (.github/workflows/ci-job-tool-fallback.yaml) drives tool installs against a corrupted payload
+# (.github/actions/tool-fallback) drives tool installs against a corrupted payload
 # or a held-down host, and the installs it means to fail carry `continue-on-error: true`, their
 # outcomes read by report steps after them; GitHub files `Process completed with exit code 1.` on
 # the check run of such a step although the job succeeds — measured on run 43168566331, where

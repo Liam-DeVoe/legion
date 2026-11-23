@@ -4,7 +4,7 @@ negates, a dorny/paths-filter filter under its predicate quantifier, and a workf
 the YAML those filters are written in, read as strictly as those readers read it: a mapping's
 repeated keys, and a loader that refuses a file holding one.
 
-check-image-trigger-paths.sh and check-ci-filters.sh (through ci_filter_coverage.py) import it from
+check-image-trigger-paths.sh and check-test-reach.sh (through go_test_steps.py) import it from
 the repository they check, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
 from that repository's root. check-workflow-files.sh imports it from beside its own file, which a
 test fixture's link to that script leads back to.

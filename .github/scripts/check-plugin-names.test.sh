@@ -8,12 +8,12 @@
 # Each case builds a miniature git repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
 # path, which the symlink puts at the fixture root. No case runs the checker over this
-# repository's own tree: ci.yaml's lint job does (.github/workflows/ci-job-lint.yaml, "Check no
+# repository's own tree: ci.yaml's lint job does (.github/actions/lint/lint, "Check no
 # current file names the pre-split Oh My Pi plugin"), on every change, so a case here would only
 # run that same check a second time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-plugin-names.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

@@ -119,10 +119,10 @@
 # too, which is why the check needs no exception for itself.
 #
 # Run from anywhere: .github/scripts/check-private-names.sh [path...]
-# CI runs it over the repository in ci-job-lint.yaml's private-names job, which ci.yaml's lint job
-# calls; over the built site in docs-site.yaml's private-names job, which ci.yaml's docs job and
+# CI runs it over the repository in the private-names leg of ci.yaml's lint job; over the built
+# site in docs-site.yaml's private-names job, which ci.yaml's docs job and
 # docs-pages.yaml's build job call; over the packed Claude Code plugin's dist/ and legion/ through
-# .github/actions/private-names-packed-plugin, in ci-job-claude-envoy.yaml's private-names job and
+# .github/actions/private-names-packed-plugin, in ci.yaml's claude-envoy-names job and
 # release.yaml's claude_envoy_names job; over each release's rendered changelog entries, the file
 # its publish job writes into the GitHub release's body, through
 # .github/actions/private-names-release-notes, in release-notes-names.yaml's job (which
@@ -132,7 +132,7 @@
 # (each one's message, author and committer), issue comments, reviews and review comments through
 # check-pr-text.sh (ci.yaml's pr-title job at each push to a pull request that is not a draft, when
 # a draft is marked ready and on the merge queue's group, and pr-title.yaml when the pull request
-# is edited); and in its tests, in ci.yaml's test job and its private-names-port job, which run
+# is edited); and in its tests, in ci.yaml's scripts job and its private-names-port job, which run
 # with placeholder terms of their own and no secret. Each step that runs it with the secret maps
 # PRIVATE_NAME_TERMS.
 set -euo pipefail

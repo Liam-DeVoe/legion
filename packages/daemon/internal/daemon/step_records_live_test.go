@@ -1,7 +1,7 @@
 // The live proof's driver for the record of each step of an issue: the whole daemon writes each
 // start and each end of a step onto the issue in Dispatch, and a person reads them back with the
 // real `dispatch steps` command. The test runs in CI's daemon-live job
-// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// (.github/actions/daemon-live), on the job's PostgreSQL and the package's test NATS
 // server, with the job's bun and its frozen install for the `dispatch` CLI, and with the job's git
 // and jj 0.38 or later, which the daemon's boot refuses to start without.
 //

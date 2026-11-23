@@ -3,7 +3,7 @@
 ## smoke-delivery.sh
 
 End-to-end delivery check of the packed plugin, which the `plugin-smokes` part of `ci.yaml`'s
-`agent-harness` job runs as a step (`.github/workflows/ci-job-agent-harness.yaml`). It starts one
+`agent-harness` job runs as a step (`.github/actions/agent-harness`). It starts one
 real Oh My Pi session in `--mode rpc`, as a Legion pane runs it, whose only extension is this
 checkout's pi-envoy packed as the release packs it and whose only tool is bash. The session's
 model, a stand-in, calls `envoy_role_set`; the script publishes to that role's namespaced topic

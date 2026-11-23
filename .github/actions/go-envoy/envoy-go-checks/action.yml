@@ -100,8 +100,8 @@ runs:
           exit 1
         fi
     # These five packages need no database, so they run here on every push. This is their one run:
-    # envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list built from
-    # NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+    # envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list naming the
+    # same packages.
     - name: Test the architecture-note and spec-file rules and their commands
       shell: bash
       working-directory: packages/envoy
@@ -113,8 +113,8 @@ runs:
     # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
     # type-checks the daemon's listener clients, so they run here, their one run, and a change to
     # only those daemon packages starts this leg rather than envoy-go's: envoy-go's unit step
-    # leaves both packages out, its `grep -Ev` and this step's package list built from
-    # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+    # leaves both packages out, its `grep -Ev` and this step's package list naming the same
+    # packages.
     - name: Test the listener's wire package, its clients and wirecheck
       shell: bash
       working-directory: packages/envoy
@@ -159,8 +159,8 @@ runs:
     # view's test asserting against a stale tree. This is the one run of that test,
     # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats the
     # same file: without `--check` the first writes the fixture instead of checking it, so
-    # envoy-go's unit step skips both by the same names, both texts built from WEB_FIXTURE_TESTS in
-    # .github/scripts/ci_job_reads.py. gotestsum puts the package before `-args`, so `--check`
+    # envoy-go's unit step skips both by the same names (check-ci-layout.sh's rule 22 holds the two
+    # lists). gotestsum puts the package before `-args`, so `--check`
     # reaches the test binary alone.
     - name: Check the web app's display-tree fixture is up to date
       shell: bash

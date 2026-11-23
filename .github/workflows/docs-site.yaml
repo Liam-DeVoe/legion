@@ -28,9 +28,8 @@ name: Docs site
 # declares `contents: read` alone; that call passes no `ci-ok-changes`, so the report step skips
 # and the checkout is the whole of what it asks the token for.
 #
-# .github/scripts/ci_job_reads.py's docs gate cites the steps below by name, and
-# .github/scripts/check-ci-filters.sh fails when a cited step is gone. The docs filter of ci.yaml
-# names this file, and so does docs-pages.yaml's on.push.paths, so a change here selects the job.
+# ci.yaml's docs job calls this file, and the docs area of .github/ci-areas.yaml names it, so a
+# change here selects the job; docs-pages.yaml builds on every push to main, with no path filter.
 on:
   workflow_call:
     inputs:
@@ -251,7 +250,7 @@ jobs:
 
   # The built site, generated reference pages and copied media captions include no private
   # deployment repository, company, internal host, Tailscale MagicDNS host or term of the
-  # deployment's own list. ci-job-lint.yaml's private-names job checks the sources, on a pull
+  # deployment's own list. The lint job's private-names leg checks the sources, on a pull
   # request and on a merge group alike. A job of its own, because it reads that list
   # (PRIVATE_NAME_TERMS) and no job that runs dependency code holds it: this one checks out the
   # .github cone for the script, downloads the site the build job uploaded, and runs that shell

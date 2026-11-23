@@ -182,7 +182,7 @@ database, one front over each pair of ports, the options reaching the brokers, t
 enrolment written beside the session key, the session's renewer, the usage error,
 and the cleanup stopping everything it started — with no real Postgres, no network
 and no Go build; CI runs it in the `envoy-go-checks` job
-(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+(`.github/actions/go-envoy/envoy-go-checks`).
 
 `dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
 the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
@@ -395,7 +395,7 @@ counts only the tests it names, so the `aws` and
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
-`.github/scripts/ci_job_reads.py`).
+`.github/scripts/go_test_steps.py` lists them for the step reader).
 
 ## database-skips.sh
 
@@ -416,9 +416,7 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
 its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
-auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
-in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, under
+auth service's `natscallout`, which opens no database, is the one today. That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, under
 gotestsum, whose test log it prints as the tests run (each test's `=== RUN` line and its
 `--- PASS`, `--- FAIL` or `--- SKIP` line), then it reads the jsonfile, each test by the last
 attempt that ran it, since a merge group reruns a failed test once. `--var NAME` names a
@@ -972,7 +970,7 @@ cd packages/envoy && DISPATCH_TEST_DATABASE_URL=<test database> DISPATCH_RECALL_
 
 These are INFRA-325's own measurements: every changed statement's plan and time (A8), and the median wall time of the six write routes the new triggers slow (A9).
 Both run against the seeded measurement database `cmd/dispatch-seed` fills, never against a test database and never against production.
-`DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `envoy-go` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale `.github/scripts/ci_job_reads.py`'s `STATEMENT_TIMING_SCALE` names, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
+`DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `go-envoy-held` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale 0.01, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
 `internal/dispatch/api`'s two measurements, below, are tools, run by the author of a change to those statements on a seed of 0.03 or more: at the largest scale that job's time allows, their bounds do not hold.
 No CI step runs the write routes' measurement.
 

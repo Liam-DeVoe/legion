@@ -3,6 +3,7 @@ description: >-
   The listener-server-change leg of ci.yaml's go-envoy job, which carries that old check-run name:
   the listener's server-change soak, the tests the serverchange build tag adds to ./cmd/listener.
   The leg runs on ubuntu-24.04-arm.
+# why: .github/ci-notes/ci.md#the-server-change-soak
 runs:
   using: composite
   steps:

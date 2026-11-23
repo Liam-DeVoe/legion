@@ -5,7 +5,7 @@
 # install only after a root workspace is added, so check the Dockerfile contract directly.
 #
 # Run from anywhere: .github/scripts/check-bun-workspace-manifests.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

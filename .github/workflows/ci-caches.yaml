@@ -43,7 +43,7 @@ name: CI caches
 # go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
 # other four after it: the go-notices entry holds go-licenses, a program lint's notices step
 # runs, and a run of a workflow file older than the architecture in the key restores by
-# go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what
+# go-notices-<os>-, which an <os>-<arch> key starts with (the notices action's restore step says what
 # that did). One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
@@ -70,8 +70,8 @@ name: CI caches
 # workflow_dispatch run: a run of any other event (pull_request, pull_request_target,
 # merge_group, issue_comment, workflow_run and the rest) may hold another person's code, so it
 # restores the entry and never saves it. This workflow's push to main is where the entry lands in
-# the scope every later run reads. check-ci-filters.sh's cache-family rule reads this workflow's
-# own actions/cache steps and not a composite action's, so it holds nothing of these two families;
+# the scope every later run reads. check-ci-layout.sh's cache-family rule reads this workflow's
+# own actions/cache steps and those of the actions it runs, and these two families' are neither;
 # the "Caches" paragraph of
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
 # record of their restores and saves.
@@ -82,7 +82,7 @@ name: CI caches
 # the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
 # jobs run in the image this repository builds, which carries the browsers and their host
 # packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
-# restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
+# restore is gone is what check-ci-layout.sh refuses, so the two jobs that wrote them are gone
 # with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
@@ -114,7 +114,7 @@ concurrency:
 permissions:
   contents: read
 
-# The proxy fall-through each ci-job-*.yaml file's env block explains: with `|`, a go command
+# The proxy fall-through ci.yaml's env block explains: with `|`, a go command
 # that hits ANY error from proxy.golang.org - a reset mid-stream among them - fetches the same
 # bytes from the source and checks them against go.sum.
 env:
@@ -158,7 +158,7 @@ jobs:
           lookup-only: true
 
       # What typecheck builds: the vet of every package. It is the one build of this family an
-      # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
+      # arm64 job makes (ci.yaml's lint job, its typecheck leg), so both legs run it.
       # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
       # cache on a devbox, would ride in an entry every job that restores go-daemon downloads, and
       # the step builds them in about two minutes (run 43990864191).
@@ -169,9 +169,9 @@ jobs:
 
       # What daemon-go builds: the test binary of every package, and the race build of the five
       # packages daemon-go runs under the detector, whose
-      # objects are cache entries of their own. Those five are the list
-      # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES holds, which check-ci-filters.sh
-      # holds ci.yaml's two steps to, so a package that joins or leaves the detector there is the
+      # objects are cache entries of their own. Those five are the packages of go-daemon's race
+      # step (.github/actions/go-daemon), which check-ci-layout.sh's rule 16 holds this command to,
+      # in order, so a package that joins or leaves the detector there is the
       # side this command follows. The test binaries are compiled and never run (`go test -c -o
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
@@ -438,7 +438,7 @@ jobs:
       # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
       # runs, and the test binaries of each leg's reader. On ubuntu-24.04-arm, envoy-infra-go's unit
       # step's race build, through the script that step runs (scripts/race-unit.sh, here in its
-      # compile mode), so the entry holds what that step links; check-ci-filters.sh holds this leg
+      # compile mode), so the entry holds what that step links; check-ci-layout.sh holds this leg
       # to that call and to no race build of its own. On ubuntu-24.04, release-envoy-infra.yaml's
       # plain `go test ./...`. Compiled, not run: the live tests need nats-server, Postgres and
       # container images, and the unit tests nothing a build cache keeps. The darwin vet is in the

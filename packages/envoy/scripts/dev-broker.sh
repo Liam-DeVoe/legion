@@ -320,8 +320,8 @@ DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]
 # with. Each entry is <binary>=<command directory under cmd/>. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
-# The go command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
-# reads what a script's go command compiles (broker-multiprocess runs this build for check k9).
+# The go command stands on a line of its own, so a reader of the script reads what it compiles
+# (airlock-arm runs this build for check k9).
 for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=dev-proxy-stands \
   agent-secrets=cipher agent-secrets-helper=cipher-helper agent-secrets-devrelay=cipher-devrelay; do
   (

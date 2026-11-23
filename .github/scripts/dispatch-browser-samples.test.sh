@@ -12,7 +12,7 @@
 # NO CASE RUNS A BROWSER, A SUITE OR A NETWORK CALL: each one is a file, /proc and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-samples.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `dir=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a directory that failed to build is used anyway

@@ -14,7 +14,7 @@
 # gitleaks_X.Y.Z_checksums.txt — together.
 #
 # Run from anywhere: .github/scripts/check-gitleaks-version.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

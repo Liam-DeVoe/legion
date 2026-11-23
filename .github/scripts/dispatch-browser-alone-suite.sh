@@ -16,8 +16,8 @@
 #
 # Both are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-# gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
-# check-ci-filters.sh's reduction of what a go command compiles.
+# records: a rule of the filter check this repository ran before CI chose its jobs by package
+# area, which the step still keeps.
 #
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.

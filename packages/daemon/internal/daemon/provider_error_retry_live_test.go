@@ -1,7 +1,7 @@
 // The live proof of what a provider error does to a worker's task (dispatch://INFRA-956 R2) and
 // of the operator's hand on the claims it leaves (R3), driven against real Oh My Pi panes under
 // the real daemon. CI's agent-harness job runs it by name
-// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it, the
+// (.github/actions/agent-harness), over the PostgreSQL that job gives it, the
 // package's test NATS server and the job's git and jj 0.38 or later, which the daemon's boot
 // refuses to start without.
 //

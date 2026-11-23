@@ -89,10 +89,10 @@ other's run nothing, and that run's shard and alone jobs would fail downloading 
 their run never held.
 
 Why those two jobs do not build the binaries themselves: they run in a container, and
-.github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
-can move what a go command compiles, so a go command there would fall out of
-check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
-which is the opposite of what the `dispatch_browser` filter is for. So the builds live in
+the filter check this repository ran before CI chose its jobs by package area counted a
+`container:` as something that can move what a go command compiles, so a go command there fell
+out of that check's reduction and was counted as reading every Go file of the repository,
+which was the opposite of what the `dispatch_browser` filter was for. So the builds live in
 this job, which takes no container, and the suite's own scripts execute what it built
 instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
 run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
@@ -186,9 +186,9 @@ container a pid 1 that reaps the browsers' orphans, which four stacks of them ma
 This job runs no `go` command, directly or through a script: the binaries job builds
 every binary the suite's scripts would have built and hands them over in one artifact. It
 has to be that way round, and that job's own header says why:
-ci_filter_coverage.py's shell_reason counts a `container:` as something that can move what
-a go command compiles, so a go command here would fall out of check-ci-filters.sh's
-reduction and be counted as reading every Go file of the repository. For the same reason
+the filter check this repository ran before CI chose its jobs by package area counted a
+`container:` as something that can move what a go command compiles, so a go command here fell
+out of that check's reduction and was counted as reading every Go file of the repository. For the same reason
 this job pins no `defaults.run.shell` and no step-level `shell:`. So every `run:` of this
 job is executed by `sh -e {0}`, not bash - measured in job 128496236572, whose every step
 logs that shell - and each one must stay POSIX. A script a step calls carries its own
@@ -198,9 +198,9 @@ The stacks' PostgreSQL binaries and this run's worker count are set on the brows
 own command line, where they have always been, rather than in an `env:`.
 That command line is in .github/scripts/dispatch-browser-shard-suite.sh, which the browser step runs.
 DISPATCH_E2E_FILE_STORE_ENDPOINT and DISPATCH_E2E_FILE_STORE_BUCKET are in
-ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
-multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
-defaults, so neither may grow a name outside that set.
+the names that check allowed and stay in the browser step's `env:`; the
+multiprocess job's build step, "Build the Dispatch server", is read under dispatch-browser.yaml's
+own `env:` and defaults, which have kept to that set since.
 
 The census both of this job's budgets are read from: main's own full-lane runs, read from the
 jobs API on 2026-11-21 near 16:15Z at main 75bd096e02. It takes every run of ci.yaml with
@@ -361,7 +361,7 @@ gitignored - so a checkout that has never built it dies while the config loads, 
 enough: `globalSetup` runs after the config has loaded. A workstation gets the build from
 `bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
-(ci-job-dispatch-ui.yaml's `Build contracts for the suites that spawn Playwright` says
+(.github/actions/ts/dispatch-ui's `Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
 block leaves out - not ./legion-api, which no row loads.
 
@@ -466,8 +466,8 @@ the census's query and why the budget is read again as the suite grows.
 ## Why the file store's address is set on the step and not in the environment
 
 The file store the "Start an S3-compatible server for uploaded files" step started. Set here, not written to $GITHUB_ENV, which
-every later step would inherit, and which check-ci-filters.sh treats as reaching a
-job's go commands unseen.
+every later step would inherit, and which the filter check this repository ran before CI chose
+its jobs by package area treated as reaching a job's go commands unseen.
 
 ## Why the shard job's blob upload is always, and takes one directory
 
@@ -730,7 +730,7 @@ psql reaches; and second-global-setup.test.ts, whose one row starts two stacks' 
 one process, as Playwright's UI mode does. They are packages/dispatch's `bun run
 test:postgres`, which its `bun run test` leaves out, so ci.yaml's dispatch-ui job, which has
 no Postgres, runs the rest of that directory and not these
-(.github/workflows/ci-job-dispatch-ui.yaml says so beside its test step).
+(.github/actions/ts/dispatch-ui says so beside its test step).
 
 Here because this file's image is the one that carries a PostgreSQL 18 with pgvector
 (.github/docker/browser.Dockerfile): the step "Test the dashboard's rows that need a
@@ -1057,7 +1057,7 @@ build again (packages/dispatch's build:contracts).
 
 run-server.sh builds it too, inside the harness's boot wait; built here, the server
 finds it current and starts in seconds. The name carries the lane because
-.github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
+the filter check this repository ran before CI chose its jobs by package area named a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
 
 ## The visual review, its docker run and its budgets
@@ -1074,12 +1074,11 @@ so). The cost is that a flaky comparison would hold the queue too, which is why 
 is measured from zero rather than defaulted (packages/dispatch/e2e/visual.e2e.ts).
 
 Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
-of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
-(ci_filter_coverage.py's `shell_reason`, "the job runs in a container:"), which then counts
-each as reading every Go file of the repository. The shard and alone jobs do take one,
-since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
-listing no script Run at all and pinning the binaries job's build whole instead
-(.github/scripts/ci_job_reads.py's gate says why). This job needs no container of its own:
+of this file drops every `go build` the suite starts out of the reduction of the filter check this
+repository ran before CI chose its jobs by package area ("the job runs in a container:"), which
+then counted each as reading every Go file of the repository. The shard and alone jobs do take
+one, since the browsers they run are in it, and that check answered for them by listing no script
+Run at all and pinning the binaries job's build whole instead. This job needs no container of its own:
 the seed its run starts has to stay on the host, where `psql` is, and a page in a
 bridge-networked container would reach the harness's 127.0.0.1 listeners over another
 address and so be no secure context, so only the Playwright command goes into the image
@@ -1405,5 +1404,5 @@ own result decides it posts the failing ci-ok at once, and on every other run it
 nothing, the verdict being ci.yaml's `ci-ok` job's own check run
 (.github/actions/ci-ok-report says how). This is the job that posts for that call: it
 needs every other job of this workflow, and the step is its last, which is the shape
-.github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
+.github/scripts/check-ci-layout.sh's rule 7 holds a called workflow to. The
 nightly workflow passes no `ci-ok-changes`, and the step skips.

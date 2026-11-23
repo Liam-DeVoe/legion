@@ -73,9 +73,8 @@ scripts="$(cd ../../.github/scripts && pwd)"
 # The broker's packages and its command, less DEFAULT_EXCEPT: every package of each opens the
 # broker's Postgres, named by BROKER_TEST_DATABASE_URL, or skips. DEFAULT_EXCEPT is a `grep -Ev`
 # pattern over the import paths `go list` prints for DEFAULT_PACKAGES, and a run with no PACKAGE
-# runs the packages it keeps. It takes out the race lane's packages under the broker's tree (each
-# a package of ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py, which builds the same pattern
-# as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
+# runs the packages it keeps. It takes out the race lane's packages under the broker's tree, which
+# DEFAULT_EXCEPT names: the auth
 # service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
 # detector, so a run here would be its second in the same CI run.
 DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/)

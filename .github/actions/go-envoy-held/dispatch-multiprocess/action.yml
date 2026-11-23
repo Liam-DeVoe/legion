@@ -12,6 +12,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#the-dispatch-servers-two-process-tests
 runs:
   using: composite
   steps:
@@ -26,8 +27,8 @@ runs:
         POSTGRES_CONTAINER: ${{ inputs.postgres }}
       run: .github/scripts/pg-connection-ceiling.sh "$POSTGRES_CONTAINER"
     # Every test the multiprocess tag adds, its names read off the source at run time, but the
-    # outbox's load steps, which the step below runs (ci_job_reads.py's OUTBOX_LOAD_TESTS builds
-    # both texts, so the skip and the run cannot come to name different tests).
+    # outbox's load steps, which the step below runs by name (check-ci-layout.sh's rule 22 holds
+    # this -skip and that -run to the same tests).
     - name: Two-process tests of the Dispatch server
       shell: bash
       working-directory: packages/envoy

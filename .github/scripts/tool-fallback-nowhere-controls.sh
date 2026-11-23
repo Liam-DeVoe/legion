@@ -4,8 +4,8 @@
 # `timeout-minutes`, which leaves the same outcome behind.
 #
 # Who runs it: the step "Check all eight installs with nowhere to go failed, and failed in their
-# own time" of .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
-# .github/ci-notes/ci-job-tool-fallback.md#why-the-control-step-reads-the-clock-as-well says
+# own time" of .github/actions/tool-fallback/x64, which ci.yaml's tool-fallback job runs;
+# .github/ci-notes/tool-fallback.md#why-the-control-step-reads-the-clock-as-well says
 # why the clock is read here at all. It takes no argument and reads sixteen variables the step's
 # own `env:` map sets, each from a step of that job: CRANE, CHANGIE, JJ, BUN, ELAN, UV,
 # PULUMI_DOCKER and PULUMI_CLI, the `outcome` of each install with nowhere to go, and CRANE_AT,
@@ -15,7 +15,7 @@
 # both in the checkout when the step runs.
 #
 # Run from the repository root: .github/scripts/tool-fallback-nowhere-controls.sh
-# CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check all eight
+# CI runs it in ci.yaml's tool-fallback job, at the step "Check all eight
 # installs with nowhere to go failed, and failed in their own time".
 set -euo pipefail
 

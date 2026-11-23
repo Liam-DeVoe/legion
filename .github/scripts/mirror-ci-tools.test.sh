@@ -45,7 +45,7 @@
 # ladder is what runs there.
 #
 # Run from anywhere: .github/scripts/mirror-ci-tools.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture and every digest below is read inside a command substitution, and bash does not
 # carry errexit into one on its own: without this, a tree that failed to build is used anyway and

@@ -32,7 +32,7 @@ runs:
     # The same reading as the tool-fallback leg's, over both halves of this one: no other arm64
     # job of this repository takes this reading of its runner, so nothing else says what one of
     # those runners had.
-    # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
+    # why: .github/ci-notes/tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
     - name: Start the machine watch over both halves
       if: inputs.after == 'start'
       shell: bash

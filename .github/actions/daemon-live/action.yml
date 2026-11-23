@@ -1,8 +1,8 @@
 name: Run the whole-daemon live tests
 description: >-
   The steps of ci.yaml's daemon-live job: the ten whole-daemon live tests of internal/daemon that
-  .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, every test of the ten files its
-  DAEMON_LIVE_FILES names. Each boots the whole daemon through the function `legion start` calls,
+  this job's -run names, every test of the ten files that carry them. Each boots the whole daemon
+  through the function `legion start` calls,
   over the job's PostgreSQL and the package's test NATS server, and drives it through GitHub and
   Dispatch envelopes, its own HTTP routes and its worker stream, with no agent. The go-daemon race
   step, which runs their package, skips them by name, so each runs once per run of the router,
@@ -73,8 +73,9 @@ runs:
 
     - uses: ./.github/actions/install-gotestsum
 
-    # The ten tests, by name, under gotestsum (.github/scripts/go-test.sh). ci_job_reads.py builds
-    # this -run and the go-daemon race step's -skip from DAEMON_LIVE_TESTS. The -timeout is the 20
+    # The ten tests, by name, under gotestsum (.github/scripts/go-test.sh). This -run and the
+    # go-daemon race step's -skip name the same tests, which check-ci-layout.sh's rule 22 holds. The
+    # -timeout is the 20
     # minutes each test had under the script that drove it, so a hung test prints the goroutine
     # dump that names it before the runner cancels the job.
     - name: Run the whole-daemon live tests

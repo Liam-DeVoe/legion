@@ -15,9 +15,8 @@
 # becomes DISPATCH_E2E_PG_CONNECTIONS below. It is an argument rather than a key of the step's
 # `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-# gives: a step `env:` key outside
-# ci_filter_coverage.py's ENV_ALLOWED drops that job out of check-ci-filters.sh's reduction of
-# what a go command compiles. The step keeps its own `timeout-minutes` and its working
+# records: a rule of the filter check this repository ran before CI chose its jobs by package
+# area, which the step still keeps. The step keeps its own `timeout-minutes` and its working
 # directory, packages/dispatch, which is where e2e/visual-run.sh is run from below.
 # It reads one variable the runner sets for every step, $RUNNER_TEMP, under which the stack's
 # run directory is made.

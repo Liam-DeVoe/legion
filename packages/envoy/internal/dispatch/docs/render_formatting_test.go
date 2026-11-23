@@ -52,7 +52,7 @@ func TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly(t *testing.T) {
 	// The storm below runs four seeds by 160 steps, and two by 60 under the race detector or
 	// -short, where each round costs several times as much. The read sits in the test rather
 	// than in the helper it passes the sizes to, since that is what makes this test the one
-	// .github/scripts/ci_job_reads.py gives envoy-go's plain full-size run.
+	// envoy-go's plain full-size run gives it.
 	seeds, steps := []uint64{1, 2, 3, 4}, 160
 	if raceEnabled || testing.Short() {
 		seeds, steps = []uint64{1, 2}, 60

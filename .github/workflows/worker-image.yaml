@@ -97,6 +97,7 @@ permissions:
 
 jobs:
   build:
+    name: ${{ 'build' }}
     # An attest-only call (attest_digest) attests what the caller's earlier call built, so it skips
     # the build. Every other run leaves attest_digest out (ci.yaml's call on a pull request,
     # release.yaml's build-only call, workflow_dispatch), so it builds.
@@ -302,7 +303,7 @@ jobs:
           "$REF" /probe/leak-guard-image-probe.sh
 
       # ci.yaml's pull_request call only, and inert there. The router asks the job of every
-      # workflow it calls to end with the report step, and check-ci-filters.sh holds it there:
+      # workflow it calls to end with the report step, and check-ci-layout.sh holds it there:
       # the step exists so that a merge-group run this job's result decides gets its failing
       # ci-ok at once rather than at the end of the run. ci.yaml's worker-image job runs on a
       # pull request alone, though, and ci-ok-report.sh posts on a merge_group run and nowhere
@@ -355,6 +356,7 @@ jobs:
   # output, so the caller passes the `image` its earlier build call reported (release.yaml's
   # worker_image_attest, from needs.worker_image.outputs.image) and that value wins here.
   attest:
+    name: ${{ 'attest' }}
     needs: build
     if: ${{ !cancelled() && github.event_name != 'pull_request' && !inputs.skip_attest && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.attest_digest != '')) }}
     runs-on: ubuntu-24.04

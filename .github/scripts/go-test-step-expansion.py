@@ -28,13 +28,9 @@ tens of minutes, for an answer a person needs twice per change (at the head and 
 base) rather than once per run.
 
 Between those hand runs CI holds the plugin-pack part of the property itself. The plugin-pack
-step's `-run` and the daemon-go race step's `-skip` are both built from one list,
-PLUGIN_PACK_TESTS in ci_job_reads.py, and check-ci-filters.sh pins each step's whole script, so an
-edit to either step's text is refused (a step whose script is not its pinned text fails, naming
-the step and the first line that differs, and on that line each test its -run or -skip names and
-the pin does not, or the other way round) and the two cannot come to name different tests.
-ci_job_reads.py's hold_plugin_pack_tests() refuses, at import, a name in that list that the
-package no longer declares and a test of agentmodels_omp_test.go the list does not name. And
+step's `-run` and the daemon-go race step's `-skip` name the same tests, and
+.github/scripts/check-ci-layout.sh's rule 22 refuses a -skip list that names some of the tests of
+another job's -run list and not all of them, naming the test it lost. And
 go-test-step-expansion.test.sh runs the step reader this script reads the steps with
 (.github/scripts/go_test_steps.py), with no `go` command, over every `go test` step of the head,
 so a step this script would refuse fails the pull request that makes it unreadable rather than
@@ -67,7 +63,7 @@ temporary directory:
 It reads the repository root off its own path, so the copy under the temporary directory checks
 itself and not the workspace it was copied from. It reads the steps with
 .github/scripts/go_test_steps.py, which sits beside it in both trees and says how a step is read:
-the documents, the step's directory and its comment-free lines (through `ci_filter_coverage`'s
+the documents, the step's directory and its comment-free lines (through `ci_layout`'s
 own helpers), `for` loops, the variables and wrappers before a command, `-skip`, and the scripts
 its AUDITED_SCRIPTS reads; a step into the local composite action it uses, a matrix job's step
 once per leg with the leg's values read in, a called workflow's step with the inputs its caller

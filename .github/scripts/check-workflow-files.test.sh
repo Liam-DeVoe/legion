@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
-# parses as YAML, repeats no mapping key after upper-casing, and calls at most 45 unique reusable
-# workflows.
+# parses as YAML, repeats no mapping key after upper-casing, calls at most 10 unique reusable
+# workflows, nested calls included, and reads less than 10,000 bytes of filter text, and ci.yaml
+# routes at most 30 jobs besides the carriers of a split job's old name; and a refusal of size
+# tells the author where to move text, never into a filter file.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
 #
 # Run from anywhere: .github/scripts/check-workflow-files.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -111,6 +113,7 @@ check "names the file and its bytes" \
 check "names GitHub's cap too" "$(contains "$out" 'its own cap of 500,000 bytes (500 KB)')"
 check "names the file the rule is in" \
   "$(contains "$out" 'into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
+check "tells the author to move no filter data anywhere" "$(is "$(contains "$out" 'ci-filters')" false)"
 check "counts the problem" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
@@ -222,7 +225,7 @@ check "reports it once" "$(is "$(errors "$out")" 1)"
 echo "case: a file name holding a comma and a colon, and a key holding the legacy ##[ command"
 # The runner ends a command's properties at the first `::` and splits them on `,`, so the file
 # name is escaped as a property; and it recognises `##[` anywhere in a line, so the message's keys
-# are escaped as ci_filter_coverage.py escapes an annotation's message.
+# are escaped as ci_layout.py escapes an annotation's message.
 root=$(fixture escaped-property)
 cat > "$root/.github/workflows/a,b:c.yaml" <<'YAML'
 name: Build
@@ -301,17 +304,17 @@ check "and the file with the folded keys, in the same run" \
 check "counts both" \
   "$(contains "$out" '^2 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
-echo "case: exactly 64,000 bytes and exactly 45 unique reusable workflows passes"
+echo "case: exactly 64,000 bytes and exactly 10 unique reusable workflows passes"
 root=$(fixture at-both-limits)
-caller "$root/.github/workflows/ci.yaml" 45 1
-callees "$root/.github/workflows" 45 1
+caller "$root/.github/workflows/ci.yaml" 10 1
+callees "$root/.github/workflows" 10 1
 pad_to "$root/.github/workflows/ci.yaml" 64000
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
-  "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
+  "$(contains "$out" '^all 11 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows$')"
+  "$(contains "$out" 'call at most 10 unique reusable workflows and read less than 10,000 bytes of filter text, and .github/workflows/ci.yaml routes at most 30 jobs besides its carriers$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -346,32 +349,32 @@ check "names the two job ids" \
 check "and the two with: keys" \
   "$(contains "$out" "^::error file=.github/workflows/with.yaml,line=8::.github/workflows/with.yaml:8: the mapping key 'Token' is the key 'token' of line 7 again")"
 
-echo "case: a file calling 46 unique reusable workflows"
+echo "case: a file calling 11 unique reusable workflows"
 root=$(fixture over-calls)
-caller "$root/.github/workflows/ci.yaml" 46 1
-callees "$root/.github/workflows" 46 1
+caller "$root/.github/workflows/ci.yaml" 11 1
+callees "$root/.github/workflows" 11 1
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the count and the limit" \
-  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 46 unique reusable workflows, above this check.s limit of 45:')"
-check "lists the callees" "$(contains "$out" '.github/workflows/w46.yaml')"
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 11 unique reusable workflows, above this check.s limit of 10:')"
+check "lists the callees" "$(contains "$out" '.github/workflows/w11.yaml')"
 check "names GitHub's own cap of 50" \
   "$(contains "$out" 'GitHub allows 50 from a single workflow file, counting every tree of nested calls')"
 check "names this check's limit and GitHub's cap, with the file's bytes" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.* The file is [0-9,]* bytes, against this check.s limit of 64,000 bytes and GitHub.s cap of 500,000 bytes (500 KB), above which GitHub starts no run at all\.$")"
 
-echo "case: 44 calls, one of which calls two more, is a tree of 46"
+echo "case: 9 calls, one of which calls two more, is a tree of 11"
 root=$(fixture nested-calls)
-caller "$root/.github/workflows/ci.yaml" 44 1
-callees "$root/.github/workflows" 44 1
-caller "$root/.github/workflows/w01.yaml" 2 45
-callees "$root/.github/workflows" 2 45
+caller "$root/.github/workflows/ci.yaml" 9 1
+callees "$root/.github/workflows" 9 1
+caller "$root/.github/workflows/w01.yaml" 2 10
+callees "$root/.github/workflows" 2 10
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "counts the whole tree" \
-  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 46 unique reusable workflows')"
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 11 unique reusable workflows')"
 check "names a workflow only the nested call reaches" \
-  "$(contains "$out" '.github/workflows/w46.yaml')"
+  "$(contains "$out" '.github/workflows/w11.yaml')"
 check "the nested caller itself, which calls two, passes" \
   "$(is "$(contains "$out" 'file=.github/workflows/w01.yaml')" false)"
 
@@ -391,5 +394,72 @@ check "names .github/ci-notes/README.md, where the rule is" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yml::.* into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
 check "read one file" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+# router <file> <jobs> [carriers] [extra]: a ci.yaml of <jobs> jobs that run a step and
+# [carriers] carriers - a sparse checkout of .github, one step and the report to ci-ok - the
+# first of them with a fourth step when [extra] is given.
+router() {
+  local file=$1 jobs=$2 carriers=${3:-0} extra=${4:-} index
+  printf 'name: CI\non: pull_request\njobs:\n' >"$file"
+  for ((index = 1; index <= jobs; index++)); do
+    printf '  job%02d:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo test\n' "$index" >>"$file"
+  done
+  for ((index = 1; index <= carriers; index++)); do
+    printf '  carrier%02d:\n    runs-on: ubuntu-24.04\n    steps:\n' "$index" >>"$file"
+    printf '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n' >>"$file"
+    printf '        with: {sparse-checkout: .github, persist-credentials: false}\n' >>"$file"
+    printf '      - run: .github/scripts/leg-verdict.sh one two\n' >>"$file"
+    if [ "$index" = 1 ] && [ -n "$extra" ]; then printf '      - run: echo a fourth step\n' >>"$file"; fi
+    printf '      - {if: always(), uses: ./.github/actions/ci-ok-report}\n' >>"$file"
+  done
+}
+
+echo "case: 30 jobs and two carriers pass"
+root=$(fixture at-job-limit)
+router "$root/.github/workflows/ci.yaml" 30 2
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a thirty-first job that runs a test"
+root=$(fixture over-job-limit)
+router "$root/.github/workflows/ci.yaml" 31
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the count and the limit" \
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml routes 31 jobs besides its carriers, above the limit of 30:')"
+
+echo "case: a carrier that runs a step besides its three is a job"
+root=$(fixture carrier-extra-step)
+router "$root/.github/workflows/ci.yaml" 30 2 extra
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the carrier with a fourth step" \
+  "$(contains "$out" 'routes 31 jobs besides its carriers, above the limit of 30: .*carrier01')"
+check "and not the carrier of three steps" "$(is "$(contains "$out" 'carrier02')" false)"
+
+# filters <file> <bytes>: a workflow whose paths-filter step reads .github/areas.yaml, padded to
+# <bytes>.
+filters() {
+  local root=$1 bytes=$2
+  printf 'name: CI\non: pull_request\njobs:\n  changes:\n    runs-on: ubuntu-24.04\n    steps:\n' >"$root/.github/workflows/ci.yaml"
+  printf '      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d\n        with:\n          filters: .github/areas.yaml\n' \
+    >>"$root/.github/workflows/ci.yaml"
+  printf 'docs:\n  - docs/**\n' >"$root/.github/areas.yaml"
+  pad_to "$root/.github/areas.yaml" "$bytes"
+}
+
+echo "case: 9,999 bytes of filter text pass"
+root=$(fixture filters-under)
+filters "$root" 9999
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: 10,000 bytes of filter text"
+root=$(fixture filters-at)
+filters "$root" 10000
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step, the file and the limit" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml: job changes's paths-filter step reads 10,000 bytes of filter text from .github/areas.yaml, at or above the limit of 10,000")"
 
 summary "check-workflow-files.sh"

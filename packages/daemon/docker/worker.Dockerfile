@@ -818,8 +818,8 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # python3-yaml: Debian's PyYAML for the image's python3, so `python3 -c "import yaml"` answers in a
 # pod. Six of this repository's own gates run python3 with `import yaml`:
 # .github/scripts/check-action-pins.sh, check-bun-version.sh, check-ci-images.sh,
-# check-image-trigger-paths.sh, check-release-credentials.sh, and check-ci-filters.sh through
-# ci_filter_coverage.py. A Legion role runs those gates on its own change before it returns the
+# check-image-trigger-paths.sh, check-release-credentials.sh, and check-ci-layout.sh through
+# ci_layout.py. A Legion role runs those gates on its own change before it returns the
 # work. apt is the one install route here. This stage's apt RUN is the only one the image allows
 # (the paragraph at the top of the stage says why), and trixie marks its python3 externally
 # managed (PEP 668), which refuses a pip install into it.

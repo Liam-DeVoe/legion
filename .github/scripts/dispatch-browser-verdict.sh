@@ -17,8 +17,8 @@
 #
 # They are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-# gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
-# check-ci-filters.sh's reduction of what a go command compiles.
+# records: a rule of the filter check this repository ran before CI chose its jobs by package
+# area, which the step still keeps.
 #
 # It reads $RUNNER_TEMP/report.json, the report the merge step wrote, for the failed rows of the
 # run. The third of the job's failures, a leg that owed a blob report and uploaded none, is

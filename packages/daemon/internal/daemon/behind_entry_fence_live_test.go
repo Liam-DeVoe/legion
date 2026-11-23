@@ -23,7 +23,7 @@
 // reviewing and left the tester's claim serving the entry it was behind on, so the same completion
 // sent again, and one naming a newer record of the phase, each meet the fence in a phase the
 // tester no longer works. The test runs in CI's daemon-live job
-// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// (.github/actions/daemon-live), on the job's PostgreSQL and the package's test NATS
 // server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
 // without.
 //

@@ -1,5 +1,8 @@
 name: CI
 
+# A job joins: an area in .github/ci-areas.yaml, the changes output of its name, a job or leg here
+# whose name: is an expression of its check-run name, its steps in .github/actions/<job>, and a
+# place in ci-ok's needs; CI_OK_SELECTED_BY maps it where its output is not its own id.
 # why: .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs
 
 # why: .github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others
@@ -49,6 +52,7 @@ env:
 jobs:
   # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
   changes:
+    name: ${{ 'changes' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
@@ -932,6 +936,7 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
+    name: ${{ 'cancel-started' }}
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10

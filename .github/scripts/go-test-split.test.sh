@@ -12,7 +12,7 @@
 # fails exits 1, and that -run=<pattern> lists under the pattern and keeps each name's leg.
 #
 # Run from anywhere: .github/scripts/go-test-split.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

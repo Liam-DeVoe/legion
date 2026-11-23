@@ -2,7 +2,7 @@
 # The rig the Oh My Pi plugin's live scripts share: packages/pi-envoy/scripts/smoke-delivery.sh,
 # smoke-btw.sh and smoke-registration-stall.sh, and packages/dispatch/e2e/acceptance/omp-roundtrip.sh.
 # Each is itself the test and a step of the agent-harness job's plugin-smokes part
-# (.github/workflows/ci-job-agent-harness.yaml). Sourced, never run.
+# (.github/actions/agent-harness). Sourced, never run.
 #
 # Each runs real Oh My Pi sessions with this checkout's pi-envoy against services of its own, and
 # takes nothing else from outside the runner:

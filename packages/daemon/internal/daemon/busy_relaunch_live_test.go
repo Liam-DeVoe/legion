@@ -2,7 +2,7 @@
 // turn is sent its task once and again only after that turn, the turn that serves a task settles
 // it, a newer task takes its place, and a relaunched process reads, in the first prompt it is
 // sent, what the relaunch ended of its subagents, its background jobs and its turn.
-// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// CI's agent-harness job runs it by name (.github/actions/agent-harness), over the
 // PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
 // later, which the daemon's boot refuses to start without.
 //

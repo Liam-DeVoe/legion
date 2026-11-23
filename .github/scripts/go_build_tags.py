@@ -19,7 +19,7 @@ over the rest, and the first one under which the file compiles is added as a set
 file compiles is never decided here: `go list -find`, run with the module's own toolchain for
 the target platform and the set, says so, so Go's own constraint grammar, file-name suffixes
 and toolchain names decide every answer. This script only reads which names a constraint uses
-(constraint_names) and which of those are tags (is_tag). check-ci-filters.sh's rule 20 asks go
+(constraint_names) and which of those are tags (is_tag). check-ci-layout.sh's rule 20 asks go
 list again, file by file from disk, whether the sets a vet step loops over miss any file, and
 fails naming it.
 """
@@ -109,7 +109,7 @@ def is_tag(name: str, known: tuple) -> bool:
 def go_skips_dir(parent: Path, name: str) -> bool:
     """Whether the go command passes over a directory of a `<root>/...` pattern: testdata, a name
     starting with `.` or `_`, node_modules, and a nested module. The one copy of that rule:
-    go_files below, ci_filter_coverage.py's closure engine and ci_job_reads.py's race-lane walk
+    go_files below and check-ci-layout.sh's rule 20 and step reader
     all read it, so their walks cannot drift. It lives here, in a module that imports nothing
     beyond the standard library, so the vet steps can run this script on a runner with no
     PyYAML."""
@@ -130,7 +130,7 @@ def go_files(directory: Path):
 
 def decode_stream(text: str) -> list:
     """The JSON objects of a stream such as `go list -json` prints, one after another. The one
-    copy: ci_filter_coverage.py's closure engine and rule 20 read it from here too."""
+    copy: check-ci-layout.sh's rule 20 reads it from here too."""
     decoder, index, out = json.JSONDecoder(), 0, []
     while True:
         while index < len(text) and text[index].isspace():

@@ -10,7 +10,7 @@
 // child's own architect, a sub-architect, whose role part is the sub-architect's
 // (packages/daemon/internal/prompts/roles/architect.md, `# Legion Sub-Architect`) and whose
 // addressing line names the architect above it (addressingFragment, in specs.go).
-// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// CI's agent-harness job runs it by name (.github/actions/agent-harness), over the
 // PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
 // later, which the daemon's boot refuses to start without.
 //

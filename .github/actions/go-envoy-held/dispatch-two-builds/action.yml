@@ -39,6 +39,7 @@ inputs:
       commit. Each step below reads it as FIRST_ROLLOUT_COMMIT.
     required: false
     default: edb69e0d7588ec037847182e74a04a343a0664c9
+# why: .github/ci-notes/ci.md#the-two-build-tests-packagesenvoycmddispatchtwobuild__testgo-each-row-starts
 runs:
   using: composite
   steps:

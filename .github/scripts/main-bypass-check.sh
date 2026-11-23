@@ -100,7 +100,7 @@
 #
 # Run from anywhere:
 #   HEAD_SHA=... HEAD_MESSAGE=... RUNS=... CI_OK=... .github/scripts/main-bypass-check.sh
-# Its tests are in main-bypass-check.test.sh, which ci.yaml's test job runs.
+# Its tests are in main-bypass-check.test.sh, which ci.yaml's scripts job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

@@ -94,13 +94,13 @@ runs:
     # in a leg of its own, envoy-go-claim-model; the API's eight source guards, and
     # one_expression_guard_test.go beside them, carry that tag as well and are deliberately not
     # here: they read the module's source, the text-check job runs their seventeen tests by name,
-    # and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those tests out of
+    # and envoy-go's plain step leaves exactly those tests and the claim model's two out of
     # this step. It comes before the unit step: run beside the other package binaries, its
     # Postgres-backed tests and the room-memory measurements queue their per-test database cleanup
     # on the service's one checkpointer, and the API's live-feed and delivery-hub tests wait for
     # the event log's safe horizon, which any open transaction on the job's Postgres delays. The
-    # five -run lists are derived in .github/scripts/ci_job_reads.py from the race lane's own
-    # packages and those files' //go:build !race and raceEnabled. 10 minutes each is ample: the
+    # five -run lists name the race lane's own packages' tests under //go:build !race and those
+    # that read raceEnabled. 10 minutes each is ample: the
     # documents package took 92 to 127 s on a two-vCPU pod, and the API's xid window tests 134 s.
     - name: Test what the race build cannot run at all or at full size
       if: inputs.rest == 'true'
@@ -140,11 +140,11 @@ runs:
     # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
     # cmd/architecture-check and cmd/spec-check, which envoy-go-checks tests on every push
     # (NOTE_AND_SPEC_PACKAGES), and listenerwire and internal/wirecheck, which envoy-go-checks tests
-    # in their place (LISTENERWIRE_PACKAGES). The pattern is built in .github/scripts/ci_job_reads.py
-    # from the same list those jobs' own steps are built from. The broker's packages,
+    # in their place (LISTENERWIRE_PACKAGES). The pattern names the packages those jobs' own steps
+    # name. The broker's packages,
     # internal/cipher and everything under it, and its command, cmd/cipherd, are left out too: the
     # database-skips step after this action runs them and fails on a failed test as on a skipped
-    # one (DATABASE_SKIPS_PKGS in ci_job_reads.py). The two tests of the web app's display-tree
+    # one. The two tests of the web app's display-tree
     # fixture are skipped: without `--check` TestWebDisplayFixture writes the committed fixture
     # rather than checking it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same
     # file; envoy-go-checks runs both, the first with the check. So is internal/dispatch/refs'
@@ -200,7 +200,7 @@ runs:
       if: inputs.rest == 'true'
       shell: bash
       run: timeout 15m packages/envoy/scripts/database-skips.test.sh
-    # The pmdoc differential (ci_job_reads.py's DIFFERENTIAL_SCRIPT says what it holds): the base
+    # The pmdoc differential (packages/envoy/internal/dispatch/pmdoc/gen/differential.sh says what it holds): the base
     # commit of the pull request or the merge group, which the shallow checkout lacks, fetched for
     # the script's `git archive`, and the listed guides handed to it as one JSONL file of
     # {"id", "md"} lines, beside the in-repo corpus it always reads. A dispatched run has no base,

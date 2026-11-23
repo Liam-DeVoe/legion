@@ -70,7 +70,7 @@
 # code is usually a step that broke the job, but a step allowed to fail leaves the same one on a
 # job that succeeds. So a job whose `continue-on-error` steps fail on purpose is not read as
 # killed once one of those steps has failed, and a runner shutdown after that stays a failure:
-# the `tool-fallback` job (.github/workflows/ci-job-tool-fallback.yaml) is such a job. The
+# ci.yaml's `tool-fallback` job (.github/actions/tool-fallback) is such a job. The
 # comment above
 # _runner_shutdown_other_exit_code holds the measurement and what closing the limit would take.
 #
@@ -122,7 +122,7 @@ _runner_shutdown_check_runs=
 #
 # Usually, and not always, which is this reading's limit: a step allowed to fail leaves that same
 # annotation on a job that succeeds. The `tool-fallback` job
-# (.github/workflows/ci-job-tool-fallback.yaml) does that on every run of it — it drives tool
+# (ci.yaml's, through .github/actions/tool-fallback) does that on every run of it — it drives tool
 # installs against a corrupted payload or a held-down host, and the installs it means to fail
 # carry `continue-on-error: true`, their outcomes read by report steps after them — and on run
 # 43168566331 its check run 131016374047 ended `success` carrying

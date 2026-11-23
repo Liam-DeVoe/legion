@@ -173,7 +173,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
+      # As the dispatch-ui leg's step of this name (.github/actions/ts/dispatch-ui), for its reason:
       # e2e/__tests__/outside-edge-refusals-input.test.ts runs the edge-refusal check under zsh,
       # which must refuse to run and name bash, and skips that row where zsh is missing. The runner
       # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
@@ -181,7 +181,7 @@ jobs:
         if: matrix.lane == 'harness'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that need a PostgreSQL run here, as they run in a pod and in the
-      # postgres-rows job of .github/workflows/dispatch-browser.yaml, which ci-job-dispatch-ui.yaml
+      # postgres-rows job of .github/workflows/dispatch-browser.yaml, which the dispatch-ui leg
       # leaves them to: on GitHub Actions their gates fail the file rather than skip it
       # (@legion/test-fixtures/host-tools). e2e/__tests__/psql-session.test.ts and
       # harness-stacks.test.ts's "psql reads its own stack's database" read LEGION_TEST_PG_DSN.

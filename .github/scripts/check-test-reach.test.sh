@@ -23,10 +23,10 @@
 # checkout, so the search walks it.
 #
 # No case runs the search over this repository's own tree: ci.yaml's lint job does
-# (.github/workflows/ci-job-lint.yaml, "Check every test reaches a job ci-ok needs").
+# (.github/actions/lint/lint, "Check every test reaches a job ci-ok needs").
 #
 # Run from anywhere: .github/scripts/check-test-reach.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and
@@ -55,7 +55,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/packages/envoy/unit" \
     "$root/packages/envoy/live" "$root/packages/web" "$root/scripts"
-  for linked in check-test-reach.sh go_test_steps.py ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
+  for linked in check-test-reach.sh go_test_steps.py ci_layout.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'

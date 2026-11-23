@@ -645,7 +645,7 @@ interface OldRuleHit {
  *  less the paths no reader is sent to and this file, whose allowlist quotes each sentence it
  *  allows a second time. Only a path that is a regular file on disk is read: in a jj workspace
  *  git's index follows the parent commit, so a file the working copy deleted is still listed
- *  (`.github/scripts/ci_filter_coverage.py`'s `repo_files` keeps the same two listings). */
+ *  (`.github/scripts/ci_layout.py`'s `repo_files` keeps the same two listings). */
 function oldRuleFiles(): string[] {
   const listed = new Set<string>();
   for (const extra of [[], ["--others", "--exclude-standard"]]) {

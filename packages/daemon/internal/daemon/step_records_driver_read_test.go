@@ -1,7 +1,7 @@
 // The check of the step records live driver's read of `dispatch steps` (parseSteps and holdsTen,
 // step_records_live_test.go). It is a file of its own so that it runs in the daemon-go job with
 // the package's other tests, while the daemon-live job takes step_records_live_test.go whole and
-// runs its one test by name (DAEMON_LIVE_FILES in .github/scripts/ci_job_reads.py).
+// runs its one test by name (.github/actions/daemon-live).
 package daemon
 
 import (

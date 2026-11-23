@@ -429,6 +429,7 @@ ci_tools_digest() {
 # ci_tools_rows [<second source>]: every row's name, in the manifest's own order, and only the
 # rows whose `second_source` is that word where the argument is given. One reader of the
 # manifest's row list, so a job's step names neither the file nor its shape.
+# shellcheck disable=SC2120 # a library function: the scripts that source this file pass its argument
 ci_tools_rows() {
   if [ "$#" -gt 1 ]; then
     ci_tools__error "ci_tools_rows takes an optional second source, and this call gave $#"
@@ -822,6 +823,7 @@ ci_tools__ghcr() {
 # of the package is this address and what follows it: ci_tools_blob_url below is this and the
 # row's digest, and .github/scripts/mirror-ci-tools.sh's uploads, manifests and read-backs are
 # this and theirs, so the filler of a copy and every reader of one address one package.
+# shellcheck disable=SC2120 # a library function: it refuses any argument a sourcing script passes
 ci_tools_registry_url() {
   if [ "$#" -ne 0 ]; then
     ci_tools__error "ci_tools_registry_url takes no argument, and this call gave $#"
@@ -852,7 +854,7 @@ ci_tools_blob_url() {
 # ci_tools_registry_head <token> <headers> <url> [curl argument…]: the HTTP status of one HEAD of
 # the package, with <token> as its bearer and the answer's headers in the file <headers>. It is
 # the HEAD .github/scripts/mirror-ci-tools.sh reads a blob and a tag with, and the one the
-# tool-fallback job (.github/workflows/ci-job-tool-fallback.yaml) reads each copy with. The curl
+# tool-fallback job (.github/actions/tool-fallback/start) reads each copy with. The curl
 # arguments, an `Accept` header for a manifest, carry no credential.
 # The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
 # process's command line, and it goes with the first request alone, which follows no redirect.

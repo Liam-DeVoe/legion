@@ -16,9 +16,9 @@
 // edit under packages/envoy/cmd or packages/envoy/infra reaches what this check reads while
 // selecting no job that ran it, so the red landed on whatever pull request next touched that
 // job's own closure, or on none. Here it is the text-check job's to run by name
-// (ci_job_reads.py's TEXT_CHECK_TESTS, which also keeps it out of envoy-go's plain step), once
+// (envoy-go's plain step leaves it out by name), once
 // per run of the router, under a filter that names the whole module - the read
-// ci_job_reads.py's MODULE_SOURCES declares for this file.
+// this test's walk makes.
 //
 // What it holds is one of the two tests the Go half of dispatch://INFRA-1576's
 // c-one-expression-decides is written as: TestOneExpressionDecidesWhoWaitsInOneSpelling here,

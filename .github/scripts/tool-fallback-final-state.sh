@@ -4,15 +4,15 @@
 # bun nor the bunx a refusal took away is back, so not one of those payloads was installed.
 #
 # Who runs it: the step "Print what every tool answers now" of
-# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
-# .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals says
+# .github/actions/tool-fallback/x64, which ci.yaml's tool-fallback job runs;
+# .github/ci-notes/tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals says
 # what each install left behind and why. It takes no argument. That job checks this repository
 # out in its
 # first step, above every step below it, so this script, the helper it sources and the rig it runs
 # are all in the checkout when the step runs.
 #
 # Run from the repository root: .github/scripts/tool-fallback-final-state.sh
-# CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Print what every tool
+# CI runs it in ci.yaml's tool-fallback job, at the step "Print what every tool
 # answers now".
 set -euo pipefail
 

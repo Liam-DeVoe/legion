@@ -16,7 +16,7 @@
 # and mutates one file.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s inherit_errexit
 

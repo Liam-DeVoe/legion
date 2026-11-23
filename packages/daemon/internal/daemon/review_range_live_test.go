@@ -3,7 +3,7 @@
 // reviewer's own deciding review of the first round read, a review whose footer names the entry of
 // that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
 // namingTheReviewRound names), and the task of the first round names `none` in that sentence.
-// The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
+// The test runs in CI's daemon-live job (.github/actions/daemon-live), on the job's
 // PostgreSQL and the package's test NATS server, with the job's bun and its frozen install for the
 // `dispatch` CLI, and with the job's git and jj 0.38 or later, which the daemon's boot refuses to
 // start without.

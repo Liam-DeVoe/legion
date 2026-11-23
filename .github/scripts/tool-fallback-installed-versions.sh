@@ -5,7 +5,7 @@
 # since the probe, which is the half a version and a digest cannot say.
 #
 # Who runs it: the step "Check every tool is the version its row pins" of
-# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job; the comments below say what each of
+# .github/actions/tool-fallback/x64, which ci.yaml's tool-fallback job runs; the comments below say what each of
 # those readings answers for. Its one argument is the docker provider plugin's tarball, which the
 # install-docker-plugin step hands back as `steps.docker-plugin.outputs.tarball`: a step's output
 # is a workflow expression, which no script can read, so the step passes it. That job checks this
@@ -17,7 +17,7 @@
 # GITHUB_ENV; the script runs it for uv's version. It reads it only inside a command
 # substitution, so an unset one ends that subshell alone (`set -u`): uv's reading is empty, and
 # the script ends naming uv among the tools that answered a version their rows do not pin.
-# CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check every tool is
+# CI runs it in ci.yaml's tool-fallback job, at the step "Check every tool is
 # the version its row pins".
 set -euo pipefail
 

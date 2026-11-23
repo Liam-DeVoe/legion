@@ -5,7 +5,7 @@
 // binary links, so a module that enters either is weighed before it ships. The decoder
 // (secrets.ParseValue) is the code each minter runs and the client calls, and the client links
 // every module the broker's secrets package needs. The broker is built from here, beside the
-// client, so that one test run holds both (ci_job_reads.py names this cross-build).
+// client, so that one test run holds both.
 package main
 
 import (

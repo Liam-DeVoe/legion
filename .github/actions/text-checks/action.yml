@@ -9,8 +9,8 @@ description: >-
   of them starts a server, a container or a database, so none of them belongs in a
   Postgres-backed product suite. Each module keeps its own package of them, internal/textcheck,
   and this job runs those three packages, those checks' seventeen tests and those two pins; the
-  product lanes leave exactly those out of their own runs (.github/scripts/ci_job_reads.py's
-  TEXT_CHECK_PACKAGE, TEXT_CHECK_TESTS and SUPERVISE_TABLE_TESTS build both sides), so each of
+  product lanes leave exactly those out of their own runs by name (check-ci-layout.sh's rule 22
+  holds each -skip to the -run here), so each of
   these tests runs once per run of the router.
 
   packages/envoy/infra is a module of its own, with a go.work of its own binding it and
@@ -68,9 +68,8 @@ runs:
     # The seventeen tests of the API's nine static source checks read the module's source and
     # open no database, so they run here rather than in the job that carries Postgres for that
     # package. They sit in the package they guard, beside its Postgres-backed tests, so this step
-    # selects them by name: the list is generated in .github/scripts/ci_job_reads.py from
-    # TEXT_CHECK_TESTS, the same declaration that leaves exactly these seventeen out of envoy-go's
-    # plain step. The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps
+    # selects them by name, the same seventeen that envoy-go's plain step leaves out by name. The
+    # package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps
     # this step from even building their fixtures' work.
     - name: Test the Dispatch API's source guards (no database)
       shell: bash
@@ -86,8 +85,8 @@ runs:
     # kind - which sealed() reads by parsing every non-test .go file of the package
     # (internal/supervise/table_test.go:27-58). They open no database and start no process; they
     # sit in a package of machine-driving tests, so this step selects them by name, and the
-    # go-daemon plain step skips exactly these two by name. The list is generated in
-    # .github/scripts/ci_job_reads.py from SUPERVISE_TABLE_TESTS, which builds both steps' texts.
+    # go-daemon plain step skips exactly these two by name, which check-ci-layout.sh's rule 22
+    # holds.
     - name: Test the supervise table's two pure pins (no database)
       shell: bash
       working-directory: packages/daemon

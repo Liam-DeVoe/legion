@@ -1,13 +1,12 @@
 # Notes for the tool fallback proof's steps
 
-The derivations and the history of `.github/workflows/ci-job-tool-fallback.yaml`, which points
-into this file. Each `# why:` line of that workflow names the section below that holds the
-derivation or the record its step, its job or its key rests on, and the sections stand in the
-order their comment blocks stood in the workflow file. A value's own arithmetic stays beside the
-value, and a comment inside a `run:` body stays beside its command, in the script that body is
-now in.
-In the text moved here, "this file" refers to the workflow,
-`.github/workflows/ci-job-tool-fallback.yaml`.
+The derivations and the history of ci.yaml's tool-fallback job and of its actions under
+`.github/actions/tool-fallback/`, which point into this file. Each `# why:` line of those files
+names the section below that holds the derivation or the record its step, its job or its key
+rests on, and the sections stand in the order their comment blocks stood when the job was a
+workflow of its own. A value's own arithmetic stays beside the value, and a comment inside a
+`run:` body stays beside its command, in the script that body is now in.
+In the text moved here, "this file" refers to that workflow.
 
 ## The steps of ci.yaml's tool-fallback job, in a file of their own
 
@@ -33,7 +32,7 @@ ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 ## The job's budget, and the bound every install step carries
 
 The budget, added up from the slowest run this job can have, the way the
-tool-fallback-arm job of .github/workflows/ci-job-tool-fallback-arm.yaml adds up its own:
+tool-fallback-arm leg adds up its own:
 the job's set-up, the two checkouts and the runner's download of the actions (1), the two
 steps that read the package and the manifest, and `stage`, which fetches about 303 MB over
 the real sources while the network is whole and so keeps the pinned ladder (2), the
@@ -104,7 +103,7 @@ twelve seconds late, so a bound is a ceiling and not a stopwatch.
 
 The merge base, for the negative control the seven `base-*` steps run: a second tree of this same repository,
 whose seven installs that control drives with nowhere left to go.
-.github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+.github/ci-notes/tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 says what keeps this checkout here.
 
 ## Why the package's blob is read for every mirrored row
@@ -275,8 +274,8 @@ on one of them is otherwise silent: each carries `continue-on-error` and the con
 accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
 behind when it ends a step at its bound. The clock is the one signal that tells the two
 apart, since GitHub gives a later step nothing that says an earlier one was cut.
-$GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that writes $GITHUB_ENV or
-$GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for the whole job.
+$GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that wrote $GITHUB_ENV or $GITHUB_PATH
+fell out of the filter check this repository ran before CI chose its jobs by package area.
 
 ## Why elan is taken away before the control installs
 
@@ -298,7 +297,7 @@ The docker provider plugin has no action at the merge base at all, so its contro
 head's own action with its second source on a dead port: its primary meets this fault
 and get.pulumi.com is nowhere to go.
 This control does not expire the day this change lands on main, which is the fault
-.github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+.github/ci-notes/tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 names in the controls that lean on the merge base: it reads nothing of the
 base tree, and the property it states — an install whose primary is faulted and whose
 second source cannot be reached fails — is a property of the head itself.
@@ -341,7 +340,7 @@ the proof of jj's second source itself, rather than a warm directory answering f
 
 elan's release asset is behind the fault, so this install must read the copy its row
 names. The removal before it is the one every elan step carries, for the reason
-.github/ci-notes/ci-job-tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
+.github/ci-notes/tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
 gives.
 
 ## Why the faulted uv install reads the wheel PyPI serves

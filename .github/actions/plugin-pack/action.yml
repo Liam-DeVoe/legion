@@ -1,7 +1,7 @@
 name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
 description: >-
   The steps of ci.yaml's plugin-pack job: the three tests of internal/daemon that
-  .github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS names (a fourth test of that package loading
+  this job's -run names (a fourth test of that package loading
   a plugin on the real Oh My Pi stays in go-daemon, TestThePromptReferenceProbeOnTheRealOhMyPi).
   TestTheRealPluginsOnTheRealOhMyPi packs packages/pi-envoy and packages/pi-legion with
   `bun pm pack` - each pack running that package's prepack, which reads bun.lock and builds the
@@ -62,8 +62,8 @@ runs:
 
     - uses: ./.github/actions/install-gotestsum
 
-    # The three tests, by name, under gotestsum (.github/scripts/go-test.sh). ci_job_reads.py
-    # builds this -run and the go-daemon race step's -skip from PLUGIN_PACK_TESTS. The -timeout is
+    # The three tests, by name, under gotestsum (.github/scripts/go-test.sh). This -run and the
+    # go-daemon race step's -skip name the same tests (check-ci-layout.sh's rule 22). The -timeout is
     # the daemon's plain step's 15 minutes, so a hung pack prints the goroutine dump that names it
     # before the runner cancels the job.
     - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi

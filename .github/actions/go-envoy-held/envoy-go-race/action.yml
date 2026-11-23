@@ -15,6 +15,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it
 runs:
   using: composite
   steps:

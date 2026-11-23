@@ -46,7 +46,7 @@
 #
 # Run from anywhere: .github/scripts/go-tagged-tests.sh <tag> <dir>, the directory as your shell
 # reads it, relative to your working directory.
-# ci.yaml's tag steps run it, and its tests run in ci.yaml's test job.
+# ci.yaml's tag steps run it, and its tests run in ci.yaml's scripts job.
 set -euo pipefail
 shopt -s nullglob
 

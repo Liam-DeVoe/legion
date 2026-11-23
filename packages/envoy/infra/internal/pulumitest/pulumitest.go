@@ -37,7 +37,7 @@ const localRun = "From the repository root, build the listener image, then the h
 	"go test -count=1 -tags pulumilive -v -timeout 15m ./host/\n" +
 	"-count=1 because go's test cache cannot see the image behind a fixed tag, and would " +
 	"replay a cached PASS against an image that had since changed. In CI each is a step of the " +
-	"envoy-smoke job; see .github/workflows/ci-job-envoy-smoke.yaml."
+	"envoy-smoke job; see .github/actions/go-envoy-held/envoy-smoke."
 
 // DockerPluginVersion is the docker provider plugin the live programs pin, and so the version of
 // the tarball DockerPluginEnv names. The `pulumi-docker` row of .github/ci-tools.yaml carries that

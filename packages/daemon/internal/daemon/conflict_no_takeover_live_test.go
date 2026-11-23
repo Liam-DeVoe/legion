@@ -14,7 +14,7 @@
 // taken. The control is a second issue on the same base whose required check passed on its
 // conflicting head: its second read confirms the conflict too, and gets it nothing.
 //
-// The test runs by name in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on
+// The test runs by name in CI's daemon-live job (.github/actions/daemon-live), on
 // the job's PostgreSQL and the package's test NATS server, with the job's git and jj 0.38 or later,
 // which the daemon's boot refuses to start without. Each step prints `== <step>`, what it drove
 // and what it read back, and `ok <step>`, so the job's log is the proof's own record.

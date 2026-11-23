@@ -102,7 +102,7 @@
 #                 the credential in its envoy.json, and the Oh My Pi and Claude Code ones pass.
 #
 # Two kinds of session, each a step of the nats-callout-sessions part of
-# .github/workflows/ci-job-agent-harness.yaml on a hosted runner, the default mode's first:
+# .github/actions/agent-harness on a hosted runner, the default mode's first:
 #   default       each plugin's own code under a stand-in host, as described above, with no model.
 #   --real-hosts  the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
 #                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), the

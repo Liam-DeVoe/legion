@@ -8,7 +8,7 @@
 # start revoking the first, the controller liveness probe against the listener, and the command's
 # exit code. Each check prints `== <name>`, what it observed, and `CHECK <name>: PASS`; the first
 # that fails prints `CHECK <name>: FAIL: <why>` and ends the run with exit 1. The agent-harness
-# job's tmux-scripts part runs it as a step (.github/workflows/ci-job-agent-harness.yaml).
+# job's tmux-scripts part runs it as a step (.github/actions/agent-harness).
 #
 # Run it as `bash scripts/e2e/controller-start-tmux.sh` from a checkout, with two inputs, both
 # required and both set by that job: LEGION_TEST_OMP, the Oh My Pi the daemon's boot gate and the

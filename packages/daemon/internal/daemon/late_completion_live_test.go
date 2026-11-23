@@ -6,7 +6,7 @@
 // implement record; a finished tester that completes again, naming its own test record, is
 // refused the same in one request; and a reviewer whose own approval moved the issue to
 // accepting before it completed has its completion taken, naming its own review record.
-// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// CI's agent-harness job runs it by name (.github/actions/agent-harness), over the
 // PostgreSQL that job gives it and the package's test NATS server.
 //
 // The unit tests already hold each half: pi-shared's handoff-record.test.ts the record the tool's

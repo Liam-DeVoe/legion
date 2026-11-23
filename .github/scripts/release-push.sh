@@ -260,7 +260,7 @@
 #            fix merges. The fragments and their refusals are fold-notes', and
 #            each <package-dir> is one of fold-orphans'. changie is what
 #            renders them, so the command looks for it before anything else
-#            and refuses naming it where it is not on PATH. ci.yaml's test job
+#            and refuses naming it where it is not on PATH. ci.yaml's scripts job
 #            runs it over .github/changelog-packages, beside the changie its
 #            release-push.test.sh cases need.
 # leak guard: every write this script makes to a public GitHub repository

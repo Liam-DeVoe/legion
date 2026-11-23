@@ -14,12 +14,12 @@
 # the ci-images job and is the only judge of a copy's state.
 #
 # No case runs the gate over this repository's own tree: ci.yaml's lint job does
-# (.github/workflows/ci-job-lint.yaml, "Check every tool asset of .github/ci-tools.yaml agrees
+# (.github/actions/lint/lint, "Check every tool asset of .github/ci-tools.yaml agrees
 # with its pin"), on every change, so a case here would only reach that same verdict a second
 # time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-ci-tools.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and

@@ -28,7 +28,7 @@
 # records and returns, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # The fixtures are built in command substitutions, and bash does not carry errexit into one on
 # its own: without this, a page that failed to build is read anyway and the case reports on
@@ -127,7 +127,7 @@ real_timeout=$(type -P timeout) ||
     exit 1; }
 
 # The control's tracer, refused by name where there is none, in the shape of the guards above.
-# GitHub's ubuntu-24.04-arm image, on which ci.yaml's test job runs this file, carries strace:
+# GitHub's ubuntu-24.04-arm image, on which ci.yaml's scripts job runs this file, carries strace:
 # that job's log read on 2026-11-21 (image version 20261116.188.1) holds `strace is already the
 # newest version (6.8-0ubuntu2)`. So no step installs it, and an image without it fails here.
 real_strace=$(type -P strace) ||

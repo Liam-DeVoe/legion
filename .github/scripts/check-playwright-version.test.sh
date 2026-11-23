@@ -9,7 +9,7 @@
 # root, and imports the module from the .github/scripts under it.
 #
 # Run from anywhere: .github/scripts/check-playwright-version.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and

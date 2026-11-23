@@ -186,8 +186,7 @@ copy_envoy() {
 
 # compare runs the comparison fuzz test over the seed corpus in <copy>, against <model>, and
 # answers 0 when the two sides disagreed, 1 when they agreed, 2 when the test did not run. The
-# go-test.sh command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
-# holds the text a script's go command runs to the Run ci_job_reads.py lists for it.
+# go-test.sh command stands on a line of its own, so a reader of the script reads what it runs.
 compare() {
 	local copy="$1" model="$2" log="$3" name
 	name="$(basename "$copy")"

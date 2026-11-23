@@ -50,11 +50,10 @@ step's output, and a run whose runner stopped answering stores no log at all. It
 headroom of every run that does store one, and the reading for a command that hangs while the
 runner is alive.
 
-The state crosses the two steps in a file rather than in $GITHUB_ENV because a step of this job
-that writes $GITHUB_ENV or $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for
-the whole job, which unreduces every go command of envoy-smoke and breaks the envoy_smoke gate
-in .github/scripts/ci_job_reads.py. The job's docker-plugin step crosses steps through
-$GITHUB_OUTPUT and a step env: for the same reason.
+The state crosses the two steps in a file rather than in $GITHUB_ENV, as it has since the filter
+check this repository ran before CI chose its jobs by package area refused a job whose step wrote
+$GITHUB_ENV or $GITHUB_PATH. The job's docker-plugin step crosses steps through $GITHUB_OUTPUT and
+a step env: for the same reason.
 
 The report prints and never fails the job: it exits 0 for `margin short` as it does for
 `margin ok`, and a missing or unreadable state file prints a line saying so and exits 0 too.

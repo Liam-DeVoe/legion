@@ -163,8 +163,8 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 // which reads the handle's cached info. nats.go's Info writes the cached info of the handle it is
 // called on under no lock, so the race detector fails this test on a read of the stream's info on
 // the shared handle: createConsumer's beside Lag's GetMsg, and DispatchTarget's beside the other
-// goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
-// DAEMON_RACE_PACKAGES).
+// goroutine's and Lag's. CI's go-daemon job runs this package under -race (its race step,
+// .github/actions/go-daemon).
 func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)

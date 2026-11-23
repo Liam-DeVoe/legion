@@ -98,7 +98,7 @@
 #
 # Run from anywhere: .github/scripts/mirror-ci-tools.sh
 # CI runs it in ci.yaml's ci-images job, after that job's image copy, under the login that job
-# already holds for the package. Its tests run in ci.yaml's test job.
+# already holds for the package. Its tests run in ci.yaml's scripts job.
 set -euo pipefail
 
 # The directory of this script, resolved before the cd below, so the helper beside it is found

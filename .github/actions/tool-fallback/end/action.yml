@@ -16,7 +16,7 @@ runs:
     # the ci-ok-report step can read the run's jobs and post a check run with gh, which would
     # otherwise go through a proxy that is about to go. The rig writes the emptied variables, as
     # it wrote the proxy ones.
-    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-fault-stops-before-the-last-steps
+    # why: .github/ci-notes/tool-fallback.md#why-the-fault-stops-before-the-last-steps
     - name: Stop routing this job through the fault
       if: always()
       shell: bash

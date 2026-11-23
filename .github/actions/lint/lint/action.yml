@@ -2,8 +2,8 @@ name: lint
 description: >-
   The lint leg of ci.yaml's lint job, which carries the old check-run name `lint / lint`: the
   checks that read the whole tree on every change, the search that every test reaches a job ci-ok
-  needs (.github/scripts/check-test-reach.sh) among them, and the checks of the workflow files the
-  ci-filters job ran. The job tests no output of the changes job, so a change anywhere starts it.
+  needs (.github/scripts/check-test-reach.sh) among them, and the checks of the CI layout and its
+  workflow files. The job tests no output of the changes job, so a change anywhere starts it.
   The leg runs on ubuntu-24.04-arm, after the job's checkout.
 runs:
   using: composite
@@ -154,25 +154,29 @@ runs:
       shell: bash
       run: bun test scripts/e2e/lib/nats-image.test.ts
 
-    # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
-    # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
-    # loads with `bun build --metafile`, and holds every such file to that gate's filter.
-    - name: Check every Bun gate's filter selects the files its typecheck compiles
-      shell: bash
-      run: .github/scripts/check-ts-filters.sh
-
-    # The three checks of the workflow files the ci-filters job ran, after every other check of
-    # this leg and whatever those concluded, so one failure does not hide the next.
-    # why: .github/ci-notes/ci.md#what-the-ci-filters-job-holds-every-filter-and-every-workflow-file-to
-    - name: Check every CI filter matches every file its job reads
+    # The checks of the CI layout and its workflow files, after every other check of this leg and
+    # whatever those concluded, so one failure does not hide the next. The layout check's rule 20
+    # lists the three Go modules with the Go setup-go installed above.
+    # why: .github/ci-notes/ci.md#what-the-lint-leg-holds-the-ci-layout-and-every-workflow-file-to
+    - name: Check the CI layout holds every rule of check-ci-layout.sh
       if: ${{ !cancelled() }}
       shell: bash
-      run: .github/scripts/check-ci-filters.sh
+      run: .github/scripts/check-ci-layout.sh
 
     - name: Check every workflow file GitHub can read and its size
       if: ${{ !cancelled() }}
       shell: bash
       run: .github/scripts/check-workflow-files.sh
+
+    # The shell R9 moved out of the workflow files, into the run: bodies of the composite actions
+    # and the scripts of .github/scripts, which actionlint below does not read: shellcheck at
+    # warning severity, the shellcheck of the same actionlint image.
+    - name: Check the shell of every composite action and script at warning severity
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        SHELLCHECK: docker run --rm -i --entrypoint shellcheck ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      run: .github/scripts/check-action-shell.sh
 
     # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
     # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.

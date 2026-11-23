@@ -4,6 +4,7 @@ description: >-
   local end-to-end acceptance of e2e-local.sh with its refusal test, and the bucket refill on a real
   listener and NATS. The leg runs on ubuntu-24.04-arm. A failed run leaves its evidence as the
   artifact go-envoy-envoy-e2e-local-evidence.
+# why: .github/ci-notes/ci.md#what-the-local-end-to-end-job-runs
 runs:
   using: composite
   steps:

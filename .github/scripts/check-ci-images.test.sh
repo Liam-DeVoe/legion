@@ -25,7 +25,7 @@
 # the stand-in for the network never, and the package mode passes a tree the tree mode refuses.
 #
 # Run from anywhere: .github/scripts/check-ci-images.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and
@@ -981,12 +981,12 @@ check "both modes in one call fails" "$(is "$status" 1)"
 check "naming them" "$(contains "$out" 'this check takes one mode')"
 
 # The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
-# repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
+# repository on every change (.github/actions/lint/lint, "Check every image a CI job
 # fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
 # check a second time in the same CI run. The package mode runs in a CI run too: ci.yaml's
-# ci-images job runs `check-ci-images.sh package` (.github/workflows/ci-job-ci-images.yaml,
+# ci-images job runs `check-ci-images.sh package` (.github/actions/ci-images,
 # "Check the package holds every row of .github/ci-images.yaml") on every event ci.yaml runs
-# on - a pull request, a merge group and a dispatch - whenever the ci_images filter selects
+# on - a pull request, a merge group and a dispatch - whenever the ci-images area selects
 # it, and there it reads ghcr.io itself. This case runs that mode over this tree's rows against
 # a stand-in for the registry instead (CI_IMAGES_MANIFEST_HEAD and LABELS below), so the mode's
 # own reading of the rows is held in every run of this suite, which reaches no registry.

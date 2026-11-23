@@ -8,7 +8,7 @@
  *    developer's path on a machine with Docker and no Postgres binaries, and the path of every
  *    CI job that runs the suite on the runner rather than in the browser image - the `visual`,
  *    `multiprocess` and `embedder` jobs of `.github/workflows/dispatch-browser.yaml` and the
- *    browser half of `.github/workflows/ci-job-dispatch-two-builds.yaml` - since the binaries of
+ *    browser half of `.github/actions/go-envoy-held/dispatch-two-builds` - since the binaries of
  *    an image a job does not run in are no route for it.
  *  - `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is the `shard`
  *    and `alone` jobs' path and an issue pod's: those two jobs of that workflow run in a
@@ -77,7 +77,7 @@ const superuserReserved = 3;
  *  sets it from a step that runs `connectionsArgs` before its browser step: the `shard` and
  *  `alone` jobs of `.github/workflows/dispatch-browser.yaml` run in a container with no Go, so
  *  their `binaries` job runs it, and the `visual`, `multiprocess` and `embedder` jobs of that
- *  file and the `dispatch-two-builds` job of `.github/workflows/ci-job-dispatch-two-builds.yaml`
+ *  file and the `dispatch-two-builds` job of `.github/actions/go-envoy-held/dispatch-two-builds`
  *  each run it in a step of their own, outside their browser steps' budgets. Unset, which is a
  *  developer's or an issue pod's run, where Go is installed, the harness runs `go` with
  *  `connectionsArgs` itself. */

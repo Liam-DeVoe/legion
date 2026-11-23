@@ -4,6 +4,7 @@ description: >-
   envoy-infra module's formatting, its two vets (its live-test tags included, and as macOS compiles
   it), its unit tests under the race detector, and its live tests against nats-server. The leg
   runs on ubuntu-24.04-arm.
+# why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
 runs:
   using: composite
   steps:

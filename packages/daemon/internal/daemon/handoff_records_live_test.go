@@ -1,7 +1,7 @@
 // The live proof's driver for the handoff records of sjawhar/legion#2354: a phase's handoff is a
 // record on the Dispatch issue, written with `dispatch handoff-write` under the worker's own
 // session, and a completion names it. The test runs in CI's daemon-live job
-// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// (.github/actions/daemon-live), on the job's PostgreSQL and the package's test NATS
 // server, with the job's bun and its frozen install for the `dispatch` CLI, and with the job's git
 // and jj 0.38 or later, which the daemon's boot refuses to start without.
 //

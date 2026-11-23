@@ -22,7 +22,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # Every case's stdout (echoed "case:" lines and `check`'s PASS/FAIL lines) is the harness's own
-# output — the log of ci.yaml's test job — so it is also teed to self_log, which finish_self_log,
+# output — the log of ci.yaml's scripts job — so it is also teed to self_log, which finish_self_log,
 # the last case of each harness, scans with the guard itself: a future case that prints an
 # assembled form or a placeholder term turns red there, in the suite, before it ever reaches a
 # real job log. `exec 3>&1 4>&2` keeps the real terminal fds reachable so the redirection can be

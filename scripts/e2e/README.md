@@ -1320,7 +1320,7 @@ and a probe run in one session's own environment is refused another session's ch
 
 The stack is `packages/envoy/scripts/dev-stack.sh --callout`: the brokers, the listener, Dispatch and `nats-server` behind the NATS auth service, each the process production runs, built from this checkout.
 dev-stack.sh restarts natsd (SIGUSR1) and the listener (SIGUSR2) in place, on the ports they served, and natsd on the same JetStream store and callout keys.
-It runs its sessions two ways, each a step of the `nats-callout-sessions` part of `.github/workflows/ci-job-agent-harness.yaml` on a hosted runner, the default mode's first.
+It runs its sessions two ways, each a step of the `nats-callout-sessions` part of `.github/actions/agent-harness` on a hosted runner, the default mode's first.
 
 By default they are each plugin's own code under a stand-in host, in processes of their own and with no model:
 the Oh My Pi extension under the stand-in host its own suite drives (`packages/pi-envoy/scripts/role-takeover/omp-client.ts`, whose heartbeat the script ticks before each message, as the host's timer would),

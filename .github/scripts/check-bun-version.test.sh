@@ -10,11 +10,11 @@
 # root, and imports the module from the .github/scripts under it.
 #
 # No case runs the gate over this repository's own tree: ci.yaml's lint job does
-# (.github/workflows/ci-job-lint.yaml, "Check every Bun install reads .bun-version"), on every
+# (.github/actions/lint/lint, "Check every Bun install reads .bun-version"), on every
 # change, so a case here would only run that same check a second time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-bun-version.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and
