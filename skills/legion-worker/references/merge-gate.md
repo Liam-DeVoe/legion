@@ -2,12 +2,12 @@
 
 Read it when you review or approve, or work a look of a closed issue's production check.
 Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
-With no pull request, or at `reviewer:owner`, the step ends by its verdict and commit, not by a review on GitHub.
+With no pull request, or at `reviewer:owner`, the step ends by its verdict, not by a review on GitHub.
 With no pull request, skip what reads GitHub.
 
 ## The reviewer
 
-1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
+1. Read CI on GitHub and `dispatch results --issue <issue>` (`--at <head>` with no pull request), never a handoff.
 2. The round reads the whole change, or the difference from the commit your task names. When that diff touches runtime code, run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
