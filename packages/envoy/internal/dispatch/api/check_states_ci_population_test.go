@@ -171,3 +171,45 @@ func TestAJobsOwnResultAtAFormerHeadTakesThePlaceOfItsRunsConclusion(t *testing.
 	wantPublishedAt(t, "the run at H1 read again after the move", rig, eachHeadH1, "c1", model.PassStandsYes, "", ciCaseJobRecorded)
 	wantPublishedAt(t, "the run at H1 read again after the move", rig, eachHeadH1, "c2", model.PassStandsNo, model.PassSubjectReasonFail, "failure")
 }
+
+// TestAJobsResultAtAFormerHeadWhoseRepositoryDidNotResolveIsAFailedRead: at H1, the head of #70,
+// the go-checks job recorded a pass of c1, a result that names no repository and so is of the
+// issue's own, and its run there failed; #70 moves to H2, and H1 is a former head whose run the
+// settler still reads. Then the read of the repository the issue resolves to stops answering
+// (ACME-1's parent chain loops, which refs.IssueRepository refuses to resolve), so whether the
+// job's pass is of H1's repository, and takes the run's place there, is not known. At a former
+// head as at an open one that is a failed read: c1 at H1 is unread for read_failed and the run
+// derives no fail there. A resolution that took this case at the open heads alone computes c1 at
+// H1 unknown for a pass and a fail, from the job's pass and the run's fail, which an architect
+// acts on at once.
+func TestAJobsResultAtAFormerHeadWhoseRepositoryDidNotResolveIsAFailedRead(t *testing.T) {
+	rig := newCheckStatesRig(t, ciJobVerification)
+	rig.github.setBranch("legion/work", ciJobBranchHead{sha: eachHeadH1})
+	upsertHead(t, rig, 70, eachHeadH1, rig.issue, "A change")
+	jobRecorded(t, "the job's pass of c1 at H1", rig.post(t, rig.issue,
+		jobTokenOn(rig.ciJobRig, eachHeadH1, "refs/heads/legion/work", 99), jobResultAt(eachHeadH1, "pass")))
+	rig.github.listings.set(eachHeadH1, completedRun(11, ciJobName, "failure"))
+	rig.github.listings.set(eachHeadH2, pendingRun(12, ciJobName, "in_progress"))
+	rig.github.setBranch("legion/work", ciJobBranchHead{sha: eachHeadH2})
+	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	settleOwed(t, rig)
+	wantPublishedAt(t, "#70 moved to H2", rig, eachHeadH1, "c1", model.PassStandsYes, "", ciCaseJobRecorded)
+
+	top := anotherIssue(t, rig.ciJobRig)
+	for _, link := range [][2]string{{rig.issue, top}, {top, rig.issue}} {
+		if _, err := rig.database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, link[0], link[1]); err != nil {
+			t.Fatalf("make %s the parent of %s: %v", link[0], link[1], err)
+		}
+	}
+	subject := computedSubject(t, rig, "c1", eachHeadH1)
+	if subject.Answer != model.PassStandsUnknown || subject.Reason != model.PassSubjectReasonReadFailed ||
+		subject.CI == nil || subject.CI.State != model.CIStateUnread || subject.CI.Case != model.ReasonReadFailed {
+		t.Fatalf("c1 at H1, a former head whose job result's repository did not resolve, computes as %s/%s with the CI read %+v, want unknown/read_failed, unread for read_failed",
+			subject.Answer, subject.Reason, subject.CI)
+	}
+	for _, id := range subject.Results {
+		if id == "ci-run:11" {
+			t.Fatalf("c1 at H1 counts the fail the failing run derived there, %v: a read that did not answer derives no state", subject.Results)
+		}
+	}
+}
