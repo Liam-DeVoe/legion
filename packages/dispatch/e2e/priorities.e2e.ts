@@ -2108,6 +2108,9 @@ test("on a phone the priorities tab keeps each place and title together as wide 
 test("the fault tabs draw a holder's claim whole, and no status bar of these pages cuts a status's name", async ({
   browser,
 }) => {
+  // Measured in this pod: 42.3 s (2026-11-22), 57.6 s at ccd4a40c, and the suite's 60 s budget hit
+  // once at c92acaa1 before its retry passed in 38.7 s: the budget leaves this row no margin.
+  test.slow();
   const seed = await seedPriorities();
   // Under #1, beside its rollout in flight and its smoke suite waiting, one issue in each other
   // status a priority's work stands in, so its bar holds eight segments, as production's do.
