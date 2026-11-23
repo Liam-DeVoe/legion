@@ -2094,6 +2094,9 @@ type Store interface {
 	// PutPullRequest writes pr as the pull request of its issue's branch pr.Branch, in place of the
 	// row the record holds for that branch; pr.Task is read and never written (PullRequest.Task).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
+	// DeletePullRequest deletes the row of issue's pull request on branch, the table's key; a branch
+	// the record holds no row for deletes nothing.
+	DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
@@ -2361,8 +2364,8 @@ type Store interface {
 	// SetJoinUnmerged writes whether GitHub refused as a conflict the merge of task's join branch
 	// into its branch, in place of what the task held.
 	SetJoinUnmerged(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, unmerged bool) error
-	// SetStartReason writes why a running task started again at its first step, which every move
-	// of the task clears.
+	// SetStartReason writes why the step a running task stands at was started: a start again at its
+	// first step, or a move back. Every move of the task clears it.
 	SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
 	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
 	// on the implementer's phases row for one with none.

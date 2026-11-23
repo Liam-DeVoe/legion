@@ -36,8 +36,9 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
-	// OutboxKindTaskPullRequestsClose closes the open pull requests of the other tasks of an issue
-	// once the pull request of the task that merges has merged (TaskPullRequestsClose).
+	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
+	// other tasks once the pull request of the task that merges has merged, and that of a task a
+	// later version of the plan removed (TaskPullRequestsClose).
 	OutboxKindTaskPullRequestsClose OutboxKind = "task_pull_requests_close"
 	OutboxKindCheckWake             OutboxKind = "check_wake"
 	OutboxKindCheckLook             OutboxKind = "check_look"
@@ -1595,11 +1596,11 @@ type TaskBranch struct {
 
 func (TaskBranch) OutboxKind() OutboxKind { return OutboxKindTaskBranch }
 
-// TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of the other
-// tasks of the row's issue, with Comment on each before its close: GitHub leaves the pull request of
-// a task that does not merge open once the work it holds merged in the pull request of the task that
-// merges. A pull request GitHub shows closed already is done, so a row that runs again closes
-// nothing more.
+// TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of tasks of
+// the row's issue, with Comment on each before its close: GitHub leaves the pull request of a task
+// that does not merge open once the work it holds merged in the pull request of the task that
+// merges, and leaves the pull request of a task a later version of the plan removed open too. A
+// pull request GitHub shows closed already is done, so a row that runs again closes nothing more.
 type TaskPullRequestsClose struct {
 	// Generation is the issue generation the pull requests were recorded at. A row of an earlier
 	// generation finishes without acting.

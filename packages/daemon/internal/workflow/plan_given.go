@@ -165,8 +165,9 @@ type writtenVersion struct {
 
 // writeVersion stores fact's version as the version in force, the rows versionRefusal built and
 // named (given): each task it leaves as it was keeps its steps and where it stands, each task it
-// changes takes the steps its block now names, and each task it removes is deleted. It answers what
-// it read of the version before.
+// changes takes the steps its block now names, and each task it removes is deleted, with the row of
+// its pull request, which is closed where it is open (closeRemovedPullRequests). It answers what it
+// read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
 	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
@@ -183,6 +184,11 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		}
 	}
 	if len(removed) > 0 {
+		if given.recorded {
+			if err := e.closeRemovedPullRequests(ctx, tx, fact, removed); err != nil {
+				return writtenVersion{}, err
+			}
+		}
 		if err := e.store.DeleteTasks(ctx, tx, fact.Issue, fact.Generation, removed); err != nil {
 			return writtenVersion{}, err
 		}
@@ -193,6 +199,42 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	e.logOnCommit(ctx, "workflow: an owner's plan is taken", "issue", fact.Issue, "generation", fact.Generation, "version", fact.Plan.Version,
 		"document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "changed", given.changed)
 	return written, nil
+}
+
+// closeRemovedPullRequests deletes the row of the pull request of each task of fact's issue that
+// fact's version removes (removed), and queues the close of each such pull request that is open,
+// one row for each (record.TaskPullRequestsClose), with the comment `Task <id> was removed from
+// the plan.`, in the version's transaction: GitHub keeps a pull request open until someone closes
+// it. A row's task is read from its branch against the plan in force (record.PullRequest.Task), so
+// the rows are read before the removed tasks go (DeleteTasks). A row left behind would be no
+// task's, and one on the issue's own branch would read as the pull request of a task that waits
+// with no branch of its own (record.StoredPlan.TasksOfBranch), and as the issue's merge where that
+// task merges; so a closed or merged row goes too. A task a later version adds back starts on a
+// branch of its own (record.Store.AssignTaskBranch), and no fact of the closed pull request finds
+// a row. It runs for a version of the issue's own generation alone (givenVersion.recorded): a row's
+// task is read at that generation, and a plan waiting at generation 0 has no task that started.
+func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
+	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
+	if err != nil {
+		return err
+	}
+	for _, pr := range prs {
+		if !slices.Contains(removed, pr.Task) {
+			continue
+		}
+		if pr.State == record.PullRequestOpen {
+			if err := e.enqueue(ctx, tx, fact.Issue, record.TaskPullRequestsClose{Generation: fact.Generation, Numbers: []int{pr.Number},
+				Comment: fmt.Sprintf("Task %s was removed from the plan.", pr.Task)}); err != nil {
+				return err
+			}
+		}
+		if err := e.store.DeletePullRequest(ctx, tx, fact.Issue, pr.Branch); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the pull request of a task the plan removed is deleted from the record, and closed where it was open",
+			"issue", fact.Issue, "task", pr.Task, "pullRequest", pr.Number, "branch", pr.Branch, "state", pr.State, "version", fact.Plan.Version)
+	}
+	return nil
 }
 
 // afterVersion is what a version written on a recorded issue starts. Where it changes the stopped
