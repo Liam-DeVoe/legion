@@ -1,6 +1,7 @@
 # operator-token-minters/become-rights.jq: follow_becomes's rights (reviews.sh), read from a
-# ServiceAccount a line (namespace, name, the right of its first finding, tab-separated). In each
-# such namespace, every namespaced right of RIGHTS_TABLE ($table, each {verb, group, resource, sub,
+# ServiceAccount a line (namespace, name, and the one of its rights found_sa keeps, whose label sorts
+# first, tab-separated). In each such namespace, every namespaced right of RIGHTS_TABLE ($table, each
+# {verb, group, resource, sub,
 # named}: workload controllers, pods/exec and attach, ephemeral containers, pod patch, rolebinding
 # create, bind and escalate, secrets), and create, update and patch on each custom resource of
 # $names (custom.jq), as custom-rights.jq asks them in a guarded namespace;

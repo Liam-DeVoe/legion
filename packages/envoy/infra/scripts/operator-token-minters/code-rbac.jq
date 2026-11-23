@@ -13,7 +13,9 @@
 # of a resource that creates on update (the RBAC objects). So a create limited by name is a grant
 # for a subject that may also patch that name, or update it there, by any of its bindings in scope,
 # its label saying so. $named_rights are read by name alone; $live true drops the `role` and `empty`
-# records, which only a render's reader needs.
+# records, which only a render's reader needs. $rights and $named_rights each come from a file
+# (--slurpfile), so each one's value is its first: a cluster's rights are more than a command line's
+# argument may hold.
 include "rec";
         def objs: if type == "array" then .[] | objs
                   elif type == "object" and (.kind // "") == "List" then (.items // [])[] | objs
@@ -51,6 +53,7 @@ include "rec";
         def named_label($r; $names): "\($r.verb) \($r.resource)\(if $r.sub != "" then "/" + $r.sub else "" end)\(if $r.group != "" then "." + $r.group else "" end)"
           + " \($names | join(", "))" + (if $r.ns != "" then " in " + $r.ns else " cluster-wide" end)
           + (if ($r.why // "") != "" then ", " + $r.why else "" end);
+        $rights[0] as $rights | $named_rights[0] as $named_rights |
         ($rights | map(.key)) as $plain
         | ([$rights[], $named_rights[]] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)) as $all
         | [inputs | objs] as $objects

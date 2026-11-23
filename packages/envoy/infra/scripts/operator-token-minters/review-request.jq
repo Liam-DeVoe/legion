@@ -1,7 +1,9 @@
 # operator-token-minters/review-request.jq: review's question (reviews.sh), one List of a
 # SubjectAccessReview for each principal of $principals ({principal, user, groups}) and each right
-# of $rights, as rights_json writes rights.
-{apiVersion: "v1", kind: "List", items: [$principals[] as $p | $rights[] | {
+# of $rights, as rights_json writes rights. Each comes from a file (--slurpfile), so its one value is
+# its first: a cluster's principals and rights are more than a command line's argument may hold.
+$principals[0] as $principals | $rights[0] as $rights
+| {apiVersion: "v1", kind: "List", items: [$principals[] as $p | $rights[] | {
       apiVersion: "authorization.k8s.io/v1", kind: "SubjectAccessReview",
       spec: ({resourceAttributes: ({verb, resource} + (if .group != "" then {group} else {} end)
                                    + (if .sub != "" then {subresource: .sub} else {} end)

@@ -41,13 +41,15 @@
 #   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
 #        whose response carries no data field, so no Secret's data reaches the box, the run's work
 #        directory or its output;
-#   (cq) a credential of a name flag's form that starts with a credential's prefix (a ghp_ token,
+#   (cq) a credential of a name flag's form shaped as a credential its issuer marks (a ghp_ token,
 #        a github_pat_ token, an AIza key and a Slack token as --signing-secret, an AWS access key
 #        ID as --secret) is refused too, naming the flag and never the value, and is printed in
 #        neither stdout, stderr nor --report;
 #   (cr) a list of a guarded namespace's token Secrets that kubectl prints without the Table's
 #        columns, as it does when a server or proxy that cannot make the Table answers with the
-#        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass.
+#        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass;
+#   (cs) a cluster whose principals and rights are each more than one argument of a command line
+#        holds is reviewed whole: they reach jq through files and its stdin, never its arguments.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -371,10 +373,14 @@ fi
 # cannot) is in neither stdout, stderr nor --report. A flag that names a thing refuses it, naming
 # the flag and never the text; a file flag's file is named by the flag and its place. Each item
 # runs in a directory of its own, with stdout and stderr apart, and writes --report there. A
-# credential of a flag's form is (cq)'s. ---
+# credential of a flag's form is (cq)'s, whose items are cases of pasted_row too, each marked by
+# shaped_canary. shaped_canary stays 16 characters: AKIA${shaped_canary} is an AWS access key ID
+# only at that length, and AIza${shaped_canary}0123456789abcdefghi holds exactly the 35 characters
+# after AIza that credential_prefix needs. ---
 pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
+shaped_canary=PASTEDCANARY5C1E
 pasted_row() {
-  local own="$temporary_dir/co-$1" args=() full report want want_exit=2 where
+  local own="$temporary_dir/co-$1" args=() full report want want_shape="" want_exit=2 where canary=PASTED-CANARY-5c1e what
   base_world
   mkdir -p "$own"
   report="$own/report.json"
@@ -385,7 +391,20 @@ pasted_row() {
     iam-preview) args=("--$1" "$pasted_canary") want="UNKNOWN code: IAM: --iam-preview entry 2 cannot be read" ;;
     report) report="$own/$pasted_canary" want="operator-token-minters: no finding and nothing unknown: exit 0" want_exit=0 ;;
     report-unwritable) report="$own/$pasted_canary/report.json" want="operator-token-minters: --report cannot be written" ;;
+    # (cq)'s: each value is of its flag's form, so the form alone would admit it.
+    ghp-token) args=(--signing-secret "ghp_${shaped_canary}0123456789abcdefghij") ;;
+    github-pat) args=(--signing-secret "github_pat_11${shaped_canary}abcdef_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW") ;;
+    google-api-key) args=(--signing-secret "AIza${shaped_canary}0123456789abcdefghi") ;;
+    slack-token) args=(--signing-secret "xoxb-${shaped_canary}-1234567890-abcdefghij") ;;
+    aws-access-key-id) args=(--secret "AKIA${shaped_canary}") ;;
     *) args=("--$1" "$pasted_canary") want="operator-token-minters: --$1 " ;;
+  esac
+  what="a pasted credential ($1)"
+  case "$1" in
+    ghp-token | github-pat | google-api-key | slack-token | aws-access-key-id)
+      canary="$shaped_canary" what="the $1 given as ${args[0]}" want="operator-token-minters: ${args[0]} is "
+      want_shape="; its value is shaped as a credential its issuer marks"
+      ;;
   esac
   mapfile -t full < <(full_args)
   status=0
@@ -393,11 +412,12 @@ pasted_row() {
     --report "$report" ${args[@]+"${args[@]}"} >"$own/stdout" 2>"$own/stderr") || status=$?
   output="$(cat "$own/stdout" "$own/stderr")"
   for where in stdout stderr; do
-    ! grep -qF -- PASTED-CANARY-5c1e "$own/$where" || fail "a pasted credential ($1) is in $where: $(grep -F -- PASTED-CANARY-5c1e "$own/$where")"
+    ! grep -qF -- "$canary" "$own/$where" || fail "$what is in $where: $(grep -F -- "$canary" "$own/$where")"
   done
-  [ ! -f "$report" ] || ! grep -qF -- PASTED-CANARY-5c1e "$report" || fail "a pasted credential ($1) is in --report: $(cat "$report")"
-  want_text "$want" "--$1 given a pasted credential"
-  want_status "$want_exit" "a pasted credential ($1)"
+  [ ! -f "$report" ] || ! grep -qF -- "$canary" "$report" || fail "$what is in --report: $(cat "$report")"
+  want_text "$want" "$what"
+  [ -z "$want_shape" ] || want_text "$want_shape" "$what"
+  want_status "$want_exit" "$what"
 }
 if row co; then
   each pasted_row alone unknown-flag project pool-project cluster location namespace service-account gsa agent-namespace \
@@ -442,43 +462,16 @@ if row cp; then
   passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
 fi
 
-# --- (cq) A credential of a name flag's form is refused too when it starts with a credential's
-# prefix (operator-token-minters.sh's credential_prefix). Each value below is of its flag's form,
-# so the form alone would admit it, and the run would print it: --signing-secret's in the signing
-# key's step name (checks.sh), --secret's in the admin tag's. Each is refused, exit 2, naming the
-# flag and never the value, which is in neither stdout, stderr nor --report. Each carries
-# shaped_canary, which the row looks for. Run by hand, the control is the script with the
-# credential_prefix line of refuse_form taken out: each item is printed, and the row fails naming
-# where. ---
-shaped_canary=PASTEDCANARY5C1E
-shaped_row() {
-  local own="$temporary_dir/cq-$1" flag value full report where
-  base_world
-  mkdir -p "$own"
-  report="$own/report.json"
-  case "$1" in
-    ghp-token) flag=--signing-secret value="ghp_${shaped_canary}0123456789abcdefghij" ;;
-    github-pat) flag=--signing-secret value="github_pat_11${shaped_canary}abcdef_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW" ;;
-    google-api-key) flag=--signing-secret value="AIza${shaped_canary}0123456789abcdefghi" ;;
-    slack-token) flag=--signing-secret value="xoxb-${shaped_canary}-1234567890-abcdefghij" ;;
-    aws-access-key-id) flag=--secret value="AKIA${shaped_canary}" ;;
-  esac
-  mapfile -t full < <(full_args)
-  status=0
-  (cd "$own" && env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "${full[@]}" \
-    --report "$report" "$flag" "$value" >"$own/stdout" 2>"$own/stderr") || status=$?
-  output="$(cat "$own/stdout" "$own/stderr")"
-  for where in stdout stderr; do
-    ! grep -qF -- "$shaped_canary" "$own/$where" || fail "the $1 given as $flag is in $where: $(grep -F -- "$shaped_canary" "$own/$where")"
-  done
-  [ ! -f "$report" ] || ! grep -qF -- "$shaped_canary" "$report" || fail "the $1 given as $flag is in --report: $(cat "$report")"
-  want_text "operator-token-minters: $flag is " "the $1 given as $flag"
-  want_text "; its value starts with a credential's prefix" "the $1 given as $flag"
-  want_status 2 "the $1 given as $flag"
-}
+# --- (cq) A credential of a name flag's form is refused too when it is shaped as a credential its
+# issuer marks (operator-token-minters.sh's credential_prefix). Each value is of its flag's form, so
+# the form alone would admit it, and the run would print it: --signing-secret's in the signing key's
+# step name (checks.sh), --secret's in the admin tag's. Each is refused, exit 2, naming the flag and
+# never the value, which is in neither stdout, stderr nor --report. Each is a case of pasted_row,
+# marked by shaped_canary. Run by hand, the control is the script with the credential_prefix line of
+# refuse_form taken out: each item is printed, and the row fails naming where. ---
 if row cq; then
-  each shaped_row ghp-token github-pat google-api-key slack-token aws-access-key-id
-  passed "(cq) a credential of a name flag's form that starts with a credential's prefix is refused, naming the flag, and printed in neither stdout, stderr nor --report"
+  each pasted_row ghp-token github-pat google-api-key slack-token aws-access-key-id
+  passed "(cq) a credential of a name flag's form, shaped as a credential its issuer marks, is refused, naming the flag, and printed in neither stdout, stderr nor --report"
 fi
 
 # --- (cr) The token Secrets' list answered without the Table: the world's API server answers as a
@@ -493,6 +486,8 @@ if row cr; then
   jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
     >"$world/clusters/operator-cluster/token-secrets.json"
   : >"$world/clusters/operator-cluster/token-secrets-no-table"
+  # The Secrets hold their data, so the server's answer carries it, as the comment above says.
+  : >"$world/clusters/operator-cluster/token-secret-data"
   run
   want_status 2 "a list of token Secrets answered without the Table"
   for ns in envoy-operator secrets-broker; do
@@ -500,5 +495,42 @@ if row cr; then
       "the list of $ns's token Secrets answered without the Table"
   done
   ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed on a list of token Secrets answered without the Table"
+  responses="$world/clusters/operator-cluster/token-secret-responses"
+  if [ ! -e "$responses" ] || ! jq -e -s 'any(.[].items[]?; has("data"))' "$responses" >/dev/null; then
+    fail "the world's server sent no token Secret's data, so the row does not hold the case its comment names"
+  fi
+  ! has_prefix "SECRET-DATA-CANARY-7f3a" || fail "the check printed a token Secret's data"
   passed "(cr) a list of token Secrets that kubectl prints without the Table's columns reads UNKNOWN for its namespace, and the RBAC step does not pass"
+fi
+
+# --- (cs) A cluster whose principals and rights are each more than one argument of a command line
+# holds. Linux refuses an exec whose one argument is longer than MAX_ARG_STRLEN, 128 KiB, which the
+# operator's cluster passes (3,183 principals and 508 rights). Here jq refuses an argument longer
+# than 16 KiB as the kernel would, with bash's words and exit 126, and the world holds 150 more
+# ServiceAccounts, so its principals alone pass that, as its rights already do. The run reviews
+# them all and exits 0, as row (a) does. Run by hand, the control is reviews.sh as it was before
+# this row, which passed the principals and the rights to jq as arguments: the reviews are not
+# built, the run reads UNKNOWN, and the row fails naming it. ---
+if row cs; then
+  base_world
+  cap=16384 cap_bin="$temporary_dir/cs-bin" real_jq="$(command -v jq)"
+  mkdir -p "$cap_bin"
+  printf '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [ "${#arg}" -le %s ] || { echo "bash: %s: Argument list too long" >&2; exit 126; }\ndone\nexec %q "$@"\n' \
+    "$cap" "$real_jq" "$real_jq" >"$cap_bin/jq"
+  chmod +x "$cap_bin/jq"
+  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [range(150) | {namespace: "bulk", name: "account-\(.)"}]'
+  echo bulk >>"$world/clusters/operator-cluster/namespaces"
+  # The principals as review sends them, so the row fails rather than passes on a world too small.
+  principals="$(jq -c '[.[] | "system:serviceaccount:\(.namespace):\(.name)" as $u
+    | {principal: $u, user: $u, groups: ["system:serviceaccounts", "system:serviceaccounts:\(.namespace)", "system:authenticated"]}]' \
+    "$world/clusters/operator-cluster/serviceaccounts.json")"
+  [ "${#principals}" -gt "$cap" ] || fail "the world's principals are ${#principals} characters, no more than the $cap a jq argument holds here, so the row tests nothing"
+  mapfile -t cs_args < <(full_args)
+  status=0
+  output="$(env PATH="$cap_bin:$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "${cs_args[@]}" 2>&1)" || status=$?
+  ! has_prefix "UNKNOWN" || fail "a cluster whose principals and rights pass a command line's argument read UNKNOWN"
+  want_status 0 "a cluster whose principals and rights pass a command line's argument"
+  accounts="$(sed -n 's/^PASS live: RBAC on operator-cluster: [0-9]* principals (\([0-9]*\) ServiceAccounts outside the system namespaces.*/\1/p' <<<"$output")"
+  [ "${accounts:-0}" -gt 150 ] || fail "the RBAC step reviewed ${accounts:-no} ServiceAccounts outside the system namespaces, not the world's 150 more"
+  passed "(cs) a cluster whose principals and rights each pass a command line's argument is reviewed whole, and exits 0"
 fi

@@ -34,9 +34,10 @@ else
   # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
   # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
   # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
-  # is UNKNOWN. The list asks for no Secret's data: kubectl asks the API server for the server-side
-  # Table form for its default output alone (Accept: application/json;as=Table;v=v1;g=meta.k8s.io,
-  # then the same for v1beta1, then plain application/json), whose rows carry each Secret's name,
+  # is UNKNOWN. The list asks for the Table form first, whose rows carry no Secret's data: kubectl
+  # asks the API server for the server-side Table form for its default output alone (Accept:
+  # application/json;as=Table;v=v1;g=meta.k8s.io, then the same for v1beta1, then plain
+  # application/json), whose rows carry each Secret's name,
   # type, number of data keys and age, and beside them the Secret's metadata alone: kubectl sends no
   # includeObject, and the API server then puts each object's PartialObjectMetadata in its row
   # (k8s.io/apiserver's endpoints/handlers/response.go, asTable). With -o name, -o jsonpath or -o
@@ -54,6 +55,8 @@ else
   #     core Secrets. kubectl then prints its own columns, NAME and AGE alone (read with kubectl
   #     1.36.4 against a server that answers plain JSON whatever the Accept header asks), so a list
   #     whose header is not NAME TYPE DATA AGE is UNKNOWN, and the run never passes on it.
+  # An empty list passes the header check: kubectl prints "No resources found in <namespace>
+  # namespace." to stderr alone (kubectl's get.go), so the list's file is empty and holds no name.
   : >"$WORK/token-secrets.tsv"
   jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
     | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"

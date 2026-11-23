@@ -1,9 +1,11 @@
 # operator-token-minters/review-answer.jq: review's answer (reviews.sh), a record per review of the
 # principal, the right's label, allowed, refused or error, the evaluation error and the API server's
 # reason, matched to its question by the subject and the attributes the answer echoes; one `short`
-# record when the answer holds fewer reviews than were asked.
+# record when the answer holds fewer reviews than were asked. $principals and $rights each come from
+# a file (--slurpfile), so each one's value is its first.
 include "rec";
-      ($rights | map({(.key): .label}) | add) as $labels
+      $principals[0] as $principals | $rights[0] as $rights
+      | ($rights | map({(.key): .label}) | add) as $labels
       | ($principals | map({("\(.user)|\(.groups | join(","))"): .principal}) | add) as $names
       | [(if .kind == "List" then .items[] else . end)
          | (.spec.resourceAttributes // {}) as $a

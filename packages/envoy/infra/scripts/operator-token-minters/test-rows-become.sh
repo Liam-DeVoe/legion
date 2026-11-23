@@ -15,7 +15,9 @@
 #        reads UNKNOWN naming the failure, not clean;
 #   (cn) with gke-foo/agent seeded (allowed the operator's token), legion/worker allowed patch, or
 #        update, of the custom resource sandboxes.agents.x-k8s.io in gke-foo becomes it, and exits 1
-#        naming the chain (N-D).
+#        naming the chain (N-D);
+#   (ct) a chain finding's text, printed and in --report, is the same whichever order the API server
+#        answers the reviews in.
 
 # --- (ck) A system namespace's ServiceAccount allowed a guarded right by name: who can become it holds
 # that right, so it seeds the chain as one allowed the right outright does. ---
@@ -87,4 +89,37 @@ custom_become_row() {
 if row cn; then
   each custom_become_row patch update create
   passed "(cn) with gke-foo/agent seeded, legion/worker allowed patch, update or create of a custom resource in gke-foo becomes it and exits 1 (N-D)"
+fi
+
+# --- (ct) The text of a chain finding does not hang on the order the reviews are answered in.
+# tenant/x may create pods and create jobs in envoy-operator, two findings, and legion/worker may
+# create pods in tenant, so it can become tenant/x. The same world is run twice, its API server
+# answering the reviews in the order asked and then reversed (review-answers-reversed), and the two
+# runs print the same findings and write the same findings to --report. Run by hand, the control is
+# reviews.sh as it was before this row, which named a found ServiceAccount by the first of its
+# findings it read: the chain names create pods in one run and create jobs in the other, and the
+# row fails naming both. ---
+order_run() {
+  local report="$temporary_dir/ct-$1.json"
+  run --report "$report"
+  want_status 1 "tenant/x's two findings and legion/worker's way to become it, answered $1"
+  want_text "FINDING system:serviceaccount:legion:worker: create pods in tenant, so it can become system:serviceaccount:tenant:x, which can " \
+    "legion/worker becoming tenant/x, answered $1"
+  grep '^FINDING ' <<<"$output" | LC_ALL=C sort >"$temporary_dir/ct-$1.findings"
+  jq -S '.findings | sort_by(.principal, .right)' "$report" >"$temporary_dir/ct-$1.report"
+}
+if row ct; then
+  base_world
+  add_sa operator-cluster tenant x
+  subject_grant operator-cluster "$(sa_subject tenant x)" create "" pods "" envoy-operator ""
+  subject_grant operator-cluster "$(sa_subject tenant x)" create batch jobs "" envoy-operator ""
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" tenant ""
+  order_run asked
+  : >"$world/clusters/operator-cluster/review-answers-reversed"
+  order_run reversed
+  cmp -s "$temporary_dir/ct-asked.findings" "$temporary_dir/ct-reversed.findings" ||
+    fail "the findings differ with the reviews answered in another order: $(diff "$temporary_dir/ct-asked.findings" "$temporary_dir/ct-reversed.findings" | grep '^[<>]' | tr '\n' ' ')"
+  cmp -s "$temporary_dir/ct-asked.report" "$temporary_dir/ct-reversed.report" ||
+    fail "the report's findings differ with the reviews answered in another order"
+  passed "(ct) a chain finding's text, printed and in --report, is the same whichever order the API server answers the reviews in"
 fi

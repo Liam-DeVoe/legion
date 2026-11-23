@@ -4682,8 +4682,8 @@ reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in and requests no credential. It asks for no Secret's data either: it lists a guarded
-namespace's token Secrets in the API server's Table form, whose rows carry each Secret's name, type,
+shell it runs in and requests no credential. It lists a guarded namespace's token Secrets asking the
+API server for the Table form first, whose rows carry no Secret's data, only each Secret's name, type,
 number of data keys and age beside its metadata, and keeps the names. Two cases still bring a token
 into `kubectl`'s memory, though nothing prints or writes it: a token Secret made by `kubectl apply`
 from a manifest that held its token carries the token in its
@@ -4728,10 +4728,14 @@ included. `--report <file>` writes the same as JSON, with each allowance the run
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
 any step runs, and a value of another form is a usage error naming the flag, never the value, as is
-a value that starts with a known credential prefix (`ghp_`, `github_pat_`, `AIza`, `ya29.`, `AKIA`
-and the others the daemon's log redaction knows), which some forms admit. A value of the flag's form
-with no such prefix is used, and may be printed, as given. A file flag's file is named by the flag
-and its place (`--rbac-render entry 2`), never its path.
+a value shaped as a credential its issuer marks, which some forms admit: a GitHub token (`ghp_`,
+`gho_`, `ghu_`, `ghs_`, `ghr_` or `github_pat_`), a Google OAuth access token (`ya29.`), a Slack
+token (`xoxb-` and the like), or an OpenAI, Dispatch, Datadog, GitLab or npm token (`sk-`, `dsp_`,
+`ddsat_`, `ddpat_`, `ddapp_`, `glpat-`, `npm_`), each with 20 or more characters after its prefix; a
+Google API key, `AIza` and 35 or more; or an AWS access key ID, `AKIA` or `ASIA` and exactly 16. A
+value of the flag's form that is not so shaped is used, and may be printed, as given: a short
+`ghp_abc` is. A file flag's file is named by the flag and its place (`--rbac-render entry 2`), never
+its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
 `gcloud`, `curl` and `agent-secrets`.
 

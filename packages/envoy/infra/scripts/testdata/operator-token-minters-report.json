@@ -846,11 +846,11 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create certificatesigningrequests, update certificatesigningrequests/approval, patch certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names on cluster example-grade/us-east1/grade-cluster",
-      "role": "create certificatesigningrequests, update certificatesigningrequests/approval, patch certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names",
+      "right": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names on cluster example-grade/us-east1/grade-cluster",
+      "role": "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create certificatesigningrequests, update certificatesigningrequests/approval, patch certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
+        "create certificatesigningrequests, patch certificatesigningrequests/approval, update certificatesigningrequests/approval and approve signers of any name cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },

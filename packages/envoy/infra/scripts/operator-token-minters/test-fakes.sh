@@ -225,7 +225,11 @@ fi
 case "${args[*]}" in
   "create -f - -o json")
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
-    jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" '
+    # A world marked review-answers-reversed answers a List of reviews in the reverse of the order
+    # it was asked in: the check matches each answer to its question by what the answer echoes, so
+    # no finding's text may hang on that order (row ct).
+    jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" \
+      --arg reversed "$([ -e "$dir/review-answers-reversed" ] && echo on || echo off)" '
       def answer:
         .spec as $s | ($s.resourceAttributes // {}) as $a
         | ($s.user // "") as $user | ($s.groups // []) as $groups
@@ -243,7 +247,7 @@ case "${args[*]}" in
         | . + {status: (if $master then {allowed: true, reason: "RBAC: allowed by ClusterRoleBinding \"cluster-admin\" of ClusterRole \"cluster-admin\" to Group \"system:masters\""}
                         elif ($by | length) > 0 then {allowed: true, reason: "RBAC: allowed by \($by[0])"}
                         else {allowed: false} end)};
-      if .kind == "List" then .items |= map(answer) else answer end'
+      if .kind == "List" then .items |= map(answer) | (if $reversed == "on" then .items |= reverse else . end) else answer end'
     ;;
   "get serviceaccounts --all-namespaces -o json")
     [ ! -e "$dir/refuse-list" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
@@ -282,10 +286,11 @@ case "${args[*]}" in
     # server or proxy that cannot make the Table does, with the Secrets whole, data included, which
     # kubectl prints under NAME and AGE alone (read with kubectl 1.36.4 against a server that
     # answers plain JSON whatever the Accept header asks; row cr). --no-headers prints the rows
-    # alone. For -o json, -o name and -o jsonpath kubectl asks for plain JSON and gets the Secrets
-    # whole, data included. Each response the API server sends is recorded, one a line, in
-    # token-secret-responses, and each list of the Secrets whole asked for with -o in
-    # secret-data-asked (row cp).
+    # alone; no row's run asks for it, but row cr's control does, step-rbac.sh's list as it was
+    # before that row, so the branch is kept. For -o json, -o name and -o jsonpath kubectl asks for
+    # plain JSON and gets the Secrets whole, data included. Each response the API server sends is
+    # recorded, one a line, in token-secret-responses, and each list of the Secrets whole asked for
+    # with -o in secret-data-asked (row cp).
     [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
     whole="$({ if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
       jq -c --arg ns "${args[3]}" --arg data "$([ -e "$dir/token-secret-data" ] && echo "$secret_data_b64")" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)

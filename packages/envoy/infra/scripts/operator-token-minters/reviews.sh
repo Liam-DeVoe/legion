@@ -9,9 +9,14 @@
 # the subject and the attributes the API server echoes in its spec. Writes a record of principal,
 # right label, allowed|refused|error and the evaluation error per review to $WORK/review.rec;
 # returns 1 with REVIEW_ERROR when the API server refused the call or did not answer every review.
+# PRINCIPALS and RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's
+# principals and rights (3,183 and 508 on the operator's) are more than one argument may hold.
 review() {
   REVIEW_ERROR=""
-  if ! jq -n --argjson principals "$2" --argjson rights "$3" -f "$LIB/review-request.jq" >"$WORK/review-in.json" 2>"$WORK/review.err"; then
+  printf '%s' "$2" >"$WORK/review-principals.json"
+  printf '%s' "$3" >"$WORK/review-rights.json"
+  if ! jq -n --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" \
+    -f "$LIB/review-request.jq" >"$WORK/review-in.json" 2>"$WORK/review.err"; then
     REVIEW_ERROR="this script could not build the reviews: $(first_line "$WORK/review.err")"
     return 1
   fi
@@ -19,8 +24,8 @@ review() {
     REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review.err")"
     return 1
   fi
-  if ! jq -r --argjson principals "$2" --argjson rights "$3" -L "$LIB" -f "$LIB/review-answer.jq" \
-    "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
+  if ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
+    -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
     REVIEW_ERROR="the API server's answer to the reviews is not JSON: $(first_line "$WORK/review.err")"
     return 1
   fi
@@ -52,56 +57,69 @@ sa_record() {
     "${3:-}" "$1" "$2" "$1" "$2" "$1"
 }
 # FOUND_SAS: each ServiceAccount (<namespace>:<name>) with a finding on the cluster read last, and
-# the right of its first finding, for follow_becomes; and each seed, a system namespace's
+# the right follow_becomes names it by (found_sa); and each seed, a system namespace's
 # ServiceAccount (its principal labelled seed:<its name>) allowed a right asked: no finding itself,
 # but who can become it holds what it holds.
 declare -A FOUND_SAS=()
+# found_sa NAMESPACE:NAME LABEL: records LABEL as a right of a found ServiceAccount (FOUND_SAS),
+# keeping, of every right the cluster's reads give it, the one whose label sorts first in the C
+# locale. The reviews' answers come in the API server's order, so the first one read would make the
+# text of every finding follow_becomes words from it hang on that order.
+found_sa() {
+  local LC_ALL=C
+  [ -n "${FOUND_SAS[$1]:-}" ] && [[ ! "$2" < "${FOUND_SAS[$1]}" ]] || FOUND_SAS[$1]="$2"
+}
 # The certificate signing chain's parts, by principal, which csr_part gathers from a cluster's
-# reviews, its named rights and a render, and csr_chains judges once they are all read.
+# reviews, its named rights and a render, and csr_chains judges once they are all read. Each list of
+# parts is a line a part, which csr_chains sorts, and CSR_WHY_OF keeps the reason that sorts first,
+# so a chain's text does not hang on the order the parts were read in.
 declare -A CSR_CREATE_OF=() CSR_APPROVAL_OF=() CSR_SIGNERS_OF=() CSR_WHY_OF=()
 csr_reset() { CSR_CREATE_OF=() CSR_APPROVAL_OF=() CSR_SIGNERS_OF=() CSR_WHY_OF=(); }
 # csr_part PRINCIPAL LABEL REASON: when LABEL is a part of the chain (CSR_RIGHTS: create, an approval
 # write, a signer's approve, each by name or not), records it for PRINCIPAL and returns 0; else 1.
 csr_part() {
-  local label="$2" names
+  local label="$2" names LC_ALL=C
   case "$label" in
     "$CSR_CREATE") CSR_CREATE_OF[$1]=1 ;;
     *" certificatesigningrequests/approval.certificates.k8s.io "*)
       names="${label#* certificatesigningrequests/approval.certificates.k8s.io }"
       if [ "$names" = cluster-wide ]; then names=""; else names=" ${names% cluster-wide}"; fi
-      CSR_APPROVAL_OF[$1]="${CSR_APPROVAL_OF[$1]:+${CSR_APPROVAL_OF[$1]}, }${label%% *} certificatesigningrequests/approval$names"
-      CSR_WHY_OF[$1]="$3"
+      CSR_APPROVAL_OF[$1]="${CSR_APPROVAL_OF[$1]:+${CSR_APPROVAL_OF[$1]}$'\n'}${label%% *} certificatesigningrequests/approval$names"
+      [ -n "${CSR_WHY_OF[$1]:-}" ] && [[ ! "$3" < "${CSR_WHY_OF[$1]}" ]] || CSR_WHY_OF[$1]="$3"
       ;;
     "$CSR_ANY_SIGNER") CSR_SIGNERS_OF[$1]="of any name" ;;
     "$CSR_SIGNER_PREFIX"*)
       # A rule naming a signer answers the review of that name and the unnamed right's named read
       # alike, so each name is kept once.
       names="${label#"$CSR_SIGNER_PREFIX"}" names="${names% cluster-wide}"
-      case " and ${CSR_SIGNERS_OF[$1]:-} and " in
-        " and of any name and " | *" and $names and "*) ;;
-        *) CSR_SIGNERS_OF[$1]="${CSR_SIGNERS_OF[$1]:+${CSR_SIGNERS_OF[$1]} and }$names" ;;
+      case $'\n'"${CSR_SIGNERS_OF[$1]:-}"$'\n' in
+        $'\nof any name\n' | *$'\n'"$names"$'\n'*) ;;
+        *) CSR_SIGNERS_OF[$1]="${CSR_SIGNERS_OF[$1]:+${CSR_SIGNERS_OF[$1]}$'\n'}$names" ;;
       esac
       ;;
     *) return 1 ;;
   esac
 }
+# sorted_join SEPARATOR LINES: LINES, a line each, sorted in the C locale and joined by SEPARATOR.
+sorted_join() {
+  local joined="" line
+  while IFS= read -r line; do joined="${joined:+$joined$1}$line"; done < <(printf '%s\n' "$2" | LC_ALL=C sort -u)
+  printf '%s' "$joined"
+}
 # csr_chains SUFFIX RESOURCE: one finding on RESOURCE, its right followed by SUFFIX, for each
 # principal csr_part saw allowed both an approval write and a signer, naming create too when it may
 # make its own request; a seed's chain only seeds FOUND_SAS. Then forgets the parts.
 csr_chains() {
-  local principal chain who
+  local principal chain
   for principal in $(printf '%s\n' ${CSR_APPROVAL_OF[@]+"${!CSR_APPROVAL_OF[@]}"} | sort); do
     [ -n "${CSR_SIGNERS_OF[$principal]:-}" ] || continue
-    chain="${CSR_CREATE_OF[$principal]:+create certificatesigningrequests, }${CSR_APPROVAL_OF[$principal]} and approve signers ${CSR_SIGNERS_OF[$principal]} cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
+    chain="${CSR_CREATE_OF[$principal]:+create certificatesigningrequests, }$(sorted_join ', ' "${CSR_APPROVAL_OF[$principal]}") and approve signers $(sorted_join ' and ' "${CSR_SIGNERS_OF[$principal]}") cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
     if [[ "$principal" == seed:* ]]; then
-      who="${principal#seed:system:serviceaccount:}"
-      [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$chain"
+      found_sa "${principal#seed:system:serviceaccount:}" "$chain"
       continue
     fi
     finding "$principal" "$chain$1" "$chain" "$2" "$chain" "${CSR_WHY_OF[$principal]:-}"
-    if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$chain"
-    fi
+    [[ ! "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$chain"
   done
   csr_reset
 }
@@ -112,7 +130,7 @@ csr_chains() {
 # it after live_named, whose named approvals join the chain). Returns 1 when the witness was
 # refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false who
+  local principal label verdict error reason witness_refused=false
   FOUND_SAS=()
   csr_reset
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
@@ -124,14 +142,11 @@ judge_reviews() {
       allowed)
         ! csr_part "$principal" "$label" "$reason" || continue
         if [[ "$principal" == seed:* ]]; then
-          who="${principal#seed:system:serviceaccount:}"
-          [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
+          found_sa "${principal#seed:system:serviceaccount:}" "$label"
           continue
         fi
         finding "$principal" "$label$2" "$label" "$3" "$label" "$reason"
-        if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-          FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
-        fi
+        [[ ! "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$label"
         ;;
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
@@ -157,7 +172,7 @@ seed_named() {
     *) return 1 ;;
   esac
   system_namespace "$ns" || return 1
-  [ -n "${FOUND_SAS[$ns:$name]:-}" ] || FOUND_SAS[$ns:$name]="$4"
+  found_sa "$ns:$name" "$4"
 }
 # follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount of FOUND_SAS holds
 # what it holds. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
@@ -199,21 +214,21 @@ follow_becomes() {
           who="${who#system:serviceaccount:}"
           [ "${targets_of[$label]:-}" != "$who" ] || continue
           if [[ "$principal" == seed:* ]]; then
-            [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
+            found_sa "$who" "$label"
             continue
           fi
           finding "$principal" "$label$suffix" "$label" "$resource" "$label" "$reason"
-          if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-            FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
-          fi
+          [[ ! "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$label"
           ;;
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
     done 4<"$WORK/review.rec"
     # The same rights limited by name in a live role, which a review naming nothing never finds.
     [ "${ROLES_OK:-false}" = true ] || continue
-    if ! jq -r -n --argjson rights '[]' --argjson named_rights "$rights" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
-      "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>"$WORK/become-named.err"; then
+    printf '[]' >"$WORK/no-rights.json"
+    printf '%s' "$rights" >"$WORK/become-rights.json"
+    if ! jq -r -n --slurpfile rights "$WORK/no-rights.json" --slurpfile named_rights "$WORK/become-rights.json" --argjson live true \
+      -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>"$WORK/become-named.err"; then
       unknown "$step" "the live roles could not be read for who can become a found ServiceAccount by a right limited by name: $(first_line "$WORK/become-named.err")"
       continue
     fi
@@ -228,9 +243,7 @@ follow_becomes() {
       done
       [ "$targets" != "${SUBJECT#system:serviceaccount:}" ] || continue
       finding "$SUBJECT" "$detail$suffix" "$detail" "$resource" "$detail" "RBAC: $id limits it by name"
-      if [[ "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-        FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$detail"
-      fi
+      [[ ! "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$detail"
     done 6<"$WORK/become-named.rec"
   done
   for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
@@ -331,8 +344,10 @@ live_named() {
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
     return 0
   fi
-  if ! jq -r -n --argjson rights '[]' --argjson named_rights "$5" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
-    "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/named.rec" 2>"$WORK/named.err"; then
+  printf '[]' >"$WORK/no-rights.json"
+  printf '%s' "$5" >"$WORK/named-rights.json"
+  if ! jq -r -n --slurpfile rights "$WORK/no-rights.json" --slurpfile named_rights "$WORK/named-rights.json" --argjson live true \
+    -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/named.rec" 2>"$WORK/named.err"; then
     unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.err")"
     return 0
   fi
@@ -344,9 +359,7 @@ live_named() {
     [ "$SUBJECT_OK" != true ] || continue
     ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
     finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"
-    if [[ "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$detail"
-    fi
+    [[ ! "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$detail"
   done 6<"$WORK/named.rec"
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
@@ -513,18 +526,20 @@ settings_verdict() {
 # principal. When the bindings could not be read, it holds impersonate groups system:masters and
 # the IAM holders alone.
 named_rights() {
-  local reviewed bindings='{"items": []}' iam_users='[]' file files=()
-  reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  local bindings='{"items": []}' file files=()
+  cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json"
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
   for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
     [ ! -s "$file" ] || files+=("$file")
   done
   if [ "${#files[@]}" -gt 0 ]; then
-    iam_users="$(awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
-      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
+      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/iam-users.json"
+  else
+    printf '[]' >"$WORK/iam-users.json"
   fi
-  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" --argjson iam_users "$iam_users" -f "$LIB/named-rights.jq" <<<"$bindings")"
+  NAMED_RIGHTS="$(jq -c --slurpfile reviewed "$WORK/reviewed.json" --slurpfile iam_users "$WORK/iam-users.json" -f "$LIB/named-rights.jq" <<<"$bindings")"
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
-# where both hold one, RIGHTS's label stays.
-with_rights() { jq -c --argjson more "$2" '. + $more | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$1"; }
+# where both hold one, RIGHTS's label stays. Both reach jq on its stdin, never its command line.
+with_rights() { printf '%s\n%s\n' "$1" "$2" | jq -c -s '.[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'; }

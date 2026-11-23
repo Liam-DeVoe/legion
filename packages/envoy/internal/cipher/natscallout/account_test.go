@@ -1,7 +1,6 @@
 package natscallout
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"testing"
@@ -177,7 +176,10 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 // stream from that backup (restoreStream), each chunk sent to $JS.SNAPSHOT.RESTORE.<stream>.<id>
 // through the same stream, with the key's one message. The key's value is three chunks of random
 // bytes, which the snapshot cannot compress, so the backup is more than one chunk, and each chunk
-// after the first waits for the acknowledgement of the one before (snapshotChunk).
+// after the first waits for the acknowledgement of the one before (snapshotChunk). The static user
+// that makes the bucket writes that value before either subtest runs, so the operator's subtest
+// needs nothing of Dispatch's and runs alone (-run 'TestAPrivateRenderAdmitsIntoEnvoy/ENVOY/operator');
+// Dispatch's write of the same key replaces it, and the bucket keeps one value a key.
 //
 // The control is the setting left at $G, its default: the auth service places the same clients in
 // $G, which holds no stream and imports nothing. So the same write gets no responders (nats.go's
@@ -208,14 +210,16 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			keys := testnats.NewCalloutKeys(t)
 			adminSeed, adminKey := testnats.User(t)
 			url := testnats.StartWithCalloutAccounts(t, keys, privateRender(),
-				testnats.StaticUser{NKey: adminKey, Publish: []string{"$JS.API.>"}, Subscribe: []string{"_INBOX.>"}})
+				testnats.StaticUser{NKey: adminKey, Publish: []string{"$JS.API.>", "$KV." + bucket + ".>"}, Subscribe: []string{"_INBOX.>"}})
 			admin, err := testnats.ConnectSeed(t, url, adminSeed)
 			require.NoError(t, err)
 			defer admin.Close()
 			adminJS, err := admin.JetStream()
 			require.NoError(t, err)
-			_, err = adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
+			adminKV, err := adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 			require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)
+			_, err = adminKV.Put(key, value)
+			require.NoError(t, err, "a static user of %s could not write the key through its import", envoyAccount)
 
 			now := time.Now()
 			tokens := dispatchToken(now)
@@ -266,7 +270,7 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 					require.Greater(t, len(backup.data), snapshotChunk, "the backup of %s is one chunk, so it waited for no acknowledgement", stream)
 					require.Equal(t, uint64(1), backup.messages, "the backup of %s holds another count than the key's one message", stream)
 					succeeds(t, nc, "$JS.API.STREAM.DELETE."+stream, nil)
-					restored, err := restoreStream(context.Background(), nc, backup, nil)
+					restored, err := restoreStream(t.Context(), nc, backup, nil)
 					require.NoError(t, err, "the held operator placed in %s could not restore %s", row.setting, stream)
 					require.Equal(t, backup.messages, restored, "the restore of %s holds another count than its backup", stream)
 				} else {

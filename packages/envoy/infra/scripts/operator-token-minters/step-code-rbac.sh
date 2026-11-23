@@ -21,8 +21,10 @@ else
     # each cluster's own, read live from its discovery.
     code_rights="$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")"
     csr_reset
-    # jq reads the renders from its stdin, so an error it prints names no file.
-    if ! cat -- "${RBAC_RENDERS[@]}" | jq -r -n --argjson rights "$code_rights" --argjson named_rights "$code_rights" \
+    # jq reads the renders from its stdin, so an error it prints names no file, and the rights from a
+    # file, never its command line.
+    printf '%s' "$code_rights" >"$WORK/code-rights.json"
+    if ! cat -- "${RBAC_RENDERS[@]}" | jq -r -n --slurpfile rights "$WORK/code-rights.json" --slurpfile named_rights "$WORK/code-rights.json" \
       --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
