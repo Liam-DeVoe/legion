@@ -171,7 +171,7 @@ its checks proves nothing for it, and a child that carries part of its requireme
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses. Where its task holds your step
-`acceptance:owner`, your acceptance is the only gate on it, and a task with no acceptance step
+`acceptance:owner`, your acceptance is the only gate on it. A task with no acceptance step
 has no gate on it at all. So give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet, since a requirement is in the approved spec or it is not one:

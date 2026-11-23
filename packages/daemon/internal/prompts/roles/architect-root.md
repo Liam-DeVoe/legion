@@ -236,7 +236,7 @@ the root's own head, or, for an `after_merge` check, on the branch the root's pu
 into or on the repository's default branch, in the root's last round.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses. Where its task holds your step
-`acceptance:owner`, your acceptance is the only gate on it, and a task with no acceptance step
+`acceptance:owner`, your acceptance is the only gate on it. A task with no acceptance step
 has no gate on it at all. So give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
