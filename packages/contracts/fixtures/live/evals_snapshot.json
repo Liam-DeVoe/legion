@@ -36,7 +36,8 @@
             "kind": "user",
             "id": "alice"
           },
-          "created_at": "2026-10-01T00:00:00Z"
+          "created_at": "2026-10-01T00:00:00Z",
+          "answer": ""
         },
         "owner": {
           "role": "",
@@ -102,7 +103,8 @@
             "kind": "user",
             "id": "alice"
           },
-          "created_at": "2026-10-01T00:00:00Z"
+          "created_at": "2026-10-01T00:00:00Z",
+          "answer": ""
         },
         "owner": {
           "role": "",
@@ -168,7 +170,8 @@
             "kind": "user",
             "id": "alice"
           },
-          "created_at": "2026-10-01T00:00:00Z"
+          "created_at": "2026-10-01T00:00:00Z",
+          "answer": ""
         },
         "owner": {
           "role": "",
@@ -225,9 +228,9 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/deploy-frequency": "362e71f5564e0b32",
-        "ACME/pr-size": "62c92e3032588d3e",
-        "ACME/review-time": "1f4e1ae025ced081"
+        "ACME/deploy-frequency": "97e4190d2b190542",
+        "ACME/pr-size": "433ef08d8f82231e",
+        "ACME/review-time": "917ad59fc0f58941"
       }
     },
     "maps": {},

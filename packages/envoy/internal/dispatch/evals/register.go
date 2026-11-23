@@ -1,7 +1,9 @@
 package evals
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals/charts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -35,6 +38,12 @@ import (
 // series registered here for the first time is the headline and primary series when the eval has
 // no series yet, and a control series otherwise, folded by its last value (agg last) and listed,
 // unless the change sets those fields.
+//
+// Charts, when set, is the eval's whole list of declared charts (R20), refused unless the eval
+// platform's validate_charts rules accept it (evals/charts, CodeChartSpecInvalid) before anything
+// is written, and Answer the short text that answers the eval's question. Each is a field of the
+// versioned definition, so a write that changes either writes a version, and one that sets
+// neither carries both forward; any eval takes them, a computed one too.
 //
 // The computation fields (ComputationChange, and a series' SeriesComputationChange) are a logged
 // eval's alone: on a computed eval the catalogue states them (computationField). A source is
@@ -67,6 +76,8 @@ type Registration struct {
 	// first stored, and any other is stored at this write's time.
 	Links   Field[[]Link]
 	DocText Field[string]
+	Charts  Field[json.RawMessage]
+	Answer  Field[string]
 
 	Series []SeriesChange
 }
@@ -182,15 +193,18 @@ const (
 	fieldLinks           = "links"
 	fieldDocText         = "doc_text"
 	fieldDocBlock        = "doc_block"
+	fieldCharts          = "charts"
+	fieldAnswer          = "answer"
 	fieldMinN            = "min_n"
 )
 
 // personFields is every field of the write that is a person's to set on an eval, as the body
 // spells it: the fields R5 names as a person's, which a register write of a computed eval may
-// set and the catalogue never states. The fields of the computation are not among them: on a
-// computed eval the catalogue states them and this write is refused (computationField), and on a
-// logged eval nothing of the registry fills them. The eval's record of them is what the seed
-// reads to leave a field a person set alone (Definition.SetByPerson).
+// set and the catalogue never states, charts and answer among them (R20). The fields of the
+// computation are not among them: on a computed eval the catalogue states them and this write is
+// refused (computationField), and on a logged eval nothing of the registry fills them. The eval's
+// record of them is what the seed reads to leave a field a person set alone
+// (Definition.SetByPerson).
 func (change Registration) personFields() []string {
 	return setFields([]namedField{
 		{fieldTarget, change.Target.Set}, {fieldTargetInclusive, change.TargetInclusive.Set},
@@ -198,7 +212,8 @@ func (change Registration) personFields() []string {
 		{fieldPerson, change.Person.Set}, {fieldIssueKey, change.IssueKey.Set},
 		{fieldState, change.State.Set}, {fieldReplacedBy, change.ReplacedBy.Set},
 		{fieldLinks, change.Links.Set}, {fieldDocText, change.DocText.Set},
-		{fieldDocBlock, change.DocBlock.Set},
+		{fieldDocBlock, change.DocBlock.Set}, {fieldCharts, change.Charts.Set},
+		{fieldAnswer, change.Answer.Set},
 	})
 }
 
@@ -260,7 +275,9 @@ type Registered struct {
 // lists or unlists that series' stored day rows in the same transaction (relistDays). A write that
 // may write the eval's section, one carrying doc_text or the first of an eval, takes the
 // document's owner lock before it stores anything (lockDocument) and does the section's document
-// work there, in its read phase, queued for the commit after its versions' rows (writeMethod).
+// work there, in its read phase, queued for the commit after its versions' rows (writeMethod). A
+// write that sets charts reads them as the store spells them, beside the newest version's
+// (chartsAsStored), so the same list sent again, however spaced, writes no version.
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -284,7 +301,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			if field := computationField(change, series); field != "" {
 				return fieldRefusal(CodeFieldComputed, field,
 					"%s is a field of the computation of %s, which its code defines (source %s): a register write of a computed eval sets "+
-						"its target, target_inclusive and target_judges, the min_n of %s's series %s, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
+						"its target, target_inclusive and target_judges, the min_n of %s's series %s, owner_role, person, issue_key, links, state, replaced_by, doc_text, doc_block, charts and answer",
 					field, evalID, current.Source, SlugPRCI, SeriesJobs)
 			}
 		}
@@ -298,6 +315,11 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		if !current.Computed() {
 			if index, count, total := seriesPastLimit(series, len(change.Series), func(index int) string { return change.Series[index].Series }); index >= 0 {
 				return fieldRefusal(CodeSeriesLimit, fmt.Sprintf("series[%d].series", index), "%s", seriesLimitReason(evalID, change.Series[index].Series, count, total))
+			}
+		}
+		if change.Charts.Set {
+			if change.Charts.Value, current.Charts, err = chartsAsStored(ctx, w.Tx, evalID, change.Charts.Value); err != nil {
+				return err
 			}
 		}
 		next := current
@@ -489,6 +511,8 @@ func (change Registration) applyTo(next *Definition, now time.Time) {
 	if change.Links.Set {
 		next.Links = stampLinks(change.Links.Value, next.Links, now)
 	}
+	change.Charts.applyTo(&next.Charts)
+	change.Answer.applyTo(&next.Answer)
 	next.TargetJudges = nonNil(next.TargetJudges)
 	next.SetByPerson = withFields(next.SetByPerson, change.personFields())
 }
@@ -521,12 +545,28 @@ func stampLinks(links, previous []Link, now time.Time) []Link {
 // sameDefinition reports whether two versions define the same eval: every field but the
 // version's own number, time, writer and way of writing. The record of which fields a person set
 // is one of them, so a person's write of a field that moves no value still writes a version,
-// which is how that choice is kept (Definition.SetByPerson).
+// which is how that choice is kept (Definition.SetByPerson). Charts compare as the store spells
+// them, and alike where neither definition read them (Definition.Charts).
 func sameDefinition(a, b Definition) bool {
 	return a.EvalID == b.EvalID && a.Computation.same(b.Computation) && a.DocBlock == b.DocBlock &&
 		sameTarget(a.Target, b.Target) && a.TargetInclusive == b.TargetInclusive && slices.Equal(a.TargetJudges, b.TargetJudges) &&
 		a.OwnerRole == b.OwnerRole && a.Person == b.Person && a.IssueKey == b.IssueKey && a.State == b.State &&
-		a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links) && slices.Equal(a.SetByPerson, b.SetByPerson)
+		a.ReplacedBy == b.ReplacedBy && sameLinks(a.Links, b.Links) && slices.Equal(a.SetByPerson, b.SetByPerson) &&
+		bytes.Equal(a.Charts, b.Charts) && a.Answer == b.Answer
+}
+
+// chartsAsStored answers declared as the store spells it, jsonb's own text, which is what a read
+// of eval_versions.charts answers, and the charts of evalID's newest version, `[]` where it has
+// none: so two lists that store alike are one value, whatever spacing, key order or spelling of
+// a number the write sent them in.
+func chartsAsStored(ctx context.Context, tx pgx.Tx, evalID string, declared json.RawMessage) (stored, newest json.RawMessage, err error) {
+	var storedText, newestText []byte
+	if err := tx.QueryRow(ctx, `
+		select $2::jsonb, coalesce((select charts from eval_versions where eval_id = $1 order by version desc limit 1), '[]'::jsonb)
+	`, evalID, string(declared)).Scan(&storedText, &newestText); err != nil {
+		return nil, nil, fmt.Errorf("read the charts of %s as the store holds them: %w", evalID, err)
+	}
+	return storedText, newestText, nil
 }
 
 // sameSeries reports whether two versions of a series are the same but for the version's own
@@ -573,9 +613,10 @@ var (
 )
 
 // validateRegistration refuses a register write whose fields the tables would refuse, whose keys
-// an index entry cannot hold (maxKeyBytes), whose links are not links, or that names more series
-// than an eval holds (MaxEvalSeries), before any transaction opens, naming the field it refuses as
-// the body spells it.
+// an index entry cannot hold (maxKeyBytes), whose links are not links, that names more series
+// than an eval holds (MaxEvalSeries), or whose charts the eval platform's validate_charts rules
+// refuse (validateCharts), before any transaction opens, naming the field it refuses as the body
+// spells it.
 func validateRegistration(change Registration) error {
 	if !slugPattern.MatchString(change.Slug) {
 		return fieldRefusal(CodeSlugInvalid, "slug", "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
@@ -663,17 +704,42 @@ func validateRegistration(change Registration) error {
 			"series %q is series %d of the %d this write names, and an eval holds at most %d series, so that each of its stored rows is written in one statement of at most %d bytes",
 			change.Series[index].Series, count, total, MaxEvalSeries, statementBytes)
 	}
+	if change.Charts.Set {
+		return validateCharts(change.Charts.Value)
+	}
 	return nil
+}
+
+// validateCharts refuses declared, a register write's charts, where evals/charts, the port of the
+// eval platform's validate_charts at its commit 4f9223b9, refuses them (R20):
+// CodeChartSpecInvalid naming the first refusal's field, with every refusal's message, each on a
+// line of its own in the order the validator finds them; and CodeInvalidJSON, naming charts, for
+// bytes that are no JSON value the platform's reader takes. A module is refused naming
+// charts[i].kind, as the validator refuses it.
+func validateCharts(declared json.RawMessage) error {
+	refusals, err := charts.Validate(declared)
+	if err != nil {
+		return fieldRefusal(CodeInvalidJSON, "charts", "invalid JSON body: charts: %v", err)
+	}
+	if len(refusals) == 0 {
+		return nil
+	}
+	messages := make([]string, len(refusals))
+	for index, refused := range refusals {
+		messages[index] = refused.Message
+	}
+	return fieldRefusal(CodeChartSpecInvalid, refusals[0].Field, "%s", strings.Join(messages, "\n"))
 }
 
 // computationField is the first field change names that the computation of a computed eval
 // defines, as the body spells it, or "" where it names none (R5). On a computed eval a person sets
 // how the number is judged and who answers for it: the target, target_inclusive and
 // target_judges; the min_n of pr-ci's job series (rankedByMinN); owner_role, person, issue_key,
-// links, state and replaced_by; and the method, through doc_text or doc_block. The catalogue
-// states the rest from the code, and the seed writes it again whenever a release changes it: every
-// field of the definition's Computation and of each series' SeriesComputation, and the series
-// themselves, which the day builders write. series is the eval's series by name.
+// links, state and replaced_by; the method, through doc_text or doc_block; and the charts it is
+// drawn by and its answer. The catalogue states the rest from the code, and the seed writes it
+// again whenever a release changes it: every field of the definition's Computation and of each
+// series' SeriesComputation, and the series themselves, which the day builders write. series is
+// the eval's series by name.
 func computationField(change Registration, series map[string]Series) string {
 	if name := change.ComputationChange.named(); name != "" {
 		return name

@@ -563,7 +563,7 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 		t.Fatalf("%d versions stored, the read answers %d: versions %v, targets %v; want 4 newest first, targets 20 20 30 30", stored, detail.Total, numbers, targets)
 	}
 	newest := detail.Items[0]
-	minutes := seriesValues(t, newest, "minutes")
+	minutes := seriesValues(t, newest.evalItem, "minutes")
 	if newest.Verdict == nil || newest.Verdict.Met == nil || !*newest.Verdict.Met || minutes.Window["median"] == nil || *minutes.Window["median"] != 15 {
 		t.Errorf("the newest version reads %+v with the verdict %+v, want the median 15 under the target 20, met", minutes.Window, newest.Verdict)
 	}
@@ -1029,7 +1029,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 			t.Fatalf("the read of %s answers no item", slug)
 		}
 		days := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/SQL/evals/"+slug+"/items?row_kind=day&"+window)
-		return seriesValues(t, detail.Items[0], measures.SeriesDeploys), days.Total
+		return seriesValues(t, detail.Items[0].evalItem, measures.SeriesDeploys), days.Total
 	}
 
 	logged(evals.SlugDeployFrequency, "seeded-reading")

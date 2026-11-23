@@ -44,7 +44,8 @@
               "kind": "user",
               "id": "alice"
             },
-            "created_at": "2026-10-01T00:00:00Z"
+            "created_at": "2026-10-01T00:00:00Z",
+            "answer": ""
           },
           "owner": {
             "role": "",
@@ -110,7 +111,8 @@
               "kind": "user",
               "id": "alice"
             },
-            "created_at": "2026-10-01T00:00:00Z"
+            "created_at": "2026-10-01T00:00:00Z",
+            "answer": ""
           },
           "owner": {
             "role": "",
@@ -154,8 +156,8 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/lead-time": "30ebc6b673997a92",
-        "ACME/pr-size": "c34a73675c51f574"
+        "ACME/lead-time": "bb14e40ddffa0eb2",
+        "ACME/pr-size": "3f3df7524fc099d4"
       }
     },
     "fields": {

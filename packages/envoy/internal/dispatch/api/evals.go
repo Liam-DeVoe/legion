@@ -28,13 +28,14 @@ import (
 // written here.
 //
 //   - GET /api/v1/projects/{key}/evals and GET /api/v1/evals read the list: each eval's current
-//     definition with each listed series' statistics over a window of days and a compare range,
-//     folded from the stored day rows of those days (evals.FoldStatistics, the one fold each
-//     source names), never from the population again (R12). The cross-project read takes
-//     `project` repeatably and reads every project when it names none: no read here picks a
-//     project for its caller (R11, R14).
-//   - GET /api/v1/projects/{key}/evals/{slug} reads one eval's versions, newest first, the newest
-//     with the window's values, and the method its section of the project's `evals-md` holds (R5).
+//     definition, its answer among its fields and never its declared charts, with each listed
+//     series' statistics over a window of days and a compare range, folded from the stored day
+//     rows of those days (evals.FoldStatistics, the one fold each source names), never from the
+//     population again (R12). The cross-project read takes `project` repeatably and reads every
+//     project when it names none: no read here picks a project for its caller (R11, R14).
+//   - GET /api/v1/projects/{key}/evals/{slug} reads one eval's versions, newest first, each with
+//     its declared charts (dispatch://INFRA-2918, R20), the newest with the window's values, and
+//     the method its section of the project's `evals-md` holds (R5).
 //   - GET /api/v1/projects/{key}/evals/{slug}/items reads the rows behind the numbers, one shape
 //     for every row kind (evals_items.go).
 //   - POST /api/v1/projects/{key}/evals/{slug}/readings logs one batch of readings, which the
@@ -297,9 +298,10 @@ type evalOwner struct {
 }
 
 // evalItem is one eval as the list read states it, and one version of one as the detail read
-// does: the definition (every field of eval_versions, R1), its owner, each listed series with its
-// values, and the verdict of its target (null where the target is off). The detail read states
-// the series and the verdict of the newest version alone; an older version's are null.
+// does: the definition (every field of eval_versions but its charts, which the detail read alone
+// answers, evalVersionItem), its owner, each listed series with its values, and the verdict of
+// its target (null where the target is off). The detail read states the series and the verdict of
+// the newest version alone; an older version's are null.
 type evalItem struct {
 	Definition evals.Definition     `json:"definition"`
 	Owner      evalOwner            `json:"owner"`
@@ -329,18 +331,27 @@ type evalListResponse struct {
 	Freshness evalFreshness  `json:"freshness"`
 }
 
+// evalVersionItem is one version of an eval as the detail read answers it: the eval as evalItem
+// states it, and the version's declared charts (R20), `[]` where it declares none. Only this read
+// answers them, so no list read, and no first paint, carries a chart's declaration.
+type evalVersionItem struct {
+	evalItem
+	Charts json.RawMessage `json:"charts"`
+}
+
 // evalDetailResponse is GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
-// newest first, the newest carrying the window's values, and doc_text, the method its section of
-// the project's `evals-md` holds (null where the document holds no section for it).
+// newest first, the newest carrying the window's values, each its declared charts, and doc_text,
+// the method its section of the project's `evals-md` holds (null where the document holds no
+// section for it).
 type evalDetailResponse struct {
-	Items     []evalItem    `json:"items"`
-	Total     int           `json:"total"`
-	Limit     int           `json:"limit"`
-	Offset    int           `json:"offset"`
-	Window    evalRange     `json:"window"`
-	Compare   *evalRange    `json:"compare"`
-	Freshness evalFreshness `json:"freshness"`
-	DocText   *string       `json:"doc_text"`
+	Items     []evalVersionItem `json:"items"`
+	Total     int               `json:"total"`
+	Limit     int               `json:"limit"`
+	Offset    int               `json:"offset"`
+	Window    evalRange         `json:"window"`
+	Compare   *evalRange        `json:"compare"`
+	Freshness evalFreshness     `json:"freshness"`
+	DocText   *string           `json:"doc_text"`
 }
 
 // evalLinkInput is one link a write gives: its relation, its absolute address and its label. The
@@ -418,7 +429,9 @@ type evalSeriesInput struct {
 // the write sets. A field the body leaves out keeps the newest version's value, or the default of
 // an eval registered here first (evals.Registration); a field the body names sets it, `target:
 // null` turning the target off. doc_text, when given, is the eval's new method, written into its
-// section of the project's `evals-md`.
+// section of the project's `evals-md`. charts, when given, is the eval's whole list of declared
+// charts, held as the bytes the body sent, since the validator reads them as the eval platform's
+// reader does (evals/charts); answer is the short text that answers the eval's question.
 type evalRegisterInput struct {
 	Actor           *model.Actor        `json:"actor"`
 	Slug            string              `json:"slug" required:"true"`
@@ -442,6 +455,8 @@ type evalRegisterInput struct {
 	State           string              `json:"state"`
 	ReplacedBy      string              `json:"replaced_by"`
 	Links           []evalLinkInput     `json:"links"`
+	Charts          json.RawMessage     `json:"charts"`
+	Answer          string              `json:"answer"`
 	Series          []evalSeriesInput   `json:"series"`
 }
 
@@ -985,7 +1000,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := evalDetailResponse{
-		Items: []evalItem{}, Total: versions.Total, Limit: read.limit, Offset: read.offset,
+		Items: []evalVersionItem{}, Total: versions.Total, Limit: read.limit, Offset: read.offset,
 		Window: newEvalRange(read.ranges.window), Compare: evalCompareRange(read.ranges.compare),
 	}
 	// The newest version states the window's values where the page holds it.
@@ -1016,12 +1031,16 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	}
 	newest, freshness := values.items()
 	answer.Freshness = freshness
+	// Each version's charts are its own row's, the newest's among them: the newest's item holds
+	// the definition the eval's own read made (evals.EvalIn), which reads no charts.
 	for _, version := range versions.Items {
 		if version.Version != entry.Definition.Version {
-			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
+			answer.Items = append(answer.Items, evalVersionItem{evalItem: evalItem{Definition: version, Owner: evalOwnerOf(version)}, Charts: version.Charts})
 			continue
 		}
-		answer.Items = append(answer.Items, newest...)
+		for _, item := range newest {
+			answer.Items = append(answer.Items, evalVersionItem{evalItem: item, Charts: version.Charts})
+		}
 	}
 	if held {
 		answer.DocText = &method
@@ -1129,7 +1148,10 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // that stand where the body changed no field of the definition or of a series it names. A field
 // the body names that no earlier write of the eval named is a change of the version's record of
 // what a person set, so `target: null` on an eval whose target is already off is answered 201,
-// and sent again 200 (evals.Definition's SetByPerson).
+// and sent again 200 (evals.Definition's SetByPerson). charts the eval platform's validate_charts
+// rules refuse are 400 CHART_SPEC_INVALID naming the first refusal's field, and charts that are no
+// JSON value its reader takes 400 INVALID_JSON, each before anything is written; a credential of
+// another project is refused 403 PROJECT_SCOPE before the handler runs (withinProjectScope).
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1163,7 +1185,8 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 // field the body names is set, `null` included (a null target is off), and each it leaves out is
 // left unset, so the registry copies it forward. The body is decoded twice, once into its type,
 // which refuses a key no field spells exactly (decodeEvalBody), and once by key, which says which
-// keys it named.
+// keys it named. charts is the value the body sent, byte for byte, which the registry validates
+// (evals.Registration.Charts): `null` among them, which it refuses as no list.
 func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, error) {
 	var input evalRegisterInput
 	raw, err := decodeEvalBody(r, &input, evalRegisterBodyKeys)
@@ -1196,6 +1219,8 @@ func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, 
 		State:           fieldOf(named, "state", input.State),
 		ReplacedBy:      fieldOf(named, "replaced_by", input.ReplacedBy),
 		Links:           fieldOf(named, "links", evalLinks(input.Links)),
+		Charts:          fieldOf(named, "charts", named["charts"]),
+		Answer:          fieldOf(named, "answer", input.Answer),
 	}
 	if len(input.Series) > 0 {
 		var namedSeries []map[string]json.RawMessage

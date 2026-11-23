@@ -2776,10 +2776,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, "no data", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
+    /** @description The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions but charts, which the eval's own read answers, read through evals_current; answer, the short text that answers the eval's question, among them), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, "no data", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
     get: operations["getApiV1ProjectsByKeyEvals"];
     put?: never;
-    /** @description Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way, and a version that lists or unlists a logged eval's series lists or unlists its stored day rows with it. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. A slug and a series' name hold at most 512 bytes. An eval holds at most 234 series, listed or not, so that each of its stored rows is written in one statement of at most 256 KiB: a write that names more, or that would leave a logged eval holding more, is refused EVAL_SERIES_LIMIT naming the first series past the bound. source is logged: only the seeded catalogue makes an eval computed, and a write naming another source is refused EVAL_FIELD_INVALID. A series' min_n is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs, so it is taken on pr-ci's job series (job:*) alone and refused EVAL_FIELD_INVALID on any other series, which no read ranks by one. On a computed eval the write sets only how the number is judged and who answers for it: target, target_inclusive, target_judges, the min_n of pr-ci's job series, owner_role, person, issue_key, links, state, replaced_by and its method (doc_text or doc_block); its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} with what it wrote, a version of the definition or of a series, or 200 with the versions that stand where the body changed nothing; 400 {code, error, field} with a stable code and the one field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_SERIES_LIMIT, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING), its error at most 1,024 bytes and its field 128 as JSON encodes them, a value of the body it names cut to fit, so the answer the Idempotency-Key keeps stays small whatever the body; 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file. */
+    /** @description Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, charts?, answer?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way, and a version that lists or unlists a logged eval's series lists or unlists its stored day rows with it. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. charts is the eval's whole list of declared charts, which the eval's own read answers and no list read does, and answer the short text that answers its question: a write that changes either writes a version, and one that names neither carries both forward. Before anything is written, charts are held to the eval platform's validate_charts rules at its commit 4f9223b9, with three differences (no kind requires approved, and approved and kept stand in any order; a network or architecture chart needs no graph; kind module is refused): a list those rules refuse is 400 CHART_SPEC_INVALID, its field the first refusal's path (charts[2].y.series) and its error every refusal's message, one a line, and charts that are no JSON value the platform's reader takes (text that is no UTF-8, an integer of more than 4,300 digits) are 400 INVALID_JSON naming charts. A slug and a series' name hold at most 512 bytes. An eval holds at most 234 series, listed or not, so that each of its stored rows is written in one statement of at most 256 KiB: a write that names more, or that would leave a logged eval holding more, is refused EVAL_SERIES_LIMIT naming the first series past the bound. source is logged: only the seeded catalogue makes an eval computed, and a write naming another source is refused EVAL_FIELD_INVALID. A series' min_n is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs, so it is taken on pr-ci's job series (job:*) alone and refused EVAL_FIELD_INVALID on any other series, which no read ranks by one. On a computed eval the write sets only how the number is judged, drawn and answered and who answers for it: target, target_inclusive, target_judges, the min_n of pr-ci's job series, owner_role, person, issue_key, links, state, replaced_by, its method (doc_text or doc_block), charts and answer; its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} with what it wrote, a version of the definition or of a series, or 200 with the versions that stand where the body changed nothing; 400 {code, error, field} with a stable code and the one field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_SERIES_LIMIT, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING, CHART_SPEC_INVALID, INVALID_JSON), its error at most 1,024 bytes and its field 128 as JSON encodes them, a value of the body it names cut to fit, so the answer the Idempotency-Key keeps stays small whatever the body; 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file. */
     post: operations["postApiV1ProjectsByKeyEvals"];
     delete?: never;
     options?: never;
@@ -2794,7 +2794,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds. */
+    /** @description One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape, each with charts, the version's declared charts ([] for none), which no list read answers: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds. */
     get: operations["getApiV1ProjectsByKeyEvalsBySlug"];
     put?: never;
     post?: never;
@@ -5112,6 +5112,7 @@ export interface components {
       statistics: components["schemas"]["EvalStatistics"] | null;
     };
     EvalDefinition: {
+      answer: string;
       /** Format: date-time */
       created_at: string;
       decision: string;
@@ -5144,7 +5145,7 @@ export interface components {
       compare: components["schemas"]["EvalRange"] | null;
       doc_text: null | string;
       freshness: components["schemas"]["EvalFreshness"];
-      items: components["schemas"]["EvalItem"][] | null;
+      items: components["schemas"]["EvalVersionItem"][] | null;
       limit: number;
       offset: number;
       total: number;
@@ -5158,12 +5159,6 @@ export interface components {
       refresher_age_seconds: null | number;
       /** Format: date-time */
       rows_updated_at: null | string;
-    };
-    EvalItem: {
-      definition: components["schemas"]["EvalDefinition"];
-      owner: components["schemas"]["EvalOwner"];
-      series: components["schemas"]["EvalSeriesValues"][] | null;
-      verdict: components["schemas"]["EvalVerdict"] | null;
     };
     EvalItemRow: {
       cols: {
@@ -5306,6 +5301,11 @@ export interface components {
     };
     EvalRegisterInput: {
       actor?: components["schemas"]["Actor"] | null;
+      answer?: string;
+      /** @description an eval's whole list of declared charts, each the declaration of one chart as the eval platform's validate_charts rules take it */
+      charts?: {
+        [key: string]: unknown;
+      }[];
       decision?: string;
       direction?: string;
       doc_block?: string;
@@ -5400,6 +5400,13 @@ export interface components {
       met: null | boolean;
       /** Format: double */
       target: number;
+    };
+    EvalVersionItem: {
+      charts: unknown;
+      definition: components["schemas"]["EvalDefinition"];
+      owner: components["schemas"]["EvalOwner"];
+      series: components["schemas"]["EvalSeriesValues"][] | null;
+      verdict: components["schemas"]["EvalVerdict"] | null;
     };
     Event: {
       actor: components["schemas"]["Actor"];
@@ -16020,7 +16027,6 @@ export type EvalDefinition = components["schemas"]["EvalDefinition"];
 export type EvalDetailResponse = components["schemas"]["EvalDetailResponse"];
 export type EvalFailureMode = components["schemas"]["EvalFailureMode"];
 export type EvalFreshness = components["schemas"]["EvalFreshness"];
-export type EvalItem = components["schemas"]["EvalItem"];
 export type EvalItemRow = components["schemas"]["EvalItemRow"];
 export type EvalItemsResponse = components["schemas"]["EvalItemsResponse"];
 export type EvalJudge = components["schemas"]["EvalJudge"];
@@ -16044,6 +16050,7 @@ export type EvalSeriesInput = components["schemas"]["EvalSeriesInput"];
 export type EvalSeriesValues = components["schemas"]["EvalSeriesValues"];
 export type EvalStatistics = components["schemas"]["EvalStatistics"];
 export type EvalVerdict = components["schemas"]["EvalVerdict"];
+export type EvalVersionItem = components["schemas"]["EvalVersionItem"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
 export type ForeignChildOpen = components["schemas"]["ForeignChildOpen"];
