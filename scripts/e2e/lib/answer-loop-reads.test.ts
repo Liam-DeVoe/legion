@@ -801,6 +801,20 @@ describe("the asker's inbox", () => {
     });
   });
 
+  test("replies_to counts each answered event's replies once, however many sends name it", () => {
+    // The listener answers a sender's own repeat under one key with its first copy's event, so
+    // the sends of one envelope can all name one event: its replies count once, not once a send.
+    expect(read("replies_to event-two event-two event-two").text).toBe("2");
+    expect(read("replies_to event-one event-two").text).toBe("3");
+    expect(read("replies_to event-one event-never event-one").text).toBe("1");
+    expect(read("replies_to event-never").text).toBe("0");
+    expect(read("evidence=$empty_evidence; replies_to event-one event-one")).toEqual({
+      code: 0,
+      text: "0",
+    });
+    expect(read("evidence=$bare_evidence; replies_to event-one")).toEqual({ code: 0, text: "0" });
+  });
+
   test("first_reply_of reads which answer reached the asker first, not which was asked first", () => {
     expect(read("first_reply_of event-two event-one").text).toContain(
       "I decided it before I stopped"
@@ -846,6 +860,19 @@ describe("the listener's log", () => {
     expect(read("listener_handoffs_to session-architect").text).toBe("1");
     expect(read("listener_handoffs_to session-never").text).toBe("0");
     expect(read("evidence=$empty_evidence; listener_handoffs_to session-tester-old")).toEqual({
+      code: 0,
+      text: "0",
+    });
+  });
+
+  test("listener_stored_handoffs_to counts the hand-offs the stream stored, not its repeats", () => {
+    // The planner's three sends under one key: one hand-off stored, two the stream recognised as
+    // that copy (duplicate: true). A line from before the field was logged counts as stored.
+    expect(read("listener_handoffs_to session-planner").text).toBe("3");
+    expect(read("listener_stored_handoffs_to session-planner").text).toBe("1");
+    expect(read("listener_stored_handoffs_to session-tester-old").text).toBe("2");
+    expect(read("listener_stored_handoffs_to session-never").text).toBe("0");
+    expect(read("evidence=$empty_evidence; listener_stored_handoffs_to session-planner")).toEqual({
       code: 0,
       text: "0",
     });

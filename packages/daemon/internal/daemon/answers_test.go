@@ -312,7 +312,7 @@ func movedBackIntoTheWorkflow(t *testing.T, pool *store.Pool, records record.Sto
 	t.Helper()
 	ctx := context.Background()
 	var root *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		root, err = records.Issue(ctx, tx, key)
 		return err
@@ -500,7 +500,7 @@ func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 			now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 			putOutboxIssue(t, pool, records, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: "LEGION", Tree: root, Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true})
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: 0, AdmittedAt: now}); err != nil {
 					return err
 				}
@@ -552,7 +552,7 @@ func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 			apply("tick", intake.ControllerTick{})
 
 			var after *record.Issue
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				after, err = records.Issue(ctx, tx, root)
 				return err
@@ -632,7 +632,7 @@ func TestQuestionsForControllerListsAPassedQuestionForSevenDays(t *testing.T) {
 	listed := func(at time.Time) []api.QuestionForController {
 		t.Helper()
 		var questions []api.QuestionForController
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			questions, err = questionsForController(ctx, tx, st, "legion", at)
 			return err
@@ -876,7 +876,7 @@ func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords
 
 	// The questions `legion state` lists.
 	var questions []api.QuestionForController
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		questions, err = questionsForController(ctx, tx, st, "legion", time.Now())
 		return err
@@ -901,7 +901,7 @@ func TestRecordFactsCarryEachRolesHandoffCommit(t *testing.T) {
 	const key, reviewed = "LEGION-5", "8848896da05779c592221b1199ee55ddb11cc3f3"
 	putOutboxIssue(t, pool, records, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: "Reviewed", Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Phase: phase.Reviewing, Generation: 1, Status: "in_progress"})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "legion-5-reviewer", HandoffCommit: reviewed}); err != nil {
 			return err
 		}

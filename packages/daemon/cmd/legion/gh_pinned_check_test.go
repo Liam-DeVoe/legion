@@ -149,7 +149,7 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", tc.args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; !strings.HasPrefix(got.checked, want) {
+			if want := ghGuardRun(tc.args); !strings.HasPrefix(got.checked, want) {
 				t.Errorf("the shared check recorded %q, want its run of the call first, %q", got.checked, want)
 			}
 			looked := strings.Contains(got.checked, "lookup acme/widgets\n")

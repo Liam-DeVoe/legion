@@ -50,18 +50,22 @@ const conversationColumns = `session, project, issue, role, token, harness, loca
 // everything else is rewritten, so a re-registration that moved the session file records where it
 // is now.
 func (s *Store) RegisterConversation(ctx context.Context, c AgentConversation) (AgentConversation, error) {
-	rows, err := s.pool.Query(ctx, `insert into agent_conversations (`+conversationColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, 'register', $9)
-		on conflict (session) do update set project = excluded.project, issue = excluded.issue,
-			role = excluded.role, token = excluded.token, harness = excluded.harness, location = excluded.location,
-			started_at = case when agent_conversations.source = 'register' then agent_conversations.started_at else excluded.started_at end,
-			source = 'register', recorded_at = excluded.recorded_at
-		returning `+conversationColumns,
-		c.Session, c.Project, c.Issue, string(c.Role), string(c.Token), string(c.Harness), c.Location, c.StartedAt, c.RecordedAt)
-	if err != nil {
-		return AgentConversation{}, fmt.Errorf("record the conversation %s of %s: %w", c.Session, c.Token, err)
-	}
-	written, err := scanConversations(rows)
+	var written []AgentConversation
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `insert into agent_conversations (`+conversationColumns+`)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, 'register', $9)
+			on conflict (session) do update set project = excluded.project, issue = excluded.issue,
+				role = excluded.role, token = excluded.token, harness = excluded.harness, location = excluded.location,
+				started_at = case when agent_conversations.source = 'register' then agent_conversations.started_at else excluded.started_at end,
+				source = 'register', recorded_at = excluded.recorded_at
+			returning `+conversationColumns,
+			c.Session, c.Project, c.Issue, string(c.Role), string(c.Token), string(c.Harness), c.Location, c.StartedAt, c.RecordedAt)
+		if err != nil {
+			return err
+		}
+		written, err = scanConversations(rows)
+		return err
+	})
 	if err != nil {
 		return AgentConversation{}, fmt.Errorf("record the conversation %s of %s: %w", c.Session, c.Token, err)
 	}
@@ -75,22 +79,30 @@ func (s *Store) RegisterConversation(ctx context.Context, c AgentConversation) (
 // is recorded already: a scan never rewrites a row, a registration's least of all. recorded is
 // whether it wrote one.
 func (s *Store) ScanConversation(ctx context.Context, c AgentConversation) (recorded bool, err error) {
-	tag, err := s.pool.Exec(ctx, `insert into agent_conversations (`+conversationColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, 'scan', $9) on conflict (session) do nothing`,
-		c.Session, c.Project, c.Issue, string(c.Role), string(c.Token), string(c.Harness), c.Location, c.StartedAt, c.RecordedAt)
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `insert into agent_conversations (`+conversationColumns+`)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, 'scan', $9) on conflict (session) do nothing`,
+			c.Session, c.Project, c.Issue, string(c.Role), string(c.Token), string(c.Harness), c.Location, c.StartedAt, c.RecordedAt)
+		recorded = tag.RowsAffected() == 1
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("record the scanned conversation %s of %s: %w", c.Session, c.Token, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return recorded, nil
 }
 
 // AgentConversation is the recorded conversation of session, and false when there is none.
 func (s *Store) AgentConversation(ctx context.Context, session string) (AgentConversation, bool, error) {
-	rows, err := s.pool.Query(ctx, `select `+conversationColumns+` from agent_conversations where session = $1`, session)
-	if err != nil {
-		return AgentConversation{}, false, fmt.Errorf("read the conversation %s: %w", session, err)
-	}
-	found, err := scanConversations(rows)
+	var found []AgentConversation
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+conversationColumns+` from agent_conversations where session = $1`, session)
+		if err != nil {
+			return err
+		}
+		found, err = scanConversations(rows)
+		return err
+	})
 	if err != nil {
 		return AgentConversation{}, false, fmt.Errorf("read the conversation %s: %w", session, err)
 	}
@@ -104,12 +116,16 @@ func (s *Store) AgentConversation(ctx context.Context, session string) (AgentCon
 // registered one before every scanned one: a conversation found by its title never outranks one a
 // registration recorded as the role's newest. Equal times are ordered by session.
 func (s *Store) RoleConversations(ctx context.Context, token claim.Token) ([]AgentConversation, error) {
-	rows, err := s.pool.Query(ctx, `select `+conversationColumns+` from agent_conversations where token = $1
-		order by source = 'register' desc, started_at desc, session`, string(token))
-	if err != nil {
-		return nil, fmt.Errorf("read the conversations of %s: %w", token, err)
-	}
-	found, err := scanConversations(rows)
+	var found []AgentConversation
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+conversationColumns+` from agent_conversations where token = $1
+			order by source = 'register' desc, started_at desc, session`, string(token))
+		if err != nil {
+			return err
+		}
+		found, err = scanConversations(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the conversations of %s: %w", token, err)
 	}
@@ -119,12 +135,16 @@ func (s *Store) RoleConversations(ctx context.Context, token claim.Token) ([]Age
 // AgentConversations is every recorded conversation of the Legion project token, oldest first,
 // equal times ordered by session.
 func (s *Store) AgentConversations(ctx context.Context, project string) ([]AgentConversation, error) {
-	rows, err := s.pool.Query(ctx, `select `+conversationColumns+` from agent_conversations where project = $1
-		order by started_at, session`, project)
-	if err != nil {
-		return nil, fmt.Errorf("read the conversations of project %s: %w", project, err)
-	}
-	found, err := scanConversations(rows)
+	var found []AgentConversation
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+conversationColumns+` from agent_conversations where project = $1
+			order by started_at, session`, project)
+		if err != nil {
+			return err
+		}
+		found, err = scanConversations(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the conversations of project %s: %w", project, err)
 	}
@@ -135,12 +155,16 @@ func (s *Store) AgentConversations(ctx context.Context, project string) ([]Agent
 // oldest first, equal times ordered by session: the rows whose registry entries are written
 // again when that issue's standing changes (agenthistory.Mirror).
 func (s *Store) IssueConversations(ctx context.Context, project, issue string) ([]AgentConversation, error) {
-	rows, err := s.pool.Query(ctx, `select `+conversationColumns+` from agent_conversations
-		where project = $1 and issue = $2 order by started_at, session`, project, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the conversations of %s: %w", issue, err)
-	}
-	found, err := scanConversations(rows)
+	var found []AgentConversation
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+conversationColumns+` from agent_conversations
+			where project = $1 and issue = $2 order by started_at, session`, project, issue)
+		if err != nil {
+			return err
+		}
+		found, err = scanConversations(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the conversations of %s: %w", issue, err)
 	}
@@ -157,34 +181,37 @@ func (s *Store) IssueConversations(ctx context.Context, project, issue string) (
 // outOfWorkflow is record.OutOfWorkflow, passed in because this package sits below record, as
 // every other reader of that rule here passes it (resumeStanding).
 func (s *Store) FinishedIssues(ctx context.Context, project string, outOfWorkflow func(status string) bool) (map[string]bool, error) {
-	rows, err := s.pool.Query(ctx, `select distinct c.issue, i.phase, i.status, i.linger_until is not null,
-		root.phase, root.status, root.linger_until is not null
-		from agent_conversations c
-		left join issues i on i.key = c.issue
-		left join issues root on root.key = i.tree
-		where c.project = $1`, project)
-	if err != nil {
-		return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
-	}
-	defer rows.Close()
 	finished := map[string]bool{}
-	for rows.Next() {
-		var issue string
-		var issuePhase, status, rootPhase, rootStatus *string
-		var lingering, rootLingering *bool
-		if err := rows.Scan(&issue, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering); err != nil {
-			return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select distinct c.issue, i.phase, i.status, i.linger_until is not null,
+			root.phase, root.status, root.linger_until is not null
+			from agent_conversations c
+			left join issues i on i.key = c.issue
+			left join issues root on root.key = i.tree
+			where c.project = $1`, project)
+		if err != nil {
+			return err
 		}
-		if issuePhase == nil || rootPhase == nil {
-			finished[issue] = true
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var issue string
+			var issuePhase, status, rootPhase, rootStatus *string
+			var lingering, rootLingering *bool
+			if err := rows.Scan(&issue, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering); err != nil {
+				return err
+			}
+			if issuePhase == nil || rootPhase == nil {
+				finished[issue] = true
+				continue
+			}
+			finished[issue] = !pods.InWorkflowNotLingering(
+				pods.Standing{Phase: phase.Phase(*issuePhase), Status: *status, Lingers: *lingering},
+				pods.Standing{Phase: phase.Phase(*rootPhase), Status: *rootStatus, Lingers: *rootLingering},
+				outOfWorkflow)
 		}
-		finished[issue] = !pods.InWorkflowNotLingering(
-			pods.Standing{Phase: phase.Phase(*issuePhase), Status: *status, Lingers: *lingering},
-			pods.Standing{Phase: phase.Phase(*rootPhase), Status: *rootStatus, Lingers: *rootLingering},
-			outOfWorkflow)
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
 	}
 	return finished, nil

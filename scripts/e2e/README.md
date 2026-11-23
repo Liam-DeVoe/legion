@@ -1628,8 +1628,9 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   — because this architect was answered before (A1 appended an exchange to the same conversation), so the count must not move, not be zero.
 
 - A8: one envelope sent three times under one idempotency key, the third after a restart:
-  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy.
-  One reply on the asker's topic across the three, and the restarted daemon logs no `answers:` line naming that question at all
+  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy: one of the three hand-off lines is `duplicate: false` (`listener_stored_handoffs_to`).
+  The second and third sends are answered with the first send's event, the copy the stream stored (`answerHandedOff`).
+  One reply on the asker's topic across the three, counted once for that one event (`replies_to`), and the restarted daemon logs no `answers:` line naming that question at all
   — neither an answer nor a `handed off again`, the question having never been handed to it a second time.
   A kill -9 the moment the reply lands, a restart and a redelivery still one reply.
   A question to the planner sent as the replaced tester's session gets the planner's answer, which the listener hands to the daemon because that tester is stopped too (a `listener handed a message to its legion
@@ -7313,6 +7314,13 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1, and `env_length` prints the length of NAME's value (0 when absent), so a check of a secret never holds its value in a variable.
   Each reader of an environment turns xtrace off for itself, so a run under `bash -x` writes no value of it into its transcript
+
+- `environ_laid_out PID`
+
+  succeeds once PID's environment holds a variable.
+  Linux names the program an exec starts in `/proc/<pid>/exe` before it lays out that program's arguments and environment: the command line reads empty until the environment's bounds are first set, and the environment until its end is, so `env_of`, `env_has` and `env_length` answer 2 there for a process that will run with a full environment.
+  A caller that found PID by the program it runs (`launched`, a wait on `/proc/<pid>/exe`) waits on this before it reads the environment, as the Stage 3 pane watchers do: an Oh My Pi found in that window is read again at the next poll, not counted as a violation.
+  It fails, too, for a process that has gone and for one started with an empty environment
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 

@@ -161,7 +161,7 @@ func TestTheWritesReadOfTheGHCallsHoldsNoResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls map[string][]AnswerToolCall
-	if err := pgx.BeginFunc(ctx, s.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, s.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		calls, err = AnswerToolCallArgsTx(ctx, tx, []string{"q1", "q2", "q3"})
 		return err

@@ -78,18 +78,22 @@ var ErrQuestionMoved = errors.New("the question is no longer in the state the up
 // row is otherwise left as it is, the conversation it was first recorded for included, so a
 // newer conversation of that agent does not make a second question of one message.
 func (s *Store) ReceiveQuestion(ctx context.Context, q AnswerQuestion) (AnswerQuestion, bool, error) {
-	rows, err := s.pool.Query(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
-			may_ask_nothing, handoff, state, received_at, last_seen_at, updated_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', $11, $11, $11)
-		on conflict (project, identity, token) do update set deliveries = answer_questions.deliveries + 1,
-			last_seen_at = excluded.last_seen_at
-		returning `+questionColumns+`, xmax = 0`,
-		q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.ReceivedAt)
-	if err != nil {
-		return AnswerQuestion{}, false, fmt.Errorf("record the question %s: %w", q.Identity, err)
-	}
+	var found []AnswerQuestion
 	var inserted bool
-	found, err := scanQuestions(rows, &inserted)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
+				may_ask_nothing, handoff, state, received_at, last_seen_at, updated_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', $11, $11, $11)
+			on conflict (project, identity, token) do update set deliveries = answer_questions.deliveries + 1,
+				last_seen_at = excluded.last_seen_at
+			returning `+questionColumns+`, xmax = 0`,
+			q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.ReceivedAt)
+		if err != nil {
+			return err
+		}
+		found, err = scanQuestions(rows, &inserted)
+		return err
+	})
 	if err != nil {
 		return AnswerQuestion{}, false, fmt.Errorf("record the question %s: %w", q.Identity, err)
 	}
@@ -101,11 +105,15 @@ func (s *Store) ReceiveQuestion(ctx context.Context, q AnswerQuestion) (AnswerQu
 
 // Question is the question id, and false when there is none.
 func (s *Store) Question(ctx context.Context, id string) (AnswerQuestion, bool, error) {
-	rows, err := s.pool.Query(ctx, `select `+questionColumns+` from answer_questions where id = $1`, id)
-	if err != nil {
-		return AnswerQuestion{}, false, fmt.Errorf("read the question %s: %w", id, err)
-	}
-	found, err := scanQuestions(rows, nil)
+	var found []AnswerQuestion
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+questionColumns+` from answer_questions where id = $1`, id)
+		if err != nil {
+			return err
+		}
+		found, err = scanQuestions(rows, nil)
+		return err
+	})
 	if err != nil {
 		return AnswerQuestion{}, false, fmt.Errorf("read the question %s: %w", id, err)
 	}
@@ -118,13 +126,17 @@ func (s *Store) Question(ctx context.Context, id string) (AnswerQuestion, bool, 
 // OpenQuestions is every question of the project the loop still has work on, oldest first: one
 // received, generating or appended, and one forwarded that its agent's role topic has not taken.
 func (s *Store) OpenQuestions(ctx context.Context, project string) ([]AnswerQuestion, error) {
-	rows, err := s.pool.Query(ctx, `select `+questionColumns+` from answer_questions
-		where project = $1 and (state in ('received', 'generating', 'appended') or (state = 'forwarded' and not forward_delivered))
-		order by received_at, id`, project)
-	if err != nil {
-		return nil, fmt.Errorf("read the open questions of %s: %w", project, err)
-	}
-	found, err := scanQuestions(rows, nil)
+	var found []AnswerQuestion
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+questionColumns+` from answer_questions
+			where project = $1 and (state in ('received', 'generating', 'appended') or (state = 'forwarded' and not forward_delivered))
+			order by received_at, id`, project)
+		if err != nil {
+			return err
+		}
+		found, err = scanQuestions(rows, nil)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the open questions of %s: %w", project, err)
 	}
@@ -138,14 +150,19 @@ func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...Qu
 	for i, state := range from {
 		states[i] = string(state)
 	}
-	tag, err := s.pool.Exec(ctx, `update answer_questions set state = $2, reply_kind = $3, reply_text = $4, pass_reason = $5,
-			forward_delivered = $6, updated_at = $7
-		where id = $1 and state = any($8)`,
-		q.ID, string(q.State), q.ReplyKind, q.ReplyText, q.PassReason, q.ForwardDelivered, q.UpdatedAt, states)
+	var updated bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update answer_questions set state = $2, reply_kind = $3, reply_text = $4, pass_reason = $5,
+				forward_delivered = $6, updated_at = $7
+			where id = $1 and state = any($8)`,
+			q.ID, string(q.State), q.ReplyKind, q.ReplyText, q.PassReason, q.ForwardDelivered, q.UpdatedAt, states)
+		updated = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("move the question %s to %s: %w", q.ID, q.State, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !updated {
 		return fmt.Errorf("move the question %s to %s from %v: %w", q.ID, q.State, from, ErrQuestionMoved)
 	}
 	return nil
@@ -153,11 +170,15 @@ func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...Qu
 
 // AnswerToolCalls is every recorded gh call of question, in seq order.
 func (s *Store) AnswerToolCalls(ctx context.Context, question string) ([]AnswerToolCall, error) {
-	rows, err := s.pool.Query(ctx, `select `+toolCallColumns+` from answer_tool_calls where question = $1 order by seq`, question)
-	if err != nil {
-		return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
-	}
-	calls, err := scanToolCalls(rows)
+	var calls []AnswerToolCall
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+toolCallColumns+` from answer_tool_calls where question = $1 order by seq`, question)
+		if err != nil {
+			return err
+		}
+		calls, err = scanToolCalls(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
 	}
@@ -216,7 +237,9 @@ func scanToolCalls(rows pgx.Rows) ([]AnswerToolCall, error) {
 // AnswerSpend is what the project's answers cost on the UTC day of at, in US dollars.
 func (s *Store) AnswerSpend(ctx context.Context, project string, at time.Time) (float64, error) {
 	var usd float64
-	err := s.pool.QueryRow(ctx, `select usd from answer_spend where project = $1 and day = $2`, project, utcDay(at)).Scan(&usd)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select usd from answer_spend where project = $1 and day = $2`, project, utcDay(at)).Scan(&usd)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -231,8 +254,12 @@ func (s *Store) AddAnswerSpend(ctx context.Context, project string, at time.Time
 	if usd < 0 {
 		return fmt.Errorf("add %f USD to the answer spend of %s: a spend is never negative", usd, project)
 	}
-	if _, err := s.pool.Exec(ctx, `insert into answer_spend (project, day, usd) values ($1, $2, $3)
-		on conflict (project, day) do update set usd = answer_spend.usd + excluded.usd`, project, utcDay(at), usd); err != nil {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `insert into answer_spend (project, day, usd) values ($1, $2, $3)
+			on conflict (project, day) do update set usd = answer_spend.usd + excluded.usd`, project, utcDay(at), usd)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("add to the answer spend of %s: %w", project, err)
 	}
 	return nil

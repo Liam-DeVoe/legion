@@ -3,9 +3,9 @@ package ghroutetest
 import "strings"
 
 // PinnedCheckPortSHA256 is the sha256 of the public_leak_check.py PinnedCheckReads was ported
-// from, leak-check-v31's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
+// from, leak-check-v33's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
 // not ghroute.ReadsProvenCheckSHA256, so a bump of the pin fails until this port moves with it.
-const PinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce571c2eafde3fe7c"
+const PinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3"
 
 // PinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // PinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether it
@@ -38,6 +38,12 @@ const PinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce
 // check exits 2 on a missing or unreadable file an argument names (file_ok), which this never
 // looks for, so `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here.
 // No call the tests count as a read meets any of the five.
+//
+// The guard calls the check as `gh-guard -- <argv>`, and `gh-guard` alone for a call of no words
+// (leakguard's modeArgv). The check's main() takes out the one `--` the guard writes after the mode
+// word, so gh_guard gets argv unchanged, a leading `--` of the call's own among it; a call of no
+// words returns 0 in mode_gh before gh_guard, and this reads it as is_read reads an empty first
+// word.
 func PinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {

@@ -246,9 +246,15 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 
 // A send repeated under one idempotency key to a stopped Legion agent, and a role publish repeated
 // under one key to a finished Legion role, are each one hand-off on the stream, and the repeat is
-// answered as a live session's repeat is (TestSendHandler_ReportsAJetStreamDuplicate): the same
-// 200 with duplicate set, naming the envelope the repeat minted. The controls are the first of
-// each and a send under another key, which are hand-offs of their own and answer no duplicate.
+// answered 200 with duplicate set, from the hand-off the stream holds (answerHandedOff), as a
+// repeat of a message the stream stored for a session is answered from its stored copy
+// (TestSendHandler_ReportsAJetStreamDuplicate). The send is Dispatch's and names no Envoy-Reads
+// header: the hand-off it repeats names no session, so it is whole only to its own request, and
+// the repeat is answered the envelope it minted (requestSender.answer). The role publish is the
+// same session's both times, so its repeat is answered the first hand-off's envelope
+// (TestARepeatOfAHandOffIsAnsweredWithTheHandOffTheStreamHolds holds each answer to its rule). The
+// controls are the first of each and a send under another key, which are hand-offs of their own
+// and answer no duplicate.
 func TestARepeatedHandOffIsAnsweredDuplicate(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
@@ -294,11 +300,115 @@ func TestARepeatedHandOffIsAnsweredDuplicate(t *testing.T) {
 		t.Fatalf("the first publish under its key answered %+v, want no duplicate: the stream held nothing", first)
 	}
 	if again := publish(); !again.Duplicate || again.EventID == "" {
-		t.Fatalf("the publish repeated under one key answered %+v, want duplicate, naming the envelope it minted", again)
+		t.Fatalf("the publish repeated under one key answered %+v, want duplicate, naming the first hand-off's envelope", again)
 	}
 	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
 		t.Fatalf("the stream holds %d hand-offs for %s after a publish and its repeat, want 1", count, finishedRoleSession)
 	}
+}
+
+// handedRepeatAnswer is the 200 of a send or a role publish that was handed off: the envelope it
+// answers, the stopped agent it was handed to, whether that envelope is another request's copy,
+// and the answer as it was written.
+type handedRepeatAnswer struct {
+	contracts.Envelope
+	Recipient string `json:"recipient"`
+	Duplicate bool   `json:"duplicate"`
+	raw       string
+}
+
+// A repeat of a message handed off to a stopped Legion agent's daemon is answered with the
+// hand-off the stream holds, read back on the hand-off's own subject at the sequence its duplicate
+// verdict named (answerHandedOff), as a repeat of a message the stream stored for a session is
+// answered with its stored copy (publishHeld). On the send route, and on a role publish to a
+// finished Legion role, under one key:
+//
+//   - case: the sender's own repeat is answered the first hand-off's envelope whole - its
+//     event_id, issued_at, trace_id and sender stamp, where the repeat minted new ones - with
+//     duplicate;
+//   - case: another session's repeat that reads the key-taken answer (listenerwire.ReadsKeyTaken)
+//     learns only that the key is taken: the first hand-off's event_id and times, with duplicate,
+//     and none of the first sender's words or name;
+//   - control: another session's repeat that does not read it is answered the envelope it
+//     minted, with duplicate, which an answer of every repeat's own envelope gives too;
+//   - control: the first hand-off answers no duplicate, and the stream holds that one hand-off
+//     after all four requests.
+func TestARepeatOfAHandOffIsAnsweredWithTheHandOffTheStreamHolds(t *testing.T) {
+	const asker, bystander = "ses-asker", "ses-bystander"
+	const asked, otherAsked = "can you answer this?", "and what about mine?"
+	answerOf := func(t *testing.T, what string, recorder *httptest.ResponseRecorder, recipient string) handedRepeatAnswer {
+		t.Helper()
+		read := handedRepeatAnswer{raw: strings.TrimSpace(recorder.Body.String())}
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &read) != nil || read.Recipient != recipient {
+			t.Fatalf("%s = %d %s, want 200 handed off to %s", what, recorder.Code, read.raw, recipient)
+		}
+		return read
+	}
+	requireRepeatsAnswered := func(t *testing.T, ask func(sender, message string, keyTaken bool) handedRepeatAnswer, stored func() uint64) {
+		t.Helper()
+		first := ask(asker, asked, false)
+		if first.Duplicate {
+			t.Fatalf("control: the first hand-off answered %s, want no duplicate: the stream held nothing", first.raw)
+		}
+		whole, _ := json.Marshal(first.Envelope)
+		own := ask(asker, asked, false)
+		if repeated, _ := json.Marshal(own.Envelope); !own.Duplicate || !bytes.Equal(repeated, whole) {
+			t.Errorf("case: the sender's own repeat answered %s, want its first hand-off whole, %s, with duplicate", own.raw, whole)
+		}
+		taken := ask(bystander, otherAsked, true)
+		if !taken.Duplicate || taken.EventID != first.EventID || taken.IssuedAt != first.IssuedAt || taken.DedupeKey != first.DedupeKey ||
+			taken.Source != "" || taken.SourceSession != "" || taken.SourceEventID != "" || taken.TraceID != "" ||
+			taken.PayloadSummary != "" || taken.Sender != nil || strings.Contains(taken.raw, asker) || strings.Contains(taken.raw, asked) {
+			t.Errorf("case: another session's repeat that reads the key-taken answer answered %s, want only that the key is taken: event %s, with duplicate, naming nothing of %s's",
+				taken.raw, first.EventID, asker)
+		}
+		minted := ask(bystander, otherAsked, false)
+		if !minted.Duplicate || minted.EventID == first.EventID || minted.SourceSession != bystander || minted.PayloadSummary != otherAsked {
+			t.Errorf("control: another session's repeat that does not read the key-taken answer answered %s, want the envelope it minted, with duplicate", minted.raw)
+		}
+		if count := stored(); count != 1 {
+			t.Errorf("control: the stream holds %d hand-offs after a hand-off and its three repeats, want 1", count)
+		}
+	}
+
+	t.Run("send", func(t *testing.T) {
+		rig := newHandoffRig(t, 0)
+		rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
+		rig.beat(t, true, time.Now())
+		requireRepeatsAnswered(t, func(sender, message string, keyTaken bool) handedRepeatAnswer {
+			t.Helper()
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(fmt.Sprintf(
+				`{"target_session":%q,"source":"agent","source_session":%q,"message":%q,"idempotency_key":"ask-1:steer"}`, handoffAgent, sender, message)))
+			if keyTaken {
+				readingKeyTaken(request)
+			}
+			recorder := httptest.NewRecorder()
+			rig.mux.ServeHTTP(recorder, request)
+			return answerOf(t, "a send from "+sender+" to the stopped agent "+handoffAgent, recorder, handoffAgent)
+		}, func() uint64 {
+			count, _ := handoffs(t, rig.client, handoffAgent)
+			return count
+		})
+	})
+	t.Run("role publish", func(t *testing.T) {
+		d, client := keptRoleDeps(t)
+		withFinishedHandoff(t, d)
+		requireRepeatsAnswered(t, func(sender, message string, keyTaken bool) handedRepeatAnswer {
+			t.Helper()
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(fmt.Sprintf(
+				`{"topic":%q,"source":"agent","source_session":%q,"message":%q,"idempotency_key":"ask-1"}`, contracts.RoleTopicPrefix+finishedLegionRole, sender, message)))
+			request.Header.Set("Content-Type", "application/json")
+			if keyTaken {
+				readingKeyTaken(request)
+			}
+			recorder := httptest.NewRecorder()
+			publishHandler(d, logging.New("test")).ServeHTTP(recorder, request)
+			return answerOf(t, "a publish from "+sender+" to the finished role "+finishedLegionRole, recorder, finishedRoleSession)
+		}, func() uint64 {
+			count, _ := handoffs(t, client, finishedRoleSession)
+			return count
+		})
+	})
 }
 
 // Spec v21, section 2.12: the hand-off keys on the project's last stated answering flag, never on

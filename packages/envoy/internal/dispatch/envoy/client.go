@@ -29,10 +29,10 @@ var ErrUnavailable = errors.New("envoy listener unavailable")
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
 // connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
 // gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/main.go startingGate). Those are what a listener being replaced gives for a few
-// seconds, so asking again a little later may be answered. Every other ErrUnavailable - a status
-// the listener chose, such as the 401 it gives a token it refuses, or an answer that does not
-// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
+// (cmd/listener/starting_gate.go startingGate). Those are what a listener being replaced gives for
+// a few seconds, so asking again a little later may be answered. Every other ErrUnavailable - a
+// status the listener chose, such as the 401 it gives a token it refuses, or an answer that does
+// not decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
 // failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
 // ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
@@ -265,7 +265,11 @@ type SendInput struct {
 // reports that the stream already held this message, so it stored nothing new; the publish still
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
-// envelope id then names an envelope JetStream discarded.
+// envelope id then names the copy the stream holds under the same key where the listener is of
+// this release, which may be an earlier attempt's or another sender's (whose text the answer
+// leaves out, listenerwire.ReadsKeyTaken), and the envelope it built for the repeat, which
+// JetStream discarded, where it is older; the answer does not say which, so a caller reads no
+// envelope id from a duplicate.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
@@ -928,8 +932,9 @@ type RolePublishInput struct {
 // Kept true is its 202: no live session holds the role, and the listener keeps the message on the
 // role's kept lane for the next session that holds the role live, until KeptUntil (milliseconds
 // since the epoch, zero when the listener named no end); EnvelopeID names the kept copy, which for
-// a repeat of an idempotency key whose copy is still kept is that earlier copy. The publish route
-// answers no duplicate verdict, so the result carries none.
+// a repeat of an idempotency key whose copy is still kept is that earlier copy. The result carries
+// no duplicate verdict: the route answers one for a repeat, and EnvelopeID names the copy the
+// listener holds either way, since this client reads the key-taken answer (post).
 type RolePublishResult struct {
 	EnvelopeID string
 	Kept       bool
@@ -983,7 +988,8 @@ func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (Rol
 // post makes one POST of body, encoded as JSON, to route: the one shape both delivery routes take
 // (Send, PublishToRole), each with its listenerwire request. It is made through do, on the
 // credential do picks; marked is a send carrying a role mark, which is made on Dispatch's identity
-// alone. A request that reached no answer is sendTransportError's.
+// alone. A request that reached no answer is sendTransportError's. Both name the key-taken answer
+// as one Dispatch reads (listenerwire.ReadsHeader).
 func (c *Client) post(ctx context.Context, route string, marked bool, body any) (*http.Response, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -1005,6 +1011,12 @@ func (c *Client) post(ctx context.Context, route string, marked bool, body any) 
 			return nil, fmt.Errorf("%w: build POST %s request: %v", ErrUnavailable, route, err)
 		}
 		request.Header.Set("Content-Type", "application/json")
+		// Dispatch reads the key-taken answer (SendResult, RolePublishResult): a duplicate's
+		// envelope id is never recorded, and a kept copy's 202 names that copy's event_id. Without
+		// the header the listener answers a copy Dispatch cannot prove its own, as every copy that
+		// names no session is, with the envelope it built for this request, whose id names no
+		// stored copy.
+		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
 	}, func(err error) error { return sendTransportError(route, err, written.Load()) })
 }
@@ -1044,8 +1056,8 @@ func sendTransportError(route string, err error, requestWritten bool) error {
 // listenerResponseError is the error a role lookup, a send or a publish reports for an answer it
 // does not take. A 502, 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says:
 // the listener behind its starting gate answers 503 {"error":"service starting"}
-// (cmd/listener/main.go startingGate), and a gateway in front of one that is gone answers 502 or
-// 504, so either is "ask again" rather than the listener's verdict on the request. Any other
+// (cmd/listener/starting_gate.go startingGate), and a gateway in front of one that is gone answers
+// 502 or 504, so either is "ask again" rather than the listener's verdict on the request. Any other
 // status with a JSON reason is that reason alone, which a delivery records and a person reads
 // verbatim ("no live session <id>", "message is required", "unauthorized"). The reason is kept on
 // the unavailable error too, for the same reader. Any other status without one is ErrUnavailable

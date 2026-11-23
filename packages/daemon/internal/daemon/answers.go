@@ -251,7 +251,7 @@ func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFac
 	var issue *record.Issue
 	var pr *record.PullRequest
 	var phases []record.PhaseRow
-	if err := pgx.BeginFunc(ctx, r.w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if issue, err = r.w.records.Issue(ctx, tx, key); err != nil {
 			return err
@@ -334,14 +334,14 @@ type controllerPassOn struct {
 
 func (p controllerPassOn) PassOn(ctx context.Context, q store.AnswerQuestion, reason answerloop.Reason, origin answerloop.Origin) error {
 	queued := false
-	// The pass is its own transaction, so it owns the commit hook the row's write registers.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, p.pool, func(tx pgx.Tx) error {
-		fresh, err := p.records.MarkProcessed(scoped, tx, store.QuestionPassedSource, q.ID)
+	// The pass is its own transaction (store.Transact), which runs the commit hook the row's write
+	// registers once it commits.
+	if err := store.Transact(ctx, p.pool, func(ctx context.Context, tx pgx.Tx) error {
+		fresh, err := p.records.MarkProcessed(ctx, tx, store.QuestionPassedSource, q.ID)
 		if err != nil || !fresh {
 			return err
 		}
-		calls, err := store.AnswerToolCallArgsTx(scoped, tx, []string{q.ID})
+		calls, err := store.AnswerToolCallArgsTx(ctx, tx, []string{q.ID})
 		if err != nil {
 			return err
 		}
@@ -356,11 +356,10 @@ func (p controllerPassOn) PassOn(ctx context.Context, q store.AnswerQuestion, re
 			return fmt.Errorf("the agent-question notice of %s: %w", q.ID, err)
 		}
 		queued = true
-		return p.records.Enqueue(scoped, tx, row)
+		return p.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		return fmt.Errorf("pass the question %s to the controller: %w", q.ID, err)
 	}
-	committed()
 	if queued {
 		p.log.Info("answers: question passed to the controller", "question", q.ID, "issue", q.Issue, "role", q.Role, "session", q.Session,
 			"reason", reason, "asker", origin.Asker, "ref", origin.Ref)
@@ -441,21 +440,21 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 	// to is whom the decision was queued for, empty when an earlier hand-off passed it on or when
 	// #2163's relay owns it (relayed).
 	to, relayed := "", false
-	// The pass is its own transaction, so it owns the commit hook the row's write registers.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, d.outbox.pool, func(tx pgx.Tx) error {
-		fresh, err := d.outbox.records.MarkProcessed(scoped, tx, decisionPassedSource, decision.ID)
+	// The pass is its own transaction (store.Transact), which runs the commit hook the row's write
+	// registers once it commits.
+	if err := store.Transact(ctx, d.outbox.pool, func(ctx context.Context, tx pgx.Tx) error {
+		fresh, err := d.outbox.records.MarkProcessed(ctx, tx, decisionPassedSource, decision.ID)
 		if err != nil || !fresh {
 			return err
 		}
-		relayed, err = d.relayCarries(scoped, tx, decision)
+		relayed, err = d.relayCarries(ctx, tx, decision)
 		if err != nil {
 			return err
 		}
 		if relayed {
 			return nil
 		}
-		architect, err := d.decisionRoute(scoped, tx, conv.Issue)
+		architect, err := d.decisionRoute(ctx, tx, conv.Issue)
 		if err != nil {
 			return err
 		}
@@ -468,11 +467,10 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 		if err != nil {
 			return fmt.Errorf("the agent-decision notice of %s: %w", decision.ID, err)
 		}
-		return d.outbox.records.Enqueue(scoped, tx, row)
+		return d.outbox.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		return fmt.Errorf("pass the decision %s on: %w", decision.ID, err)
 	}
-	committed()
 	switch {
 	case relayed:
 		d.log.Info("answers: decision left to the parked-decision relay of the tree its ask stands in", "decision", decision.ID,

@@ -58,7 +58,7 @@ func decisionOnAskOf(t *testing.T, askOn string, control bool) {
 	putOutboxIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: root, Parent: &root, Title: "Parked child", Phase: phase.Done, Generation: 1, Status: "backlog"})
 	// The controller's report issue is in no tree and the daemon records nothing of it.
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		recorded, err := records.Issue(ctx, tx, report)
 		if err != nil {
 			return err

@@ -38,13 +38,18 @@ func (s *Store) StartAnswerToolCall(ctx context.Context, call AnswerToolCall) er
 	if err != nil {
 		return fmt.Errorf("record gh call %s.%d: encode its arguments: %w", call.Question, call.Seq, err)
 	}
-	tag, err := s.pool.Exec(ctx, `insert into answer_tool_calls (question, seq, args, app, owner, started_at)
-		values ($1, $2, $3, $4, $5, $6) on conflict (question, seq) do nothing`,
-		call.Question, call.Seq, args, call.App, call.Owner, call.StartedAt)
+	var recorded bool
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `insert into answer_tool_calls (question, seq, args, app, owner, started_at)
+			values ($1, $2, $3, $4, $5, $6) on conflict (question, seq) do nothing`,
+			call.Question, call.Seq, args, call.App, call.Owner, call.StartedAt)
+		recorded = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("record gh call %s.%d: %w", call.Question, call.Seq, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !recorded {
 		return fmt.Errorf("gh call %s.%d %w", call.Question, call.Seq, ErrAnswerToolCallRecorded)
 	}
 	return nil
@@ -54,12 +59,17 @@ func (s *Store) StartAnswerToolCall(ctx context.Context, call AnswerToolCall) er
 // status (nil when gh never started) and when it ended. Only a started, unfinished call is
 // finished; any other is an error and nothing changes.
 func (s *Store) FinishAnswerToolCall(ctx context.Context, question string, seq int, result string, exit *int, at time.Time) error {
-	tag, err := s.pool.Exec(ctx, `update answer_tool_calls set result = $3, exit = $4, finished_at = $5
-		where question = $1 and seq = $2 and result is null`, question, seq, result, exit, at)
+	var finished bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update answer_tool_calls set result = $3, exit = $4, finished_at = $5
+			where question = $1 and seq = $2 and result is null`, question, seq, result, exit, at)
+		finished = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("finish gh call %s.%d: %w", question, seq, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !finished {
 		return fmt.Errorf("finish gh call %s.%d: no started, unfinished call has that number", question, seq)
 	}
 	return nil
@@ -69,9 +79,11 @@ func (s *Store) FinishAnswerToolCall(ctx context.Context, question string, seq i
 func (s *Store) AnswerToolCall(ctx context.Context, question string, seq int) (AnswerToolCall, bool, error) {
 	call := AnswerToolCall{Question: question, Seq: seq}
 	var args []byte
-	err := s.pool.QueryRow(ctx, `select args, app, owner, started_at, result, exit, finished_at
-		from answer_tool_calls where question = $1 and seq = $2`, question, seq).
-		Scan(&args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select args, app, owner, started_at, result, exit, finished_at
+			from answer_tool_calls where question = $1 and seq = $2`, question, seq).
+			Scan(&args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AnswerToolCall{}, false, nil
 	}
