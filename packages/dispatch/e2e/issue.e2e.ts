@@ -16,7 +16,7 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearIssueCreator, resetDatabase } from "./seed";
-import { holdAssetUntilReleased } from "./shell";
+import { chunkFile, holdAssetUntilReleased } from "./shell";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -1416,7 +1416,7 @@ test("a landing on an issue tab draws the shell and the tab strip while the tab'
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const plan = await holdAssetUntilReleased(page, /\/assets\/PlanTab-[\w-]{8}\.js$/u);
+    const plan = await holdAssetUntilReleased(page, chunkFile("PlanTab"));
     // `install()` leaves the clock running at real speed, and `pauseAt` stops it, a second
     // ahead of the run's clock, since the page's clock refuses to move backwards and the two can
     // differ a little. It is paused before the load, so no page timer is armed for it to fire.
@@ -1446,7 +1446,8 @@ test("a landing on an issue tab draws the shell and the tab strip while the tab'
 
     plan.release();
     // An import of the chunk's own address settles once its module has run, and with it the
-    // panel's download, which is the same module.
+    // panel's download, which is the same module. Read from the hold, not the page's resource
+    // timing (`ranChunk`), which the page's installed clock leaves empty.
     await page.evaluate((url) => import(url).then(() => undefined), await plan.url);
     let spent = 0;
     await expect

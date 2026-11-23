@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import {
@@ -258,7 +258,7 @@ function DetailsDrawer({
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
-  const { open, openedFrom, page, setOpen } = drawer;
+  const { open: asked, openedFrom, page, setDrawn, setOpen } = drawer;
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
   // the effects below read the latest through this ref and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.
@@ -266,6 +266,45 @@ function DetailsDrawer({
   setOpenNow.current = setOpen;
   const openedFromNow = useRef(openedFrom);
   openedFromNow.current = openedFrom;
+  // Below the phone's width the drawer is a sheet over the whole page, a dialog that takes the
+  // focus as it opens (`useDialog`), so the rule below for an open the margin's chunk drew late -
+  // take no focus from where the reader went - cannot hold there by leaving the focus alone: a
+  // sheet that opened late would take it, and cover the page the reader went on in. So a sheet the
+  // drawer finds asked for as it mounts - an open pressed before the margin's chunk was in - does
+  // not open where the focus has left what held it at that press (`openedFrom`) for another
+  // control: the open is called off, in a render of its own before the browser paints, and the
+  // reader stays where they went. It is read once, as the drawer mounts: every later open is
+  // drawn as soon as it is asked, with the drawer mounted - a press, or a compose or a card the
+  // margin opens it for (above) - and not after a chunk the reader may have gone on from. The
+  // read of the focus is in `useState`'s initializer, which React calls in the mount render alone
+  // and in no later render, so no render after the mount reads the document; the call-off is a
+  // state of this mount, set back as the open is called off, so a later open draws as it always
+  // did. A focus that went nowhere - a press on the page's text - calls nothing off: the sheet
+  // then takes the focus from nowhere, as the drawer does from the phone's width up (below).
+  const [calledOff, setCalledOff] = useState(() => {
+    const active = document.activeElement;
+    return (
+      asked &&
+      isPhoneViewport &&
+      openedFrom !== undefined &&
+      active !== openedFrom &&
+      active instanceof HTMLElement &&
+      active !== document.body
+    );
+  });
+  const open = asked && !calledOff;
+  useLayoutEffect(() => {
+    if (!calledOff) return;
+    setCalledOff(false);
+    setOpenNow.current(false);
+  }, [calledOff]);
+  // Until the drawer is drawn, the shell's Escape calls off an open of Details
+  // (`MarginDrawer.setDrawn`); from its mount on, Escape is the drawer's own (below, and
+  // `useDialog` on a phone).
+  useLayoutEffect(() => {
+    setDrawn?.(true);
+    return () => setDrawn?.(false);
+  }, [setDrawn]);
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
   const sheet = useDialog<HTMLElement>({

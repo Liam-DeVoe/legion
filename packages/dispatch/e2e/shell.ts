@@ -209,6 +209,11 @@ export async function failBuildScript(page: Page): Promise<void> {
   });
 }
 
+/** The pattern of the chunk the build names `<name>-<hash>.js`. */
+export function chunkFile(name: string): RegExp {
+  return new RegExp(`/assets/${name}-[\\w-]{8}\\.js$`, "u");
+}
+
 /** The path of the margin's own chunk (`web/src/features/margin/MarginColumn.tsx`), which the
  *  shell asks for once its hold on a landing has ended (`web/src/features/shell/
  *  content-drawn.ts`). */
@@ -222,7 +227,7 @@ export async function holdMarginChunk(page: Page): Promise<() => void> {
 
 /** The path of the reference-preview layer's chunk (`web/src/features/refs/RefPreviewLayer.tsx`),
  *  which the shell asks for at the same moment. */
-const REF_PREVIEW_CHUNK = /\/assets\/RefPreview-[^/]+\.js$/u;
+export const REF_PREVIEW_CHUNK = /\/assets\/RefPreview-[^/]+\.js$/u;
 
 /** The paths of the shell's two lists of writes, which the writes host fetches once the page has
  *  drawn and draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`). */
@@ -274,6 +279,28 @@ export async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
     .toBe(true);
 }
 
+/** Waits until the page itself has fetched the chunk at `pattern` and run it: its resource timing
+ *  names the fetch (`fetchedChunk`), and an import of that same address settles once the module
+ *  has run - with no request of its own, since the page holds the module - by which time the
+ *  page's own import of it, out since before that fetch, has settled too. Not for a page whose
+ *  clock the row installed: Playwright's clock replaces `performance`, whose resource entries
+ *  then read empty, so such a row imports the address its hold saw (`HeldAsset.url`), as
+ *  `issue.e2e.ts`'s held tab does. */
+export async function ranChunk(page: Page, pattern: RegExp): Promise<void> {
+  await fetchedChunk(page, pattern);
+  await page.evaluate(
+    async ({ flags, source }) => {
+      const chunk = new RegExp(source, flags);
+      const fetched = performance
+        .getEntriesByType("resource")
+        .find((entry) => chunk.test(new URL(entry.name).pathname));
+      if (fetched === undefined) throw new Error(`the page fetched no ${source}`);
+      await import(fetched.name);
+    },
+    { flags: pattern.flags, source: pattern.source }
+  );
+}
+
 /** One node of a tree React commits, as far as `chunkComponentsRendered` reads it. */
 interface Fiber {
   readonly child: Fiber | null;
@@ -301,14 +328,16 @@ function chunkComponentsRendered(page: Page, urls: readonly string[]): Promise<b
     // in a document a navigation has just made, which reads the empty set the init script below
     // made there before React commits. No row polls across a navigation today, for two reasons.
     // `failAssetWhen` aborts only once `ready()` has resolved, so no load it fails reloads while
-    // its own poll runs; and the one row that calls `settled()` outside it, `keyed-writes.e2e.ts`'s
-    // write pressed while the kinds of write fail to download, awaits that poll before it aborts
-    // the download whose failure reloads the page. A poll begins only once the reference-preview
-    // chunk has come down, which the render an effect of a committed tree begins asks for
-    // (`web/src/features/refs/RefPreviewLayer.tsx`, `setWanted`), so React has committed a root in
-    // that document by then. Read as "not rendered yet", a hook React never found would hold the
-    // poll to its timeout; a throw ends it at once, since `expect.poll` does not catch an error of
-    // the function it polls (playwright/lib/matchers/expect.js:13397).
+    // its own poll runs; and the two rows that call `settled()` outside it await that poll before
+    // they fail a download: `keyed-writes.e2e.ts`'s write pressed while the kinds of write fail to
+    // download, before each download it aborts, the second of which reloads the page, and
+    // `keyboard-palette.e2e.ts`'s bar whose chunk failed offline, whose failure reloads nothing.
+    // A poll begins only once the reference-preview chunk has come down, which the render an
+    // effect of a committed tree begins asks for (`web/src/features/refs/RefPreviewLayer.tsx`,
+    // `setWanted`), so React has committed a root in that document by then. Read as "not rendered
+    // yet", a hook React never found would hold the poll to its timeout; a throw ends it at once,
+    // since `expect.poll` does not catch an error of the function it polls
+    // (playwright/lib/matchers/expect.js:13397).
     if (roots === undefined || roots.size === 0) {
       throw new Error("React committed no root to the DevTools hook `shellLoads` installs");
     }

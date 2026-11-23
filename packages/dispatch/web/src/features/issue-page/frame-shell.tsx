@@ -48,6 +48,10 @@ export interface FrameInput {
    *  768 to 959 px at a 20 px default font. */
   readonly railFits: boolean;
   readonly setDetailsFor: (issue: string | undefined) => void;
+  /** Tells the shell whether Details' drawer is drawn, which it is only once the margin's chunk
+   *  is in (`MarginDrawer.setDrawn`): until then the shell itself calls off an open of Details on
+   *  Escape (`AppShell`, `app.tsx`). */
+  readonly setDetailsDrawn: (drawn: boolean) => void;
   readonly setDrawerPage: (page: MarginDrawerPage | undefined) => void;
   readonly setNavigationOpen: (open: boolean) => void;
 }
@@ -138,7 +142,7 @@ let openedFrom: Element | null = null;
 
 function drawerOf(
   issue: string | undefined,
-  { detailsFor, drawerPage, setDetailsFor, setDrawerPage }: FrameInput
+  { detailsFor, drawerPage, setDetailsDrawn, setDetailsFor, setDrawerPage }: FrameInput
 ): MarginDrawer {
   const handed = handedDrawers.get(setDetailsFor);
   if (
@@ -153,6 +157,7 @@ function drawerOf(
     open: detailsFor !== undefined && detailsFor === issue,
     openedFrom,
     page: drawerPage,
+    setDrawn: setDetailsDrawn,
     setOpen: (open: boolean) => {
       if (open) openedFrom = document.activeElement;
       setDetailsFor(open ? issue : undefined);

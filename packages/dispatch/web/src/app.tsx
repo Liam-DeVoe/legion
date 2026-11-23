@@ -75,6 +75,7 @@ import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
   appKeymap,
+  isEditableTarget,
   type KeyBindingDescription,
   MOD_KEY_LABEL,
   useKeymap,
@@ -85,6 +86,7 @@ import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import { SIGN_OUT_SETTLE_MS, SignInChannel } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  dialogOpen,
   MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
@@ -668,6 +670,9 @@ function AppShell({
   const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
   if (detailsFor !== undefined && detailsFor !== issueKey) setDetailsFor(undefined);
   const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
+  // Whether Details' drawer is drawn, which it is only once the margin's chunk is in: the drawer
+  // says so as it mounts and as it goes (`MarginDrawer.setDrawn`, `features/margin/Margin.tsx`).
+  const [detailsDrawn, setDetailsDrawn] = useState(false);
   // What a page put in the margin's slot (`features/issue-page/margin-slot.tsx`). A fill is a
   // function, and React reads a function handed to a setter as an updater, so a registration
   // always wraps it in one.
@@ -685,6 +690,7 @@ function AppShell({
         location,
         navigationOpen,
         railFits,
+        setDetailsDrawn,
         setDetailsFor,
         setDrawerPage,
         setNavigationOpen,
@@ -692,6 +698,39 @@ function AppShell({
     [detailsFor, drawerPage, frameOf, location, navigationOpen, railFits]
   );
   const issueFrame = frame !== undefined;
+  // In the frame Details opens only once the margin's chunk is in, which can be long after the
+  // press that asked for it, and until then no drawer is drawn to take its Escape. So while
+  // Details is asked for and not drawn, Escape calls the open off, and the chunk that lands after
+  // it opens nothing; once the drawer is drawn, its Escape is its own (`Margin.tsx`). It is the
+  // drawer's Escape, kept for the window before the drawer is: a listener on the document, in the
+  // bubble phase, as the drawer's is, so it answers before the keymap's own listener on the window
+  // (`KeymapProvider`) - a focused outline row would otherwise take the key to leave the tree -
+  // and marks the key handled, which every binding of the keymap passes over. It passes by what
+  // the drawer passes by: an Escape already handled, one in a field (`isEditableTarget`) or in a
+  // dialog, one under an open dialog, and one that ends an input method's composition. Not a
+  // binding of the keymap, which would add a row to the list of keys (`ShortcutHelp.tsx` lists
+  // every binding, one that does not apply greyed).
+  const detailsWaiting = frame?.drawer.open === true && !detailsDrawn;
+  useEffect(() => {
+    if (!detailsWaiting) return;
+    const callOff = (event: KeyboardEvent) => {
+      const { target } = event;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        isEditableTarget(target) ||
+        (target instanceof Element && target.closest('[role="dialog"]') !== null) ||
+        dialogOpen()
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setDetailsFor(undefined);
+    };
+    document.addEventListener("keydown", callOff);
+    return () => document.removeEventListener("keydown", callOff);
+  }, [detailsWaiting]);
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of

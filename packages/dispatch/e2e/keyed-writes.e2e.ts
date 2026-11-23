@@ -19,6 +19,7 @@ import {
   userHeaders,
 } from "./api";
 import { holdFirstRequest } from "./editor";
+import { nextFrames } from "./frames";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -41,7 +42,7 @@ import {
   tabReloads,
   WRITE_KINDS_CHUNK,
 } from "./shell";
-import { expect, type Page, test } from "./test";
+import { type Browser, type BrowserContext, expect, type Page, type Route, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -1324,6 +1325,24 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
   }
 });
 
+/** Dispatch's verdict on a status change, a refusal: the page shows it with Retry and Discard
+ *  rather than trying the write again. */
+const STATUS_REFUSED = {
+  json: { code: "INVALID_ISSUE", error: "the row refuses this status change" },
+  status: 400,
+};
+
+/** Holds every status change of the issue at `path` at the network, out and unanswered, and
+ *  hands the row the first one held, for it to answer once it chooses. */
+async function holdStatusChanges(page: Page, path: string): Promise<{ first: Promise<Route> }> {
+  const first = Promise.withResolvers<Route>();
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    first.resolve(route);
+  });
+  return { first: first.promise };
+}
+
 // The pending-writes indicator is a chunk of its own, and its download can fail while the browser
 // is online - a deployment that replaced the build the page loaded - with no recovery reload to
 // follow: the tab's three reloads are spent here, as a tab whose assets kept failing has spent
@@ -1355,9 +1374,7 @@ test("a pending-writes indicator whose chunk fails to download online with no re
     const spent = await recordTabReloads(page, [3, 2, 1]);
     // Every status change is held at the network, out and never answered, so a write is out
     // while the indicator mounts.
-    await page.route(`**${path}`, (route) =>
-      route.request().method() === "PATCH" ? undefined : route.fallback()
-    );
+    await holdStatusChanges(page, path);
     const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
     await page.goto(`/issues/${issue.key}`);
     const indicator = await indicatorCode.held;
@@ -1387,6 +1404,57 @@ test("a pending-writes indicator whose chunk fails to download online with no re
       pendingWrites(page),
       "the write pressed after the failure did not draw the indicator again"
     ).toBeVisible();
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The same failure, and then the one write the indicator would show turns refused: Dispatch
+// answers the status change held at the network with its verdict, a refusal, whose Retry and
+// Discard only the indicator offers. How many writes the indicator shows does not change - it is
+// still the one - so its boundary draws it afresh on any change of the writes it shows
+// (`ChunkBoundary`'s `reset`, `web/src/features/writes/write-hosts.tsx`), not on a change of how
+// many they are, which would leave the refusal with neither for the life of the page.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a pending-writes indicator whose chunk fails to download online with no reload to follow draws again when its one write is refused", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A refusal the indicator shows" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const statusChanges = await holdStatusChanges(page, path);
+    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
+    await page.goto(`/issues/${issue.key}`);
+    const indicator = await indicatorCode.held;
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    await page.getByLabel("Status").selectOption("backlog");
+    const statusChange = await statusChanges.first;
+
+    const caught = page.waitForEvent("console", (message) =>
+      message.text().includes("Failed to fetch dynamically imported module")
+    );
+    await indicator.abort();
+    await caught;
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(pendingWrites(page)).toHaveCount(0);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+
+    // `holdFirstRequest` lets every later request for the indicator's chunk through.
+    await statusChange.fulfill(STATUS_REFUSED);
+    const refused = pendingWrites(page);
+    await expect(refused, "the refusal did not draw the indicator again").toContainText(
+      "Not saved:"
+    );
+    await expect(refused.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(refused.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
   } finally {
@@ -1431,9 +1499,7 @@ test("a kept-writes list whose chunk fails to download online with no reload to 
     await page.goto("/");
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     const spent = await recordTabReloads(page, [3, 2, 1]);
-    await page.route(`**${path}`, (route) =>
-      route.request().method() === "PATCH" ? undefined : route.fallback()
-    );
+    await holdStatusChanges(page, path);
     const listCode = await holdFirstRequest(page, KEPT_WRITES_CHUNK);
     await page.goto(`/issues/${issue.key}`);
     const list = await listCode.held;
@@ -1455,19 +1521,184 @@ test("a kept-writes list whose chunk fails to download online with no reload to 
   }
 });
 
-// A session can lapse while the store's take-up of what a reload kept still waits for the kinds
-// of write (`Writes.resume`): it takes them up all the same, for the sign-in that follows, and
-// the sign-in page lists them once it has. If the kinds' download failed online with no reload to
-// follow - the tab's three reloads are spent here - the shell that asked for them is gone, so the
-// sign-in page asks for them again itself (`KeptWritesHost`), and the write the reload kept is
-// listed there. Alice's status change is held at the network, so it stays out and kept; the page
-// reloads with the kinds' chunk held on the wire until the writes host has joined that download,
-// which then fails; her session then lapses.
-// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
-// page loads and the browser's own "leave this page?" prompt between them.
-test("a session that lapses while the take-up waits for kinds of write that failed to download lists the write the reload kept on the sign-in page", async ({
+/** Whether the tab keeps a write Dispatch refused (`WriteStorage`): the store keeps a write's new
+ *  standing before it tells the lists of it (`Writes.#update`), in the same task, so once this
+ *  reads the refusal every list has read it too. */
+function keepsARefusal(page: Page): Promise<boolean> {
+  return page.evaluate(() =>
+    Object.entries(window.sessionStorage).some(([name, value]) => {
+      if (!name.startsWith("dispatch.write:")) return false;
+      const kept: unknown = JSON.parse(value);
+      return (
+        typeof kept === "object" &&
+        kept !== null &&
+        "state" in kept &&
+        typeof kept.state === "object" &&
+        kept.state !== null &&
+        "status" in kept.state &&
+        kept.state.status === "refused"
+      );
+    })
+  );
+}
+
+/**
+ * The kept-writes list of a lapsed session, its chunk failed online with no reload to follow,
+ * and then the reader coming back to the sign-in page as `comeBack` does: the list asks for its
+ * chunk again (`KeptWritesHost`, `web/src/features/writes/write-hosts.tsx`) and draws the write
+ * kept for alice's next sign-in, with the Discard of its refusal. The write is refused before
+ * the list's download fails, and a refusal is final, so nothing of the writes the list shows
+ * changes after the failure: only the reader's coming back can draw the list again. Held
+ * unanswered instead, the write's attempt would give up after its 15 s of silence
+ * (`KEYED_SEND_ATTEMPT_MS`) and draw the list for its own change.
+ */
+async function keptListAfterComingBack(
+  browser: Browser,
+  comeBack: (page: Page, context: BrowserContext) => Promise<void>,
+  what: string
+): Promise<void> {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A kept list asked for again" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const statusChanges = await holdStatusChanges(page, path);
+    const listCode = await holdFirstRequest(page, KEPT_WRITES_CHUNK);
+    await page.goto(`/issues/${issue.key}`);
+    const list = await listCode.held;
+    await page.getByLabel("Status").selectOption("backlog");
+    const statusChange = await statusChanges.first;
+    await expect(pendingWrites(page)).toBeVisible();
+
+    await lapse(page);
+    await statusChange.fulfill(STATUS_REFUSED);
+    await expect.poll(() => keepsARefusal(page), "the refusal never reached the page").toBe(true);
+    const caught = page.waitForEvent("console", (message) =>
+      message.text().includes("Failed to fetch dynamically imported module")
+    );
+    await list.abort();
+    await caught;
+    const kept = page.getByRole("region", { name: "Kept changes" });
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(kept).toHaveCount(0);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+
+    // `holdFirstRequest` lets every later request for the list's chunk through.
+    await comeBack(page, alice);
+    await expect(kept, `${what} did not ask for the list's chunk again`).toBeVisible();
+    await expect(kept).toContainText("Kept until you sign in again as alice:");
+    await expect(kept).toContainText(`${issue.key} set to `);
+    await expect(kept).toContainText("— Not saved");
+    await expect(kept.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
+    expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+}
+
+// The same failure of the list, on the sign-in page, where the reader changes nothing of what the
+// list shows: no write is pressed there, and the one out may never be answered. So the list asks
+// for its chunk again as the window gets the focus back, or the browser comes back online
+// (`KeptWritesHost`, `web/src/features/writes/write-hosts.tsx`): a reader who leaves the tab and
+// comes back finds the writes their sign-in will take up, and the Discard of a refused one,
+// rather than a page that lists none of them until a reload by hand. The page has the focus
+// already, so the row sends the window its `focus` itself, as the browser does when the reader
+// comes back to the tab.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a kept-writes list whose chunk failed to download online asks for it again when the window gets the focus back", async ({
   browser,
 }) => {
+  await keptListAfterComingBack(
+    browser,
+    async (page) => {
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    },
+    "the window's focus"
+  );
+});
+
+// The same, with the browser going offline and coming back online, as a reader's network does
+// under them: the window's `online` asks for the list's chunk again.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a kept-writes list whose chunk failed to download online asks for it again when the browser comes back online", async ({
+  browser,
+}) => {
+  await keptListAfterComingBack(
+    browser,
+    async (page, context) => {
+      await context.setOffline(true);
+      await expect
+        .poll(() => page.evaluate(() => navigator.onLine), "the page reads itself offline")
+        .toBe(false);
+      await context.setOffline(false);
+    },
+    "the browser coming back online"
+  );
+});
+
+// The same failure of the list, and then the write it shows turns refused: Dispatch answers the
+// status change held at the network with its verdict, a refusal, which only the list's Discard
+// drops while the session is lapsed. The list still shows the one write, so its boundary draws it
+// afresh on any change of the writes it shows (`ChunkBoundary`'s `reset`,
+// `web/src/features/writes/write-hosts.tsx`), not on a change of how many they are.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a kept-writes list whose chunk failed to download online draws again with Discard when its write is refused", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A kept refusal to discard" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const statusChanges = await holdStatusChanges(page, path);
+    const listCode = await holdFirstRequest(page, KEPT_WRITES_CHUNK);
+    await page.goto(`/issues/${issue.key}`);
+    const list = await listCode.held;
+    await page.getByLabel("Status").selectOption("backlog");
+    const statusChange = await statusChanges.first;
+    await expect(pendingWrites(page)).toBeVisible();
+
+    await lapse(page);
+    const caught = page.waitForEvent("console", (message) =>
+      message.text().includes("Failed to fetch dynamically imported module")
+    );
+    await list.abort();
+    await caught;
+    const kept = page.getByRole("region", { name: "Kept changes" });
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(kept).toHaveCount(0);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+
+    // `holdFirstRequest` lets every later request for the list's chunk through.
+    await statusChange.fulfill(STATUS_REFUSED);
+    await expect(kept, "the refusal did not draw the list again").toBeVisible();
+    await expect(kept).toContainText(`${issue.key} set to `);
+    await expect(kept).toContainText("— Not saved");
+    await expect(kept.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
+    expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
+/**
+ * A session that lapses while the store's take-up of what a reload kept still waits for the
+ * kinds of write, whose download failed online with no reload to follow: the sign-in page asks
+ * for the kinds again itself (`KeptWritesHost`) and lists the write the reload kept once the
+ * take-up has it. With `signInPageKindsFail` that ask fails too, and the list comes only once the
+ * window gets the focus back, which asks for the kinds once more.
+ */
+async function keptThroughALapse(browser: Browser, signInPageKindsFail: boolean): Promise<void> {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "Kept through a lapse" });
   const path = `/api/v1/issues/${issue.key}`;
@@ -1475,9 +1706,7 @@ test("a session that lapses while the take-up waits for kinds of write that fail
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
-    await page.route(`**${path}`, (route) =>
-      route.request().method() === "PATCH" ? undefined : route.fallback()
-    );
+    await holdStatusChanges(page, path);
     await page.goto(`/issues/${issue.key}`);
     await page.getByLabel("Status").selectOption("todo");
     await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
@@ -1491,23 +1720,43 @@ test("a session that lapses while the take-up waits for kinds of write that fail
     // its prefetch of the kinds has joined the held download, and fails with it.
     await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
-    await page.evaluate(() =>
-      window.addEventListener(
-        "vite:preloadError",
-        () => Reflect.set(window, "__kindsFailed", true),
-        { once: true }
-      )
+    // The failure is read in this process, from the browser's report of the request, which a
+    // reload it began cannot take away with the document. The two frames after it leave the page
+    // the time to handle that failure and ask for any reload it would, and the tab's record of its
+    // reloads then says whether it did, as the row's last check reads it again.
+    const failed = page.waitForEvent("requestfailed", (request) =>
+      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
     );
     await kinds.abort();
-    await expect
-      .poll(() => page.evaluate(() => Reflect.get(window, "__kindsFailed") === true), {
-        message: "the page never saw the kinds' download fail",
-      })
-      .toBe(true);
+    await failed;
+    await nextFrames(page);
+    expect(await tabReloads(page), "the kinds' failed download reloaded the page").toEqual(spent);
     expect(await keptWrites(page)).toBe(1);
 
+    // The next request for the kinds is the sign-in page's, as it draws: no press is left to ask
+    // for them on this page, and the take-up asks only at a press. A later one goes through.
+    let signInPageKindsFailed: Promise<unknown> | undefined;
+    if (signInPageKindsFail) {
+      let failNext = true;
+      await page.route(WRITE_KINDS_CHUNK, async (route) => {
+        if (!failNext) return route.fallback();
+        failNext = false;
+        await route.abort();
+      });
+      signInPageKindsFailed = page.waitForEvent("requestfailed", (request) =>
+        WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
+      );
+    }
     await lapse(page);
     const kept = page.getByRole("region", { name: "Kept changes" });
+    if (signInPageKindsFailed !== undefined) {
+      // Two frames after the browser's report of the failure, the page has handled it: a take-up
+      // it ended would have put its write in the list by then.
+      await signInPageKindsFailed;
+      await nextFrames(page);
+      await expect(kept, "the take-up ended with no kinds in").toHaveCount(0);
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    }
     await expect(kept, "the sign-in page lists nothing the reload kept").toBeVisible();
     await expect(kept).toContainText("Kept until you sign in again as alice:");
     await expect(kept).toContainText(`${issue.key} set to `);
@@ -1515,6 +1764,34 @@ test("a session that lapses while the take-up waits for kinds of write that fail
   } finally {
     await alice.close();
   }
+}
+
+// A session can lapse while the store's take-up of what a reload kept still waits for the kinds
+// of write (`Writes.resume`): it takes them up all the same, for the sign-in that follows, and
+// the sign-in page lists them once it has. If the kinds' download failed online with no reload to
+// follow - the tab's three reloads are spent here - the shell that asked for them is gone, so the
+// sign-in page asks for them again itself (`KeptWritesHost`), and the write the reload kept is
+// listed there. Alice's status change is held at the network, so it stays out and kept; the page
+// reloads with the kinds' chunk held on the wire until the writes host has joined that download,
+// which then fails; her session then lapses.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("a session that lapses while the take-up waits for kinds of write that failed to download lists the write the reload kept on the sign-in page", async ({
+  browser,
+}) => {
+  await keptThroughALapse(browser, false);
+});
+
+// The same, with the sign-in page's own ask for the kinds failing too: until the kinds are in, the
+// take-up holds the write back from the store, so the list has no row to draw and no failure of
+// its own to draw again from. The reader's coming back to the page asks for the kinds once more
+// (`KeptWritesHost`), and the write the reload kept is listed then.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("a session that lapses while the kinds of write fail to download on the sign-in page too lists the write the reload kept once the window gets the focus back", async ({
+  browser,
+}) => {
+  await keptThroughALapse(browser, true);
 });
 
 /** Whether leaving `page` now asks the reader to confirm: a listener of its `beforeunload`
@@ -1560,9 +1837,7 @@ test("Sign out pressed while the take-up waits for the kinds of write names the 
       void dialog.accept();
     });
     // Every status change is held at the network: out, never answered, and kept in the tab.
-    await page.route(`**${path}`, (route) =>
-      route.request().method() === "PATCH" ? undefined : route.fallback()
-    );
+    await holdStatusChanges(page, path);
     await page.goto(`/issues/${issue.key}`);
     await page.getByLabel("Status").selectOption("todo");
     await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");

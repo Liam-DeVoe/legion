@@ -33,11 +33,18 @@ export interface MarginDrawer {
    *  undefined until then, and on every page that is not the new one. */
   readonly page?: MarginDrawerPage;
   /** What held the focus as the drawer was last opened (`setOpen(true)`), for the drawer to read
-   *  as it draws open (`features/margin/Margin.tsx`): one the reader opened before the margin's
-   *  chunk was in draws only once that chunk lands, and takes the focus only if the reader has
-   *  not gone elsewhere meanwhile. Undefined where nothing records it, and the drawer then takes
-   *  the focus as it opens. */
+   *  as it draws open (`features/margin/Margin.tsx`). One the reader opened before the margin's
+   *  chunk was in draws only once that chunk lands, and by then the reader may have gone
+   *  elsewhere: from the phone's width up the drawer then takes no focus from where they went,
+   *  and below it, where the drawer is a sheet that takes the focus as it opens, the open is
+   *  called off. Undefined where nothing records it, and the drawer then takes the focus as it
+   *  opens. */
   readonly openedFrom?: Element | null;
+  /** Told by the drawer as it is drawn and as it goes (`features/margin/Margin.tsx`), into state
+   *  the shell keeps (`AppShell`, `app.tsx`): until it is drawn, which is once the margin's chunk
+   *  is in, the shell's Escape calls off an open of it, and from then on its Escape is the
+   *  drawer's own. Undefined where nothing listens. */
+  readonly setDrawn?: (drawn: boolean) => void;
   readonly setOpen: (open: boolean) => void;
   /** Sets `page`, and with `undefined` takes it away again when the new page goes. */
   readonly setPage: (page: MarginDrawerPage | undefined) => void;

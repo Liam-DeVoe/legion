@@ -39,9 +39,11 @@ import { navigateInApp } from "./sends";
 import {
   EDITOR_LIBRARY_CHUNK,
   failAssetWhen,
+  holdAssetUntilReleased,
   holdMarginChunk,
   MARGIN_CHUNK,
   missEntryChunk,
+  REF_PREVIEW_CHUNK,
   recordTabReloads,
   tabReloads,
 } from "./shell";
@@ -1317,11 +1319,7 @@ test("a preview layer that arrives while a button is held on a link opens no car
       };
     });
     const listened = () => page.evaluate(() => Reflect.get(window, "__hoverListened") === true);
-    const layer = Promise.withResolvers<void>();
-    await page.route(/\/assets\/RefPreview-[^/]+\.js$/u, async (route) => {
-      await layer.promise;
-      await route.continue();
-    });
+    const layer = await holdAssetUntilReleased(page, REF_PREVIEW_CHUNK);
     await page.goto(`/issues/${source.key}/spec`);
     const link = documentEditor(page).getByRole("link", { name: "the held link" });
     await expect(link).toBeVisible();
@@ -1329,7 +1327,7 @@ test("a preview layer that arrives while a button is held on a link opens no car
     await link.hover();
     await page.mouse.down();
     expect(await listened(), "the layer is not in yet").toBe(false);
-    layer.resolve();
+    layer.release();
     await expect.poll(listened).toBe(true);
     // Past the card's open delay: a card the layer's arrival opened would be on the page now.
     await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);
@@ -1346,7 +1344,6 @@ test("a preview layer that arrives while a button is held on a link opens no car
   });
 });
 
-// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
 // The preview layer mounts once the page has drawn, with no reader action, and the shell draws it
 // outside the page's error boundary (`web/src/features/refs/RefPreviewLayer.tsx`). Its chunk
 // failing online in a tab whose three reloads are spent reloads nothing
@@ -1380,11 +1377,7 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     await page.goto("/");
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     const spent = await recordTabReloads(page, [3, 2, 1]);
-    const failed = await failAssetWhen(
-      page,
-      /\/assets\/RefPreview-[^/]+\.js$/u,
-      async () => undefined
-    );
+    const failed = await failAssetWhen(page, REF_PREVIEW_CHUNK, async () => undefined);
     const caught = page.waitForEvent(
       "console",
       (message) =>
@@ -1405,7 +1398,7 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     expect(counts.documents, "the failure reloaded nothing").toBe(2);
     expect(await tabReloads(page)).toEqual(spent);
 
-    await page.unroute(/\/assets\/RefPreview-[^/]+\.js$/u);
+    await page.unroute(REF_PREVIEW_CHUNK);
     await navigateInApp(page, `/issues/${target.key}/spec`);
     const otherLink = documentEditor(page).getByRole("link", { name: "the other link" });
     await expect(otherLink).toBeVisible();

@@ -1,6 +1,7 @@
 import { ISSUE_TAB_LABELS } from "../web/src/features/issue/issue-tab-list";
 import { HEADER_SCROLLS_QUERY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
@@ -36,6 +37,7 @@ import {
   viewportAt,
 } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
+import { focusedNodeId } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
 import { holdMarginChunk } from "./shell";
 import { expect, type Locator, type Page, type Route, test } from "./test";
@@ -532,6 +534,152 @@ test("Details opened by Shift+M before the margin's chunk is in takes no focus f
       "Shift+M did not open Details once the margin was in"
     ).toBeVisible();
     await expect(went, "Details took the focus from where the reader went").toBeFocused();
+  });
+});
+
+/** The header's control that opens and closes Details, whose `aria-expanded` is whether the
+ *  reader has Details asked for, drawn or not. */
+function detailsControl(page: Page): Locator {
+  return page.getByTestId("issue-details-control");
+}
+
+// The phone's half of the row above. Below the phone's width Details is a sheet over the whole
+// page, a dialog that takes the focus as it opens (`useDialog`), so one that opened late would
+// take the focus from where the reader went, under a sheet they no longer wait for. So the open
+// whose sheet lands after the reader has moved the focus is called off, and the sheet does not
+// open (`web/src/features/margin/Margin.tsx`). The row holds the margin's chunk, opens Details
+// from its control in the header, moves the focus to the view control and releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Details opened on a phone before the margin's chunk is in does not open over where the reader went @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await detailsControl(page).tap();
+    await expect(detailsControl(page), "the control did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toBeHidden();
+    const went = presetChooser(page);
+    await went.focus();
+
+    releaseMargin();
+    await expect(
+      detailsControl(page),
+      "the open was not called off once the margin was in"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details' sheet opened late").toBeHidden();
+    await expect(went, "Details took the focus from where the reader went").toBeFocused();
+  });
+});
+
+// Escape pressed while Details' open waits for the margin's chunk calls the open off, as it closes
+// Details once Details is drawn: the shell answers Escape itself while Details is asked for and
+// its drawer is not drawn (`AppShell`, `web/src/app.tsx`), so the chunk that lands after it opens
+// nothing. The row holds the margin's chunk, presses Shift+M and then Escape from the page, and
+// releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed before the margin's chunk is in calls off the Details Shift+M asked for", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    releaseMargin();
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details opened once the margin was in").toBeHidden();
+  });
+});
+
+// The same Escape from the outline row the load's opening put the focus on, where the tree binds
+// Escape too, to leave the row (`useTreeKeymap.ts`'s `tree-leave`). A drawn Details takes that
+// Escape first, and the row keeps the focus (`web/src/features/margin/Margin.tsx`); so does the
+// shell's Escape while Details' open waits for the margin's chunk, which answers before the
+// keymap and marks the key handled (`AppShell`, `web/src/app.tsx`).
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed on an outline row before the margin's chunk is in calls off the Details Shift+M asked for, and the row keeps the focus", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    const row = await focusedNodeId(page);
+    expect(row, "the load's opening put the focus on no row").not.toBeNull();
+    await page.keyboard.press("Shift+M");
+    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(await focusedNodeId(page), "the Escape also took the focus off the row").toBe(row);
+
+    releaseMargin();
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details opened once the margin was in").toBeHidden();
+  });
+});
+
+// An Escape in a field is the field's, while Details' open waits for its chunk as beside a drawn
+// Details: it calls nothing off, and the open lands once the margin's chunk is in. The field is
+// the header's status select, whose Escape leaves it (`useHeaderKeys.ts`'s `back`).
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed in a field before the margin's chunk is in is the field's, and Details opens once the margin is in", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    const status = issuePage(page).getByRole("combobox", {
+      exact: true,
+      name: PROPERTY_LABELS.status,
+    });
+    await status.focus();
+    await page.keyboard.press("Escape");
+    await expect(status, "the Escape in the status field did not leave it").not.toBeFocused();
+    await expect(detailsControl(page), "the Escape in a field called the open off").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    releaseMargin();
+    await expect(marginShell(page), "Details did not open once the margin was in").toBeVisible();
   });
 });
 

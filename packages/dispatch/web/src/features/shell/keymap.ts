@@ -222,7 +222,10 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
-function isEditableTarget(target: EventTarget | null): boolean {
+/** Whether `target` takes typed text, so a key there is the field's own: a binding fires there
+ *  only when it says so (`inEditable`), and the shell's Escape for a Details still loading
+ *  (`app.tsx`) passes it by. */
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }

@@ -5,7 +5,7 @@ import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
 import { keptWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { fetchedChunk, holdAsset, holdAssetUntilReleased, pageAssetPath } from "./shell";
+import { chunkFile, holdAsset, holdAssetUntilReleased, pageAssetPath, ranChunk } from "./shell";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -441,11 +441,6 @@ async function afterAnyWrite(page: Page): Promise<void> {
   await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
 }
 
-/** The pattern of the chunk the build names `<name>-<hash>.js`. */
-function chunkFile(name: string): RegExp {
-  return new RegExp(`/assets/${name}-[\\w-]{8}\\.js$`, "u");
-}
-
 /** Brings the chunk named `name` into the page's module map, as a page that has fetched and run
  *  it holds it, whatever the code under test starts of its own accord. The entry chunk names the
  *  path of every chunk the shell draws a surface from, and an import of that path runs it; it
@@ -481,25 +476,6 @@ const SUSPENSE_REVEAL_HOLD_MS = 300;
 async function lateOpenWindow(page: Page): Promise<void> {
   await page.clock.runFor(SUSPENSE_REVEAL_HOLD_MS);
   await nextFrames(page);
-}
-
-/** Waits until the page itself has fetched the chunk at `pattern` and run it: its resource timing
- *  names the fetch (`fetchedChunk`), and an import of that same address settles once the module
- *  has run - with no request of its own, since the page holds the module - by which time the
- *  page's own import of it, out since before that fetch, has settled too. */
-async function ranTheChunk(page: Page, pattern: RegExp): Promise<void> {
-  await fetchedChunk(page, pattern);
-  await page.evaluate(
-    async ({ flags, source }) => {
-      const chunk = new RegExp(source, flags);
-      const fetched = performance
-        .getEntriesByType("resource")
-        .find((entry) => chunk.test(new URL(entry.name).pathname));
-      if (fetched === undefined) throw new Error(`the page fetched no ${source}`);
-      await import(fetched.name);
-    },
-    { flags: pattern.flags, source: pattern.source }
-  );
 }
 
 // The surfaces a key opens over this page - the Create issue dialog, the shortcut sheet, the search
@@ -614,8 +590,13 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   // (`web/src/features/shell/asked-surface.tsx`). The rows above bring each chunk in themselves
   // (`chunkIn`), which leaves the surface's own load unrun, so they hold whichever way the press
   // goes; this one brings nothing in. It waits for the page's own download of each chunk and for
-  // that module to have run, then keeps every box the page adds from the press on: a press that
-  // draws its surface in its own commit adds none, and one that draws the box adds it there.
+  // that module to have run (`ranChunk`), then reads, for each press, whether its surface is in
+  // the document in a task the press's own keydown queues: React commits what a key's handler
+  // sets before the browser runs another task, so a surface drawn in the commit of its press is
+  // there, and one behind `lazy` and `Suspense` is not, since its first render suspends and React
+  // shows that boundary's content no sooner than 300 ms after its fallback. And it keeps every box
+  // the page adds from the press on: a press that draws its surface in its own commit adds none,
+  // and one that draws the box adds it there.
   test("c and ? after the page's own download of their chunks open each surface in the commit of the press, with no box", async ({
     browser,
   }) => {
@@ -626,8 +607,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
       await openIssue(page, issue.key, "Prefetched surfaces");
-      await ranTheChunk(page, chunkFile("CreateIssueDialog"));
-      await ranTheChunk(page, chunkFile("ShortcutHelp"));
+      await ranChunk(page, chunkFile("CreateIssueDialog"));
+      await ranChunk(page, chunkFile("ShortcutHelp"));
       await page.evaluate(() => {
         const boxes: string[] = [];
         Reflect.set(window, "__loadingBoxes", boxes);
@@ -641,6 +622,24 @@ test.describe("keys typed straight after a key that opens a surface", () => {
             }
           }
         }).observe(document.body, { childList: true, subtree: true });
+        // The surface each key opens, by the name its dialog carries, and whether it was in the
+        // document in the task the key's keydown queued. In the capture phase on the window, so
+        // it hears the key before any handler of the page can stop it.
+        const surfaces: Record<string, string> = { "?": "Keyboard shortcuts", c: "Create issue" };
+        const inTheirTask: Record<string, boolean> = {};
+        Reflect.set(window, "__surfacesInTheirTask", inTheirTask);
+        window.addEventListener(
+          "keydown",
+          (event) => {
+            const name = surfaces[event.key];
+            if (name === undefined) return;
+            setTimeout(() => {
+              inTheirTask[event.key] =
+                document.querySelector(`[role="dialog"][aria-label="${name}"]`) !== null;
+            }, 0);
+          },
+          { capture: true }
+        );
       });
 
       await page.keyboard.press("c");
@@ -654,6 +653,10 @@ test.describe("keys typed straight after a key that opens a surface", () => {
         await page.evaluate(() => Reflect.get(window, "__loadingBoxes")),
         "a press drew the box that holds the keys, so its surface's chunk was not in"
       ).toEqual([]);
+      expect(
+        await page.evaluate(() => Reflect.get(window, "__surfacesInTheirTask")),
+        "a press's surface was not in the document in the task its keydown queued"
+      ).toEqual({ "?": true, c: true });
     } finally {
       await context.close();
     }
