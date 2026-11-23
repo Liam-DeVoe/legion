@@ -246,6 +246,7 @@ var nonDispatchFacts = []string{
 	"PullRequestMergeability", "PullRequestMerged", "PullRequestClosed", "PullRequestDequeued", "Push", "BasePush",
 	"PullRequestMissing", "MergeQueueReadDone", "ConflictConfirmDone", "GateAboveDispatch", "DispatchArtifact",
 	"CheckLookEnded", "CheckWakeDue", "CheckBound", "ListenerWake", "PodBackstopDue", "MemoryGuardKill", "VolumeNearFull",
+	"ControllerMemoryGuardKill",
 }
 
 // wantFacts is the way the design decides for the facts it names: the API's sign-off, backward

@@ -1742,7 +1742,7 @@ A fault that a rule would bring on more or less often is not drawn, which favour
 
 **Evidence in a recorded window.** _The supervision facts that the replay leaves out._
 The replay leaves out the facts of a claim's readiness, of its task's confirmation, of a lost session and of a fault of the session store.
-It also leaves out a silent worker, a stalled background job, an entry sweep, a memory kill, a full volume, a listener's wake and a pod's backstop.
+It also leaves out a silent worker, a stalled background job, an entry sweep, a memory kill in an issue's pod or in the controller's, a full volume, a listener's wake and a pod's backstop.
 It enters each recorded `supervise: claim failed` line at its offset in the segment of its issue.
 
 **If it is wrong.**

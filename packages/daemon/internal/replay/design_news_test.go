@@ -148,3 +148,48 @@ func TestTheNewsOfAnApprovedVersionIsToldOnceAndHoldsNoMerger(t *testing.T) {
 		t.Error("the stub gave no row back to wait on its backoff, want the implementer's news-only start to wait behind its task")
 	}
 }
+
+// The replay's holder of a member's phase is the daemon's (internal/daemon's phaseHolder, held by
+// TestOnlyAPhaseWorkerHoldsAMembersPhase): a phase worker holds a member's phase, and only a phase
+// worker does. Admitted, which phase.RoleFor answers the tree's architect for, has no holder, since
+// a member there has not started its work and its first phase's start carries its news; a phase no
+// role works names none; a member in reviewing names its reviewer's claim, one in implementing its
+// implementer's and one in merging its merger's. Accepting, which the owning architect holds, is
+// named through the owner walk and not here. A tree whose root names no project token holds no
+// claim for any member.
+func TestOnlyAPhaseWorkerHoldsAMembersPhaseInTheReplay(t *testing.T) {
+	root := record.Issue{Key: "ACME-1", Project: "ACME", Phase: phase.Implementing}
+	claims := newNewsClaims(root, record.NewsFacts{Members: []record.Issue{root}})
+	project, err := claim.ProjectToken(root.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		phase phase.Phase
+		role  claim.Role
+	}{
+		{phase.Admitted, ""},
+		{phase.AwaitingPerson, ""},
+		{phase.Implementing, claim.RoleImplementer},
+		{phase.Reviewing, claim.RoleReviewer},
+		{phase.Merging, claim.RoleMerger},
+	} {
+		member := record.Issue{Key: "ACME-2", Project: "ACME", Phase: tc.phase}
+		holder, held, err := claims.holderOf(context.Background(), nil, nil, member)
+		if err != nil {
+			t.Fatalf("the holder of a member in %s: %v", tc.phase, err)
+		}
+		if held != (tc.role != "") || held && holder.role != tc.role {
+			t.Fatalf("the holder of a member in %s = %+v (held %t), want role %q", tc.phase, holder, held, tc.role)
+		}
+		if held {
+			if want, _ := claim.NewToken(project, member.Key, tc.role); holder.token != want {
+				t.Fatalf("the holder of a member in %s is %s, want %s", tc.phase, holder.token, want)
+			}
+		}
+	}
+	unnamed := newNewsClaims(record.Issue{Key: "ACME-1", Phase: phase.Implementing}, record.NewsFacts{})
+	if _, held, err := unnamed.holderOf(context.Background(), nil, nil, record.Issue{Key: "ACME-2", Phase: phase.Reviewing}); err != nil || held {
+		t.Fatalf("a tree whose root names no project token held a member's phase (held %t, err %v), want no holder", held, err)
+	}
+}
