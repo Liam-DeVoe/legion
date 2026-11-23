@@ -109,8 +109,9 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
 // turns the loop's test hooks on, makes each SIGUSR1 collect the agent's heap and log what it
 // found (collectAgentOnSignal) and each SIGUSR2 log its runtime figures as they stand
-// (reportAgentFiguresOnSignal), and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
-// it allocate at full speed that long after its start (growAgentHeap).
+// (reportAgentFiguresOnSignal); DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
+// it allocate at full speed that long after its start (growAgentHeap); and DISPATCH_TEST_AGENT_NOW,
+// handed on the same way, is the time its runs tell their model as the time now (agent.Config.Now).
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
 	if socket == "" {
@@ -147,9 +148,15 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 			return 1
 		}
 	}
-	// The server checked DISPATCH_TEST_HOOKS before it passed this on, so the agent reads it alone.
+	// The server checked DISPATCH_TEST_HOOKS before it passed these on, so the agent reads each
+	// alone.
 	var after time.Duration
 	if err := testHookDuration(env, "DISPATCH_TEST_AGENT_GROW_AFTER", true, &after); err != nil {
+		fmt.Fprintf(stderr, "agent: %v\n", err)
+		return 1
+	}
+	var now time.Time
+	if err := testHookTime(env, "DISPATCH_TEST_AGENT_NOW", true, &now); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)
 		return 1
 	}
@@ -161,7 +168,7 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 		collectAgentOnSignal(stderr)
 		reportAgentFiguresOnSignal(stderr)
 	}
-	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks}
+	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks, Now: now}
 	// The chat model's first token is read now, beside the hello and the first claim, so a
 	// sign-in's exchange - Azure's, whose source caches its token - is not made by a run's first
 	// model call; that call waits on the exchange in flight instead of starting its own. A read

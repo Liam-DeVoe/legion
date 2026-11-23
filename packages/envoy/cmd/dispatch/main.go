@@ -192,6 +192,12 @@ type bootConfig struct {
 	// (growAgentHeap); zero for none. Only DISPATCH_TEST_AGENT_GROW_AFTER, under the test hooks,
 	// sets it, for the test of the memory group.
 	AgentGrowAfter time.Duration
+	// AgentNow hands DISPATCH_TEST_AGENT_NOW on to the agent process, whose runs tell their model
+	// that time as the time now and write each time they give the model relative to it, in place
+	// of the clock's; zero for the clock's. Only DISPATCH_TEST_AGENT_NOW, under the test hooks,
+	// sets it, for an eval whose seeded times are written for one day. Nothing of the server
+	// reads it: its leases, timeouts and stored times stay on the clock.
+	AgentNow time.Time
 	// ServerHeap is how many bytes this process holds on its heap from its boot until it exits,
 	// each page resident (holdServerHeap); zero for none. Only DISPATCH_TEST_SERVER_HEAP, under
 	// the test hooks, sets it, so the test of the memory group holds the server near its peak
@@ -1355,7 +1361,7 @@ func main() {
 		agent = listening
 	} else {
 		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile,
-			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter, Procs: boot.AgentProcs})
+			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter, Procs: boot.AgentProcs, Now: boot.AgentNow})
 		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, env, limits)
 		agent = supervisor
 	}
@@ -1598,6 +1604,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	if err := testHookBytes(env, "DISPATCH_TEST_SERVER_HEAP", boot.TestHooksEnabled, &boot.ServerHeap); err != nil {
+		return bootConfig{}, err
+	}
+	if err := testHookTime(env, "DISPATCH_TEST_AGENT_NOW", boot.TestHooksEnabled, &boot.AgentNow); err != nil {
 		return bootConfig{}, err
 	}
 	if boot.AgentCallHook, err = agentCallHook(env, boot.TestHooksEnabled); err != nil {
@@ -2528,6 +2537,25 @@ func testHookBytes(env settingValues, name string, testHooksEnabled bool, target
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value <= 0 {
 		return fmt.Errorf("%s=%q (expected a positive whole number of bytes)", name, raw)
+	}
+	*target = value
+	return nil
+}
+
+// testHookTime reads the test-only time setting name, an RFC 3339 time, into target, leaving
+// target as it is when the setting is unset. Such a setting is refused without
+// DISPATCH_TEST_HOOKS=1, and so is any value that is not an RFC 3339 time.
+func testHookTime(env settingValues, name string, testHooksEnabled bool, target *time.Time) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return fmt.Errorf("%s=%q (expected an RFC 3339 time, such as 2026-11-18T12:00:00Z)", name, raw)
 	}
 	*target = value
 	return nil

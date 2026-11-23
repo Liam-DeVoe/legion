@@ -1006,7 +1006,8 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 // link, which the bar draws with its title already, and its status after the chip that shows it,
 // ran past 250 words, printed a correction of themselves, and wrote raw times, "priority 1", raw
 // values such as "(medium)" and session ids in code. The system prompt says how an answer reads
-// (state 4 of the bar's design), and each model call is told the time now, from which a time is
+// (state 4 of the bar's design): each priority and time as the page shows it, which the reads give
+// beside the value (shownResult); and each model call is told the time now, from which a time is
 // written as the issue page writes it.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
@@ -1018,6 +1019,8 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"Say each fact once: never say again, in other words, what the answer or its list already said",
 		"without saying what you read or how",
 		"a priority as P0, P1, P2 or P3",
+		"The reads give each priority and each time also as the page shows it, in the field after it named for it with _shown",
+		"write that form, never the raw value beside it",
 		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
 		`never as the result's raw value, and never in parentheses: "an ask of medium urgency", not "(medium)"`,
 		`"2 days ago"`,

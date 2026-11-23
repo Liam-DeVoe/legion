@@ -189,10 +189,10 @@ type server struct {
 }
 
 // startServer starts the Dispatch server binary on the database databaseURL names, with its agent
-// process, the chat model behind the proxy, the fake Envoy, a person named by personHeader and a
-// log in dir, and waits until it serves.
+// process on the seed's clock, now (seedClock), the chat model behind the proxy, the fake Envoy, a
+// person named by personHeader and a log in dir, and waits until it serves.
 func startServer(ctx context.Context, binary, dir, databaseURL, agentToken string, chat chatSettings, proxy *chatProxy,
-	envoyURL string, tokensPerMinute int) (*server, error) {
+	envoyURL string, tokensPerMinute int, now time.Time) (*server, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("hold a port for the server: %w", err)
@@ -244,6 +244,7 @@ func startServer(ctx context.Context, binary, dir, databaseURL, agentToken strin
 		"DISPATCH_AZURE_FEDERATED_TOKEN_FILE=" + chat.TokenFile,
 		"SSL_CERT_FILE=" + proxy.bundle,
 	}
+	command.Env = append(command.Env, seedClock(now)...)
 	if chat.APIVersion != "" {
 		command.Env = append(command.Env, "DISPATCH_AZURE_CHAT_API_VERSION="+chat.APIVersion)
 	}
@@ -303,6 +304,15 @@ func (s *server) stop() {
 	}
 	_ = syscall.Kill(-s.command.Process.Pid, syscall.SIGKILL)
 	_ = s.log.Close()
+}
+
+// seedClock is the settings that put a try's agent on the seed's clock: the server's test hooks,
+// under which alone it takes DISPATCH_TEST_AGENT_NOW, and now, the seed's now, as the time each
+// run's model is told and every relative time the agent gives it is written from. The seed writes
+// its times for that day, so they read as of that day, as the judge, built with the seed's now,
+// reads them; the server's own leases and timeouts stay on the clock.
+func seedClock(now time.Time) []string {
+	return []string{"DISPATCH_TEST_HOOKS=1", "DISPATCH_TEST_AGENT_NOW=" + now.UTC().Format(time.RFC3339Nano)}
 }
 
 // buildServer builds cmd/dispatch into dir, from the envoy module the working directory is in.

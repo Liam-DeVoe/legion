@@ -20,16 +20,19 @@
 // which it refuses) it writes the seed into a template database, and for each try of each task
 // it copies the template, starts a Dispatch server on the copy (cmd/dispatch, built unless
 // --server-bin names a build) with its agent process and an in-process fake Envoy answering the
-// seed's sessions, and acts as a person through the routes: it starts a run with the task's
-// words, page, mode and level, answers each plan the run shows as the task's grade says, and
-// reads the run to its end. A change task is graded by the store it leaves (eval.GradeEnd), an
-// answer task by a judge model reading the answer against the task's facts, and every message
-// and comment of the person's by c13's rule (eval.CheckPersonWrites). The judge reads an answer as
-// the person reads it in the bar, with each link rendered as the bar's chip draws it from the
-// store the try left (eval.RenderAnswer); the check of the links it holds reads it as written. A
-// try the judge cannot read is unjudged, neither a pass nor a fail, and is put to the judge again
-// once at the run's end. The tries of one task run before the next task starts, --parallel of
-// them at once.
+// seed's sessions, both on the seed's clock: the server's agent tells each run's model the seed's
+// now as the time now (DISPATCH_TEST_AGENT_NOW, under the server's test hooks), and the fake
+// Envoy answers each session last seen when the seed says, so the seed's times, written for its
+// day, read as of that day, as the judge reads them. It acts as a person through the routes: it
+// starts a run with the task's words, page, mode and level, answers each plan the run shows as
+// the task's grade says, and reads the run to its end. A change task is graded by the store it
+// leaves (eval.GradeEnd), an answer task by a judge model reading the answer against the task's
+// facts, and every message and comment of the person's by c13's rule (eval.CheckPersonWrites).
+// The judge reads an answer as the person reads it in the bar, with each link rendered as the
+// bar's chip draws it from the store the try left (eval.RenderAnswer); the check of the links it
+// holds reads it as written. A try the judge cannot read is unjudged, neither a pass nor a fail,
+// and is put to the judge again once at the run's end. The tries of one task run before the next
+// task starts, --parallel of them at once.
 //
 // The chat model is the one the server's own settings name, read from run's environment:
 // DISPATCH_AZURE_CHAT_ENDPOINT, DISPATCH_AZURE_CHAT_DEPLOYMENT, DISPATCH_AZURE_CHAT_API_VERSION,

@@ -151,7 +151,9 @@ const nowLayout = "2006-01-02 15:04 UTC"
 // each row of the plan that ran are told the model as the person's next message. A tool call whose
 // result was not saved is answered as unsaved, so each call has its result, as the providers
 // require; a tool step whose model step is only a note is told as a note. The result of each
-// step withheld names, its note's too, is told as withheld (withheldHistory).
+// step withheld names, its note's too, is told as withheld (withheldHistory). Each result the
+// model is told gives each priority and time it holds also as the issue page shows it, a time
+// relative to now (shownResult).
 func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, withheld map[int]string, now time.Time) ([]agentloop.Message, error) {
 	var opening strings.Builder
 	if len(run.Turns) > 0 {
@@ -237,11 +239,11 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 			}
 			if body.Row != nil {
 				closeCalls()
-				told(fmt.Sprintf("Change %d of plan %d, %s %s: %s", body.Row.Row, body.Row.Plan, body.Call.Tool, body.Call.Arguments, body.Result))
+				told(fmt.Sprintf("Change %d of plan %d, %s %s: %s", body.Row.Row, body.Row.Plan, body.Call.Tool, body.Call.Arguments, shownResult(body.Result, now)))
 				continue
 			}
 			if !modelled && body.Call.ID == pageCallID {
-				page = body.Result
+				page = shownResult(body.Result, now)
 				continue
 			}
 			if !pending[body.Call.ID] {
@@ -249,7 +251,7 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 				continue
 			}
 			message := results()
-			message.Blocks = append(message.Blocks, toolResult(body.Call, body.Result, body.Error))
+			message.Blocks = append(message.Blocks, toolResult(body.Call, shownResult(body.Result, now), body.Error))
 			delete(pending, body.Call.ID)
 		case agentwire.StepPerson:
 			closeCalls()

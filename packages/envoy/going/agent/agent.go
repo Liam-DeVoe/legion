@@ -45,13 +45,18 @@ const exitWait = 500 * time.Millisecond
 
 // Config is the agent's configuration, the chat model's settings alone: the model its runs call,
 // a zero ID where the server names none; the chat deployment's tokens a minute, which the agent
-// paces its calls to its share of, 0 for no quota; how many runs it works at once; and whether
-// the test hooks are on (hooks.go), which only an end-to-end test's server turns on.
+// paces its calls to its share of, 0 for no quota; how many runs it works at once; whether
+// the test hooks are on (hooks.go), which only an end-to-end test's server turns on; and the
+// time each run's model is told as the time now, from which the agent writes each time it gives
+// the model relative to now (shownResult), zero for the clock's at the start of each run's turn.
+// Only a server under its own test hooks sets Now (DISPATCH_TEST_AGENT_NOW), for an eval whose
+// seeded times are written for one day; nothing else of the agent reads it.
 type Config struct {
 	Model           agentloop.Model
 	TokensPerMinute int
 	Slots           int
 	Hooks           bool
+	Now             time.Time
 }
 
 // errStuck is Run's end once the watchdog counted stuckLimit goroutines stuck.

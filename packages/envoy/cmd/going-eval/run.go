@@ -477,7 +477,8 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 	_, _ = rand.Read(secret)
 	agentToken := hex.EncodeToString(secret)
 	dir := e.tryDir(task.ID, try)
-	srv, err := startServer(ctx, e.binary, dir, e.databases.url(database), agentToken, e.chat, e.proxy, envoy.url(), serverTokenLimit(e.options.parallel))
+	srv, err := startServer(ctx, e.binary, dir, e.databases.url(database), agentToken, e.chat, e.proxy, envoy.url(),
+		serverTokenLimit(e.options.parallel), e.seed.Now)
 	if err != nil {
 		result.Error = err.Error()
 		return result

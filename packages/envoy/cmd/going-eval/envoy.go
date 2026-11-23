@@ -18,12 +18,14 @@ import (
 )
 
 // fakeEnvoy is the Envoy listener one try's Dispatch server reads: it answers the seed's agent
-// sessions as the listener does - a live session at the time of each read, an unresponsive one
-// as the seed last saw it, a gone one not at all - and takes a send to a live or unresponsive
-// session. A live session answers a send with its status reply (eval.Session.StatusReply), posted
-// back to the message as that session through Dispatch's reply route, which is how an agent of
-// the seed answers the person who asks it where its work stands. It holds no role, no interest
-// and no Legion agent entry.
+// sessions as the listener does - a live or an unresponsive one as the seed last saw it, a gone
+// one not at all - and takes a send to a live or unresponsive session. Every time it answers is
+// on the seed's clock, as the try's agent is (seedClock): a live session's last seen is the
+// seed's too, never the time of the read, which the agent, told the seed's now, would read as
+// days after now. A live session answers a send with its status reply (eval.Session.StatusReply),
+// posted back to the message as that session through Dispatch's reply route, which is how an
+// agent of the seed answers the person who asks it where its work stands. It holds no role, no
+// interest and no Legion agent entry.
 type fakeEnvoy struct {
 	sessions map[string]eval.Session
 	listener net.Listener
@@ -74,17 +76,13 @@ func (f *fakeEnvoy) close() {
 	f.replies.Wait()
 }
 
-// answered is a session as the listener answers it, in the state the seed gives it: a live one
-// seen now.
+// answered is a session as the listener answers it, in the state the seed gives it and last seen
+// when the seed says, on the seed's clock.
 func (f *fakeEnvoy) answered(session eval.Session) dispatchenvoy.Session {
-	seen := session.LastSeen
-	if session.State == dispatchenvoy.StateLive {
-		seen = time.Now()
-	}
 	return dispatchenvoy.Session{
 		SessionID: session.ID, Title: session.Title, MachineID: "eval", Host: "eval",
 		Roles: []string{}, Capabilities: []string{"btw", "aside", "steer"},
-		LastSeen: seen.UnixMilli(), State: session.State,
+		LastSeen: session.LastSeen.UnixMilli(), State: session.State,
 	}
 }
 

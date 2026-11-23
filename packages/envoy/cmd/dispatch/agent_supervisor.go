@@ -150,11 +150,14 @@ func newAgentSupervisor(end agentEnd, command, env []string, limits agentMemory)
 // agentTestHooks is what a server under its own test hooks turns on in its agent: the loop's test
 // hooks (DISPATCH_TEST_AGENT_HOOKS=1, going/agent's hooks.go), the wait after each start before
 // the agent allocates at full speed (DISPATCH_TEST_AGENT_GROW_AFTER, growAgentHeap), zero for
-// none, and the agent's GOMAXPROCS (DISPATCH_TEST_AGENT_PROCS), zero for the CPUs it is given.
+// none, the agent's GOMAXPROCS (DISPATCH_TEST_AGENT_PROCS), zero for the CPUs it is given, and
+// the time the agent's runs tell their model as the time now (DISPATCH_TEST_AGENT_NOW,
+// going/agent's Config.Now), zero for the clock's.
 type agentTestHooks struct {
 	Loop      bool
 	GrowAfter time.Duration
 	Procs     int
+	Now       time.Time
 }
 
 // procs is the agent's GOMAXPROCS: as many CPUs as the server schedules on, agentMaxProcs at the
@@ -190,6 +193,9 @@ func agentEnvironment(chat answererConfig, socket string, limits agentMemory, tr
 	}
 	if hooks.GrowAfter > 0 {
 		set("DISPATCH_TEST_AGENT_GROW_AFTER", hooks.GrowAfter.String())
+	}
+	if !hooks.Now.IsZero() {
+		set("DISPATCH_TEST_AGENT_NOW", hooks.Now.Format(time.RFC3339Nano))
 	}
 	set("DISPATCH_ANSWERER", chat.Place)
 	switch chat.Place {

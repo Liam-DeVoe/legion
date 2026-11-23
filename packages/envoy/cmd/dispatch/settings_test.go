@@ -2276,6 +2276,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_GROW_AFTER": "5s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_AGENT_NOW": func(t *testing.T) {
+			// The server hands the time on to its agent, whose runs tell their model it as the time
+			// now (going/agent's tests hold that), and the agent refuses a value that is no RFC 3339
+			// time before it calls anything. Without the test hooks the server refuses to start.
+			if boot := resolveWith(t, map[string]string{}); !boot.AgentNow.IsZero() {
+				t.Errorf("unset: AgentNow = %v, want zero (the agent's runs read the clock)", boot.AgentNow)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_NOW": " 2026-11-18T12:00:00Z "})
+			if want := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC); !boot.AgentNow.Equal(want) {
+				t.Errorf("DISPATCH_TEST_AGENT_NOW=2026-11-18T12:00:00Z: AgentNow = %v, want %v", boot.AgentNow, want)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{Now: boot.AgentNow}); !slices.Contains(env, "DISPATCH_TEST_AGENT_NOW=2026-11-18T12:00:00Z") {
+				t.Errorf("the agent's environment is %v, want DISPATCH_TEST_AGENT_NOW=2026-11-18T12:00:00Z", env)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{}); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "DISPATCH_TEST_AGENT_NOW=") }) {
+				t.Errorf("unset: the agent's environment is %v, want no DISPATCH_TEST_AGENT_NOW", env)
+			}
+			for _, invalid := range []string{"2026-11-18", "noon", "2026-11-18 12:00:00Z", "2026-11-18T12:00:00"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_NOW": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_NOW=%q (expected an RFC 3339 time", invalid))
+				var stderr bytes.Buffer
+				values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_TEST_AGENT_NOW": invalid})
+				if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+					!strings.Contains(stderr.String(), fmt.Sprintf("DISPATCH_TEST_AGENT_NOW=%q", invalid)) {
+					t.Errorf("the agent with DISPATCH_TEST_AGENT_NOW=%s: exit %d, stderr %q; want 1, naming it", invalid, code, stderr.String())
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_NOW": "2026-11-18T12:00:00Z"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_SERVER_HEAP": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.ServerHeap != 0 {
 				t.Errorf("unset: ServerHeap = %d, want 0 (the server holds no heap for a test)", boot.ServerHeap)

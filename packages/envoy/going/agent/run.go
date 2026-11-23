@@ -132,9 +132,11 @@ var errReplyFiltered = errors.New("the chat model's content filter stopped the s
 const finishContentFilter = "content-filter"
 
 // worker is one claimed run of the agent's: the run, its level, what it has spent, its history,
-// the time it took the run's turn, which its model is told as the time now, and its own context,
-// which a stop, a lease the run no longer holds, the watchdog and the agent's end each cancel, and
-// which ends as the run's turn ends (work).
+// the time it took the run's turn, or the agent's own time now where a test sets one
+// (Config.Now), which its model is told as the time now and from which each time the model is
+// given is written relative to now (shownResult), and its own context, which a stop, a lease the
+// run no longer holds, the watchdog and the agent's end each cancel, and which ends as the run's
+// turn ends (work).
 type worker struct {
 	agent *agent
 	run   *agentwire.ClaimedRun
@@ -188,7 +190,11 @@ type worker struct {
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
 func newWorker(ctx context.Context, a *agent, run *agentwire.ClaimedRun, release func()) *worker {
-	w := &worker{agent: a, run: run, name: run.Level, history: run.History, release: release, now: time.Now()}
+	now := a.config.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	w := &worker{agent: a, run: run, name: run.Level, history: run.History, release: release, now: now}
 	w.ctx, w.cancel = context.WithCancel(ctx)
 	w.used = run.BudgetUsed
 	models := 0
