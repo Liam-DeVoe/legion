@@ -560,7 +560,7 @@ const (
 
 // DesignNewsRecord is the news of an approved design that a task carries to one audience
 // (workflow's RenderNews): a task of its own, or the record after a start's own record, joined to
-// it as InFront joins a note to a task. A task can carry several, one for each audience it speaks
+// it by Joined. A task can carry several, one for each audience it speaks
 // to. dispatch://INFRA-175's R2, R3 and R5 have it name the changed sections and checks of each
 // document, and, for the root's architect, each issue of the tree with what changed for it; the
 // readers' prompts give the answers its Design 7 names.
@@ -595,10 +595,12 @@ type DesignNewsRecord struct {
 }
 
 // DesignNewsItem is one step's approved version as news names it: the step, its document as a
-// dispatch:// link (or the bare artifact reference, ArtifactReference, where the gate row of the
-// step holds another document), the artifact, the version a person approved now, and the version
-// the audience took (Taken): 0 where no version was approved before it, and null where the review
-// history could not say which version the audience took, its reason in the reason block. In the
+// dispatch:// link (or the bare artifact reference, ArtifactReference, where no issue that holds
+// it is named: the gate row of the step holds another document, or neither the daemon's record
+// nor Dispatch names the issue of the row's document, workflow.GateDocuments), the artifact, the
+// version a person approved now, and the version the audience took (Taken): 0 where no version
+// was approved before it, and null where the review history could not say which version the
+// audience took, its reason in the reason block. In the
 // root architect's summary, Yours says whether that version is the one the architect took, and
 // not the one each issue owed the item took. Changes is what the item says changed (a
 // NewsChanges word).
@@ -644,15 +646,22 @@ type DesignNewsBlock struct {
 // DesignNewsMember is one member of a tree in its root architect's summary: its key, its phase,
 // how it is told (a NewsTold word) and, where it is told nothing or nothing yet, why (a NewsWhy
 // word, empty otherwise), the role that holds its phase where a task tells it (empty for a member
-// told nothing, and where its phase names no role), and, for a member in accepting that an
+// told nothing, and where its phase names no role), whether the task that tells it gives it the
+// gate's opening (Opening: its holder row owes the opening while the standing gate is open), the
+// count of the items it is owed that the daemon cannot name yet, whose change sets are not
+// recorded, which no row of Owed names (Unnamed), and, for a member in accepting that an
 // architect other than the tree root's holds, the issue whose architect that is (ArchitectOf: the
-// member itself, or an issue above it; empty otherwise).
+// member itself, or an issue above it; empty otherwise). A member told by a task is owed the
+// opening, an item Owed names, an item Unnamed counts, or more than one of them; a member told
+// nothing has no Opening and no Unnamed.
 type DesignNewsMember struct {
 	Issue       string `json:"issue"`
 	Phase       string `json:"phase"`
 	Told        string `json:"told"`
 	Why         string `json:"why"`
 	Holder      string `json:"holder"`
+	Opening     bool   `json:"opening"`
+	Unnamed     int    `json:"unnamed"`
 	ArchitectOf string `json:"architect_of"`
 }
 

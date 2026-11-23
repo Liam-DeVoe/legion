@@ -432,10 +432,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 // cleared them) or were a copy themselves, names the bare artifact reference
 // (texts.ArtifactReference) rather than a document that may be another issue's, and the daemon
 // names it from Dispatch when the outbox runs the start row and queues the task (and when rootTask
-// writes a queued task again at its send), and when the outbox publishes the catch-up
-// (NameStartDocuments, NameCatchUpDocuments). The architect-start task (ArchitectStartOf) and the
-// catch-up (treeCatchUp) both read it, so the two name one document for one row whatever daemon
-// wrote the row.
+// writes a queued task again at its send), when the outbox publishes the catch-up, and when the
+// claim sends a task of news (NameStartDocuments, NameCatchUpDocuments, NameNewsDocuments). The
+// architect-start task (ArchitectStartOf), the catch-up (treeCatchUp) and the news of an approved
+// design (GateDocuments) all read it, so they name one document for one row whatever daemon wrote
+// the row.
 func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
 	var unnamed []string
 	for _, row := range rows {
@@ -465,21 +466,52 @@ func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[
 	return documents, nil
 }
 
+// GateDocuments is stepDocuments for a text the daemon builds outside the workflow: the news of an
+// approved design, which the daemon's send reads in its own transaction (the daemon's
+// readNewsAtSend). So the news names a gate row's document by the one rule the architect-start
+// task and the catch-up name it by, and the bare artifact reference that rule gives is named from
+// Dispatch where the daemon sends the task (NameNewsDocuments).
+func GateDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
+	return stepDocuments(ctx, tx, store, rows)
+}
+
 // NameCatchUpDocuments names, in catchUp, a catch-up as QueueCatchUp queued it, each gate step's
 // document that it gives as the bare artifact reference (stepDocuments) as the step's document of
-// the issue issueOf answers holds the artifact, where it answers one, as NameStartDocuments names
-// the start task's. issueOf is the outbox's read of Dispatch when it publishes the catch-up,
-// outside any transaction; a step it answers nothing for keeps the bare reference.
+// the issue issueOf answers holds the artifact, where it answers one (namedDocument), as
+// NameStartDocuments names the start task's. issueOf is the outbox's read of Dispatch when it
+// publishes the catch-up, outside any transaction; a step it answers nothing for keeps the bare
+// reference.
 func NameCatchUpDocuments(catchUp *record.CatchUp, issueOf func(artifact string) (string, bool)) {
 	for i, gate := range catchUp.Gates {
-		artifact, bare := texts.ArtifactOfReference(gate.Document)
-		if !bare {
-			continue
-		}
-		if issue, ok := issueOf(artifact); ok {
-			catchUp.Gates[i].Document = stepRef(issue, gate.Step)
-		}
+		catchUp.Gates[i].Document = namedDocument(gate.Document, gate.Step, issueOf)
 	}
+}
+
+// NameNewsDocuments names, in documents, a tree's gate documents as GateDocuments read them for
+// the news of an approved design (News.Documents), each one it gives as the bare artifact
+// reference as the step's document of the issue issueOf answers holds the artifact, where it
+// answers one (namedDocument), as the catch-up's are named (NameCatchUpDocuments). issueOf is the
+// daemon's read of Dispatch where it sends the task (the daemon's designNews), outside any
+// transaction; a step it answers nothing for keeps the bare reference.
+func NameNewsDocuments(documents map[record.DesignStep]string, issueOf func(artifact string) (string, bool)) {
+	for step, document := range documents {
+		documents[step] = namedDocument(document, step, issueOf)
+	}
+}
+
+// namedDocument is document, the document of a gate row of step as stepDocuments gives it, named as
+// step's document of the issue issueOf answers holds its artifact where it is the bare artifact
+// reference and issueOf answers one, and as it is otherwise: the catch-up's naming
+// (NameCatchUpDocuments) and the news's (NameNewsDocuments) are this one.
+func namedDocument(document string, step record.DesignStep, issueOf func(artifact string) (string, bool)) string {
+	artifact, bare := texts.ArtifactOfReference(document)
+	if !bare {
+		return document
+	}
+	if issue, ok := issueOf(artifact); ok {
+		return stepRef(issue, step)
+	}
+	return document
 }
 
 // unreleasedChildren is each child the Dispatch mirror shows under an issue of owned, the issues

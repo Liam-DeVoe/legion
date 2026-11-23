@@ -494,10 +494,11 @@ func gateSteps(start ArchitectStart) []texts.ArchitectGate {
 // step's document of the issue issueOf answers holds the artifact, where it answers one
 // (texts.NameStartDocuments). issueOf is the daemon's read of Dispatch when the outbox runs the
 // start row and queues the task on the architect's claim, and when the daemon's rootTask writes a
-// queued task again at its send because a decision it named left the tree; the claim's send of a
-// task it queued asks Dispatch nothing again otherwise. Each read is made outside any
-// transaction, so the workflow itself asks Dispatch nothing; a step it answers nothing for keeps
-// the bare reference, and so does every step of a task that names none.
+// queued task again at its send because a decision it named left the tree or a newer decision
+// replaced one it named; the claim's send of a task it queued asks Dispatch nothing again
+// otherwise. Each read is made outside any transaction, so the workflow itself asks Dispatch
+// nothing; a step it answers nothing for keeps the bare reference, and so does every step of a
+// task that names none.
 func NameStartDocuments(task string, issueOf func(artifact string) (string, bool)) string {
 	return texts.NameStartDocuments(task, func(step, artifact string) (string, bool) {
 		issue, ok := issueOf(artifact)

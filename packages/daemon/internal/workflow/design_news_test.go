@@ -48,6 +48,12 @@ func closedGates() map[record.DesignStep]record.DesignGate {
 	return gates
 }
 
+// newsDocuments is the document each row of newsGates and closedGates is bound to, as the daemon's
+// send names it (News.Documents): each row records the root's own document.
+func newsDocuments() map[record.DesignStep]string {
+	return map[record.DesignStep]string{record.DesignStepSpec: specDocument, record.DesignStepCriteria: checksDocument}
+}
+
 // specChanges is what changed in the spec from version from to version 5, as Dispatch names it:
 // four units, among them the run of text outside every section that stands after the "Rollout"
 // section and the second section headed "Notes", three requirements and a callout.
@@ -77,7 +83,7 @@ func checksChanges() NewsChange {
 // 3 and the Verification document since version 2, the root's own checks.
 func rootHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
-		Steps: newsSteps, Gates: newsGates(), OpeningOwed: true, Items: []NewsChange{specChanges(3), checksChanges()}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), OpeningOwed: true, Items: []NewsChange{specChanges(3), checksChanges()}}
 }
 
 // closedHolderNews is rootHolderNews sent after a later version closed the gate again.
@@ -94,7 +100,7 @@ func unreadHolderNews() News {
 		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesUnavailable,
 		Reason: "dispatch has no changes route: GET /api/v1/artifacts/artifact-spec/changes answered 404 Not Found"}}
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-209", Phase: phase.Reviewing,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{unread}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{unread}}
 }
 
 // unreadBaselineChanges is the item of an issue whose told row knows no version of the spec and
@@ -110,7 +116,7 @@ func unreadBaselineChanges() NewsChange {
 // could not give.
 func unreadBaselineHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-217", Phase: phase.Testing,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{unreadBaselineChanges()}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{unreadBaselineChanges()}}
 }
 
 // firstApprovalHolderNews is the news of a child's planner whose phase began before any version
@@ -119,20 +125,20 @@ func firstApprovalHolderNews() News {
 	first := specChanges(0)
 	first.Changes.Sections, first.Changes.Blocks = nil, nil
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-213", Phase: phase.Planning,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{first}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{first}}
 }
 
 // acceptingHolderNews is the news of a child standing in accepting, whose holder is the
 // sub-architect that owns it.
 func acceptingHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-210", Phase: phase.Accepting,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{specChanges(4)}}
 }
 
 // plannerHolderNews is the news of a child's planner, which took spec version 4.
 func plannerHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-218", Phase: phase.Planning,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{specChanges(4)}}
 }
 
 // decisionOnlyHolderNews is the one news task of a version whose only difference is decision
@@ -142,7 +148,7 @@ func decisionOnlyHolderNews() News {
 	decisions := NewsChange{Step: record.DesignStepSpec, Changes: record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead, DecisionOnly: true}}
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-211", Phase: phase.Testing,
-		Steps: newsSteps, Gates: newsGates(), OpeningOwed: true, Items: []NewsChange{decisions}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), OpeningOwed: true, Items: []NewsChange{decisions}}
 }
 
 // unchangedChanges is a pair Dispatch read as unchanged: version 5 of the spec holds the same text
@@ -157,13 +163,13 @@ func unchangedChanges() NewsChange {
 // opening is owed and nothing else is.
 func unchangedHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-211", Phase: phase.Testing,
-		Steps: newsSteps, Gates: newsGates(), OpeningOwed: true, Items: []NewsChange{unchangedChanges()}}
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), OpeningOwed: true, Items: []NewsChange{unchangedChanges()}}
 }
 
 // treeSummaryNews is the root architect's summary of a spec change over the whole tree: the
 // architect last took spec version 3 and checks version 2, and each member stands somewhere else.
 func treeSummaryNews() News {
-	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(),
 		Items: []NewsChange{specChanges(3), checksChanges()},
 		Members: []NewsMember{
 			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
@@ -187,7 +193,7 @@ func mergedRootSummaryNews() News {
 	checks := gates[record.DesignStepCriteria]
 	checks.ApprovedMark = record.EventMark{Seq: 32}
 	gates[record.DesignStepCriteria] = checks
-	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: gates, OpeningOwed: true,
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: gates, Documents: newsDocuments(), OpeningOwed: true,
 		Items: []NewsChange{checksChanges()},
 		Members: []NewsMember{
 			{Issue: newsTree, Phase: phase.Merging, State: NewsMerged},
@@ -199,7 +205,7 @@ func mergedRootSummaryNews() News {
 // closedSummaryNews is treeSummaryNews sent after the writer saved version 6 of the spec, which
 // closed the gate again: the members its news was owed to are told nothing yet.
 func closedSummaryNews() News {
-	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: closedGates(),
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: closedGates(), Documents: newsDocuments(),
 		Items: []NewsChange{specChanges(3)},
 		Members: []NewsMember{
 			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
@@ -211,7 +217,7 @@ func closedSummaryNews() News {
 // waits for a task not taken yet: a tester whose claim holds one, and a member in accepting owned
 // by a sub-architect whose claim holds one.
 func waitingSummaryNews() News {
-	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(),
 		Items: []NewsChange{specChanges(3)},
 		Members: []NewsMember{
 			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
@@ -445,14 +451,15 @@ func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 }
 
 // A pair Dispatch could not read names the versions, says the change list could not be read, and
-// carries Dispatch's reason in a block by Dispatch, with no change rows.
+// carries the reason in a block by the daemon, whose sentence quotes Dispatch's error, with no
+// change rows.
 func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T) {
 	rec := NewsRecord(unreadHolderNews())
 	t.Logf("the news of an unread pair:\n%s", RenderNews(unreadHolderNews()))
 	wantLines(t, "items", linesOf(rec.Items, itemLine), []string{`spec ` + specDocument + ` artifact-spec 5 taken=4 yours=- unavailable ` +
 		`"dispatch has no changes route: GET /api/v1/artifacts/artifact-spec/changes answered 404 Not Found"`})
-	if by := rec.Items[0].Reason.By; by != "dispatch" {
-		t.Errorf("the reason's block is by %q, want dispatch, whose error it carries", by)
+	if by := rec.Items[0].Reason.By; by != texts.ByDaemon {
+		t.Errorf("the reason's block is by %q, want %s, whose sentence quotes Dispatch's error", by, texts.ByDaemon)
 	}
 	if len(rec.Sections)+len(rec.Blocks) != 0 {
 		t.Errorf("the unread pair's news names changes it could not read: %+v %+v", rec.Sections, rec.Blocks)
@@ -479,7 +486,7 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 	}
 
 	first := firstApprovalHolderNews().Items[0]
-	summary := News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+	summary := News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(),
 		Members: []NewsMember{
 			{Issue: "LEGION-217", Phase: phase.Testing, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}},
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsSentNow, Items: []NewsChange{first}},
@@ -580,7 +587,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 	unchangedChecks := NewsChange{Step: record.DesignStepCriteria, Changes: record.DesignChanges{
 		VersionPair: record.VersionPair{ArtifactID: "artifact-checks", From: 2, To: 3}, State: record.DesignChangesRead, Unchanged: true}}
 	holder := NewsRecord(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(3), unchangedChecks}})
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(), Items: []NewsChange{specChanges(3), unchangedChecks}})
 	wantLines(t, "holder's items", linesOf(holder.Items, itemLine), []string{
 		`spec ` + specDocument + ` artifact-spec 5 taken=3 yours=- listed ""`,
 		`criteria ` + checksDocument + ` artifact-checks 3 taken=2 yours=- same_text ""`,
@@ -594,7 +601,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 		t.Error("the holder's news names no section of the changed spec, the control")
 	}
 
-	summary := NewsRecord(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+	summary := NewsRecord(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(),
 		Items: []NewsChange{unchangedChanges()},
 		Members: []NewsMember{
 			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
@@ -624,7 +631,7 @@ func TestAnUnchangedPairIsNamedWithNoChangeListInEveryForm(t *testing.T) {
 // how it changed.
 func TestNewsNamesEachRunOfTheTextOutsideTheSectionsWhereItStands(t *testing.T) {
 	news := News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Reviewing,
-		Steps: newsSteps, Gates: newsGates(),
+		Steps: newsSteps, Gates: newsGates(), Documents: newsDocuments(),
 		Items: []NewsChange{{Step: record.DesignStepSpec, Changes: record.DesignChanges{
 			VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 3, To: 5}, State: record.DesignChangesRead,
 			Sections: []record.SectionChange{

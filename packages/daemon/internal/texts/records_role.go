@@ -111,14 +111,17 @@ const MemoryKillHeavyWork = "where_deployment_instructions_say"
 // (record.MergeForwardMessage, its ask; record.MergeForwardAsker): the implementer before merging,
 // and in merging the merger (cybermonklabs/legion#4979), each with the same fields. They are the
 // pull request, the head that conflicts with its base, the base, that the head conflicts with its
-// base (HeadConflictsWithBase, true on every ask), the phase the issue stays in, why the daemon
-// acted (record.ConflictWhy's word), and the branch the role asked pushes the merge to (PushTo,
-// the issue branch). The base is absent where the daemon has not recorded it
-// (record.PullRequest.Base); the conflict is stated all the same. dispatch://INFRA-4374's R0 and
-// R1 have the ask say that the head conflicts with its base and that the implementer merges the
-// base forward and pushes, and R8 of dispatch://INFRA-3686 keeps both as fields. What the merger's
-// ask said beside them - that the merge and its conflict are its own, and that the reviewer is
-// asked to approve the head its merge leaves - is the merger's prompt's.
+// base (HeadConflictsWithBase, true on every ask), how many of GitHub's reads found it conflicting
+// before the daemon acted (ConflictReads, ConflictReadsConfirmed on every ask), the phase the
+// issue stays in, why the daemon acted (record.ConflictWhy's word), and the branch the role asked
+// pushes the merge to (PushTo, the issue branch). The base is absent where the daemon has not
+// recorded it (record.PullRequest.Base); the conflict is stated all the same. dispatch://INFRA-4374's
+// R0 and R1 have the ask say that the head conflicts with its base and that the implementer merges
+// the base forward and pushes, and R8 of dispatch://INFRA-3686 keeps both as fields. Main's ask
+// said that a second read of GitHub confirmed the conflict, and the merger's prompt says that the
+// message says two reads found the head conflicting (roles/merger.md, #4979), so the count is a
+// field too. What the merger's ask said beside them - that the merge and its conflict are its own,
+// and that the reviewer is asked to approve the head its merge leaves - is the merger's prompt's.
 //
 // An ask whose why is that a check the base requires has not passed on the head
 // (record.ConflictCheckNotGreen) also says that GitHub runs no check on that head
@@ -132,11 +135,18 @@ type MergeForwardAskRecord struct {
 	Head                  string      `json:"head"`
 	ConflictsWith         string      `json:"conflicts_with,omitempty"`
 	HeadConflictsWithBase bool        `json:"head_conflicts_with_base"`
+	ConflictReads         int         `json:"conflict_reads"`
 	Phase                 phase.Phase `json:"phase"`
 	Why                   string      `json:"why"`
 	ChecksOnHead          string      `json:"checks_on_head,omitempty"`
 	PushTo                string      `json:"push_to"`
 }
+
+// ConflictReadsConfirmed is what a merge-forward ask's conflict_reads says
+// (MergeForwardAskRecord): two of GitHub's reads, at least a minute apart, found the head
+// conflicting with its base, which is the confirmed conflict every ask is made for
+// (dispatch://INFRA-4374 R2, classify.ConflictRound).
+const ConflictReadsConfirmed = 2
 
 // ChecksOnHeadNone is what a merge-forward ask's checks_on_head says (MergeForwardAskRecord):
 // GitHub runs no check on a head that conflicts with its base.
@@ -145,7 +155,12 @@ const ChecksOnHeadNone = "none"
 // MergeForwardHoldRecord is the message to the tester or the reviewer that holds the phase, or to
 // the merger of an issue that entered merging while the implementer's merge of the head had not
 // landed, that the implementer merges the base forward in the workspace they share
-// (record.MergeForwardMessage, its hold): the facts of the ask.
+// (record.MergeForwardMessage, its hold): the facts of the ask, and the role asked to merge the
+// base forward (Asked), which on every hold is the implementer: before merging the implementer is
+// the role asked (record.MergeForwardAsker), and the merger is held only behind an ask of the
+// implementer that has not landed (workflow's holdMerger). Main's hold said "The implementer is
+// asked to merge %s forward", and the merger's prompt says that such a message says the
+// implementer is asked (roles/merger.md, #4979), so it is a field.
 type MergeForwardHoldRecord struct {
 	RoleHead
 	PullRequest   string      `json:"pull_request"`
@@ -153,6 +168,7 @@ type MergeForwardHoldRecord struct {
 	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Phase         phase.Phase `json:"phase"`
 	Why           string      `json:"why"`
+	Asked         claim.Role  `json:"asked"`
 }
 
 // MergeForwardLandedRecord is the message to that same worker that the merge forward landed

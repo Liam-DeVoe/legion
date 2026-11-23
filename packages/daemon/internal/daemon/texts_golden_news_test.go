@@ -37,6 +37,9 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 	closed[record.DesignStepSpec] = closedSpec
 	steps := []record.DesignStep{record.DesignStepSpec}
 	specDoc, checksDoc := "dispatch://"+tree+"/spec", "dispatch://"+tree+"/artifact/"+dispatch.VerificationSlug
+	// The document of each gate row as the daemon's send names it (workflow.News.Documents): both
+	// rows record the tree's own documents, in gates and in closed alike.
+	docs := map[record.DesignStep]string{record.DesignStepSpec: specDoc, record.DesignStepCriteria: checksDoc}
 	word := func(label string, n int) string { return r.words("news/"+label, n) }
 	change := func(step record.DesignStep, artifact string, from, to int) workflow.NewsChange {
 		return workflow.NewsChange{Step: step, Changes: record.DesignChanges{VersionPair: record.VersionPair{ArtifactID: artifact, From: from, To: to},
@@ -73,7 +76,7 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 		want[at+"version"], want[at+"taken"], want[at+"changes"] = fmt.Sprint(version), taken, changes
 	}
 	holder := func(issue string, p phase.Phase, items ...workflow.NewsChange) workflow.News {
-		return workflow.News{Audience: record.AudienceHolder, Tree: tree, Issue: issue, Phase: p, Steps: steps, Gates: gates, Items: items}
+		return workflow.News{Audience: record.AudienceHolder, Tree: tree, Issue: issue, Phase: p, Steps: steps, Gates: gates, Documents: docs, Items: items}
 	}
 	add := func(variant string, reader claim.Role, news workflow.News, want map[string]string) {
 		issue := news.Issue
@@ -137,18 +140,23 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 			{Issue: r.key(n + 12), Phase: phase.Done, State: workflow.NewsDone},
 			{Issue: r.key(n + 13), Phase: phase.Implementing, State: workflow.NewsOutOfWorkflow},
 			{Issue: r.key(n + 14), Phase: phase.Merging, State: workflow.NewsMerged},
+			{Issue: r.key(n + 15), Phase: phase.Implementing, State: workflow.NewsSentNow, Opening: true},
+			{Issue: r.key(n + 16), Phase: phase.Testing, State: workflow.NewsAtNextStart, Items: owed, Opening: true, Unnamed: r.n},
 		}
 	}
 	{
 		decisions := change(record.DesignStepCriteria, checksArtifact, checksFrom, checksTo)
 		decisions.Changes.DecisionOnly = true
-		news := workflow.News{Audience: record.AudienceArchitect, Tree: tree, Steps: steps, Gates: gates,
+		news := workflow.News{Audience: record.AudienceArchitect, Tree: tree, Steps: steps, Gates: gates, Documents: docs,
 			Items: []workflow.NewsChange{specChanges(specTo - 2), decisions}, Members: members(80)}
 		want := goldenWant("audience", texts.NewsToRootArchitect, "items[0].yours", true, "items[2].yours", false,
 			"members[0].issue", tree, "members[0].told", texts.NewsToldNothing, "members[0].why", texts.NewsWhyWaitsOnPerson,
+			"members[0].opening", false, "members[0].unnamed", 0,
 			"members[1].issue", r.key(81), "members[1].phase", phase.Implementing, "members[1].told", texts.NewsToldNow,
 			"members[1].holder", claim.RoleImplementer, "members[5].architect_of", r.key(85), "members[6].architect_of", r.key(81),
-			"members[14].why", texts.NewsWhyMerged, "owed[0].issue", r.key(81), "owed[0].item", 2)
+			"members[14].why", texts.NewsWhyMerged, "members[15].issue", r.key(95), "members[15].opening", true, "members[15].unnamed", 0,
+			"members[16].issue", r.key(96), "members[16].opening", true, "members[16].unnamed", r.n,
+			"owed[0].issue", r.key(81), "owed[0].item", 2)
 		item(want, 0, record.DesignStepSpec, specDoc, specArtifact, specTo, fmt.Sprint(specTo-2), texts.NewsChangesListed)
 		item(want, 1, record.DesignStepCriteria, checksDoc, checksArtifact, checksTo, fmt.Sprint(checksFrom), texts.NewsChangesDecisionBlocksOnly)
 		item(want, 2, record.DesignStepSpec, specDoc, specArtifact, specTo, fmt.Sprint(specTo-1), texts.NewsChangesListed)
@@ -157,7 +165,7 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 	// That summary sent after a later version of the spec closed the gate again: the architect is
 	// told the gate as it stands, and a member owed news is told nothing yet.
 	{
-		news := workflow.News{Audience: record.AudienceArchitect, Tree: tree, Steps: steps, Gates: closed, OpeningOwed: true,
+		news := workflow.News{Audience: record.AudienceArchitect, Tree: tree, Steps: steps, Gates: closed, Documents: docs, OpeningOwed: true,
 			Items: []workflow.NewsChange{specChanges(specTo - 2)},
 			Members: []workflow.NewsMember{{Issue: tree, Phase: phase.AwaitingPerson, State: workflow.NewsAwaitingPerson},
 				{Issue: r.key(75), Phase: phase.Testing, State: workflow.NewsGateClosed}}}
@@ -175,7 +183,7 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 		unread := workflow.NewsChange{Step: record.DesignStepSpec, HistoryUnread: &record.DesignHistoryUnread{
 			DesignHistoryQuestion: record.DesignHistoryQuestion{ArtifactID: specArtifact, To: specTo}, Reason: reason, ReadAt: r.at(60)}}
 		want := goldenWant("audience", texts.NewsToHolder, "phase", phase.Testing, "items[0].reason", reason,
-			"items[0].reason@by", "dispatch", "items[0].reason@at", r.at(60))
+			"items[0].reason@by", texts.ByDaemon, "items[0].reason@at", r.at(60))
 		item(want, 0, record.DesignStepSpec, specDoc, specArtifact, specTo, "null", texts.NewsChangesNoPair)
 		add("history-unread", claim.RoleTester, holder(r.key(76), phase.Testing, unread), want)
 	}
@@ -185,7 +193,7 @@ func (b *goldenBuild) designNews(r goldenRendering) {
 			"Dispatch failed 3 reads of it, the last with: dispatch: " + word("changes", 30)}[r.n-1]
 		unavailable := change(record.DesignStepSpec, specArtifact, specTo-1, specTo)
 		unavailable.Changes.State, unavailable.Changes.Reason, unavailable.Changes.ReadAt = record.DesignChangesUnavailable, reason, r.at(61)
-		want := goldenWant("audience", texts.NewsToHolder, "phase", phase.Merging, "items[0].reason", reason, "items[0].reason@by", "dispatch")
+		want := goldenWant("audience", texts.NewsToHolder, "phase", phase.Merging, "items[0].reason", reason, "items[0].reason@by", texts.ByDaemon)
 		item(want, 0, record.DesignStepSpec, specDoc, specArtifact, specTo, fmt.Sprint(specTo-1), texts.NewsChangesUnavailable)
 		add("changes-unavailable", claim.RoleMerger, holder(r.key(77), phase.Merging, unavailable), want)
 	}

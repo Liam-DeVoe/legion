@@ -1172,13 +1172,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1077",
-      "text": "kind: design-news\nissue: ALPHA-1077\ntree: ALPHA-1070\naudience: holder\nphase: merging\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,5,unavailable\n<reason by=\"dispatch\" at=\"2026-11-18T10:31:00Z\" field=\"items[0].reason\">\ndispatch has no changes route: GET /api/v1/artifacts/artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5/changes answered 404 Not Found\n</reason>",
+      "text": "kind: design-news\nissue: ALPHA-1077\ntree: ALPHA-1070\naudience: holder\nphase: merging\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,5,unavailable\n<reason by=\"daemon\" at=\"2026-11-18T10:31:00Z\" field=\"items[0].reason\">\ndispatch has no changes route: GET /api/v1/artifacts/artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5/changes answered 404 Not Found\n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
           "start": 239,
-          "end": 451
+          "end": 449
         }
       ]
     },
@@ -1190,13 +1190,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2077",
-      "text": "kind: design-news\nissue: BRAVO-2077\ntree: BRAVO-2070\naudience: holder\nphase: merging\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,6,unavailable\n<reason by=\"dispatch\" at=\"2027-04-07T17:46:00Z\" field=\"items[0].reason\">\nDispatch failed 3 reads of it, the last with: dispatch: iqrfbi mred adulp fziep hpdxjl\n</reason>",
+      "text": "kind: design-news\nissue: BRAVO-2077\ntree: BRAVO-2070\naudience: holder\nphase: merging\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,6,unavailable\n<reason by=\"daemon\" at=\"2027-04-07T17:46:00Z\" field=\"items[0].reason\">\nDispatch failed 3 reads of it, the last with: dispatch: iqrfbi mred adulp fziep hpdxjl\n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
           "start": 239,
-          "end": 408
+          "end": 406
         }
       ]
     },
@@ -1336,13 +1336,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1076",
-      "text": "kind: design-news\nissue: ALPHA-1076\ntree: ALPHA-1070\naudience: holder\nphase: testing\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,null,no_pair\n<reason by=\"dispatch\" at=\"2026-11-18T10:30:00Z\" field=\"items[0].reason\">\nDispatch failed 3 reads of the document's review history, the last with: dispatch: bznbjdutt djvi bqh oktyd aywiu\n</reason>",
+      "text": "kind: design-news\nissue: ALPHA-1076\ntree: ALPHA-1070\naudience: holder\nphase: testing\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,null,no_pair\n<reason by=\"daemon\" at=\"2026-11-18T10:30:00Z\" field=\"items[0].reason\">\nDispatch failed 3 reads of the document's review history, the last with: dispatch: bznbjdutt djvi bqh oktyd aywiu\n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
           "start": 238,
-          "end": 434
+          "end": 432
         }
       ]
     },
@@ -1354,13 +1354,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2076",
-      "text": "kind: design-news\nissue: BRAVO-2076\ntree: BRAVO-2070\naudience: holder\nphase: testing\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,null,no_pair\n<reason by=\"dispatch\" at=\"2027-04-07T17:45:00Z\" field=\"items[0].reason\">\ndispatch holds no such document: creds mehzg zhdzjxr vfqqup kxcgjqd ypifn\n</reason>",
+      "text": "kind: design-news\nissue: BRAVO-2076\ntree: BRAVO-2070\naudience: holder\nphase: testing\nitems[1]{step,document,artifact,version,taken,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,null,no_pair\n<reason by=\"daemon\" at=\"2027-04-07T17:45:00Z\" field=\"items[0].reason\">\ndispatch holds no such document: creds mehzg zhdzjxr vfqqup kxcgjqd ypifn\n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
           "start": 238,
-          "end": 394
+          "end": 392
         }
       ]
     },
@@ -1524,91 +1524,91 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1070",
-      "text": "kind: design-news\nissue: ALPHA-1070\ntree: ALPHA-1070\naudience: root_architect\nitems[3]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,4,true,listed\n  criteria,\"dispatch://ALPHA-1070/artifact/verification-md\",artifact-1a52eaba-1742-73e4-9f2a-8558d8c3da9f,5,4,true,decision_blocks_only\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,5,false,listed\nsections[12]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\n  2,before_first_section,0,moved,0\n  2,section,1,changed,0\n  2,after_section,0,added,1\n  2,section,2,removed,0\n  2,section,1,changed,0\n  2,outside_sections,0,changed,0\nblocks[6]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\n  2,requirement,changed\n  2,callout,added\n  2,other,removed\nmembers[15]{issue,phase,told,why,holder,architect_of}:\n  ALPHA-1070,awaiting_person,nothing,waits_on_person,\"\",\"\"\n  ALPHA-1081,implementing,now,\"\",implementer,\"\"\n  ALPHA-1082,testing,when_task_taken,\"\",tester,\"\"\n  ALPHA-1083,reviewing,at_next_start,\"\",reviewer,\"\"\n  ALPHA-1084,accepting,by_you,\"\",architect,\"\"\n  ALPHA-1085,accepting,now,\"\",architect,ALPHA-1085\n  ALPHA-1086,accepting,when_task_taken,\"\",architect,ALPHA-1081\n  ALPHA-1087,testing,nothing,work_unchanged,\"\",\"\"\n  ALPHA-1088,implementing,nothing,root_checks_only,\"\",\"\"\n  ALPHA-1089,planning,nothing,already_taken,\"\",\"\"\n  ALPHA-1090,admitted,nothing,not_started,\"\",\"\"\n  ALPHA-1091,held,nothing,stopped,\"\",\"\"\n  ALPHA-1092,done,nothing,done,\"\",\"\"\n  ALPHA-1093,implementing,nothing,out_of_workflow,\"\",\"\"\n  ALPHA-1094,merging,nothing,merged,\"\",\"\"\nowed[6]{issue,item}:\n  ALPHA-1081,2\n  ALPHA-1082,2\n  ALPHA-1083,2\n  ALPHA-1084,2\n  ALPHA-1085,2\n  ALPHA-1086,2\n<heading field=\"sections[1].heading\">\nzquyawim aedhn\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nzquyawim aedhn\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\nehuggy ipd \n</heading-1>\n<heading-2 field=\"sections[7].heading\">\nzquyawim aedhn\n</heading-2>\n<after_heading-1 field=\"sections[8].after_heading\">\nzquyawim aedhn\n</after_heading-1>\n<heading-3 field=\"sections[9].heading\">\nehuggy ipd \n</heading-3>\n<id field=\"blocks[0].id\">\nr-fmvtos\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-ypr z\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-ypr z-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nbuewvnuz\n</other_type>\n<id-3 field=\"blocks[3].id\">\nr-fmvtos\n</id-3>\n<id-4 field=\"blocks[4].id\">\nnote-ypr z\n</id-4>\n<id-5 field=\"blocks[5].id\">\nnote-ypr z-x\n</id-5>\n<other_type-1 field=\"blocks[5].other_type\">\nbuewvnuz\n</other_type-1>",
+      "text": "kind: design-news\nissue: ALPHA-1070\ntree: ALPHA-1070\naudience: root_architect\nitems[3]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,4,true,listed\n  criteria,\"dispatch://ALPHA-1070/artifact/verification-md\",artifact-1a52eaba-1742-73e4-9f2a-8558d8c3da9f,5,4,true,decision_blocks_only\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,5,false,listed\nsections[12]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\n  2,before_first_section,0,moved,0\n  2,section,1,changed,0\n  2,after_section,0,added,1\n  2,section,2,removed,0\n  2,section,1,changed,0\n  2,outside_sections,0,changed,0\nblocks[6]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\n  2,requirement,changed\n  2,callout,added\n  2,other,removed\nmembers[17]{issue,phase,told,why,holder,opening,unnamed,architect_of}:\n  ALPHA-1070,awaiting_person,nothing,waits_on_person,\"\",false,0,\"\"\n  ALPHA-1081,implementing,now,\"\",implementer,false,0,\"\"\n  ALPHA-1082,testing,when_task_taken,\"\",tester,false,0,\"\"\n  ALPHA-1083,reviewing,at_next_start,\"\",reviewer,false,0,\"\"\n  ALPHA-1084,accepting,by_you,\"\",architect,false,0,\"\"\n  ALPHA-1085,accepting,now,\"\",architect,false,0,ALPHA-1085\n  ALPHA-1086,accepting,when_task_taken,\"\",architect,false,0,ALPHA-1081\n  ALPHA-1087,testing,nothing,work_unchanged,\"\",false,0,\"\"\n  ALPHA-1088,implementing,nothing,root_checks_only,\"\",false,0,\"\"\n  ALPHA-1089,planning,nothing,already_taken,\"\",false,0,\"\"\n  ALPHA-1090,admitted,nothing,not_started,\"\",false,0,\"\"\n  ALPHA-1091,held,nothing,stopped,\"\",false,0,\"\"\n  ALPHA-1092,done,nothing,done,\"\",false,0,\"\"\n  ALPHA-1093,implementing,nothing,out_of_workflow,\"\",false,0,\"\"\n  ALPHA-1094,merging,nothing,merged,\"\",false,0,\"\"\n  ALPHA-1095,implementing,now,\"\",implementer,true,0,\"\"\n  ALPHA-1096,testing,at_next_start,\"\",tester,true,1,\"\"\nowed[7]{issue,item}:\n  ALPHA-1081,2\n  ALPHA-1082,2\n  ALPHA-1083,2\n  ALPHA-1084,2\n  ALPHA-1085,2\n  ALPHA-1086,2\n  ALPHA-1096,2\n<heading field=\"sections[1].heading\">\nzquyawim aedhn\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nzquyawim aedhn\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\nehuggy ipd \n</heading-1>\n<heading-2 field=\"sections[7].heading\">\nzquyawim aedhn\n</heading-2>\n<after_heading-1 field=\"sections[8].after_heading\">\nzquyawim aedhn\n</after_heading-1>\n<heading-3 field=\"sections[9].heading\">\nehuggy ipd \n</heading-3>\n<id field=\"blocks[0].id\">\nr-fmvtos\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-ypr z\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-ypr z-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nbuewvnuz\n</other_type>\n<id-3 field=\"blocks[3].id\">\nr-fmvtos\n</id-3>\n<id-4 field=\"blocks[4].id\">\nnote-ypr z\n</id-4>\n<id-5 field=\"blocks[5].id\">\nnote-ypr z-x\n</id-5>\n<other_type-1 field=\"blocks[5].other_type\">\nbuewvnuz\n</other_type-1>",
       "spans": [
         {
           "part": "block",
           "name": "heading",
-          "start": 1919,
-          "end": 1982
+          "start": 2180,
+          "end": 2243
         },
         {
           "part": "block",
           "name": "after_heading",
-          "start": 1983,
-          "end": 2064
+          "start": 2244,
+          "end": 2325
         },
         {
           "part": "block",
           "name": "heading-1",
-          "start": 2065,
-          "end": 2129
+          "start": 2326,
+          "end": 2390
         },
         {
           "part": "block",
           "name": "heading-2",
-          "start": 2130,
-          "end": 2197
+          "start": 2391,
+          "end": 2458
         },
         {
           "part": "block",
           "name": "after_heading-1",
-          "start": 2198,
-          "end": 2283
+          "start": 2459,
+          "end": 2544
         },
         {
           "part": "block",
           "name": "heading-3",
-          "start": 2284,
-          "end": 2348
+          "start": 2545,
+          "end": 2609
         },
         {
           "part": "block",
           "name": "id",
-          "start": 2349,
-          "end": 2389
+          "start": 2610,
+          "end": 2650
         },
         {
           "part": "block",
           "name": "id-1",
-          "start": 2390,
-          "end": 2436
+          "start": 2651,
+          "end": 2697
         },
         {
           "part": "block",
           "name": "id-2",
-          "start": 2437,
-          "end": 2485
+          "start": 2698,
+          "end": 2746
         },
         {
           "part": "block",
           "name": "other_type",
-          "start": 2486,
-          "end": 2550
+          "start": 2747,
+          "end": 2811
         },
         {
           "part": "block",
           "name": "id-3",
-          "start": 2551,
-          "end": 2595
+          "start": 2812,
+          "end": 2856
         },
         {
           "part": "block",
           "name": "id-4",
-          "start": 2596,
-          "end": 2642
+          "start": 2857,
+          "end": 2903
         },
         {
           "part": "block",
           "name": "id-5",
-          "start": 2643,
-          "end": 2691
+          "start": 2904,
+          "end": 2952
         },
         {
           "part": "block",
           "name": "other_type-1",
-          "start": 2692,
-          "end": 2760
+          "start": 2953,
+          "end": 3021
         }
       ]
     },
@@ -1620,91 +1620,91 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2070",
-      "text": "kind: design-news\nissue: BRAVO-2070\ntree: BRAVO-2070\naudience: root_architect\nitems[3]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,5,true,listed\n  criteria,\"dispatch://BRAVO-2070/artifact/verification-md\",artifact-62e3cf96-faa7-5cd7-ccc5-c44d4a7c58d7,7,6,true,decision_blocks_only\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,6,false,listed\nsections[12]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\n  2,before_first_section,0,moved,0\n  2,section,1,changed,0\n  2,after_section,0,added,1\n  2,section,2,removed,0\n  2,section,1,changed,0\n  2,outside_sections,0,changed,0\nblocks[6]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\n  2,requirement,changed\n  2,callout,added\n  2,other,removed\nmembers[15]{issue,phase,told,why,holder,architect_of}:\n  BRAVO-2070,awaiting_person,nothing,waits_on_person,\"\",\"\"\n  BRAVO-2081,implementing,now,\"\",implementer,\"\"\n  BRAVO-2082,testing,when_task_taken,\"\",tester,\"\"\n  BRAVO-2083,reviewing,at_next_start,\"\",reviewer,\"\"\n  BRAVO-2084,accepting,by_you,\"\",architect,\"\"\n  BRAVO-2085,accepting,now,\"\",architect,BRAVO-2085\n  BRAVO-2086,accepting,when_task_taken,\"\",architect,BRAVO-2081\n  BRAVO-2087,testing,nothing,work_unchanged,\"\",\"\"\n  BRAVO-2088,implementing,nothing,root_checks_only,\"\",\"\"\n  BRAVO-2089,planning,nothing,already_taken,\"\",\"\"\n  BRAVO-2090,admitted,nothing,not_started,\"\",\"\"\n  BRAVO-2091,held,nothing,stopped,\"\",\"\"\n  BRAVO-2092,done,nothing,done,\"\",\"\"\n  BRAVO-2093,implementing,nothing,out_of_workflow,\"\",\"\"\n  BRAVO-2094,merging,nothing,merged,\"\",\"\"\nowed[6]{issue,item}:\n  BRAVO-2081,2\n  BRAVO-2082,2\n  BRAVO-2083,2\n  BRAVO-2084,2\n  BRAVO-2085,2\n  BRAVO-2086,2\n<heading field=\"sections[1].heading\">\nupohja xdaikqc\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nupohja xdaikqc\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\njazkb oeyxe\n</heading-1>\n<heading-2 field=\"sections[7].heading\">\nupohja xdaikqc\n</heading-2>\n<after_heading-1 field=\"sections[8].after_heading\">\nupohja xdaikqc\n</after_heading-1>\n<heading-3 field=\"sections[9].heading\">\njazkb oeyxe\n</heading-3>\n<id field=\"blocks[0].id\">\nr-fmncgk\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-vqhlb\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-vqhlb-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nrpjjzqqp\n</other_type>\n<id-3 field=\"blocks[3].id\">\nr-fmncgk\n</id-3>\n<id-4 field=\"blocks[4].id\">\nnote-vqhlb\n</id-4>\n<id-5 field=\"blocks[5].id\">\nnote-vqhlb-x\n</id-5>\n<other_type-1 field=\"blocks[5].other_type\">\nrpjjzqqp\n</other_type-1>",
+      "text": "kind: design-news\nissue: BRAVO-2070\ntree: BRAVO-2070\naudience: root_architect\nitems[3]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,5,true,listed\n  criteria,\"dispatch://BRAVO-2070/artifact/verification-md\",artifact-62e3cf96-faa7-5cd7-ccc5-c44d4a7c58d7,7,6,true,decision_blocks_only\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,6,false,listed\nsections[12]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\n  2,before_first_section,0,moved,0\n  2,section,1,changed,0\n  2,after_section,0,added,1\n  2,section,2,removed,0\n  2,section,1,changed,0\n  2,outside_sections,0,changed,0\nblocks[6]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\n  2,requirement,changed\n  2,callout,added\n  2,other,removed\nmembers[17]{issue,phase,told,why,holder,opening,unnamed,architect_of}:\n  BRAVO-2070,awaiting_person,nothing,waits_on_person,\"\",false,0,\"\"\n  BRAVO-2081,implementing,now,\"\",implementer,false,0,\"\"\n  BRAVO-2082,testing,when_task_taken,\"\",tester,false,0,\"\"\n  BRAVO-2083,reviewing,at_next_start,\"\",reviewer,false,0,\"\"\n  BRAVO-2084,accepting,by_you,\"\",architect,false,0,\"\"\n  BRAVO-2085,accepting,now,\"\",architect,false,0,BRAVO-2085\n  BRAVO-2086,accepting,when_task_taken,\"\",architect,false,0,BRAVO-2081\n  BRAVO-2087,testing,nothing,work_unchanged,\"\",false,0,\"\"\n  BRAVO-2088,implementing,nothing,root_checks_only,\"\",false,0,\"\"\n  BRAVO-2089,planning,nothing,already_taken,\"\",false,0,\"\"\n  BRAVO-2090,admitted,nothing,not_started,\"\",false,0,\"\"\n  BRAVO-2091,held,nothing,stopped,\"\",false,0,\"\"\n  BRAVO-2092,done,nothing,done,\"\",false,0,\"\"\n  BRAVO-2093,implementing,nothing,out_of_workflow,\"\",false,0,\"\"\n  BRAVO-2094,merging,nothing,merged,\"\",false,0,\"\"\n  BRAVO-2095,implementing,now,\"\",implementer,true,0,\"\"\n  BRAVO-2096,testing,at_next_start,\"\",tester,true,2,\"\"\nowed[7]{issue,item}:\n  BRAVO-2081,2\n  BRAVO-2082,2\n  BRAVO-2083,2\n  BRAVO-2084,2\n  BRAVO-2085,2\n  BRAVO-2086,2\n  BRAVO-2096,2\n<heading field=\"sections[1].heading\">\nupohja xdaikqc\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nupohja xdaikqc\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\njazkb oeyxe\n</heading-1>\n<heading-2 field=\"sections[7].heading\">\nupohja xdaikqc\n</heading-2>\n<after_heading-1 field=\"sections[8].after_heading\">\nupohja xdaikqc\n</after_heading-1>\n<heading-3 field=\"sections[9].heading\">\njazkb oeyxe\n</heading-3>\n<id field=\"blocks[0].id\">\nr-fmncgk\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-vqhlb\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-vqhlb-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nrpjjzqqp\n</other_type>\n<id-3 field=\"blocks[3].id\">\nr-fmncgk\n</id-3>\n<id-4 field=\"blocks[4].id\">\nnote-vqhlb\n</id-4>\n<id-5 field=\"blocks[5].id\">\nnote-vqhlb-x\n</id-5>\n<other_type-1 field=\"blocks[5].other_type\">\nrpjjzqqp\n</other_type-1>",
       "spans": [
         {
           "part": "block",
           "name": "heading",
-          "start": 1919,
-          "end": 1982
+          "start": 2180,
+          "end": 2243
         },
         {
           "part": "block",
           "name": "after_heading",
-          "start": 1983,
-          "end": 2064
+          "start": 2244,
+          "end": 2325
         },
         {
           "part": "block",
           "name": "heading-1",
-          "start": 2065,
-          "end": 2129
+          "start": 2326,
+          "end": 2390
         },
         {
           "part": "block",
           "name": "heading-2",
-          "start": 2130,
-          "end": 2197
+          "start": 2391,
+          "end": 2458
         },
         {
           "part": "block",
           "name": "after_heading-1",
-          "start": 2198,
-          "end": 2283
+          "start": 2459,
+          "end": 2544
         },
         {
           "part": "block",
           "name": "heading-3",
-          "start": 2284,
-          "end": 2348
+          "start": 2545,
+          "end": 2609
         },
         {
           "part": "block",
           "name": "id",
-          "start": 2349,
-          "end": 2389
+          "start": 2610,
+          "end": 2650
         },
         {
           "part": "block",
           "name": "id-1",
-          "start": 2390,
-          "end": 2436
+          "start": 2651,
+          "end": 2697
         },
         {
           "part": "block",
           "name": "id-2",
-          "start": 2437,
-          "end": 2485
+          "start": 2698,
+          "end": 2746
         },
         {
           "part": "block",
           "name": "other_type",
-          "start": 2486,
-          "end": 2550
+          "start": 2747,
+          "end": 2811
         },
         {
           "part": "block",
           "name": "id-3",
-          "start": 2551,
-          "end": 2595
+          "start": 2812,
+          "end": 2856
         },
         {
           "part": "block",
           "name": "id-4",
-          "start": 2596,
-          "end": 2642
+          "start": 2857,
+          "end": 2903
         },
         {
           "part": "block",
           "name": "id-5",
-          "start": 2643,
-          "end": 2691
+          "start": 2904,
+          "end": 2952
         },
         {
           "part": "block",
           "name": "other_type-1",
-          "start": 2692,
-          "end": 2760
+          "start": 2953,
+          "end": 3021
         }
       ]
     },
@@ -1716,49 +1716,49 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1070",
-      "text": "kind: design-news\nissue: ALPHA-1070\ntree: ALPHA-1070\naudience: root_architect\ngate: closed\ngate_step: spec\ngate_document: \"dispatch://ALPHA-1070/spec\"\ngate_artifact: artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5\ngate_version: 7\nmerge: held\nitems[1]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,4,true,listed\nsections[6]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\nblocks[3]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\nmembers[2]{issue,phase,told,why,holder,architect_of}:\n  ALPHA-1070,awaiting_person,nothing,waits_on_person,\"\",\"\"\n  ALPHA-1075,testing,not_yet,gate_closed,\"\",\"\"\n<heading field=\"sections[1].heading\">\nzquyawim aedhn\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nzquyawim aedhn\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\nehuggy ipd \n</heading-1>\n<id field=\"blocks[0].id\">\nr-fmvtos\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-ypr z\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-ypr z-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nbuewvnuz\n</other_type>",
+      "text": "kind: design-news\nissue: ALPHA-1070\ntree: ALPHA-1070\naudience: root_architect\ngate: closed\ngate_step: spec\ngate_document: \"dispatch://ALPHA-1070/spec\"\ngate_artifact: artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5\ngate_version: 7\nmerge: held\nitems[1]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://ALPHA-1070/spec\",artifact-e9e0d276-d766-3f28-4a3b-04f27c1613c5,6,4,true,listed\nsections[6]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\nblocks[3]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\nmembers[2]{issue,phase,told,why,holder,opening,unnamed,architect_of}:\n  ALPHA-1070,awaiting_person,nothing,waits_on_person,\"\",false,0,\"\"\n  ALPHA-1075,testing,not_yet,gate_closed,\"\",false,0,\"\"\n<heading field=\"sections[1].heading\">\nzquyawim aedhn\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nzquyawim aedhn\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\nehuggy ipd \n</heading-1>\n<id field=\"blocks[0].id\">\nr-fmvtos\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-ypr z\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-ypr z-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nbuewvnuz\n</other_type>",
       "spans": [
         {
           "part": "block",
           "name": "heading",
-          "start": 862,
-          "end": 925
+          "start": 894,
+          "end": 957
         },
         {
           "part": "block",
           "name": "after_heading",
-          "start": 926,
-          "end": 1007
+          "start": 958,
+          "end": 1039
         },
         {
           "part": "block",
           "name": "heading-1",
-          "start": 1008,
-          "end": 1072
+          "start": 1040,
+          "end": 1104
         },
         {
           "part": "block",
           "name": "id",
-          "start": 1073,
-          "end": 1113
+          "start": 1105,
+          "end": 1145
         },
         {
           "part": "block",
           "name": "id-1",
-          "start": 1114,
-          "end": 1160
+          "start": 1146,
+          "end": 1192
         },
         {
           "part": "block",
           "name": "id-2",
-          "start": 1161,
-          "end": 1209
+          "start": 1193,
+          "end": 1241
         },
         {
           "part": "block",
           "name": "other_type",
-          "start": 1210,
-          "end": 1274
+          "start": 1242,
+          "end": 1306
         }
       ]
     },
@@ -1770,49 +1770,49 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2070",
-      "text": "kind: design-news\nissue: BRAVO-2070\ntree: BRAVO-2070\naudience: root_architect\ngate: closed\ngate_step: spec\ngate_document: \"dispatch://BRAVO-2070/spec\"\ngate_artifact: artifact-96a316f3-beb9-edec-809a-08f34cc99ece\ngate_version: 8\nmerge: held\nitems[1]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,5,true,listed\nsections[6]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\nblocks[3]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\nmembers[2]{issue,phase,told,why,holder,architect_of}:\n  BRAVO-2070,awaiting_person,nothing,waits_on_person,\"\",\"\"\n  BRAVO-2075,testing,not_yet,gate_closed,\"\",\"\"\n<heading field=\"sections[1].heading\">\nupohja xdaikqc\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nupohja xdaikqc\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\njazkb oeyxe\n</heading-1>\n<id field=\"blocks[0].id\">\nr-fmncgk\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-vqhlb\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-vqhlb-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nrpjjzqqp\n</other_type>",
+      "text": "kind: design-news\nissue: BRAVO-2070\ntree: BRAVO-2070\naudience: root_architect\ngate: closed\ngate_step: spec\ngate_document: \"dispatch://BRAVO-2070/spec\"\ngate_artifact: artifact-96a316f3-beb9-edec-809a-08f34cc99ece\ngate_version: 8\nmerge: held\nitems[1]{step,document,artifact,version,taken,yours,changes}:\n  spec,\"dispatch://BRAVO-2070/spec\",artifact-96a316f3-beb9-edec-809a-08f34cc99ece,7,5,true,listed\nsections[6]{item,unit,nth,change,after_nth}:\n  0,before_first_section,0,moved,0\n  0,section,1,changed,0\n  0,after_section,0,added,1\n  0,section,2,removed,0\n  0,section,1,changed,0\n  0,outside_sections,0,changed,0\nblocks[3]{item,type,change}:\n  0,requirement,changed\n  0,callout,added\n  0,other,removed\nmembers[2]{issue,phase,told,why,holder,opening,unnamed,architect_of}:\n  BRAVO-2070,awaiting_person,nothing,waits_on_person,\"\",false,0,\"\"\n  BRAVO-2075,testing,not_yet,gate_closed,\"\",false,0,\"\"\n<heading field=\"sections[1].heading\">\nupohja xdaikqc\n</heading>\n<after_heading field=\"sections[2].after_heading\">\nupohja xdaikqc\n</after_heading>\n<heading-1 field=\"sections[3].heading\">\njazkb oeyxe\n</heading-1>\n<id field=\"blocks[0].id\">\nr-fmncgk\n</id>\n<id-1 field=\"blocks[1].id\">\nnote-vqhlb\n</id-1>\n<id-2 field=\"blocks[2].id\">\nnote-vqhlb-x\n</id-2>\n<other_type field=\"blocks[2].other_type\">\nrpjjzqqp\n</other_type>",
       "spans": [
         {
           "part": "block",
           "name": "heading",
-          "start": 862,
-          "end": 925
+          "start": 894,
+          "end": 957
         },
         {
           "part": "block",
           "name": "after_heading",
-          "start": 926,
-          "end": 1007
+          "start": 958,
+          "end": 1039
         },
         {
           "part": "block",
           "name": "heading-1",
-          "start": 1008,
-          "end": 1072
+          "start": 1040,
+          "end": 1104
         },
         {
           "part": "block",
           "name": "id",
-          "start": 1073,
-          "end": 1113
+          "start": 1105,
+          "end": 1145
         },
         {
           "part": "block",
           "name": "id-1",
-          "start": 1114,
-          "end": 1160
+          "start": 1146,
+          "end": 1192
         },
         {
           "part": "block",
           "name": "id-2",
-          "start": 1161,
-          "end": 1209
+          "start": 1193,
+          "end": 1241
         },
         {
           "part": "block",
           "name": "other_type",
-          "start": 1210,
-          "end": 1274
+          "start": 1242,
+          "end": 1306
         }
       ]
     },
@@ -11878,6 +11878,7 @@
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "conflicts_with": "main-knboh",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "testing",
         "why": "required-check-not-green",
         "checks_on_head": "none",
@@ -11900,6 +11901,7 @@
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "conflicts_with": "main-esxue",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "reviewing",
         "why": "base-requires-current",
         "push_to": "legion/BRAVO-2260"
@@ -11921,6 +11923,7 @@
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "conflicts_with": "main-knboh",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "merging",
         "why": "merge-next",
         "push_to": "legion/ALPHA-1260"
@@ -11942,6 +11945,7 @@
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "conflicts_with": "main-esxue",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "merging",
         "why": "merge-next",
         "push_to": "legion/BRAVO-2260"
@@ -11962,6 +11966,7 @@
         "pull_request": "alpha-works/alpha-tower#1451",
         "head": "d46dd3ec615afa00ec455d4d887aaf98ea7d41c0",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "testing",
         "why": "base-rules-unread",
         "push_to": "legion/ALPHA-1260"
@@ -11982,6 +11987,7 @@
         "pull_request": "bravo-labs/bravo-yard#1452",
         "head": "f7ab29ca4d43ee8dda0d9f7a646cf308c321345d",
         "head_conflicts_with_base": true,
+        "conflict_reads": 2,
         "phase": "reviewing",
         "why": "base-rules-unread",
         "push_to": "legion/BRAVO-2260"
@@ -12003,7 +12009,8 @@
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "conflicts_with": "main-knboh",
         "phase": "testing",
-        "why": "required-check-not-green"
+        "why": "required-check-not-green",
+        "asked": "implementer"
       }
     },
     {
@@ -12022,7 +12029,8 @@
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "conflicts_with": "main-esxue",
         "phase": "reviewing",
-        "why": "base-requires-current"
+        "why": "base-requires-current",
+        "asked": "implementer"
       }
     },
     {
@@ -12041,7 +12049,8 @@
         "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
         "conflicts_with": "main-knboh",
         "phase": "merging",
-        "why": "required-check-not-green"
+        "why": "required-check-not-green",
+        "asked": "implementer"
       }
     },
     {
@@ -12060,7 +12069,8 @@
         "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
         "conflicts_with": "main-esxue",
         "phase": "merging",
-        "why": "base-requires-current"
+        "why": "base-requires-current",
+        "asked": "implementer"
       }
     },
     {

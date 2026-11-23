@@ -227,8 +227,10 @@ const (
 	RefusedStatus  = "status"
 )
 
-// ByDaemon is the author the words object of a message-refused notice names for a first line
-// that is the daemon's own text (MessageRefusedRecord.Begins).
+// ByDaemon is the author a text names for words that are the daemon's own: the words object of a
+// message-refused notice, for a first line that is the daemon's own text
+// (MessageRefusedRecord.Begins), and the reason block of an item of news, the daemon's sentence of
+// a read of Dispatch it gave up on, which quotes Dispatch's error (workflow's dispatchReason).
 const ByDaemon = "daemon"
 
 // BeforeFirstPhase is what a message-refused notice's refused_close says: the refused line is the
@@ -257,11 +259,13 @@ const BeforeFirstPhase = "before_first_phase"
 // where the words go on past what Begins holds, with the count of the rest (rest): every unit of
 // those words after Begins, the lines after the first among them, so the count is 0 only where
 // Begins holds the words whole. The line endings the words end with are no words, and the count
-// leaves them out. Begins holds the first line's head and nothing else, cut where it parts no
-// character as its writer wrote it (the daemon's wholeCharacters: a letter and the combining marks
+// leaves them out. Begins holds the first line's head and nothing else, cut where it parts none of
+// these as its writer wrote them (the daemon's wholeCharacters): a letter and the combining marks
 // after it, by Go's own Unicode tables, an emoji and its skin-tone modifier, the characters a zero
-// width joiner joins, the two regional indicators of a flag, the jamo of one Hangul syllable),
-// unless the line's first character alone runs past the bound.
+// width joiner joins, the two regional indicators of a flag, the jamo of one Hangul syllable,
+// unless the line's first character alone runs past the bound. Two characters UAX #29 keeps whole
+// it can part: a prepended concatenation mark or a reph and the character after it (GB9b), and
+// the consonants of an Indic conjunct with no joiner between them (GB9c).
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`

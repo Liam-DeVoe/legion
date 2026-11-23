@@ -2898,8 +2898,10 @@ For a row that names no issue, both read the store's rows on its document when t
 Where the store names no issue, the daemon asks Dispatch which issue holds the document when its outbox runs the text's row: the architect's start row, which queues the task on the architect's claim, and the catch-up's row, which publishes the catch-up.
 Where Dispatch does not answer then, the text gives the document's bare artifact reference, `/api/v1/artifacts/<artifact id>`.
 The daemon does not ask Dispatch again when the claim sends the task it queued, so the reference reaches the architect as it was queued.
-The one exception is a task that the claim writes again at its send because a decision that the task named has left the tree: that rewrite asks Dispatch at the send.
-Neither text reads `issues.handed_over_from` for it.
+There are two exceptions, both a task that the claim writes again at its send: one where a decision that the task named has left the tree, and one where a newer decision replaced a decision that the task named.
+Each such rewrite names every step's document again from the store, asks Dispatch at the send only for a document that the store does not name the issue of, and gives the bare artifact reference again where Dispatch does not answer.
+The `design-news` record (`gate_document`, `items[].document`) names a row's document by the same rule, from the store when the claim sends the task, else from Dispatch at that send, else by the bare artifact reference, so a carried root's news names the old root's document and never the carried root's own.
+No text reads `issues.handed_over_from` for it.
 The `gate-moved` message (`document`) names the document of the issue that the row names, and each write of a carried row that can send that message names the issue first.
 An earlier image names the column in none of its reads or writes, so it reads every gate and ignores the column.
 Its writes also do not clear the column.
@@ -2929,8 +2931,11 @@ This release adds fields to the payloads that its outbox queues:
 
 - A gate-moved message of an opening carries `unchanged_since`, the version of the step's document its reader took, where nothing that reader holds changed since that version.
 
-- News of an approved design is a task of the kind `design-news`, with the keys `tree`, `audience`, `phase`, `gate`, `gate_step`, `gate_document`, `gate_artifact`, `gate_version`, `merge`, `items` (`step`, `document`, `artifact`, `version`, `taken`, `yours`, `changes`), `sections` (`item`, `unit`, `nth`, `change`, `after_nth`), `blocks` (`item`, `type`, `change`), `members` (`issue`, `phase`, `told`, `why`, `holder`, `architect_of`) and `owed` (`issue`, `item`), and the blocks `reason`, `heading`, `after_heading`, `id` and `other_type`.
+- News of an approved design is a task of the kind `design-news`, with the keys `tree`, `audience`, `phase`, `gate`, `gate_step`, `gate_document`, `gate_artifact`, `gate_version`, `merge`, `items` (`step`, `document`, `artifact`, `version`, `taken`, `yours`, `changes`), `sections` (`item`, `unit`, `nth`, `change`, `after_nth`), `blocks` (`item`, `type`, `change`), `members` (`issue`, `phase`, `told`, `why`, `holder`, `opening`, `unnamed`, `architect_of`) and `owed` (`issue`, `item`), and the blocks `reason`, `heading`, `after_heading`, `id` and `other_type`.
   It travels as the text of a task, which no release decodes, so it adds no key that an earlier release refuses.
+
+- A merge-forward ask carries `conflict_reads`, the count of GitHub's reads that found its head conflicting with its base, and a merge-forward hold carries `asked`, the role asked to merge the base forward.
+  The daemon writes both from the `merge_forward` row when its outbox runs the row, so neither adds a key to the row's payload, which an earlier release decodes.
 
 - A review-stuck notice of a head GitHub will not merge carries that head's checks, names each check GitHub skipped under `skipped`, and says once under `each_skipped_check` that a skipped check ran nothing on that head.
 

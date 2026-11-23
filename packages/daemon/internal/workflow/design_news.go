@@ -26,6 +26,14 @@ import (
 // composed while the gate stood open and sent after a later version closed it says closed. Each
 // row carries its own Step, as the store writes it.
 //
+// Documents is the document each row of Gates is bound to, by step, by the rule the
+// architect-start task and the catch-up name it by (GateDocuments): a dispatch:// link on the
+// issue the row records, or that the store's rows on its artifact name, else on the issue Dispatch
+// names where the daemon sends the task (NameNewsDocuments, outside the transaction), else the
+// bare artifact reference. So a carried root's news names the old root's document, or the bare
+// reference where nothing says whose it is, and never the carried root's own. It holds a document
+// for every row of Gates.
+//
 // OpeningOwed is the audience's told row's own flag (record.DesignTold.OpeningOwed): the gate
 // opened while the audience was owed news, so the news leads with the gate's record in place of
 // the opening's role message.
@@ -42,6 +50,7 @@ type News struct {
 	Phase       phase.Phase
 	Steps       []record.DesignStep
 	Gates       map[record.DesignStep]record.DesignGate
+	Documents   map[record.DesignStep]string
 	OpeningOwed bool
 	Items       []NewsChange
 	// Members is every member of the tree, the root among them, in the order the architect's
@@ -94,16 +103,21 @@ func (c NewsChange) to() int {
 }
 
 // NewsMember is one member of a tree as the root architect's summary names it: its key, its phase,
-// what its news is (State), and, for a member owed news, the items its holder is owed. Architect
-// is the key of the issue whose architect holds the member in accepting, where that is an
-// architect other than the tree root's: the member's own, or one between it and the root (the
-// owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none.
+// what its news is (State), and, for a member owed news, the items its holder is owed whose change
+// sets are recorded (Items), whether the task that tells it gives it the gate's opening (Opening:
+// its holder row owes the opening, which record.OwedNews owes only while the standing gate is
+// open), and how many items it is owed that the record cannot tell yet (Unnamed), which no item
+// names. A member owed news is owed at least one of the three. Architect is the key of the issue
+// whose architect holds the member in accepting, where that is an architect other than the tree
+// root's: the member's own, or one between it and the root (the owner walk, record.OwningIssue).
+// The summary names that architect as the one told. Every other member has none.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
 	State     NewsState
 	Items     []NewsChange
+	Opening   bool
+	Unnamed   int
 	Architect string
 }
 
@@ -203,7 +217,7 @@ func NewsRecord(news News) texts.DesignNewsRecord {
 	rec := texts.DesignNewsRecord{TaskHead: texts.TaskHead{Kind: texts.DesignNews, Issue: news.Issue}, Tree: news.Tree,
 		Audience: texts.NewsToHolder}
 	if news.OpeningOwed {
-		if gate, said := gateAtSend(news.Tree, news.Steps, news.Gates); said {
+		if gate, said := gateAtSend(news); said {
 			rec.Gate, rec.GateStep, rec.GateDocument, rec.GateArtifact, rec.GateVersion, rec.Merge =
 				gate.Gate, gate.Step, gate.Document, gate.Artifact, gate.Version, gate.Merge
 		}
@@ -229,7 +243,8 @@ func NewsRecord(news News) texts.DesignNewsRecord {
 	}
 	for _, member := range news.Members {
 		told, why := memberTold(member.State)
-		row := texts.DesignNewsMember{Issue: member.Issue, Phase: string(member.Phase), Told: told, Why: why, ArchitectOf: member.Architect}
+		row := texts.DesignNewsMember{Issue: member.Issue, Phase: string(member.Phase), Told: told, Why: why, Opening: member.Opening,
+			Unnamed: member.Unnamed, ArchitectOf: member.Architect}
 		// The role that holds the member's phase is named where a task tells it, by its holder or by
 		// the root architect, as the summary named the holder only beside news it is owed: a member
 		// told nothing is told by nobody, and one at admitted, whose phase RoleFor names the
@@ -245,17 +260,19 @@ func NewsRecord(news News) texts.DesignNewsRecord {
 	return rec
 }
 
-// gateAtSend is the gate-moved record of tree as gates stand now. The standing gate is closed
-// when a step the tree is gated on holds a row that is not open (classify.StandingGate, the
+// gateAtSend is the gate-moved record of news's tree as its gates stand now. The standing gate is
+// closed when a step the tree is gated on holds a row that is not open (classify.StandingGate, the
 // predicate the merger's hold reads too), and the record names that row's latest version, the one
 // with its reviewer. Otherwise it is open, and the record names the approval that opened it: the
 // row whose approval Dispatch recorded last (record.EventMark.After), the later step in the tree's
-// order where the marks cannot tell. Each names its row's document as the row records it
-// (record.DesignGate.DocumentOf), the old root's for a carried row. It says nothing (false) when no
-// row holds an approval.
-func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (texts.GateMovedRecord, bool) {
+// order where the marks cannot tell. Each names its row's document as the send names it
+// (News.Documents): the old root's for a carried row, or the bare artifact reference where nothing
+// says whose it is. It says nothing (false) when no row holds an approval.
+func gateAtSend(news News) (texts.GateMovedRecord, bool) {
+	tree, steps, gates := news.Tree, news.Steps, news.Gates
 	if held, closed := classify.StandingGate(steps, gates); closed {
-		return gateMovedOn(tree, held.DocumentOf(), held.Step.OrSpec(), held.ArtifactID, held.LatestVersion, false), true
+		step := held.Step.OrSpec()
+		return gateMovedOn(tree, news.Documents[step], step, held.ArtifactID, held.LatestVersion, false), true
 	}
 	var opened record.DesignGate
 	var openedStep record.DesignStep
@@ -271,7 +288,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	if openedStep == "" {
 		return texts.GateMovedRecord{}, false
 	}
-	return gateMovedOn(tree, opened.DocumentOf(), openedStep, opened.ArtifactID, *opened.ApprovedVersion, true), true
+	return gateMovedOn(tree, news.Documents[openedStep], openedStep, opened.ArtifactID, *opened.ApprovedVersion, true), true
 }
 
 // distinctPairs is each step's pair of versions the architect's summary tells of, and each
@@ -387,32 +404,31 @@ func (n newsItems) changed(at int, item NewsChange) (*int, string, *texts.Words)
 	return taken, texts.NewsChangesNoneNamed, nil
 }
 
-// document is the document item names, as a dispatch:// link: the document of its step's gate row
-// as the row records it (record.DesignGate.DocumentOf), the old root's for a carried row, where
-// that row holds the item's artifact, and otherwise the bare artifact reference
-// (texts.ArtifactReference), since no record then says which issue holds it.
+// document is the document item names: the document of its step's gate row as the send names it
+// (News.Documents: a dispatch:// link, the old root's for a carried row, or the bare artifact
+// reference where nothing says whose it is), where that row holds the item's artifact, and
+// otherwise the bare artifact reference (texts.ArtifactReference), since no record then says
+// which issue holds it.
 func (n newsItems) document(item NewsChange) string {
 	if row, ok := n.news.Gates[item.Step]; ok && row.ArtifactID == item.artifact() {
-		return stepRef(row.DocumentOf(), item.Step)
+		return n.news.Documents[item.Step]
 	}
 	return texts.ArtifactReference(item.artifact())
 }
 
-// dispatchReason is the reason Dispatch could not answer, as the reconcile recorded it read at at:
-// Dispatch's own error text, or the reconcile's count of failed reads around it, the words of
-// another author in a block of their own, bounded at texts.OneAct.
+// dispatchReason is the reason Dispatch could not answer, as the reconcile recorded it read at at
+// (the daemon's giveUpReason): the daemon's sentence of the read it gave up on, that Dispatch holds
+// no such document or that Dispatch failed so many reads of it, with Dispatch's own error text
+// after it, in a block of its own, bounded at texts.OneAct. The sentence is the daemon's, so the
+// block names the daemon as its author (texts.ByDaemon), and Dispatch's words are those it quotes.
 func dispatchReason(reason string, at time.Time) *texts.Words {
 	if reason == "" {
 		return nil
 	}
 	words := texts.Carry(reason, texts.OneAct, false)
-	words.By, words.At = newsReasonBy, at
+	words.By, words.At = texts.ByDaemon, at
 	return &words
 }
-
-// newsReasonBy is the author a reason block of news names: Dispatch, whose error the reason
-// carries.
-const newsReasonBy = "dispatch"
 
 // sectionRow is the row of one top-level unit that changed in the item at index item, as Dispatch
 // names it (record.SectionChange). A `##` section is a section, its place among the sections of its

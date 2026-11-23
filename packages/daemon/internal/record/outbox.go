@@ -2075,9 +2075,14 @@ func (p MergeForwardMessage) Kind() texts.Kind {
 // implementer, or in merging the merger (cybermonklabs/legion#4979), each with the same fields. It
 // also says that the head conflicts with its base, whether or not the record holds the base, and
 // names the issue branch the role asked pushes the merge to (claim.IssueBranch), which
-// dispatch://INFRA-4374's R0 and R1 have it say; an ask whose why is a required check that has not
-// passed says that GitHub runs no check on the head (texts.ChecksOnHeadNone), which R0 has it say.
-// The review names the review it asks for (texts.MergeForwardReviewAsked), which R1 has it ask.
+// dispatch://INFRA-4374's R0 and R1 have it say; it says that two of GitHub's reads found the head
+// conflicting (texts.ConflictReadsConfirmed), the confirmed conflict every ask is made for, as
+// main's ask said that a second read confirmed it; and an ask whose why is a required check that
+// has not passed says that GitHub runs no check on the head (texts.ChecksOnHeadNone), which R0 has
+// it say. The hold names the role asked, the implementer on every hold: before merging the
+// implementer is the role asked, and the merger is held only behind an ask of the implementer that
+// has not landed (workflow's holdMerger), as main's hold said that the implementer is asked. The
+// review names the review it asks for (texts.MergeForwardReviewAsked), which R1 has it ask.
 // What each reader does with its message - the merge in the issue workspace and the push with no
 // handoff and no completion, the stop of every write and of a completion at the old head, the read
 // of what the merge changed (for a merge of the base its remerge diff and the files the base
@@ -2093,13 +2098,14 @@ func (p MergeForwardMessage) Record(issue, repo string) any {
 	switch p.Step {
 	case MergeForwardAsk:
 		ask := texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, HeadConflictsWithBase: true,
-			Phase: p.Phase, Why: string(p.Why), PushTo: claim.IssueBranch(issue)}
+			ConflictReads: texts.ConflictReadsConfirmed, Phase: p.Phase, Why: string(p.Why), PushTo: claim.IssueBranch(issue)}
 		if p.Why == ConflictCheckNotGreen {
 			ask.ChecksOnHead = texts.ChecksOnHeadNone
 		}
 		return ask
 	case MergeForwardHold:
-		return texts.MergeForwardHoldRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
+		return texts.MergeForwardHoldRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why),
+			Asked: claim.RoleImplementer}
 	case MergeForwardLanded:
 		return texts.MergeForwardLandedRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase}
 	}

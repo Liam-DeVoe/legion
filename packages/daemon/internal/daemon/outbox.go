@@ -737,10 +737,13 @@ func withoutLeadingBlankLines(text string) string {
 }
 
 // wholeCharacters is head, a head of line that a bound cut, backed off to the last place in it
-// that parts no character as its writer wrote it (joined), so a quote never holds part of one.
-// Where every place in head falls inside its first character, as where one letter's marks alone
-// run past the bound, backing off would quote nothing of a line that holds something, so the head
-// stays as the bound cut it.
+// that falls inside no character as joined reads one, so a quote holds no part of a letter and its
+// marks, of an emoji and its modifier or a joiner's sequence, of a flag or of a Hangul syllable.
+// It can part the two clusters of UAX #29 that joined does not keep (GB9b, GB9c): a prepended
+// concatenation mark or a reph from the character after it, and the consonants of an Indic
+// conjunct with no joiner between them. Where every place in head falls inside its first
+// character, as where one letter's marks alone run past the bound, backing off would quote nothing
+// of a line that holds something, so the head stays as the bound cut it.
 func wholeCharacters(line, head string) string {
 	if len(head) == len(line) {
 		return head
@@ -4463,13 +4466,15 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 // and otherwise changes nothing or queues the row again, as the workflow decides
 // (workflow.checkWakeDue). The row carries the check instance it was named for, so nothing is
 // read here before the fact: the workflow reads the check in the fact's own transaction, where no
-// report can land between the read and the look it starts. The event is the issue and this row,
-// as the check's bound is (checkBound), since the workflow queues the wake again as a new row
-// while the issue runs again, and that row's apply must be fresh rather than a duplicate of this
-// one's.
+// report can land between the read and the look it starts. The fact carries when the row came due
+// (record.OutboxRow.NextAt), which the workflow reads an earlier release's unmarked row by
+// (workflow's queuedRetry). The event is the issue and this row, as the check's bound is
+// (checkBound), since the workflow queues the wake again as a new row while the issue runs again,
+// and that row's apply must be fresh rather than a duplicate of this one's.
 func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload record.CheckWakeDue) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-wake:%s:%d", row.Issue, row.ID),
-		intake.CheckWakeDue{Issue: row.Issue, Look: payload.Look, OpenedAt: payload.OpenedAt, Reason: payload.Reason, Retry: payload.Retry}, r.handlers...); err != nil {
+		intake.CheckWakeDue{Issue: row.Issue, Look: payload.Look, OpenedAt: payload.OpenedAt, Reason: payload.Reason, Retry: payload.Retry,
+			Due: row.NextAt}, r.handlers...); err != nil {
 		return fmt.Errorf("wake %s's production check at look %d: %w", row.Issue, payload.Look, err)
 	}
 	return nil

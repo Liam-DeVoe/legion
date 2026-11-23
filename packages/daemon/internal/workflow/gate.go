@@ -1082,7 +1082,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		return err
 	}
 	if !open {
-		moved := gateMovedOn(root.Tree, owner, step, document, version, false)
+		moved := gateMovedOn(root.Tree, stepRef(owner, step), step, document, version, false)
 		for _, to := range addressed {
 			if err := e.roleMessage(ctx, tx, to.issue, to.token, moved, texts.UrgencyOf(texts.GateMoved, to.role, texts.Variant{})); err != nil {
 				return err
@@ -1097,7 +1097,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		return err
 	}
 	owed := record.OwedNews(facts)
-	opened := gateMovedOn(root.Tree, owner, step, document, version, true)
+	opened := gateMovedOn(root.Tree, stepRef(owner, step), step, document, version, true)
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
@@ -1143,27 +1143,29 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // GateMovedMessage is the gate-moved message of tree's design gate whose step's document is the
 // tree's root's own (gateMovedOn).
 func GateMovedMessage(tree string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
-	return gateMovedOn(tree, tree, step, artifact, version, open)
+	return gateMovedOn(tree, stepRef(tree, step), step, artifact, version, open)
 }
 
-// gateMovedOn is the gate-moved message of tree's design gate, whose step's document is owner's:
-// whether the gate opened or closed (a texts.Gate word), the step and the reference of the
-// document of owner it reviews, with the artifact id, never "spec version" (under more than one
-// gated step the version the event carries is that step's document's, and a message naming the
-// spec would send a reader to the wrong one, INFRA-1272), the version, and what the move does to a
-// merge the gate holds: released at the opening, held while it is closed. owner is tree itself,
-// or, for a gate the tree's root carried from a closed tree, the old root whose document the copy
-// is bound to and a person approves (putGateTold, record.DesignGate.DocumentOf), the document the
-// carried-gate-opened notice of the same approval names. It is the one record of a gate's move:
-// the role message at the move (tellGateMoved) and the news task that carries the opening in its
-// place, or says the gate closed again before its send (RenderNews's gateAtSend), both give it.
-func gateMovedOn(tree, owner string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
+// gateMovedOn is the gate-moved message of tree's design gate, whose step's document is document:
+// whether the gate opened or closed (a texts.Gate word), the step and the
+// document it reviews, with the artifact id, never "spec version" (under more than one gated step
+// the version the event carries is that step's document's, and a message naming the spec would
+// send a reader to the wrong one, INFRA-1272), the version, and what the move does to a merge the
+// gate holds: released at the opening, held while it is closed. At the move (tellGateMoved) the
+// document is the step's document of the tree itself, or, for a gate the tree's root carried from
+// a closed tree, of the old root whose document the copy is bound to and a person approves
+// (putGateTold, record.DesignGate.DocumentOf), the document the carried-gate-opened notice of the
+// same approval names. The news task that carries the opening in its place, or says the gate
+// closed again before its send (RenderNews's gateAtSend), names the document as the send names it
+// (News.Documents), which can be the bare artifact reference where nothing says whose it is. It is
+// the one record of a gate's move, which both give.
+func gateMovedOn(tree, document string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
 	gate, merge := texts.GateClosed, texts.MergeHeld
 	if open {
 		gate, merge = texts.GateOpened, texts.MergeReleased
 	}
 	return texts.GateMovedRecord{RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: tree}, Gate: gate, Step: string(step.OrSpec()),
-		Document: stepRef(owner, step), Artifact: artifact, Version: version, Merge: merge}
+		Document: document, Artifact: artifact, Version: version, Merge: merge}
 }
 
 // settleChildArchitectOpenings settles the gate's opening as owed on the holder row of each member

@@ -3,6 +3,7 @@ package texts
 import (
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -185,60 +186,116 @@ func drawBlocks(before []string, blocks []block) []string {
 }
 
 // InFront is parts and then text, each joined to the next by a blank line: the notes a start puts
-// in front of a task (supervise's Delivery.message), and the task. A part can hold words that are
-// not the daemon's: a process's cause quotes the runtime's, and those can carry a tail of the
-// role's own log, a task's own lines among it. So every block of text (drawnBlocks) is drawn
-// again, with its attributes and its words as they were, under the tag blockTags gives it against
-// the whole of what is sent: the parts, the lines of text outside its blocks and the words of every
-// block. A task can be several records, each joined to the one before by a blank line (the
-// daemon's followedBy: a start's own record, then the news record of each audience), and the
-// blocks of every record are drawn again together, so nothing in front of any block opens or
-// closes its tag, as nothing does in the task alone (Render). Each block of a text of one record
-// keeps the tag Render gave it wherever the parts hold none of those tags, and the parts and a text
-// with no block are joined as they are. A card, which the TypeScript readers draw again by this
-// rule (testdata/in-front.json), is one record.
+// in front of a task the daemon drew (supervise's Delivery.message), and the task. A part can hold
+// words that are not the daemon's: a process's cause quotes the runtime's, and those can carry a
+// tail of the role's own log, a task's own lines among it. So every block of text (drawnBlocks) is
+// drawn again, with its attributes and its words as they were, under the tag blockTags gives it
+// against the whole of what is sent: the parts, the lines of text outside its blocks and the words
+// of every block. A task can be several records, each joined to the one before by a blank line
+// (Joined: a start's own record, then the news record of each audience), and the blocks of every
+// record are drawn again together, so nothing in front of any block opens or closes its tag, as
+// nothing does in the task alone. Each block of the text keeps the tag it had wherever the parts
+// hold none of those tags, the parts stay word for word, and a text with no block is joined as it
+// is. A card, which the TypeScript readers draw again by this rule (testdata/in-front.json), is
+// one record. A text that no record drew, such as an operator's task, goes in front of no note by
+// this rule but by InFrontOfWords, which keeps it as its author wrote it.
 func InFront(parts []string, text string) string {
 	if len(parts) == 0 {
 		return text
 	}
-	front := strings.Join(parts, "\n\n") + "\n\n"
-	found := drawnBlocks(text)
-	if len(found) == 0 {
-		return front + text
+	return joinParts(append(slices.Clip(parts), text), func(i int) bool { return i == len(parts) })
+}
+
+// InFrontOfWords is parts and then text, each joined to the next by a blank line, where text is
+// words another author wrote that no record drew: an operator's task (supervise's
+// Delivery.message), in front of which a start puts its notes. The text goes as its author wrote
+// it, tags and all: its lines are no record's blocks, and nothing renames them. Each block of a
+// part (drawnBlocks) is drawn again instead, with its attributes and its words as they were, under
+// the tag blockTags gives it against the whole of what is sent, the text among it, so no line of
+// the text opens or closes the tag of a part's block. A part that holds no block is joined as it
+// is, so where no part holds a block the parts and the text are joined word for word.
+func InFrontOfWords(parts []string, text string) string {
+	if len(parts) == 0 {
+		return text
 	}
-	// The text outside the blocks: ahead of the first, between one record's run and the next (the
-	// next record's fields), and after the last. Two blocks of one run stand a new line apart,
-	// which holds no tag.
-	before := append([]string(nil), parts...)
-	blocks := make([]block, len(found))
-	from := 0
-	for i, d := range found {
-		if between := text[from:d.start]; between != "\n" {
-			before = append(before, between)
+	return joinParts(append(slices.Clip(parts), text), func(i int) bool { return i < len(parts) })
+}
+
+// Joined is records, each a text Render drew, each joined to the next by a blank line: a start's
+// own record and then the news record of each audience a delivery speaks to (the daemon's
+// followedBy). Each record's blocks were drawn against that record alone, and the words of one
+// record can hold the tag of another's block: a heading of a changed section can quote the closing
+// tag of the start's reason block. So every block of every record (drawnBlocks) is drawn again,
+// with its attributes and its words as they were, under the tag blockTags gives it against all the
+// other text of the joined task, the lines outside the blocks of every record and the words of
+// every block, so nothing in the task opens or closes a block's tag but that block's own lines,
+// with no note in front as behind one (InFront). A block keeps the tag Render gave it wherever no
+// other record holds that tag. An empty record is no part, and one record alone comes back as
+// Render drew it.
+func Joined(records ...string) string {
+	parts := slices.DeleteFunc(slices.Clone(records), func(record string) bool { return record == "" })
+	return joinParts(parts, func(int) bool { return true })
+}
+
+// joinParts is parts, each joined to the next by a blank line, with every block of each part that
+// drawn says a record drew (drawnBlocks) drawn again, its opening tag's attributes and its words as
+// they were, under the tag blockTags gives it against everything else that is sent: every part
+// another author wrote, which goes as written, the text of each drawn part outside its blocks, and
+// the words of every block. It is the one rule InFront, InFrontOfWords and Joined join by. Parts
+// that hold no drawn block are joined as they are.
+func joinParts(parts []string, drawn func(part int) bool) string {
+	found := make([][]drawnBlock, len(parts))
+	var before []string
+	var blocks []block
+	size := 0
+	for i, part := range parts {
+		size += len(part) + len("\n\n")
+		if !drawn(i) {
+			before = append(before, part)
+			continue
 		}
-		blocks[i] = block{name: d.name(), words: Words{Text: d.words}}
-		from = d.end
+		found[i] = drawnBlocks(part)
+		// The text outside the blocks: ahead of the first, between one record's run and the next
+		// (the next record's fields), and after the last. Two blocks of one run stand a new line
+		// apart, which holds no tag.
+		from := 0
+		for _, d := range found[i] {
+			if between := part[from:d.start]; between != "\n" {
+				before = append(before, between)
+			}
+			blocks = append(blocks, block{name: d.name(), words: Words{Text: d.words}})
+			from = d.end
+		}
+		before = append(before, part[from:])
 	}
-	before = append(before, text[from:])
+	if len(blocks) == 0 {
+		return strings.Join(parts, "\n\n")
+	}
 	tags := blockTags(before, blocks)
 	var b strings.Builder
-	b.Grow(len(front) + len(text) + 8*len(found))
-	b.WriteString(front)
-	from = 0
-	for i, d := range found {
-		b.WriteString(text[from:d.start])
-		// The block as drawBlock draws it, its opening tag's attributes as that tag wrote them.
-		b.WriteString("<")
-		b.WriteString(tags[i])
-		b.WriteString(d.attributes)
-		b.WriteString(">\n")
-		b.WriteString(d.words)
-		b.WriteString("\n</")
-		b.WriteString(tags[i])
-		b.WriteString(">")
-		from = d.end
+	// Room for a suffix of a few characters on each block's two tags.
+	b.Grow(size + 8*len(blocks))
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		from := 0
+		for _, d := range found[i] {
+			b.WriteString(part[from:d.start])
+			// The block as drawBlock draws it, its opening tag's attributes as that tag wrote them.
+			b.WriteString("<")
+			b.WriteString(tags[0])
+			b.WriteString(d.attributes)
+			b.WriteString(">\n")
+			b.WriteString(d.words)
+			b.WriteString("\n</")
+			b.WriteString(tags[0])
+			b.WriteString(">")
+			tags = tags[1:]
+			from = d.end
+		}
+		b.WriteString(part[from:])
 	}
-	b.WriteString(text[from:])
 	return b.String()
 }
 
@@ -268,20 +325,22 @@ func (d drawnBlock) name() string {
 }
 
 // drawnBlocks is the blocks of text, in their order: a text Render drew, or several such records,
-// each joined to the one before by a blank line (the daemon's followedBy, through InFront). No line
-// of a record ahead of its blocks starts with <, since a field is a TOON line and the lead and the
-// kept sentences are the daemon's own, so a record's first such line opens its first block. A
-// block closes on the first line after its opening that is its closing tag, since no words of a
-// block hold that tag (blockTags), and the next block opens on the line after. A record's run of
-// blocks ends at the first line that opens no block. Render ends a record with its last block, so
-// where that line is blank the next record starts after it, and its first line that starts with <
-// opens its first block in turn; a record with no block has no such line, and the search goes on
-// into the record after it. The blocks end at a run that ends on any other line (a reviewer's
-// round line after the last record, reviewround.Ending, or a line of a text Render did not draw),
-// and at a record whose first line that starts with < opens no block, or opens one that never
-// closes: what follows stays as it is. So they are empty where the first line that starts with <
-// opens none, as in a text Render did not draw, such as an operator's task, which InFront then
-// joins as it is. One pass over text.
+// each joined to the one before by a blank line (Joined, the daemon's followedBy). No line of a
+// record ahead of its blocks starts with <, since a field is a TOON line and the lead and the kept
+// sentences are the daemon's own, so a record's first such line opens its first block. A block
+// closes on the first line after its opening that is its closing tag, since no words of a block
+// hold that tag (blockTags), and the next block opens on the line after. A record's run of blocks
+// ends at the first line that opens no block. Render ends a record with its last block, so where
+// that line is blank the next record starts after it, and its first line that starts with < opens
+// its first block in turn; a record with no block has no such line, and the search goes on into
+// the record after it. The blocks end at a run that ends on any other line (a reviewer's round
+// line after the last record, reviewround.Ending, or a line of a text Render did not draw), and at
+// a record whose first line that starts with < opens no block, or opens one that never closes:
+// what follows stays as it is. So they are empty where the first line that starts with < opens
+// none. A text Render did not draw can still hold lines of a block's form, such as two `<details>`
+// sections of a log an operator pasted into a task, which this reads as blocks: such a text is
+// never read here, since its caller joins it as its author wrote it (InFrontOfWords). One pass
+// over text.
 func drawnBlocks(text string) []drawnBlock {
 	var blocks []drawnBlock
 	for record := 0; record < len(text); {

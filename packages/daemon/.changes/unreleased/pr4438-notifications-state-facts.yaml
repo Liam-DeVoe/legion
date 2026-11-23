@@ -20,10 +20,11 @@ body: |-
   architect's words and not the daemon's sentence or the spaces;
   any other line is the daemon's own, whole. The block holds no character the daemon added: a line
   ends at a line feed or at a carriage return and a line feed, neither of which the block holds; a
-  line past 200 UTF-16 units is cut with no ellipsis, and never inside a character as its writer
-  wrote it (a letter and the combining marks after it, by Go's own Unicode tables, 17.0.0 in Go
-  1.27.3, an emoji and its skin-tone modifier, the characters a zero width joiner joins, the two
-  regional indicators of a flag, the jamo of one Hangul syllable); the words object counts
+  line past 200 UTF-16 units is cut with no ellipsis, and never inside a letter and the combining
+  marks after it (by Go's own Unicode tables, 17.0.0 in Go 1.27.3), an emoji and its skin-tone
+  modifier, the characters a zero width joiner joins, the two regional indicators of a flag or the
+  jamo of one Hangul syllable, though it can part a prepended concatenation mark or a reph from the
+  character after it and the consonants of an Indic conjunct with no joiner; the words object counts
   every UTF-16 unit of the words after the block, the later lines among them but not the line
   endings the words end with (`rest`), as the notice's `length` counts the refused body in UTF-16
   units; and a worker's words lose the full stop the daemon's sentence adds after words that end
@@ -52,9 +53,9 @@ body: |-
   (`retry`), which makes the look it starts a retry (`woken_by: retry`), and so is a row an earlier
   release queued with no mark whose reason is word for word that release's sentence of a retry,
   where it is not the wake of the pending report whose time the check holds: on a check that holds
-  no such time, or due before the check's `wake_at`, as the retry of a look that a late report
-  leaves queued beside its own row; any other wake is the checking role's own, whose summary is
-  its words whatever they open with. An
+  no such time, or that came due before the check's `wake_at`, whenever it runs, as the retry of a
+  look that a late report leaves queued beside its own row; any other wake is the checking role's
+  own, whose summary is its words whatever they open with. An
   update-stalled notice names who suspended each suspended claim it lists (`suspended_by:
   operator` for the operator's suspension, one held for a claim's turn among them, and
   `suspended_by: pause` for a claim a project's pause stopped, answered or not, whether the pause
@@ -70,8 +71,10 @@ body: |-
   confirmation of its entry, that entry (`entry`), a pr-blocked notice names its conflict rounds
   not counted, 0 included (`conflict_rounds`), a merge-queue-removal message says that the event
   names no reason and that the merger reads GitHub (`event_reason: none`, `read_on: github`), a
-  merge-forward ask says that the head conflicts with its base and where to push
-  (`head_conflicts_with_base: true`, `push_to`), a memory-kill message says where heavy work runs
+  merge-forward ask says that the head conflicts with its base, that two reads of GitHub found it
+  so, and where to push (`head_conflicts_with_base: true`, `conflict_reads: 2`, `push_to`), a
+  merge-forward hold names the role asked to merge the base forward (`asked: implementer`), a
+  memory-kill message says where heavy work runs
   (`heavy_work_runs`), a volume-near-full notice writes each backslash of a name as `\\` as well as
   each line break, so two names stay two values, and a root's resume names its gate step's
   document whatever the act (`document`), names no gate state for a step with no gate, and names
@@ -79,9 +82,10 @@ body: |-
   the issue whose document it is bound to (`design_gates.document_issue`, migration
   `20261122040952_design_gate_document_issue`), so the start task, the catch-up and the gate-moved
   message of a root that carried its old root's gate name the old root's document; for a row that
-  records none, the start task and the catch-up read it from the document's own registration in
-  the store, else from Dispatch when the daemon queues the start task, writes it again or
-  publishes the catch-up, else give the document's bare artifact
+  records none, the start task, the catch-up and the news of an approved design read it from the
+  document's own registration in the store, else from Dispatch when the daemon queues the start
+  task, writes it again (where a decision it named left the tree, or a newer decision replaced one
+  it named), publishes the catch-up or sends the news, else give the document's bare artifact
   reference (`/api/v1/artifacts/<id>`); and a parked decision's
   notice names when the person made it (`at`). A relaunch note and a catch-up's `relaunch` of a
   cut turn say that its tool calls in flight were never answered and that the subagents and
@@ -120,10 +124,15 @@ body: |-
   message (`unchanged_since`). News of an approved design is a `design-news` record of its own
   kind, a task of its own or the record after a start's own record: the tree, the issue and the
   phase its holder holds it in, or each member of the tree with how it is told for the root's
-  architect; each document's version and the version its reader took, with each changed section
-  and block as a row; Dispatch's reason, a heading, a block id and a type the daemon does not name
+  architect, whether its task gives it the gate's opening (`opening`) and how many items it is
+  owed that the daemon cannot name yet (`unnamed`); each document's version and the version its
+  reader took, with each changed section and block as a row; the daemon's reason for a read of
+  Dispatch it gave up on (`by="daemon"`), a heading, a block id and a type the daemon does not name
   in blocks of their own; and, where the opening is owed, the gate's fields as a gate-moved
-  message gives them, said of the gate at the send. The readers' prompts give the steps the news
+  message gives them, said of the gate at the send. Every block of a start's record and of each
+  news record after it takes a tag chosen against all the other text of the task, with or without
+  a note in front of it. An operator's task goes behind the notes of a cut turn or a relaunch as
+  the operator wrote it, tags and all. The readers' prompts give the steps the news
   text gave: each answer, reading a first version whole, and the command that prints a version.
   A notice is published with its kind's urgency, and a `low` text wakes no released pod. Of the
   role messages to a role whose pod is released, only

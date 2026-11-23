@@ -107,11 +107,15 @@
 // opening or a closing tag (<tag or </tag), and that no earlier block of the text took. A field
 // can hold another author's words too, such as an issue's title or a check's name, so nothing in
 // the text can open or close the tag of a block but that block's own lines, and no two blocks
-// share a tag. Block draws one block, as the whole of its text. InFront puts the notes a start
-// puts before a task in front of that task's text, and draws the task's blocks again under the
-// tags the same rule gives them against those notes too, since a note can hold words that are not
-// the daemon's. The opening tag carries these attributes, in this order, each only where it is
-// set:
+// share a tag. Block draws one block, as the whole of its text. Joined joins the records of one
+// task, a start's own record and the news record of each audience, and draws every block of every
+// record again under the tags the same rule gives them against all the other text of the task.
+// InFront puts the notes a start puts before a task in front of that task's text, and draws the
+// task's blocks again under the tags the same rule gives them against those notes too, since a
+// note can hold words that are not the daemon's. InFrontOfWords puts them in front of a text no
+// record drew, an operator's task, which goes as its author wrote it, and draws the notes' blocks
+// again against it instead. The opening tag carries these attributes, in this order, each only
+// where it is set:
 //
 //   - by: the author, where the fields of the text do not name the author;
 //   - at: the time of the act, where the fields of the text do not give the time;

@@ -800,7 +800,8 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			Phase: phase.Merging, PullRequest: number, Why: record.ConflictMergeNext})
 		b.published(r, texts.MergeForwardAsk, "ask-merger", claim.RoleMerger, issue, mergerAsk.Record(issue, r.repo),
 			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
-			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", record.ConflictMergeNext))
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", record.ConflictMergeNext,
+				"conflict_reads", texts.ConflictReadsConfirmed))
 		worker := phase.RoleFor(at)
 		hold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardHold, Head: head, Base: base,
 			Phase: at, PullRequest: number, Why: why})
@@ -811,7 +812,8 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			Phase: phase.Merging, PullRequest: number, Why: why})
 		b.published(r, texts.MergeForwardHold, "hold-merger", claim.RoleMerger, issue, mergerHold.Record(issue, r.repo),
 			texts.UrgencyOf(texts.MergeForwardHold, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
-			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", why))
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", why,
+				"asked", claim.RoleImplementer))
 		told := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardLanded, Head: head, Landed: landed, Base: base,
 			Phase: at, PullRequest: number, Why: why})
 		b.published(r, texts.MergeForwardLanded, "landed", worker, issue, told.Record(issue, r.repo),

@@ -52,7 +52,8 @@ func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
 
 // The merger's ask is the merge-forward ask's record, with the facts of the implementer's: the
 // pull request, the head that conflicts with the base, the base, that the head conflicts with it,
-// the phase the issue stays in, why the daemon acted and the branch the merge is pushed to. What
+// that two reads of GitHub found it so, the phase the issue stays in, why the daemon acted and the
+// branch the merge is pushed to. What
 // the merger's ask said beside them (cybermonklabs/legion#4979) - that the merge and its conflict
 // are its own to resolve, and that when its merge lands the reviewer is asked to read it and
 // approve the new head - is a step its prompt gives (internal/prompts/go/merger.md), so the record
@@ -63,8 +64,8 @@ func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {
 	merger := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging,
 		PullRequest: 42, Why: ConflictMergeNext}
 	want := texts.MergeForwardAskRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardAsk, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
-		Head: "c0de", ConflictsWith: "main", HeadConflictsWithBase: true, Phase: phase.Merging, Why: string(ConflictMergeNext),
-		PushTo: claim.IssueBranch("LEGION-208")}
+		Head: "c0de", ConflictsWith: "main", HeadConflictsWithBase: true, ConflictReads: texts.ConflictReadsConfirmed, Phase: phase.Merging,
+		Why: string(ConflictMergeNext), PushTo: claim.IssueBranch("LEGION-208")}
 	got := merger.Record("LEGION-208", "sjawhar/legion")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the merger's ask is %+v, want %+v", got, want)

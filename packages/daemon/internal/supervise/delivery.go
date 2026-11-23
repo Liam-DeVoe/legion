@@ -304,11 +304,14 @@ type sentences struct{ abandoned, ended bool }
 // (ProviderErrorNote, as the delivery holds it rendered), so the agent reads what the provider
 // did and then the task; each of these says something the others do not.
 //
-// The notes go in front of the task joined by texts.InFront, which draws the task's blocks of
-// another author's words again under tags chosen against the notes as well: a note's cause or
-// reason quotes the runtime's or the provider's own words, which can carry a tail of the role's own
-// log, a line that opens a block's tag among it, and the task was drawn before any note was. The
-// notes stay word for word.
+// The notes go in front of a task the daemon drew joined by texts.InFront, which draws the task's
+// blocks of another author's words again under tags chosen against the notes as well: a note's
+// cause or reason quotes the runtime's or the provider's own words, which can carry a tail of the
+// role's own log, a line that opens a block's tag among it, and the task was drawn before any note
+// was. The notes stay word for word. An operator's task (operatorsOwn) is the operator's own words,
+// which no record drew, and goes as the operator wrote it, tags and all: the notes go in front of
+// it joined by texts.InFrontOfWords, which draws again any block a note holds under a tag chosen
+// against the operator's text, and renames no line of that text.
 //
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's note alone (RelaunchNote with no task), composed from the record as it
@@ -365,7 +368,21 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		parts = append(parts, d.ProviderErrorNote)
 	}
+	if d.operatorsOwn() {
+		return texts.InFrontOfWords(parts, text), carried
+	}
 	return texts.InFront(parts, text), carried
+}
+
+// operatorsOwn is whether d's task is words a person wrote that no record drew: a task of no run
+// (Generation 0) that is not the daemon's own delivery of a relaunch's record (Relaunch). Every
+// task the daemon queues from a start row carries the run of its issue, which admission numbers
+// from 1, and so does every rewrite of such a task at its send (Deps.DesignNews, Deps.RootTask),
+// so a task of no run is an operator's own, which the API's route queues with none (the API's
+// heldTaskNotCurrent reads it so too), or the controller's start message, a fixed sentence of the
+// daemon's that holds no block, which either join sends as it is.
+func (d Delivery) operatorsOwn() bool {
+	return d.Generation == 0 && !d.Relaunch()
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
