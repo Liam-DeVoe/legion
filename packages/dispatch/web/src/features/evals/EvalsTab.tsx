@@ -1,6 +1,8 @@
 import { type ReactNode, useId } from "react";
 
 import { textPrimaryOnCanvas } from "../../theme/classes";
+import { EvalsHeader } from "./EvalsHeader";
+import { useEvalsUrlState } from "./evals-url";
 
 /** The tab's sections, in the order dispatch://INFRA-2918/spec R2 sets: the target cards, the
  *  Legion measures, CI health, deploys and lead time, the merge timeline, and then every eval the
@@ -27,10 +29,12 @@ function EvalsSectionSlot({ id, title }: { id: string; title: string }): ReactNo
 }
 
 /** A project's Evals tab (`/projects/<KEY>/evals`, spec R1): its one page of numbers, every
- *  project's alike. */
+ *  project's alike, under one header. */
 export function EvalsTab({ project }: { project: string }): ReactNode {
+  const [state, setState] = useEvalsUrlState();
   return (
     <div className="flex flex-col gap-6" data-project={project}>
+      <EvalsHeader onChange={setState} state={state} />
       {EVALS_SECTIONS.map((section) => (
         <EvalsSectionSlot id={section.id} key={section.id} title={section.title} />
       ))}
