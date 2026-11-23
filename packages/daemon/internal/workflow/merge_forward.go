@@ -377,6 +377,17 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // (leftItsPhase). The reviewer whose approval moved the issue on completes reviewing after the
 // move, at the head it reviewed, and the review a landed merge forward then asks of it is made
 // with no completion (record.MergeForwardReview), so a refusal would lose that report for good.
+//
+// The fence knows a head by its name alone, which leaves one completion it cannot judge. A role of
+// the deployment reports the commit its workspace stands on (`@-`, pi-shared's handoff-record.ts),
+// so where that role made a commit of its own above a head a merge forward replaced, its
+// completion names that commit: neither the replaced head nor the head the pull request stands at,
+// it passes. Refusing it would take the commit's ancestry, which the daemon does not hold: the
+// record keeps each merge forward's replaced head and the head it left, not a commit graph, and a
+// commit the role did not push is on no remote that GitHub could be asked about. Such a
+// completion is taken, and the troubleshooting guide's "The work loops or stops" says how an
+// operator finds it and sends the task back to the step.
+//
 // It answers false where it does not refuse.
 func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
