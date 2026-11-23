@@ -1054,7 +1054,7 @@ func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, boo
 	return record.PhaseLeftBy(role, issue.Phase, w.Task, w.Steps), false
 }
 
-// ownersReport says whether fact, a completion on issue, is the owner's report of a step of its
+// ownersOwnReport says whether fact, a completion on issue, is the owner's report of a step of its
 // own: its claim is the owner's (record.OwnerClaim), the issue's own architect, from which alone
 // the route complete_step takes a report and applies it with the step it names
 // (intake.HandoffComplete.Step). It is the one rule of "this report is the owner's own": the
@@ -1062,21 +1062,21 @@ func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, boo
 // never by the claim the step's row names, which is the architect that started the step
 // (ownerAgent), the nearest one above where the issue's own architect did not hold its role then.
 // An issue whose key makes no claim token has no owner, so no claim reports as one there.
-func ownersReport(issue record.Issue, fact intake.HandoffComplete) bool {
+func ownersOwnReport(issue record.Issue, fact intake.HandoffComplete) bool {
 	owner, err := record.OwnerClaim(issue)
 	return err == nil && fact.Claim != "" && fact.Claim == owner
 }
 
 // judgedReport is the phase fact, a completion on issue whose walk is w, is of and whether it is
 // current, or the refusal of an owner's report of a step that does not run. The owner's report
-// (ownersReport), which the route complete_step applies with the step it names, is current exactly
+// (ownersOwnReport), which the route complete_step applies with the step it names, is current exactly
 // where that step runs and its agent is the owner (ownerStepRefusal), read here, in the fact's own
 // transaction, whatever the route read before it. Every other completion is judged by
 // completionOf, and at a place the owner works no other claim's completion is the step's: it is of
 // the phase its role left, which pastCompletion records as leftItsPhase records one, or refuses,
 // and it moves nothing.
 func judgedReport(issue record.Issue, w Walk, fact intake.HandoffComplete) (phase.Phase, bool, *intake.Refusal) {
-	if ownersReport(issue, fact) {
+	if ownersOwnReport(issue, fact) {
 		if refusal := ownerStepRefusal(issue, w, fact.Step); refusal != nil {
 			return "", false, refusal
 		}
@@ -1200,9 +1200,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// would promise it the task of an entry its claim never served.
 	// The owner's report is no completion of a claim beside the step's: it is judged by the step it
 	// names and its agent (judgedReport), and the row names the architect that started the step,
-	// which is not the owner where an architect above started it (ownersReport), so neither check
+	// which is not the owner where an architect above started it (ownersOwnReport), so neither check
 	// of the report's claim against the row's is asked of it.
-	owners := ownersReport(*issue, fact)
+	owners := ownersOwnReport(*issue, fact)
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
 	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil && !owners {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
