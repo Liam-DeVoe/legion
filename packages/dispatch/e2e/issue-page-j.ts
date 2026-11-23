@@ -1,14 +1,15 @@
-import type { Locator, Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { createIssue, createProject, getArtifact } from "./api";
+import { createComment, createIssue, createProject, getArtifact } from "./api";
 import { PROJECT } from "./issue-layout-seed-support";
+import { requirementBlockId } from "./issue-layout-seed-text";
 
 /**
  * How the Spec view's rows read the new issue page's Spec view and its Contents slot
  * (`e2e/issue-page-j.e2e.ts`): the readers that `e2e/issue-page.ts` (the page's root and its
  * frame), `e2e/issue-page-g.ts` (one node's row, and the tree as rows) and `e2e/issue-page-i.ts`
- * (the outline) do not hold, and the one seed of the view's own.
+ * (the outline) do not hold, and the seeds of the view's own.
  *
  * What the Spec view and the Contents slot draw, beyond what those files name:
  *
@@ -97,6 +98,82 @@ export async function seedChildWithSpec(): Promise<ChildWithSpecSeed> {
       requirements: parentRequirements,
       specSlug: await specSlugOf(parent.primary_artifact_id),
     },
+  };
+}
+
+/** The issue of `seedTallSpec`: its key, its spec's artifact id and slug, the block ids of the
+ *  statements its spec holds, in document order, and the id of its one comment. */
+export interface TallSpecSeed {
+  readonly commentId: string;
+  readonly key: string;
+  readonly requirements: readonly string[];
+  readonly specArtifactId: string;
+  readonly specSlug: string;
+}
+
+/** The words of each statement of `seedTallSpec`, in document order: thirty, each a sentence or
+ *  two of its own. */
+const TALL_SPEC_WORDS = [
+  "An export holds every document of the workspace as it stood when the export began. A document changed while it runs waits for the next export.",
+  "The export is one archive file, named for the workspace and the day it was made, so that two exports made on one day never share a name.",
+  "Each document in the archive keeps the path it had in the workspace, with its folders written out as folders of the archive.",
+  "A document's history travels with it: every saved version, oldest first, each with the name of the person who saved it and when.",
+  "Comments are exported beside the document they were left on, in a file of their own, with each reply placed under the comment it answers.",
+  "Pictures and other attached files are copied into the archive whole. A file over two gigabytes is listed by name and left out, and the list says why.",
+  "The person who starts an export sees how far it has gone, as a count of the documents written out of the documents it will hold.",
+  "An export that stops part way can be started again, and it goes on from the last document it finished rather than from the first.",
+  "Only an owner of the workspace can start an export. Anyone else who opens the export page is told who the owners are and how to reach them.",
+  "When the archive is ready, the person who started it gets one email holding a link to it. The link works for seven days and then stops.",
+  "The link asks the person who opens it to sign in, and it opens only for the person who started the export or for another owner.",
+  "Every export is written to the workspace's activity list: who started it, when it finished, and how large the archive came out.",
+  "A workspace holds at most three exports at once. Starting a fourth removes the oldest, and the page says so before the fourth begins.",
+  "Documents an owner marked private are left out of every export another owner starts, and the archive says how many were left out.",
+  "Deleted documents still in the bin are not exported. Restoring one from the bin puts it into the next export like any other document.",
+  "The archive opens with the tools every common computer already has, so no one needs to install anything to read what they exported.",
+  "Each document is written in the format it was made in, with a copy in plain text beside it for any reader that cannot open that format.",
+  "Names of people in the archive are the names they had when the export ran, even where a person has since left the workspace.",
+  "Links between documents point to the linked document's place inside the archive, so they still work once the archive is unpacked elsewhere.",
+  "A link to a page outside the workspace is kept as it was written. The export never follows it and never copies what it points to.",
+  "An export of a workspace of ten thousand documents finishes within an hour on the plan that every paying workspace is on.",
+  "While an export runs, the workspace stays open for writing. No one is asked to stop work, and no document is locked for the export.",
+  "If the archive cannot be written, the person who started it is told in one sentence what went wrong and whether starting again will help.",
+  "The settings page lists the exports the workspace holds, newest first, each with its size, its date and the person who started it.",
+  "An owner can delete an export before its link runs out. The link then stops at once, for anyone who already holds it as well.",
+  "The archive carries a short file at its top that says what the export holds, when it ran, and how to read the files inside it.",
+  "Exports are kept in the same country as the workspace itself, and they never leave it while they wait to be downloaded.",
+  "Every archive is checked once it is written, and an archive that does not open cleanly is never offered to anyone for download.",
+  "A workspace on the free plan can export once a month. The page says on which day the next export can be started.",
+  "Turning exports off for a workspace removes every export it holds and stops every link to one, and the activity list records who did it.",
+] as const;
+
+/**
+ * One issue whose spec holds thirty statements, each a sentence or two of words of its own, so
+ * that the Spec view's statements alone stand well past one screen at 1440 by 900, and one
+ * comment on the issue itself, which answers no other and is anchored to nothing, in the project
+ * the issue-layout seeds make. A row that lands on a row of the view below the first screen
+ * reads it: the file's other seeds draw too few statements to put a row below the screen.
+ */
+export async function seedTallSpec(): Promise<TallSpecSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const statements = TALL_SPEC_WORDS.map((words, index) => ({
+    id: requirementBlockId(index + 1),
+    words,
+  }));
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: `${statements.map(({ id, words }) => statementBlock(id, words)).join("\n\n")}\n`,
+    title: "A workspace can be exported as one archive",
+  });
+  const comment = await createComment(issue.key, {
+    body: "Should an export hold the documents still in the bin, for an owner who asks for them?",
+  });
+  return {
+    commentId: comment.id,
+    key: issue.key,
+    requirements: statements.map(({ id }) => id),
+    specArtifactId: issue.primary_artifact_id,
+    specSlug: await specSlugOf(issue.primary_artifact_id),
   };
 }
 
@@ -242,4 +319,23 @@ export function ownWords(scope: Locator): Promise<string[]> {
       return own.textContent ?? "";
     })
   );
+}
+
+/** Fails unless `row`, the row an address landed on, stands inside the viewport: its top at or
+ *  below the viewport's top and its bottom at or above the viewport's bottom. Each failure names
+ *  `what` landed there, the row's top and bottom, and how tall the page is and how far it is
+ *  scrolled, which together say where a row that left the screen went. */
+export async function expectInViewport(page: Page, row: Locator, what: string): Promise<void> {
+  const box = await row.boundingBox();
+  expect(box, `${what} draws no box for the focused row`).not.toBeNull();
+  const height = page.viewportSize()?.height ?? Number.NaN;
+  const { scrollHeight, scrollY } = await page.evaluate(() => ({
+    scrollHeight: document.documentElement.scrollHeight,
+    scrollY: window.scrollY,
+  }));
+  const top = box?.y ?? Number.NaN;
+  const bottom = top + (box?.height ?? Number.NaN);
+  const where = `${what}: the focused row stands from ${top} px to ${bottom} px in a viewport ${height} px tall, on a page ${scrollHeight} px tall scrolled ${scrollY} px`;
+  expect(top, `${where}, its top above the viewport`).toBeGreaterThanOrEqual(0);
+  expect(bottom, `${where}, its bottom below the viewport`).toBeLessThanOrEqual(height);
 }
