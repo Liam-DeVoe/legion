@@ -241,6 +241,52 @@ func TestTheOperatorsRetryOfAnOwnerWhoseStepIsStillQueuedTellsNothingMore(t *tes
 	}
 }
 
+// An owner-step still queued for another run of the step — an earlier run, which the daemon's
+// executor finishes undelivered when the row next runs (ownerStepRuns) — holds back no telling of
+// the open run: the operator's retry tells the open run's step once, and so does a launch's
+// catch-up. Only an owner-step of the open run itself, or one that names no run, is the telling
+// that a second would repeat (record.Store.OwnerStepPending).
+//
+// Before, any owner-step of the issue still queued stopped both (the store's read of a pending
+// notice of the kind, NoticePending), so the owner of the open run was told nothing until the
+// stale row ran.
+func TestAStaleOwnerStepOfAnotherRunHoldsBackNoTellingOfTheOpenRun(t *testing.T) {
+	stale := record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
+		Reason: "the earlier run's step", OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 0}}
+	started := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
+		t.Helper()
+		pool := migratedPool(t)
+		engine := returnEngine()
+		child := ownerAtItsStep(t, pool, engine)
+		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			return engine.notice(ctx, tx, child.Key, stale)
+		})
+		return pool, engine, child
+	}
+	toldOpenRun := func(t *testing.T, pool *pgxpool.Pool, key, by string) {
+		t.Helper()
+		told := ownerSteps(t, pool, key)
+		if len(told) != 2 || told[1].OwnerStep == nil || told[1].OwnerStep.Starts != 1 {
+			t.Fatalf("%s with an earlier run's owner-step queued holds %+v, want that one and one owner-step of the open run (starts 1)", by, told)
+		}
+	}
+
+	t.Run("the operator's retry", func(t *testing.T) {
+		pool, engine, child := started(t)
+		token := claim.Token(treeRoleToken(t, child.Key, claim.RoleArchitect))
+		if result := applyOwned(t, pool, engine, "operator-retry", intake.RestartPhase{Issue: child.Key, Role: claim.RoleArchitect, Claim: token}); result.Refusal != nil {
+			t.Fatalf("the operator's retry of the owner = %+v, want it applied", result.Refusal)
+		}
+		toldOpenRun(t, pool, child.Key, "the retry")
+	})
+
+	t.Run("a launch's catch-up", func(t *testing.T) {
+		pool, engine, child := started(t)
+		claimReady(t, pool, engine, child.Key, claim.RoleArchitect, 2)
+		toldOpenRun(t, pool, child.Key, "the launch's ready")
+	})
+}
+
 // The stranded list names a child's own architect that failed while its child stands at a place
 // only that architect ends — a step of its own, or its retro — with no start of it queued: nothing
 // but the operator's retry starts it then. It names none where a start is queued (the daemon's

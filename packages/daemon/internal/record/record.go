@@ -2389,10 +2389,11 @@ type Store interface {
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
 	// tellStalledTrees), on every fact, every tick and every boot.
 	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
-	// NoticePending says whether the outbox still holds an unpublished architect notice of kind
-	// on issue (OutboxKindNotice), so a notice told again is never queued behind the one it
-	// repeats (workflow's owedOwnersStep and restart, for an owner-step).
-	NoticePending(ctx context.Context, tx pgx.Tx, issue string, kind NoticeKind) (bool, error)
+	// OwnerStepPending says whether the outbox still holds an unpublished owner-step of the run
+	// step names on issue, or one that names no run, so an owner-step told again is never queued
+	// behind the one it repeats (workflow's owedOwnersStep and restart); an owner-step of another
+	// run holds back nothing (Postgres.OwnerStepPending).
+	OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error)
 	// SlotWritePending says whether the outbox still holds a supervise slot_credential row of the
 	// claim token queued before the row before (workflow's ownerSlotCredential): the write of an
 	// owner's slot back to its own App, which a later notice to that claim waits for (the daemon's

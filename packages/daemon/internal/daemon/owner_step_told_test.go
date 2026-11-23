@@ -167,11 +167,17 @@ func (r *ownerHoldRig) tellQueued(t *testing.T, want int) {
 //     ready of that launch after the notice was published to it tells nothing more;
 //   - a step whose owner-step was never published is told at the launch;
 //   - the operator's retry of the owner tells it the step once again, whatever the session holds,
-//     and the relaunch's ready adds nothing to it, before or after it publishes.
+//     and the relaunch's ready adds nothing to it, before or after it publishes;
+//   - a relaunch into a fresh session while the owner-step is published, the listener forwarding
+//     it to the fresh session the outbox's read of the claim did not yet name, is told nothing
+//     more at that launch's ready: the mark names the session the listener named
+//     (notify.HTTPPublisher.PublishTo).
 //
 // The control is the catch-up as it stood (workflow's claimReady at its parent commit): it told
 // the step again at every ready where no owner-step was still queued, so the first two cases, the
-// ready after the fresh session's notice, and the last ready of the retry each queued one more.
+// ready after the fresh session's notice, and the last ready of the retry each queued one more;
+// and the mark of the claim the outbox read before the publish, which named the session the
+// relaunch left, so the last case's ready told the fresh session the step a second time.
 func TestALaunchTellsTheOwnersStepAgainOnlyToASessionNotToldIt(t *testing.T) {
 	t.Run("a ready of the launch told the step", func(t *testing.T) {
 		r := newToldRig(t)
@@ -239,4 +245,27 @@ func TestALaunchTellsTheOwnersStepAgainOnlyToASessionNotToldIt(t *testing.T) {
 			t.Fatalf("a ready of the retried launch after it was told the step queued %+v, want nothing", queued)
 		}
 	})
+
+	t.Run("a relaunch into a fresh session during the publish", func(t *testing.T) {
+		r := newToldRig(t)
+		r.runner.notices = &namingPublisher{holderPublisher: r.pub, holder: "ses_fresh"}
+		r.tell(t, stepOneTold(), 1)
+		r.relaunched(t, ownerHoldLaunch+1, "ses_fresh")
+		r.ready(t, "ready:2", ownerHoldLaunch+1, false)
+		if queued := r.queuedOwnerSteps(t); len(queued) != 0 {
+			t.Fatalf("the ready of the fresh session the listener forwarded the step to queued %+v, want nothing: that session holds it", queued)
+		}
+	})
+}
+
+// namingPublisher is the outbox's publisher with the listener naming holder as the session it
+// forwarded each publish to (notify.HTTPPublisher.PublishTo), whatever the claim records: a
+// session that took the role while the publish was made.
+type namingPublisher struct {
+	*holderPublisher
+	holder string
+}
+
+func (p *namingPublisher) PublishTo(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	return p.holder, p.Publish(ctx, topic, message, payload, key)
 }
