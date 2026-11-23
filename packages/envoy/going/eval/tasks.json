@@ -2121,6 +2121,25 @@
       ]
     }
   },
+  {
+    "id": "change-36",
+    "kind": "change",
+    "words": "add the label email to DEMO-28 and set its priority to P1",
+    "page": "/projects/DEMO/issues",
+    "mode": "ask",
+    "level": "fast",
+    "grade": {
+      "approve": true,
+      "end_state": [
+        { "item": "DEMO-28", "field": "labels", "value": ["notifications", "feature", "email"] },
+        { "item": "DEMO-28", "field": "priority", "value": 1 }
+      ],
+      "allowed": [
+        { "item": "DEMO-28", "field": "labels" },
+        { "item": "DEMO-28", "field": "priority" }
+      ]
+    }
+  },
 
   {
     "id": "document-01",

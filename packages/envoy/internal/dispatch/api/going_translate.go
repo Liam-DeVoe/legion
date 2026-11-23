@@ -867,11 +867,12 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 }
 
 // goingTranslateIssueUpdate is `dispatch issue-update`'s translation: `parent` and `repo` given
-// empty are cleared, `before` and `after` are the rank's neighbours, `advances` is the priority
-// ids the issue states and `advances_revision` the revision the read it answers returned (the
-// route's own compare-and-set), `external_links` adds the links named to the set the issue holds
-// (the route replaces the set; an empty list clears it), and a `reason`, which goingUnsendable
-// takes only beside a close, is posted on the issue as a message
+// empty are cleared, `before` and `after` are the rank's neighbours, `labels_add` is sent as the
+// route takes it, adding to the labels the issue holds when the write commits, `advances` is the
+// priority ids the issue states and `advances_revision` the revision the read it answers returned
+// (the route's own compare-and-set), `external_links` adds the links named to the set the issue
+// holds (the route replaces the set; an empty list clears it), and a `reason`, which
+// goingUnsendable takes only beside a close, is posted on the issue as a message
 // before the close, as `dispatch issue-update --reason` posts it (updateIssueInput has no reason
 // field). An issue already closed is refused before its reason is posted, so no reason lands as
 // a stray message; a write that resumes after its own reason, landed by an earlier try of the
@@ -879,7 +880,7 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 // was written.
 func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 	arguments, key := call.arguments, call.path["key"]
-	body := goingPick(arguments, "status", "title", "labels", "priority", "assignee", "route",
+	body := goingPick(arguments, "status", "title", "labels", "labels_add", "priority", "assignee", "route",
 		"blocked_by", "components", "advances", "advances_revision")
 	for _, name := range []string{"parent", "repo"} {
 		if value, named := arguments[name]; named {

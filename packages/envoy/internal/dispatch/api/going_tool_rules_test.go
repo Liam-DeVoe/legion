@@ -156,6 +156,9 @@ func TestEachPortedRuleRefusesThePartACallBreaks(t *testing.T) {
 		{"a reason beside no close", "dispatch_issue_update", map[string]any{"issue": "DSP-1", "status": "todo", "reason": "Why."},
 			"reason goes only with status done: it is the note posted on the issue as it closes, and status todo closes nothing. Drop reason, or set status done to close the issue."},
 		{"an update that clears the priority", "dispatch_issue_update", map[string]any{"issue": "DSP-1", "priority": nil}, ""},
+		{"labels beside labels_add", "dispatch_issue_update", map[string]any{"issue": "DSP-1", "labels": []any{"board"}, "labels_add": []any{"api"}},
+			goingIssueUpdateLabelsRule},
+		{"an update that adds a label alone", "dispatch_issue_update", map[string]any{"issue": "DSP-1", "labels_add": []any{"api"}}, ""},
 		{"mentions past their count", "dispatch_comment", map[string]any{"issue": "DSP-1", "body": "Hi.", "mentions": []any{
 			"role:a", "role:b", "role:c", "role:d", "role:e", "role:f", "role:g", "role:h", "role:i", "role:j", "role:k"}}, goingCommentMentionLimitRule},
 		{"a mention named twice", "dispatch_comment", map[string]any{"issue": "DSP-1", "body": "Hi.", "mentions": []any{"session:s-1", "session:s-1"}},

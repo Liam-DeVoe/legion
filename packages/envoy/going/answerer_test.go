@@ -417,6 +417,43 @@ func TestAnswerThroughAgentloopCutsAtTheWordCap(t *testing.T) {
 	}
 }
 
+// TestTheShortAnswerNamesEachItemByItsKey: a preview's short answer wrote "DEMO-1 (Board redesign,
+// in progress) has 5 open children", each item's title and status in parentheses, while the panel
+// shows each link as its text alone and lists each linked item by its title beneath. The model is
+// told to name each item by its key as its link's text, an item with no key by what it is and its
+// issue, to write no title and no value in parentheses beside it, and to say a status that answers
+// the question in the sentence; the word bound and the other rules stay.
+func TestTheShortAnswerNamesEachItemByItsKey(t *testing.T) {
+	model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: "[DEMO-12](" + routeHit.Href + ") holds it."}})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	stream := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	stream.ended(t)
+	requests := model.Requests()
+	if len(requests) != 1 || len(requests[0].Messages) == 0 || requests[0].Messages[0].Role != "system" {
+		t.Fatalf("the model served %d calls, want one whose first message is the system message", len(requests))
+	}
+	system := requests[0].Messages[0].Content
+	for _, said := range []string{
+		"Name each item you link by its key as the link's text: an issue by its key, the id it is given with, such as [DEMO-7](/issues/DEMO-7)",
+		"an item with no key - a document, an ask, a comment, a message - by what it is and the issue it is on",
+		"so write no item's title in your words, and no status or other value of an item in parentheses beside it",
+		`Where a status or another value answers the question, say it in the sentence, such as "DEMO-7 is in progress".`,
+		fmt.Sprintf("Answer in at most %d words.", contracts.GoingAnswerWordMax),
+		"Link each item you use as a markdown link whose target is that item's own href",
+	} {
+		if !strings.Contains(system, said) {
+			t.Errorf("the system message does not say %q", said)
+		}
+	}
+	// The text frames escape every punctuation byte, the key's dash among them.
+	if text := stream.text(); !strings.Contains(text, `DEMO\-12 holds it`) {
+		t.Errorf("answer = %q, want the item named by its key as the link's text", text)
+	}
+}
+
 // TestAnswerThroughAgentloopDropsALinkOutsideTheCitationSet: a link to something the model was
 // never given reaches a reader as its own text and no more - no target, no link syntax, no item
 // - and the stream says the answer was changed.

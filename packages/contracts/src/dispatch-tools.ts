@@ -548,22 +548,25 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
-const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
+const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
+const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}; ${ISSUE_UPDATE_LABELS_RULE}.`;
 
 /** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
- *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
- *  and the update names at least one field to change. `check` and `refusal` both read this one
- *  function, so the refusal never names a part the call kept. */
+ *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else;
+ *  labels replaces every label and labels_add adds to them, so a call names one of the two, as
+ *  the route refuses both; and the update names at least one field to change. `check` and
+ *  `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
     readonly reason?: unknown;
     readonly title?: unknown;
     readonly labels?: unknown;
+    readonly labels_add?: unknown;
     readonly priority?: unknown;
     readonly assignee?: unknown;
     readonly external_links?: unknown;
@@ -585,10 +588,14 @@ function issueUpdateProblem(value: unknown): string | undefined {
       typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
     return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
   }
+  if (input.labels !== undefined && input.labels_add !== undefined) {
+    return `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`;
+  }
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
     Array.isArray(input.labels) ||
+    Array.isArray(input.labels_add) ||
     typeof input.priority === "number" ||
     input.priority === null ||
     typeof input.assignee === "string" ||
@@ -1147,7 +1154,8 @@ export const dispatchToolSpecs = [
       before: "DSP-2",
     },
     description:
-      "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
+      "Update an existing issue: move its lifecycle status, retitle it, add labels to it or " +
+      "replace its labels, set " +
       "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
       "run, a document), set its " +
       "route, set or clear its parent, replace the issues it is blocked by, replace the " +
@@ -1155,7 +1163,9 @@ export const dispatchToolSpecs = [
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
-      "Legion the daemon moves it. A non-empty external_links is " +
+      "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
+      "labels replaces the whole set, so a label it does not name is removed, and the two never " +
+      "go together. A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1199,7 +1209,13 @@ export const dispatchToolSpecs = [
       labels: z
         .array(z.string({ min: 1, max: 40 }), { max: 20 })
         .describe(
-          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label."
+          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label, so a label it does not name is removed. To add labels and keep the others, use labels_add. Not with labels_add."
+        )
+        .optional(),
+      labels_add: z
+        .array(z.string({ min: 1, max: 40 }), { max: 20 })
+        .describe(
+          "Labels to add, at most 20 of up to 40 characters: each is added to the labels the issue holds when the write lands, and every label it holds stays; the issue holds at most 20 in all. Not with labels."
         )
         .optional(),
       // `.describe()` comes last here, unlike every other field. On the OMP host's Zod facade a

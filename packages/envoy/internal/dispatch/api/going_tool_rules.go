@@ -103,9 +103,10 @@ func goingDocumentOwnerKept(call goingRuleCall, requireArtifact, alwaysRequireAr
 const (
 	goingOwnerRule = "Exactly one of issue and project is required; with project, artifact names the document."
 
-	goingIssueUpdateFieldsRule = "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after."
+	goingIssueUpdateFieldsRule = "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after."
 	goingIssueUpdateDoneRule   = "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note"
 	goingIssueUpdateReasonRule = "reason goes only with status done"
+	goingIssueUpdateLabelsRule = "labels_add goes without labels: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone."
 
 	goingCommentTurnRule          = "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn."
 	goingCommentMentionMax        = 10
@@ -238,9 +239,10 @@ var goingToolRules = map[string]goingToolRule{
 }
 
 // goingIssueUpdateProblem is dispatch_issue_update's rule (`issueUpdateProblem`): a reason goes
-// with status done and with nothing else, and the update names at least one field to change. The
-// bar's close takes no reason (barTool), so a close without one keeps the rule here; one whose
-// reason is no text, or blank, would post an empty note, and breaks it as the spec's does.
+// with status done and with nothing else, labels and labels_add never go together, as the route
+// refuses both (400 LABELS_INPUT), and the update names at least one field to change. The bar's
+// close takes no reason (barTool), so a close without one keeps the rule here; one whose reason is
+// no text, or blank, would post an empty note, and breaks it as the spec's does.
 func goingIssueUpdateProblem(call goingRuleCall, _ string) string {
 	if call["status"] == "done" {
 		if reason, isText := call.text("reason"); call.has("reason") && (!isText || strings.TrimSpace(reason) == "") {
@@ -254,9 +256,12 @@ func goingIssueUpdateProblem(call goingRuleCall, _ string) string {
 		return goingIssueUpdateReasonRule + ": it is the note posted on the issue as it closes, and " + status +
 			" closes nothing. Drop reason, or set status done to close the issue."
 	}
+	if call.has("labels") && call.has("labels_add") {
+		return goingIssueUpdateLabelsRule
+	}
 	_, numbered := goingNumber(call["priority"])
 	components, _ := call["components"].(map[string]any)
-	changes := call.isText("status") || call.isText("title") || call.isList("labels") || numbered ||
+	changes := call.isText("status") || call.isText("title") || call.isList("labels") || call.isList("labels_add") || numbered ||
 		(call.has("priority") && call["priority"] == nil) || call.isText("assignee") ||
 		(call.has("assignee") && call["assignee"] == nil) || call.isList("external_links") || call.isText("route") ||
 		call.isText("parent") || call.isList("blocked_by") || call.isList("advances") || components != nil ||

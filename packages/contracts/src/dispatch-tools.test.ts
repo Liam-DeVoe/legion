@@ -228,7 +228,7 @@ function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string,
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -937,6 +937,7 @@ describe("dispatchToolSpecs", () => {
     for (const args of [
       { issue: "DSP-1", title: "Renamed" },
       { issue: "DSP-1", labels: [] },
+      { issue: "DSP-1", labels_add: ["accessibility"] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
       { issue: "DSP-1", assignee: "alice@example.com" },
@@ -1093,6 +1094,27 @@ describe("dispatchToolSpecs", () => {
     expect(
       schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(32001) }).success
     ).toBe(true);
+  });
+
+  // The route refuses a write naming both labels and labels_add (400 LABELS_INPUT): labels
+  // replaces every label, and labels_add adds to the labels the issue holds. The tool refuses such
+  // a call before anything is sent, in words that say which to name; each alone is a field.
+  test("dispatch_issue_update takes labels_add, which adds labels, and never with labels", () => {
+    const schema = schemaFor("dispatch_issue_update");
+    const both = schema.safeParse({ issue: "DSP-1", labels: ["board"], labels_add: ["api"] });
+    expect(both.success).toBe(false);
+    expect(both.error?.issues.map((issue) => issue.message)).toEqual([
+      "labels_add goes without labels: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.",
+    ]);
+    expect(
+      schema.safeParse({ issue: "DSP-1", labels_add: ["api"], priority: 2 }).success
+    ).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(
+      false
+    );
+    const update: DispatchToolSpec = specFor("dispatch_issue_update");
+    expect(update.validation?.message).toContain("; labels_add goes without labels.");
+    expect(update.description).toContain("labels_add adds labels and keeps every label");
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.

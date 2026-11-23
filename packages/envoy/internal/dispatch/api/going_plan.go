@@ -1097,11 +1097,29 @@ type goingPlanApproveInput struct {
 
 // goingPlanTick is the person's word on one row: whether it runs (an untick also unticks every row
 // that needs it), and the values they edited, each an argument of the row's tool put over the
-// arguments the plan shows.
+// arguments the plan shows, in place of each argument the edited one goes without
+// (goingEditReplaces).
 type goingPlanTick struct {
 	Row    int            `json:"row" required:"true"`
 	Tick   *bool          `json:"tick" required:"true"`
 	Values map[string]any `json:"values"`
+}
+
+// goingEditReplaces is, by the argument a person's edit writes, the arguments of the row the edit
+// takes the place of. The plan shows a row that adds labels (labels_add) as the labels the issue
+// holds with those it adds, and the label picker edits that whole set: the edit is labels, the
+// whole set the person chose, which the route takes only without labels_add.
+var goingEditReplaces = map[string][]string{"labels": {"labels_add"}}
+
+// goingPutEdited puts the person's edited values over arguments, each in place of the arguments it
+// goes without (goingEditReplaces).
+func goingPutEdited(arguments, edited map[string]any) {
+	for name := range edited {
+		for _, replaced := range goingEditReplaces[name] {
+			delete(arguments, replaced)
+		}
+	}
+	maps.Copy(arguments, edited)
 }
 
 // goingPlanReviseInput is POST /api/v1/going/runs/{id}/plan/revise's body: the plan, and the
@@ -1207,7 +1225,7 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 		if row.tool == goingSendToAgent {
 			sendIssue, err = s.goingEditSend(r.Context(), doer, run.id, arguments, edited, sendIssue)
 		} else {
-			maps.Copy(arguments, edited)
+			goingPutEdited(arguments, edited)
 		}
 		if entry, held := s.going.Lookup(row.tool); err == nil && held {
 			if why := goingNewIssueApprovalRefusal(entry, row, arguments, plan.rows, ticks); why != "" {

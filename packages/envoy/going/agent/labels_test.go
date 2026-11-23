@@ -61,6 +61,11 @@ var labelCases = []struct {
 	// The status question a real-model preview asked, in its order.
 	{toolRead, `{"issue":"DEMO-1"}`, "Reading DEMO-1", "Read DEMO-1"},
 	{toolFindTools, `{"need":"list issue messages and handoffs for DEMO-1"}`, "Looking for a way to list issue messages and handoffs for DEMO-1", "Looked for a way to list issue messages and handoffs for DEMO-1"},
+	// A need the model wrote as a tool's name reads as that tool's work in words.
+	{toolFindTools, `{"need":"dispatch_issues"}`, "Looking for a way to list a project's issues for a roadmap or backlog pass", "Looked for a way to list a project's issues for a roadmap or backlog pass"},
+	{toolFindTools, `{"need":"draw_block"}`, "Looking for a way to draw a table, a chart or one number", "Looked for a way to draw a table, a chart or one number"},
+	{toolFindTools, `{"need":"dispatch_handoff_read for DEMO-7"}`, "Looking for a way to read the newest handoff recorded for one phase of an issue…", "Looked for a way to read the newest handoff recorded for one phase of an issue…"},
+	{toolFindTools, `{"need":"Dispatch_Issue_Update labels"}`, "Looking for a way to update an existing issue", "Looked for a way to update an existing issue"},
 	{toolCallTool, `{"tool":"dispatch_list_issue_messages","arguments":{"issue":"DEMO-1"}}`, "Reading the messages of DEMO-1", "Read the messages of DEMO-1"},
 	{toolSearch, `{"query":"three things","project":"DEMO"}`, `Searching DEMO for "three things"`, `Searched DEMO for "three things"`},
 	{toolSearch, `{"query":"three things"}`, `Searching Dispatch for "three things"`, `Searched Dispatch for "three things"`},
@@ -158,7 +163,9 @@ func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 		{toolRead, `{"issue":"DEMO-12"}`, answered(http.StatusForbidden, `{"code":"FORBIDDEN","error":"no"}`),
 			true, "Could not read DEMO-12: you have no access", 0, []string{"DEMO-12"}},
 		{toolRead, `{"issue":"DEMO-99"}`, answered(http.StatusNotFound, `{"code":"NOT_FOUND","error":"no"}`),
-			true, "Could not read DEMO-99: it was not found", 0, []string{"DEMO-99"}},
+			true, "Read DEMO-99 · none found", 0, []string{"DEMO-99"}},
+		{toolCallTool, `{"tool":"dispatch_handoff_read","arguments":{"issue":"DEMO-7","phase":"plan"}}`, answered(http.StatusNotFound, `{"code":"NOT_FOUND","error":"no"}`),
+			true, "Read the plan handoff of DEMO-7 · none found", 0, []string{"DEMO-7"}},
 		{toolSearch, `{"query":"x y"}`, answered(http.StatusBadRequest, `{"code":"INVALID","error":"no"}`),
 			true, `Could not search Dispatch for "x y": Dispatch refused the request`, 0, []string{}},
 		{toolCallTool, `{"tool":"read_roster","arguments":{}}`, answered(http.StatusServiceUnavailable, `{}`),
@@ -174,6 +181,53 @@ func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 		end := ended(label, arguments, row.result, row.refused)
 		if end.label != row.label || end.count != row.count || !slices.Equal(end.items, row.items) {
 			t.Errorf("%s %s ended reading %q, count %d, items %q; want %q, %d, %q", row.tool, row.input, end.label, end.count, end.items, row.label, row.count, row.items)
+		}
+	}
+}
+
+// TestAReadThatFoundNothingIsNoFailure: a read Dispatch answered 404 - the item or record it reads
+// does not exist - found nothing, which the person cannot act on as a failure: it reads as its past
+// form with " · none found" and carries no error. A 403, a 5xx, a 404 of a step that is no read and
+// a call that got no answer stay failures, in one sentence of why.
+func TestAReadThatFoundNothingIsNoFailure(t *testing.T) {
+	answered := func(status int) string {
+		return resultText(agentwire.CallRequest{Step: 2, Call: 1}, agentwire.CallAnswer{Status: status, Body: []byte(`{"code":"X","error":"no"}`)})
+	}
+	handoff := `{"tool":"dispatch_handoff_read","arguments":{"issue":"DEMO-7","phase":"plan"}}`
+	for _, row := range []struct {
+		name, tool, input, result string
+		noneFound                 bool
+		label                     string
+	}{
+		{"a read answered 404", toolCallTool, handoff, answered(http.StatusNotFound), true, "Read the plan handoff of DEMO-7 · none found"},
+		{"a read answered 403", toolCallTool, handoff, answered(http.StatusForbidden), false, "Could not read the plan handoff of DEMO-7: you have no access"},
+		{"a read answered 500", toolCallTool, handoff, answered(http.StatusInternalServerError), false, "Could not read the plan handoff of DEMO-7: Dispatch failed to answer"},
+		{"a search answered 404", toolSearch, `{"query":"x y"}`, answered(http.StatusNotFound), false, `Could not search Dispatch for "x y": it was not found`},
+		{"a change answered 404", "dispatch_comment", `{"issue":"DEMO-7","body":"Done."}`, answered(http.StatusNotFound), false, "Could not comment on DEMO-7: it was not found"},
+		{"a read the run stopped", toolRead, `{"issue":"DEMO-1"}`, callCutOff, false, "Could not read DEMO-1: the run stopped"},
+	} {
+		label, arguments := stepLabel(row.tool, json.RawMessage(row.input))
+		if end := ended(label, arguments, row.result, true); end.noneFound != row.noneFound || end.label != row.label {
+			t.Errorf("%s ended reading %q, none found %t; want %q, %t", row.name, end.label, end.noneFound, row.label, row.noneFound)
+		}
+	}
+}
+
+// TestALookForAToolByItsNameNamesNoTool: whatever tool find_tools can return the model names as
+// its need, the step's line reads that tool's work in words and holds no tool's name (rule 1 of
+// the bar's design), while the call itself runs with the model's own input.
+func TestALookForAToolByItsNameNamesNoTool(t *testing.T) {
+	for _, tool := range findableTools() {
+		input := json.RawMessage(fmt.Sprintf(`{"need":%q}`, tool.name))
+		label, arguments := stepLabel(toolFindTools, input)
+		present, past := presentLabel(label, arguments), ended(label, arguments, "", false).label
+		for _, words := range []string{present, past} {
+			if strings.Contains(words, "_") || strings.TrimPrefix(strings.TrimPrefix(words, "Looking for a way to "), "Looked for a way to ") == "" {
+				t.Errorf("a look for %s reads %q, which names a tool or no work", tool.name, words)
+			}
+		}
+		if need, _ := labelArguments(input)["need"].(string); need != tool.name {
+			t.Errorf("the look for %s runs with the need %q, want the model's own", tool.name, need)
 		}
 	}
 }
@@ -379,5 +433,52 @@ func TestARunsFramesCarryEachStepsWords(t *testing.T) {
 		if got.Label != frame.Label || got.Kind != frame.Kind || got.Error != frame.Error || !slices.Equal(got.Items, frame.Items) {
 			t.Errorf("the %s frame carries %+v, want the label %q, the kind %q, error %t and the items %q", tool, got, frame.Label, frame.Kind, frame.Error, frame.Items)
 		}
+	}
+}
+
+// TestAReadThatFoundNothingAndALookByAToolsNameCarryWords: a read Dispatch answered 404 carries its
+// past form with " · none found" and no error, so the bar counts no failure, while the model is
+// still told what Dispatch answered; a find_tools call whose need is a tool's name carries that
+// tool's work in words, while the call runs with the model's own need, which answers that tool.
+func TestAReadThatFoundNothingAndALookByAToolsNameCarryWords(t *testing.T) {
+	var told []string
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if results := request.ToolResults(); len(results) > 0 {
+			told = results
+			return agenttest.Reply{Text: "DEMO-99 does not exist."}
+		}
+		return agenttest.Reply{Calls: []agenttest.Call{
+			{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-99"}},
+			{Name: toolFindTools, Arguments: map[string]any{"need": "dispatch_issues"}},
+		}}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusNotFound, Body: []byte(`{"code":"NOT_FOUND","error":"not found"}`)}
+	})
+	workRun(t, fake.Model(), client, "what is DEMO-99")
+	if end, _ := server.end(t); end.State != agentwire.StateDone {
+		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	tools := map[string]toolFrame{}
+	for _, step := range server.steps {
+		for _, frame := range step.Frames {
+			if frame.Name == frameTool {
+				var tool toolFrame
+				_ = json.Unmarshal(frame.Data, &tool)
+				tools[tool.Tool] = tool
+			}
+		}
+	}
+	if read := tools[toolRead]; read.Label != "Read DEMO-99 · none found" || read.Error || read.Kind != kindRead {
+		t.Errorf("the read's frame carries %+v, want the label %q, kind read and no error", read, "Read DEMO-99 · none found")
+	}
+	look := tools[toolFindTools]
+	if look.Label != "Looked for a way to list a project's issues for a roadmap or backlog pass" || look.Error || !strings.Contains(look.Note, `"need":"dispatch_issues"`) {
+		t.Errorf("the look's frame carries %+v, want the work of dispatch_issues in words and the model's own need in its note", look)
+	}
+	if len(told) != 2 || !strings.Contains(told[0], "status 404") || !strings.Contains(told[1], `"name":"dispatch_issues"`) {
+		t.Errorf("the model was told %q, want the read's 404 and the look's answer of dispatch_issues", told)
 	}
 }

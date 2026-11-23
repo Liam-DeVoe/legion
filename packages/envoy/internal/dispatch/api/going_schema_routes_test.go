@@ -623,7 +623,7 @@ func (items goingSchemaItemsOf) value(s *goingSchemaSeed, tool string) goingSche
 			return items.priorities[n%len(items.priorities)]
 		case "components.ids[]":
 			return items.components[n%len(items.components)]
-		case "labels[]":
+		case "labels[]", "labels_add[]":
 			if length >= 0 {
 				return goingSchemaText("", length)
 			}

@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -84,7 +86,7 @@ func stepLabel(tool string, input json.RawMessage) (contracts.ToolLabel, map[str
 	case toolRead:
 		return namedLabel(dispatchRead), arguments
 	case toolFindTools:
-		return findToolsLabel, arguments
+		return findToolsLabel, needInWords(arguments)
 	case toolProposePlan:
 		return proposePlanLabel, arguments
 	case toolCallTool:
@@ -128,20 +130,73 @@ func labelArguments(input json.RawMessage) map[string]any {
 	return arguments
 }
 
-// endedStep is what a tool frame says of a call that ended: its words, the count of the list it
-// answered, and the items it named and answered.
-type endedStep struct {
-	label string
-	count int
-	items []string
+// needInWords is find_tools' arguments as its label reads them: where a word of the need is the
+// name of a tool find_tools can return - a model wrote "dispatch_issues" or "draw_block" as its
+// need - the need is that tool's work in words (workWords), so the line names no tool (rule 1 of
+// the bar's design): "Looked for a way to draw a table, a chart or one number". The arguments the
+// call runs with are not these: the model's input is unchanged.
+func needInWords(arguments map[string]any) map[string]any {
+	need, _ := arguments["need"].(string)
+	for _, word := range strings.FieldsFunc(need, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' }) {
+		if tools := namedTools(strings.ToLower(word)); len(tools) > 0 {
+			inWords := maps.Clone(arguments)
+			inWords["need"] = workWords(tools[0].description)
+			return inWords
+		}
+	}
+	return arguments
 }
+
+// clauseEnds are what ends the first clause of a tool's description: its first sentence's end, a
+// colon, a semicolon, a dash, or a bracket that opens an aside.
+var clauseEnds = []string{". ", ": ", "; ", " - ", " — ", " ("}
+
+// workWords is what a tool does, as a step line names it: the first clause of its description,
+// with its first letter lower-cased: "list a project's issues for a roadmap or backlog pass",
+// "draw a table, a chart or one number". A label cuts it on a word (labelValue).
+func workWords(description string) string {
+	end := len(description)
+	for _, stop := range clauseEnds {
+		if at := strings.Index(description, stop); at >= 0 && at < end {
+			end = at
+		}
+	}
+	clause := strings.TrimSuffix(strings.TrimSpace(description[:end]), ".")
+	first, size := utf8.DecodeRuneInString(clause)
+	if size == 0 {
+		return ""
+	}
+	return string(unicode.ToLower(first)) + clause[size:]
+}
+
+// endedStep is what a tool frame says of a call that ended: its words, the count of the list it
+// answered, the items it named and answered, and whether it was a read Dispatch answered 404,
+// which found nothing and failed in nothing (noneFound).
+type endedStep struct {
+	label     string
+	count     int
+	items     []string
+	noneFound bool
+}
+
+// noneFoundWords end the past form of a read Dispatch answered 404: "Read the plan handoff of
+// DEMO-7 · none found".
+const noneFoundWords = " · none found"
 
 // ended is the end of a call of label with arguments that answered result, refused where the call
 // failed: its past form filled, followed by the count of the list it answered where the label
-// counts one ("· 3 hits"), or, for a call that failed, why in words (failedWords).
+// counts one ("· 3 hits"), or, for a call that failed, why in words (failedWords). A read Dispatch
+// answered 404 - the item or record it reads does not exist - is no failure the person can act
+// on: it reads as its past form with noneFoundWords, and is marked noneFound, so its frame carries
+// no error. A 403, a 5xx and every other refusal stay failures.
 func ended(label contracts.ToolLabel, arguments map[string]any, result string, refused bool) endedStep {
 	answer, answered := parseResult(result)
 	step := endedStep{items: argumentItems(arguments)}
+	if refused && label.Kind == kindRead && answered && answer.Status == http.StatusNotFound {
+		step.label = cutWords(fillLabel(label.Past, arguments), labelLimit-utf8.RuneCountInString(noneFoundWords)) + noneFoundWords
+		step.noneFound = true
+		return step
+	}
 	if refused {
 		step.label = failedWords(label, arguments, result, answer, answered)
 		return step

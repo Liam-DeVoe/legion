@@ -90,13 +90,14 @@ type KindCount struct {
 }
 
 // Kinds is every kind of task, in the order of R13's Design, with the number of tasks of it that
-// the Design names. The eval holds exactly these numbers.
+// the Design names, and one change task more: change-36, which adds a label to an issue holding
+// two and passes only when both are kept. The eval holds exactly these numbers.
 var Kinds = []KindCount{
 	{KindFind, 20},
 	{KindAnswer, 25},
 	{KindStatus, 15},
 	{KindChart, 20},
-	{KindChange, 35},
+	{KindChange, 36},
 	{KindDocument, 15},
 	{KindHandoff, 10},
 	{KindNewIssue, 10},

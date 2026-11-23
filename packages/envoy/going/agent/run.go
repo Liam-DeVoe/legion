@@ -75,14 +75,15 @@ type callFrame struct {
 }
 
 // toolFrame is the data of a tool frame: the step, the tool, its one-line note for the model and
-// whether it failed in a way its person can act on - no access, not found, the run stopped; and
-// what the bar shows of it: its label, the past form of its tool's label filled from its
-// arguments, with the count of a list it answered, or one sentence that says why it failed
-// (ended), or, for a slip, what the model tried (slipWords); the kind of step it is; the count of
-// the results of a list or a search; the items it named and answered, by key or reference; and
-// whether it is a slip: a call of the model's that failed by the model's own guess - a tool no one
-// has, arguments its tool refuses, a change outside a plan - which the model mends itself, and
-// which the bar shows as no failure. A slip is not an error.
+// whether it failed in a way its person can act on - no access, the run stopped, Dispatch failing;
+// and what the bar shows of it: its label, the past form of its tool's label filled from its
+// arguments, with the count of a list it answered, " · none found" for a read Dispatch answered
+// 404, which is no error, or one sentence that says why it failed (ended), or, for a slip, what
+// the model tried (slipWords); the kind of step it is; the count of the results of a list or a
+// search; the items it named and answered, by key or reference; and whether it is a slip: a call
+// of the model's that failed by the model's own guess - a tool no one has, arguments its tool
+// refuses, a change outside a plan - which the model mends itself, and which the bar shows as no
+// failure. A slip is not an error.
 type toolFrame struct {
 	Step  int      `json:"step"`
 	Tool  string   `json:"tool"`
@@ -744,7 +745,9 @@ const toolPanicked = "it panicked"
 // call do makes as the step numbered after base by the tool call's index, which it shows the bar
 // first as a running call (callStarted), and saves it as that step, with what the model is told of
 // its result and the words the bar shows of it (ended), or, for a call that failed by the model's
-// own slip, what it tried (slipWords), as a slip and no error. A do that panics is saved as a
+// own slip, what it tried (slipWords), as a slip and no error. A read Dispatch answered 404 found
+// nothing, which is no error either: the model is told what Dispatch answered, and the bar shows
+// the read with "none found" (endedStep.noneFound). A do that panics is saved as a
 // refusal naming the panic, and the panic goes on to agentloop's recover, so the run's next step,
 // which starts from the saved steps, tells the model the tool failed.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
@@ -775,7 +778,7 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 					end.label = words
 				}
 			}
-			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused && !slip, Label: end.label, Kind: kind, Count: end.count, Items: end.items, Slip: slip})
+			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused && !slip && !end.noneFound, Label: end.label, Kind: kind, Count: end.count, Items: end.items, Slip: slip})
 			frames := []agentwire.Frame{{Name: frameTool, Data: frame}}
 			if block, drew := w.drawn.LoadAndDelete(step); drew {
 				frames = append(frames, agentwire.Frame{Name: frameBlock, Data: block.(json.RawMessage)})

@@ -419,6 +419,73 @@ func TestUndoOfOneRun(t *testing.T) {
 	})
 }
 
+// TestARowThatAddsALabelKeepsTheOthersAndItsUndoPutsThemBack: a plan row of dispatch_issue_update
+// with labels_add, proposed beside a priority as the preview's "add the label accessibility and set
+// its priority to P2" was, reads the field labels with the labels the issue holds; once it runs,
+// the issue holds those labels and the one added, and its Undo puts back the labels it held and
+// its priority. Before, the tool offered labels alone, which replaced the set, so the row removed
+// the label it did not name. The person's edit of the labels on such a row, the whole set the
+// label picker closed on, takes labels_add's place and writes that set.
+func TestARowThatAddsALabelKeepsTheOthersAndItsUndoPutsThemBack(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	labelled := func(t *testing.T, title string) string {
+		t.Helper()
+		issue := rig.issue(t, title)
+		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"labels": []string{"board", "api"}})
+		return issue
+	}
+	planned := func(t *testing.T, words string, issue string) (string, goingPlanAnswer) {
+		t.Helper()
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange("dispatch_issue_update", map[string]any{"issue": issue, "labels_add": []any{"accessibility"}, "priority": 2}))
+			}
+			return answered("Done.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		return run, rig.waiting(t, run)
+	}
+
+	t.Run("it adds the label, keeps the others, and its Undo puts them back", func(t *testing.T) {
+		issue := labelled(t, "Labelled twice")
+		run, plan := planned(t, "add the label accessibility to Labelled twice and set its priority to P2", issue)
+		var now struct {
+			Labels []string `json:"labels"`
+		}
+		if row := plan.Rows[0]; !slices.Equal(row.Fields, []string{"labels", "priority"}) || json.Unmarshal(row.Now, &now) != nil || !slices.Equal(now.Labels, []string{"board", "api"}) {
+			t.Fatalf("the row reads the fields %v holding %s, want labels and priority, with the labels board and api", row.Fields, row.Now)
+		}
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+		}
+		if after := rig.issueRead(t, issue); !slices.Equal(after.Labels, []string{"board", "api", "accessibility"}) || after.Priority == nil || *after.Priority != 2 {
+			t.Fatalf("after the row ran the issue holds the labels %v and priority %v, want board, api and accessibility at P2", after.Labels, after.Priority)
+		}
+		line := rig.undone(t, run, "dispatch_issue_update")[0]
+		if !line.Outcome.OK {
+			t.Fatalf("Undo of the row answered %+v, want it written back", line)
+		}
+		if after := rig.issueRead(t, issue); !slices.Equal(after.Labels, []string{"board", "api"}) || after.Priority != nil {
+			t.Fatalf("after Undo the issue holds the labels %v and priority %v, want board and api with no priority", after.Labels, after.Priority)
+		}
+	})
+
+	t.Run("an edit of its labels writes the set the person chose", func(t *testing.T) {
+		issue := labelled(t, "Labelled by hand")
+		run, _ := planned(t, "add the label accessibility to Labelled by hand and set its priority to P2", issue)
+		rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{
+			{"row": 0, "tick": true, "values": map[string]any{"labels": []any{"board", "accessibility"}}},
+		}})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+		}
+		if labels := rig.issueRead(t, issue).Labels; !slices.Equal(labels, []string{"board", "accessibility"}) {
+			t.Fatalf("after the edited row ran the issue holds the labels %v, want the set the person chose, board and accessibility", labels)
+		}
+	})
+}
+
 // textOf is the one text query answers off the store.
 func (rig goingPlanRig) textOf(t *testing.T, query string, arguments ...any) string {
 	t.Helper()

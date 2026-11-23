@@ -944,6 +944,7 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"Name each item once, by its link alone",
 		"beside a link write only what the chip does not show, such as its priority or who works on it: never its title, and never its status",
 		"never a correction of yourself or your working",
+		"Say each fact once: never say again, in other words, what the answer or its list already said",
 		"without saying what you read or how",
 		"a priority as P0, P1, P2 or P3",
 		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
@@ -965,6 +966,42 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	}
 	if opening := messages[0].Blocks[0].Text; !strings.Contains(opening, "The time now: 2026-11-22 20:16 UTC.") {
 		t.Errorf("the person's message is %q, which does not state the time now in UTC", opening)
+	}
+}
+
+// TestAPlanAddsALabelAndKeepsTheOthers: asked to add the label accessibility to DEMO-10, a preview's
+// model proposed labels ["accessibility"], which replaced DEMO-10's labels and removed board, while
+// its own words said the other labels stayed. The tool the model finds takes labels_add, which adds
+// to the labels the issue holds, and the system prompt says to add a label with it, that labels
+// replaces the whole list and is only for words that set it, and that a change never drops a value
+// the words do not name.
+func TestAPlanAddsALabelAndKeepsTheOthers(t *testing.T) {
+	for _, said := range []string{
+		"A change never drops a value the person's words do not name.",
+		`To add a label, propose dispatch_issue_update with labels_add, which keeps the issue's other labels`,
+		"labels replaces the issue's whole list of labels, so a label it leaves out is removed: propose labels only where the words set the whole list",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+	named := namedTools(dispatchIssueUpdate)
+	if len(named) != 1 {
+		t.Fatalf("find_tools names %d tools %s, want one", len(named), dispatchIssueUpdate)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(named[0].schema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if add := schema.Properties["labels_add"].Description; !strings.Contains(add, "every label it holds stays") {
+		t.Errorf("%s's labels_add says %q, which does not say the issue's labels stay", dispatchIssueUpdate, add)
+	}
+	if replace := schema.Properties["labels"].Description; !strings.Contains(replace, "To add labels and keep the others, use labels_add") {
+		t.Errorf("%s's labels says %q, which does not point at labels_add", dispatchIssueUpdate, replace)
 	}
 }
 

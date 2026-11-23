@@ -188,9 +188,12 @@ var goingWriteFields = map[string]string{
 // goingIssueFields are the issue's own fields each argument of an update writes, by argument. The
 // advances relation is one of them: a write replaces the issue's own set, so its value before and
 // after is the own priority ids and the revision the read answered (goingAdvancesValue,
-// goingIssueFieldValue), which the undo writes back against as a compare-and-set.
+// goingIssueFieldValue), which the undo writes back against as a compare-and-set. labels_add
+// writes the field labels, whose new value is the labels the issue holds with those it adds: the
+// read before it reads the labels, the route's answer says what it found and left of them, and
+// the undo writes the labels it found back, as it does for labels.
 var goingIssueFields = map[string]string{
-	"status": "status", "title": "title", "labels": "labels", "priority": "priority",
+	"status": "status", "title": "title", "labels": "labels", "labels_add": "labels", "priority": "priority",
 	"assignee": "assignee", "route": "route", "parent": "parent", "blocked_by": "blocked_by",
 	"components": "components", "repo": "repo", "external_links": "external_links",
 	"advances": goingAdvances, "before": "rank", "after": "rank",
