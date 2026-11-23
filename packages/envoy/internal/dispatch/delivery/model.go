@@ -19,6 +19,9 @@ import (
 // cleared the next time a pass succeeds -- LastReconcileAt does not advance on a failed pass, so
 // the two together answer both "when did this last actually work" and "what's wrong right now."
 type DeliverySettings struct {
+	// Project is the delivery-on project whose deploy source reads DeployRepo (dispatch://INFRA-978,
+	// D1), and empty for the singleton row the release before reads.
+	Project                 string      `json:"project,omitempty"`
 	DeployRepo              string      `json:"deploy_repo"`
 	DeployWorkflowPath      string      `json:"deploy_workflow_path"`
 	ProductionJobNames      []string    `json:"production_job_names"`

@@ -2926,6 +2926,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/production-events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The project's deploys and failed changes, one page {items, total, limit, offset} newest first (limit 1-200, default 50): a deploy by its finished_at and a failure by its detected_at within [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84); kind keeps deploy or failure rows, state counted or rejected ones (a deploy is always counted), and deploy_id (a uuid) the project's failures that blame that deploy, an empty page for an id of no row. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
+    get: operations["getApiV1ProjectsByKeyProductionEvents"];
+    put?: never;
+    /** @description Post one deploy or failure {kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, actor?}, taking OpenTelemetry's deployment.environment.name, deployment.status, cicd.pipeline.run.url.full and cicd.pipeline.run.id beside environment, status and url (both names alike, or one): 201 with the new row, or 200 with the row the project already holds under source_ref, writing nothing. A deploy needs finished_at and an agent or service token; a credential holding the person scope is 403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN. A failure names the deploy it blames one way, by deploy_id, by cicd.pipeline.run.id (the GitHub run of repo) or by commit_sha (the first deploy that shipped it), 409 PRODUCTION_EVENT_NO_DEPLOY when no deploy row matches; a system's failure is the signal api, and a person's is the signal person with the person as actor and the server's source_ref person:<deploy id>:<login>. A system's post without source_ref, and any field no row can hold, is 400 PRODUCTION_EVENT_INPUT naming it; 404 PROJECT_NOT_FOUND an unknown project. */
+    post: operations["postApiV1ProjectsByKeyProductionEvents"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/production-events/{id}/state": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Reject, re-count or restore one failure of the project {state, reason, restored_by_deploy?}: rejected and counted keep their reason (required), writer and time, and restored sets the restore time, its writer and the restoring deploy where named; the answer is the row. A reject and a re-count are a person's (the person scope) or the project's controller's: the session the project's Legion daemon names as its controller, proven by that session's broker-issued token. A restore is a person's. Anyone else is 403 PRODUCTION_EVENT_STATE_FORBIDDEN; a row the project does not hold 404 PRODUCTION_EVENT_NOT_FOUND, a deploy's row or a missing reason 400 PRODUCTION_EVENT_STATE_INPUT, a restoring deploy no deploy row is 409 PRODUCTION_EVENT_NO_DEPLOY, an unknown project 404 PROJECT_NOT_FOUND. */
+    put: operations["putApiV1ProjectsByKeyProductionEventsByIdState"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/related": {
     parameters: {
       query?: never;
@@ -4818,6 +4853,7 @@ export interface components {
       pr_checks_workflow_path: string;
       production_apply_step_name: null | string;
       production_job_names: string[] | null;
+      project?: string;
       staging_apply_job_name: null | string;
       staging_e2e_job_name: null | string;
       /** Format: date-time */
@@ -6644,6 +6680,81 @@ export interface components {
       } | null;
       count: number;
       issues: components["schemas"]["PriorityIssue"][] | null;
+    };
+    ProductionEvent: {
+      actor: components["schemas"]["Actor"];
+      commits: string[] | null;
+      /** Format: date-time */
+      created_at: string;
+      deploy_id: null | string;
+      /** Format: date-time */
+      detected_at: null | string;
+      environment: string;
+      /** Format: date-time */
+      finished_at: null | string;
+      id: string;
+      /** @enum {string} */
+      kind: "deploy" | "failure";
+      note: string;
+      project_key: string;
+      pull_requests: string[] | null;
+      repo: string;
+      /** Format: date-time */
+      restored_at: null | string;
+      restored_by: components["schemas"]["Actor"] | null;
+      restored_by_deploy: null | string;
+      /** @enum {null|string} */
+      signal: "check_fail" | "revert" | "incident_issue" | "api" | "person" | null;
+      /** @enum {string} */
+      source: "github" | "api" | "person" | "check_results" | "reverts" | "incident_label";
+      source_ref: string;
+      /** Format: date-time */
+      started_at: null | string;
+      /** @enum {string} */
+      state: "counted" | "rejected";
+      /** Format: date-time */
+      state_at: null | string;
+      state_by: components["schemas"]["Actor"] | null;
+      state_reason: null | string;
+      status: string;
+      url: string;
+    };
+    ProductionEventInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      "cicd.pipeline.run.id"?: string;
+      "cicd.pipeline.run.url.full"?: string;
+      commit_sha?: string;
+      commits?: string[] | null;
+      deploy_id?: null | string;
+      "deployment.environment.name"?: string;
+      "deployment.status"?: string;
+      /** Format: date-time */
+      detected_at?: null | string;
+      environment?: string;
+      /** Format: date-time */
+      finished_at?: null | string;
+      /** @enum {string} */
+      kind: "deploy" | "failure";
+      note?: string;
+      pull_requests?: string[] | null;
+      repo?: string;
+      source_ref?: string;
+      /** Format: date-time */
+      started_at?: null | string;
+      status?: string;
+      url?: string;
+    };
+    ProductionEventList: {
+      items: components["schemas"]["ProductionEvent"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
+    ProductionEventStateInput: {
+      reason?: string;
+      restored_by_deploy?: null | string;
+      /** @enum {string} */
+      state: "counted" | "rejected" | "restored";
     };
     ProgressCount: {
       done: number;
@@ -15029,6 +15140,133 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyProductionEvents: {
+    parameters: {
+      query?: {
+        from?: string;
+        to?: string;
+        kind?: "deploy" | "failure";
+        state?: "counted" | "rejected";
+        deploy_id?: string;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProductionEventList"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyProductionEvents: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProductionEventInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProductionEvent"];
+        };
+      };
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProductionEvent"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyProductionEventsByIdState: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProductionEventStateInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProductionEvent"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyRelated: {
     parameters: {
       query?: {
@@ -16176,6 +16414,10 @@ export type PriorityIssue = components["schemas"]["PriorityIssue"];
 export type PriorityRow = components["schemas"]["PriorityRow"];
 export type PriorityWork = components["schemas"]["PriorityWork"];
 export type PriorityWorkParked = components["schemas"]["PriorityWorkParked"];
+export type ProductionEvent = components["schemas"]["ProductionEvent"];
+export type ProductionEventInput = components["schemas"]["ProductionEventInput"];
+export type ProductionEventList = components["schemas"]["ProductionEventList"];
+export type ProductionEventStateInput = components["schemas"]["ProductionEventStateInput"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];

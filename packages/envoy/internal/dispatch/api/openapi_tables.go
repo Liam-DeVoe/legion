@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
@@ -157,6 +158,10 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(evals.DayPoint{}):     "EvalDayPoint",
 	reflect.TypeOf(evals.Verdict{}):      "EvalVerdict",
 	reflect.TypeOf(evals.Judge{}):        "EvalJudge",
+
+	// The record of deploys and failed changes, whose one-word Go name the prodevents package can
+	// carry and which model.Event's schema, Event, already holds for a client.
+	reflect.TypeOf(prodevents.Event{}): "ProductionEvent",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an

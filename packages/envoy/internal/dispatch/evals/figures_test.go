@@ -468,15 +468,17 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r.expectBuilt(t, "the first whole build", refresherToday)
 	t.Logf("the first whole build stored %d figures rows", len(state.figures))
 
-	// A pull request of another repository than the deploy repository's, merged a day earlier.
+	// A pull request of another repository than the deploy repository's that names an issue of the
+	// main project (namesIssueOf), which it counts for through that issue, merged a day earlier: one
+	// that names none counts for no project, and its move moves no row.
 	var moved delivery.DeliveryPullRequest
 	for _, pr := range deliveries.PullRequests {
-		if pr.Repo != deliveries.DeployRepo && pr.MergedAt != nil && measures.Midnight(*pr.MergedAt).After(deliveries.From) && moved.Number == 0 {
+		if pr.Repo != deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && measures.Midnight(*pr.MergedAt).After(deliveries.From) && moved.Number == 0 {
 			moved = pr
 		}
 	}
 	if moved.Number == 0 {
-		t.Fatal("the history holds no pull request of another repository merged after its first day")
+		t.Fatal("the history holds no pull request of another repository that names an issue of the main project merged after its first day")
 	}
 	r.exec(t, "merge a pull request a day earlier", `
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour') where repo = $1 and number = $2

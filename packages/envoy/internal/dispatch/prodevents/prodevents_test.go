@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -266,6 +267,67 @@ func TestTheListPagesAWindowOfAProjectsRows(t *testing.T) {
 	}
 	if _, total, err = List(ctx, database.Pool, ListQuery{Project: "ALPHA", From: day, To: day.Add(72 * time.Hour), Limit: 10, Offset: 10}); err != nil || total != 4 {
 		t.Fatalf("a page past the end answered total %d, err %v; want 4", total, err)
+	}
+}
+
+// A drill-down reads the failures that blame one deploy (ListQuery.DeployID): two deploys with
+// failures on each, and the filter answers the one deploy's failures alone, no deploy row and no
+// failure of another project, even one that blames the same deploy.
+func TestTheListKeepsTheFailuresThatBlameOneDeploy(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	project(t, ctx, database.Pool, "ALPHA")
+	project(t, ctx, database.Pool, "BETA")
+	first, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:1", at(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := Write(ctx, database.Pool, deploy("ALPHA", "github:2", at(2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blamingFirst []string
+	for _, ref := range []string{"api:1", "api:2"} {
+		stored, _, err := Write(ctx, database.Pool, failure("ALPHA", ref, first.ID, SignalAPI))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blamingFirst = append(blamingFirst, stored.ID)
+	}
+	if _, _, err := Write(ctx, database.Pool, failure("ALPHA", "api:3", second.ID, SignalAPI)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Write(ctx, database.Pool, failure("BETA", "api:4", first.ID, SignalAPI)); err != nil {
+		t.Fatal(err)
+	}
+
+	window := ListQuery{Project: "ALPHA", From: day, To: day.Add(72 * time.Hour), Limit: 10}
+	if _, total, err := List(ctx, database.Pool, window); err != nil || total != 5 {
+		t.Fatalf("the window holds %d rows (err %v), want ALPHA's two deploys and three failures", total, err)
+	}
+	filtered := window
+	filtered.DeployID = first.ID
+	page, total, err := List(ctx, database.Pool, filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, event := range page {
+		got = append(got, event.ID)
+	}
+	slices.Sort(got)
+	slices.Sort(blamingFirst)
+	if total != 2 || !slices.Equal(got, blamingFirst) {
+		t.Fatalf("the failures of deploy %s: total %d, rows %v; want ALPHA's two that blame it, %v", first.ID, total, got, blamingFirst)
+	}
+	filtered.Offset = 5
+	if page, total, err := List(ctx, database.Pool, filtered); err != nil || len(page) != 0 || total != 2 {
+		t.Fatalf("a page past the end of deploy %s's failures answered %d rows, total %d, err %v; want none and 2", first.ID, len(page), total, err)
+	}
+	filtered = window
+	filtered.DeployID = "0195f2a8-0000-7000-8000-000000000000"
+	if page, total, err := List(ctx, database.Pool, filtered); err != nil || len(page) != 0 || total != 0 {
+		t.Fatalf("an id of no row answered %d rows, total %d, err %v; want an empty page", len(page), total, err)
 	}
 }
 

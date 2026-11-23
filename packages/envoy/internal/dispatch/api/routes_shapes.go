@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // routeAnswer is one answer a route can give: a status and a zero value of the Go type its body
@@ -276,6 +277,28 @@ type evalItemsQuery struct {
 	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
 	// end, most failures first.
 	Sort string `query:"sort" enum:"median,failures"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// productionEventsQuery is GET /api/v1/projects/{key}/production-events's query: the window, one
+// kind, one state and the page (parseProductionEventsQuery).
+type productionEventsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. A deploy is in the
+	// window by its finished_at, a failure by its detected_at.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// Kind keeps the rows of one kind.
+	Kind string `query:"kind" enum:"deploy,failure"`
+	// State keeps the rows of one state; a deploy is always counted.
+	State string `query:"state" enum:"counted,rejected"`
+	// DeployID keeps the project's failures that blame this deploy, a row's uuid: the
+	// drill-down's read of one deploy. An id of no row answers an empty page.
+	DeployID string `query:"deploy_id"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -725,6 +748,17 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/evals": {
 		Status: http.StatusOK, Response: evalListResponse{}, Params: evalsQuery{},
+	},
+	"GET /api/v1/projects/{key}/production-events": {
+		Status: http.StatusOK, Response: productionEventList{}, Params: productionEventsQuery{},
+	},
+	// A repeat of a source_ref the project holds answers that row, 200, and writes nothing.
+	"POST /api/v1/projects/{key}/production-events": {
+		Status: http.StatusCreated, Response: prodevents.Event{}, Request: productionEventInput{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: prodevents.Event{}}},
+	},
+	"PUT /api/v1/projects/{key}/production-events/{id}/state": {
+		Status: http.StatusOK, Response: prodevents.Event{}, Request: productionEventStateInput{},
 	},
 	"GET /api/v1/settings/repo-projects":                 {Status: http.StatusOK, Response: []model.RepoProject{}},
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {Status: http.StatusOK, Response: appInstallationResponse{}},

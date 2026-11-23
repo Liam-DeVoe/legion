@@ -223,7 +223,7 @@ A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
-Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`): today `GET /api/v1/projects/{key}/architecture`, `GET /api/v1/issues/{key}/steps`, `GET /api/v1/projects/{key}/plans` and `GET /api/v1/projects/{key}/production-events`.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
@@ -4558,6 +4558,39 @@ Each item below names a path with its method and identity, then its purpose.
   The project read across projects, in its envelope and item shape: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
   The page runs across the projects.
   `400 INVALID_QUERY` names a malformed key or one the route does not take, as the project read does; `404 PROJECT_NOT_FOUND` names a project no row holds.
+
+- `/api/v1/projects/{key}/production-events?from=&to=&kind=&state=&deploy_id=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The project's record of deploys and failed changes (`production_events`, `internal/dispatch/prodevents`), one page `{items, total, limit, offset}` newest first, `limit` 1 to 200 (default 50).
+  A deploy is in the window `[from, to)` by its `finished_at` and a failure by its `detected_at`; the window is read as the delivery routes read it (RFC3339, a moment of the UTC years 1 to 9999, the last 7 days by default, at most 84 days).
+  `kind` keeps `deploy` or `failure` rows, `state` `counted` or `rejected` ones (a deploy is always `counted`), and `deploy_id`, a deploy row's uuid, the project's failures that blame that deploy, the drill-down's read of one deploy: an id of no row answers an empty page.
+  Each row is every column of the table: the deploy's run, commits and pull requests, the failure's blamed deploy, `signal`, `detected_at`, its `state` with `state_reason`, `state_by` and `state_at`, and its restore with `restored_at`, `restored_by` and `restored_by_deploy`.
+  `400 INVALID_QUERY` names a malformed key, a key the route does not take and a key named twice, as the eval reads do; `404 PROJECT_NOT_FOUND` an unknown project.
+  It is on the read list, so a read-only token reads it.
+
+- `/api/v1/projects/{key}/production-events` (POST; cookie, trusted header, or bearer)
+
+  Post one event: `201` with the new row, or `200` with the row the project already holds under its `source_ref`, writing nothing (`unique (project_key, source_ref)`).
+  The body is `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, cicd.pipeline.run.id?, actor?}`, and OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` are taken for `environment`, `status` and `url` (one name of a field, or both alike; two values are `400 PRODUCTION_EVENT_INPUT`).
+  A deploy (`kind: deploy`) needs `finished_at`, the moment it reached production, and is a system's: an agent or service token, any credential that holds no `person` scope; one that holds it is `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
+  A deploy's own run is its `source_ref` and `url`, so a deploy naming `deploy_id`, `commit_sha`, `cicd.pipeline.run.id` or `detected_at` is `400 PRODUCTION_EVENT_INPUT`.
+  A failure (`kind: failure`) names the deploy it blames one way: `deploy_id`, `cicd.pipeline.run.id` with `repo` (the deploy row the GitHub adapter wrote for that run), or `commit_sha` (the first deploy, of any project, that shipped it); a deploy no row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`.
+  Its `detected_at` is the server's time where the body names none.
+  A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).
+  A person's failure, the drill-down's flag from a credential holding `person`, is the signal `person`, the person its actor, and its `source_ref` the server's, `person:<deploy id>:<login>`, so a person's second flag of one deploy answers the first; a body naming another `source_ref` is `400 PRODUCTION_EVENT_INPUT`.
+  `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+  The store writes the row in a transaction of its own, whose trigger logs a `production_events` change in the change log's outbox, and drains it after the commit (`delivery.DrainAfterCommit`).
+
+- `/api/v1/projects/{key}/production-events/{id}/state` (PUT; cookie, trusted header, or bearer)
+
+  Reject, re-count or restore one failure of the project, `{state, reason, restored_by_deploy?}`, answering the row.
+  `rejected` takes the failure out of the numbers and `counted` puts it back, each with its `reason` (required), writer and time in `state_reason`, `state_by` and `state_at`; `restored` sets `restored_at`, `restored_by` and, where the body names one, the restoring deploy `restored_by_deploy`, and keeps no reason.
+  A reject and a re-count are a person's (a credential holding `person`) or the project's controller's; a restore is a person's.
+  The controller is proven, never claimed: the request's credential proves its session (a broker-issued token), and that session is the one the project's Legion daemon names as its registered controller (`controllerLocator.sessionId` of `GET /legion/v1/state`, which the sampler records as the project's `controller` observation, `legion.ControllerSession`).
+  Anyone else is `403 PRODUCTION_EVENT_STATE_FORBIDDEN`.
+  The row must be the path project's: the project-scope check reads the path's key alone, so a row of another project is `404 PRODUCTION_EVENT_NOT_FOUND`, as is an id of no row.
+  A deploy's row and a reject or re-count without a reason are `400 PRODUCTION_EVENT_STATE_INPUT`, a `restored_by_deploy` no deploy row is `409 PRODUCTION_EVENT_NO_DEPLOY`, and an unknown project `404 PROJECT_NOT_FOUND`.
+  The precedent for who may write the state and what the row keeps is `POST /api/v1/results/{id}/retract`; the write drains its change rows after its commit, as the post does.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
