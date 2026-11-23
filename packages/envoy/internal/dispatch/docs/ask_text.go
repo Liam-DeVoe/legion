@@ -352,8 +352,9 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // state, and for an answer the person, the time, the options and the words it states on the node
 // (asks' answerFacts).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
+	held := askNodeAnswer{state: ask.State}
 	// kept for one release: catch-up
-	held := askNodeAnswer{state: ask.State, planned: true}
+	held.planned = true
 	if ask.Answer != nil {
 		held.answeredBy = asks.AnswererOf(*ask.Answer)
 		held.answeredAt = asks.AnsweredAtValue(ask.Answer.At)

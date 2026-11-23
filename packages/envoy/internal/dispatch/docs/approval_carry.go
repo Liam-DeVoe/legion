@@ -314,11 +314,16 @@ type carryInput struct {
 	version      *pmdoc.Node
 	agrees       bool
 	answered     map[string]bool
-	decided      map[string]bool
-	restored     map[string]bool
-	steps        decisionStepCases
+	// kept for one release: decisions-step
+	decided map[string]bool
+	// kept for one release: decisions-step
+	restored map[string]bool
+	// kept for one release: decisions-step
+	steps decisionStepCases
 	// pointersLeft is, within one pass of the cases over the two versions (neutral), the pointer
 	// lines of the step's write that no case has taken out of A yet (pointerLinesTaken).
+	//
+	// kept for one release: decisions-step
 	pointersLeft *[]string
 }
 

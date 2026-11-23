@@ -380,6 +380,9 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	if err != nil {
 		return nil, err
 	}
+	// The blocks it hands back are the ones it marked resolved, which only a write while another
+	// build serves marks.
+	// kept for one release: roll-window-attributes
 	return s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
 }
 

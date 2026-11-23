@@ -281,6 +281,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
+		// kept for one release: roll-window-attributes
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
 	if markdown == nil || canonical == latest.markdown {

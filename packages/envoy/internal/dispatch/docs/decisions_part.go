@@ -15,12 +15,18 @@ import (
 // returned answered asks stand in: a level-2 heading with this
 // title, read without regard to case, and every top-level block after it up to the next heading
 // of level 2 or above.
+//
+// kept for one release: decisions-step
 const decisionsPartTitle = "Decisions"
 
 // decisionsPartLevel is the level of a `## Decisions` heading.
+//
+// kept for one release: decisions-step
 const decisionsPartLevel = 2
 
 // headingLevel is a heading node's level, 0 for a node that is no heading.
+//
+// kept for one release: decisions-step
 func headingLevel(node *pmdoc.Node) int {
 	if node.Type != "heading" {
 		return 0
@@ -39,6 +45,8 @@ func headingLevel(node *pmdoc.Node) int {
 // decisionsPart is where tree's `## Decisions` part stands among its top-level children: the
 // index of its heading and the index after its last block, or -1 and -1 where tree holds none. The
 // first such heading is the part.
+//
+// kept for one release: decisions-step
 func decisionsPart(tree *pmdoc.Node) (int, int) {
 	if tree == nil {
 		return -1, -1
@@ -61,6 +69,8 @@ func decisionsPart(tree *pmdoc.Node) (int, int) {
 }
 
 // hasDecisionsPart reports whether tree holds a `## Decisions` part.
+//
+// kept for one release: decisions-step
 func hasDecisionsPart(tree *pmdoc.Node) bool {
 	start, _ := decisionsPart(tree)
 	return start >= 0
@@ -172,6 +182,8 @@ func withoutAddedShapedPointers(tree *pmdoc.Node, added map[string][]string, dec
 
 // shapedAttribute is the `block[]` attribute of a decision and of an ask that names each spec
 // node it shaped.
+//
+// kept for one release: decisions-step
 const shapedAttribute = "shaped"
 
 // shapedPointersOf is the pointers node's `shaped` attribute holds, in their order, as a parse
@@ -269,6 +281,8 @@ func (shape restoredShape) writtenBlock(node *pmdoc.Node) *pmdoc.Node {
 // decidedAskBlocks is each ask block of a version, as asksAgreeWithTheirNodes read it (shown),
 // whose ask holds an answer, by block id: its own document's row, or the source of a copy, read
 // answered (asks.StateAnswered).
+//
+// kept for one release: decisions-step
 func decidedAskBlocks(shown versionAsks) map[string]bool {
 	decided := map[string]bool{}
 	for id := range shown.nodes {
@@ -293,6 +307,8 @@ func decidedAskBlocks(shown versionAsks) map[string]bool {
 // them (shaped, restoredShape). A block whose words, bytes or pointers moved since is not among
 // them, so the restore that returns it is a difference no case carries (R7) and the restore
 // reports the approval superseded, and neither is a block an agent wrote there.
+//
+// kept for one release: decisions-step
 func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool, shaped map[string]restoredShape) map[string]bool {
 	start, end := decisionsPart(version)
 	if start < 0 {
@@ -315,6 +331,8 @@ func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool, s
 
 // sameAskBytes reports whether two ask blocks render byte for byte the same once each is cut to
 // what a person approves of an ask (askBytes).
+//
+// kept for one release: decisions-step
 func sameAskBytes(a, b *pmdoc.Node) bool {
 	first, err := askBytes(a)
 	if err != nil {
@@ -330,6 +348,8 @@ func sameAskBytes(a, b *pmdoc.Node) bool {
 // its question and options, each link, code span and sub-list among them, urgency, multiple and
 // its `shaped` pointers - under its id; the pointers the restore's own write changed are taken
 // off before (restoredShape).
+//
+// kept for one release: decisions-step
 func askBytes(node *pmdoc.Node) (string, error) {
 	attrs := maps.Clone(node.Attrs)
 	for _, name := range askServerAttributeNames {
@@ -343,6 +363,8 @@ func askBytes(node *pmdoc.Node) (string, error) {
 // the decisions step takes out of a spec is named by (decisionStepCases.pointerLines), since a
 // paragraph's block id is minted afresh by every read of a stored version and its text is the
 // paragraph.
+//
+// kept for one release: decisions-step
 func blockMarkdown(node *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
 }
