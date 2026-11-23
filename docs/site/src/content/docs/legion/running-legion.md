@@ -955,6 +955,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),

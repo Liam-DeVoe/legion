@@ -144,6 +144,17 @@ shard and alone jobs run them in a container of this repository's own image, and
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
 $RUNNER_TEMP, so the checkout stays clean.
 
+`-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
+leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
+line table for that), and `go version -m` still reads the build information. Without them the
+artifact every shard and alone leg downloads was 107,567,572 bytes zipped and 248,108,722
+unzipped (run 45062410823); stripped, about half that (the binaries job's upload step logs
+each run's size). The download is where a leg's run has failed
+on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the step's
+whole 2 minutes, and three legs failed when the second attempt stalled too (shard 4 of
+merge group 45062410823 among them). Half the bytes is half the time a slow connection
+has to be slow in.
+
 ## Why the binaries artifact's name holds no run attempt
 
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
@@ -376,8 +387,8 @@ run-broker.sh serves from.
 ## What the shard job places, and what its budget leaves for it
 
 The census the job's budget is read from counts this step, at its maximum of 1 s (the
-shard job's measured steps above); it copies one 106 MB artifact on the runner's disk (141 ms
-for those bytes on a pod).
+shard job's measured steps above); it copies the four binaries on the runner's disk (141 ms
+for the 106 MB artifact of the unstripped build on a pod).
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -444,8 +455,20 @@ per stack, so the readiness wait's own bucket worked and ten upload rows of run
 42409479235 failed on 502s from the Dispatch server's PutObject, every one of them for
 a stack's own bucket.
 
+The two flags after those, `-master.raftHashicorp -master.raftBootstrap`, are this job's own.
+A one-node master on weed's default raft elects itself only after about 19 s: the log of
+run 45048924209's shard 4 has "Starting RaftServer" at 17:33:08.6 and "is the leader" at
+17:33:27.5, and the S3 gateway answers only after that, so the readiness wait below took
+23 s at the median of 3,247 shard legs on 2026-11-22 (p90 24 s). With HashiCorp's raft and
+a bootstrap of the empty data directory each run starts with, the master is leader within
+about a second of its start. Measured with the weed 3.97 binary from that release on a
+loaded developer machine, start to an object written and read back: 31 to 37 s with the
+default raft, 10.5 to 13 s with these two flags, leader at 1.4 s. Neither flag changes
+what the store keeps or serves: the data directory is new in every run, so there is no
+earlier raft state to resume.
+
 So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
-read that image's /entrypoint.sh again and reconcile these flags with its `server`
+read that image's /entrypoint.sh again and reconcile the three image flags with its `server`
 case, because they are the script's and this job runs the binary without it. The row
 pins a digest, so the entrypoint cannot change under this job between bumps, which is
 what makes the rule a read at bump time rather than a check on every run. Read it with
