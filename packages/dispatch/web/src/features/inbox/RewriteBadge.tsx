@@ -58,7 +58,9 @@ const ON_PAGE = {
  * Rewritten shows the original wording in place and reads **Original** until it is pressed again
  * (`toggleKey`, where the surface has one); Rewrite failed tries again (`onRetry`, and `r`), and
  * why it failed is its tooltip alone. `onRetry` is absent where nothing can be rewritten again
- * from the page. A state this release does not know draws nothing.
+ * from the page. A state this release does not know draws nothing. A surface that keeps its
+ * controls out of the tab order and reaches them by a key of its own - a row of the issue
+ * page's outline - passes `tabIndex` -1.
  *
  * Inside `NoTooltips` the badge draws no `title`: what its tooltip says - why a rewrite failed and
  * that a press tries again, or what a press shows - is its description, read after its name, as a
@@ -71,6 +73,7 @@ export function RewriteBadge({
   rewrite,
   running = false,
   showingOriginal,
+  tabIndex,
   toggleKey,
 }: {
   onRetry?: () => void;
@@ -79,6 +82,8 @@ export function RewriteBadge({
   /** The reader's own rewrite is out, before the read says so. */
   running?: boolean;
   showingOriginal: boolean;
+  /** The pressable badge's place in the tab order: -1 takes it out, and absent leaves it in. */
+  tabIndex?: -1;
   /** The key that shows or hides the original on this surface, which the tooltip names. */
   toggleKey?: string;
 }): ReactNode {
@@ -118,6 +123,7 @@ export function RewriteBadge({
           className={HIT}
           data-ask-rewrite="failed"
           onClick={onRetry}
+          tabIndex={tabIndex}
           type="button"
         >
           <span
@@ -150,6 +156,7 @@ export function RewriteBadge({
         className={HIT}
         data-ask-rewrite={showingOriginal ? "original" : "rewritten"}
         onClick={onToggle}
+        tabIndex={tabIndex}
         type="button"
       >
         <span className={`${PILL} ${groupFocusVisibleRing} ${tone}`}>

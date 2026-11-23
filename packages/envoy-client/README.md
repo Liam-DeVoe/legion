@@ -906,9 +906,10 @@ the issue's messages for the reason, then close with one that points at it). The
 `PATCH` landing this way is the command's write, and exits 0.
 
 A write whose path names a text Dispatch's reviewer holds and that has not posted (an issue, an
-ask, a comment or a message) is kept by Dispatch and runs right after that text posts: Dispatch
-answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. Dispatch keeps such
-a write only for a client that says it reads that `202`: every write the client sends carries
+ask, a comment or a message), and an update of an issue whose `blocked_by`, `parent` or `rank`
+names a held issue, is kept by Dispatch and runs right after that text posts: Dispatch answers it
+`202` with `{id, held}` alone, `held.waits_on` naming the held text. Dispatch keeps such a write
+only for a client that says it reads that `202`: every write the client sends carries
 `Dispatch-Accepts-Kept-Write: 1` (`DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`), and Dispatch answers a
 write without it `409 HELD_TEXT` with the held id and keeps nothing. Three kinds of
 write are not kept so: a new ask, comment or message on a held issue, which the reviewer holds
@@ -923,11 +924,12 @@ command prints one line for it, `Kept until held text <waits_on> posts: Dispatch
 as <id> and runs it right after that text posts.`, with `dispatch held <id>` to read it, and
 exits 0. `dispatch result`, `artifact` to an issue, `claim`, `claim --release` and
 `handoff-write` reach such a write, and so do `edit-ask`, `resolve-ask`, `follow --action
-unfollow` and `resolve-comment` when given the text's full id. Given a `dispatch://` reference
-those four read the text first, as `issue-update` and `follow --action follow` always do, and
-Dispatch answers a session's read of a held text `409 HELD_TEXT`, so they send no write. A
-picture upload ahead of the command's own write that is kept fails the command, saying the
-picture was not uploaded yet, since the call's text has no address for it until it is.
+unfollow` and `resolve-comment` when given the text's full id, and so does `issue-update` of a
+posted issue whose `--blocked-by`, `--parent`, `--before` or `--after` names a held issue. Given a
+`dispatch://` reference those four read the text first, as `issue-update` and `follow --action
+follow` always do, and Dispatch answers a session's read of a held text `409 HELD_TEXT`, so they
+send no write. A picture upload ahead of the command's own write that is kept fails the command,
+saying the picture was not uploaded yet, since the call's text has no address for it until it is.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

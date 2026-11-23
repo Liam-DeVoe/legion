@@ -13,6 +13,7 @@ import type {
   IssueDetails,
   MessageRead,
   ReferenceTarget,
+  TextRewrite,
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
@@ -240,6 +241,13 @@ export interface TreeNode {
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
+  /** The rewrite of the node's words, where one runs, was written or failed (`TextRewrite`,
+   *  INFRA-3231's R7): an ask's, from a person's Rewrite or the reviewer's, and a comment's or a
+   *  message's the reviewer wrote before it posted, each as its read carries it. Its row draws the
+   *  badge beside its author and time, and while the badge shows it the wording the rewrite
+   *  replaced in place (`NodeRow.tsx`'s `useOriginalWords`). Absent where no rewrite touched the
+   *  words, and on every other kind. */
+  readonly rewrite?: TextRewrite;
   /** The record `text` is, where it is one: an ask, a comment, a message, or the document a
    *  decision is a block of. A body drawn from `tree` links what the text cites against it, as
    *  every other surface drawing the same text does (`MarkdownBody`'s `source`). */
@@ -683,6 +691,7 @@ function assemble(
       ...(draft.heldForReview === undefined ? {} : { heldForReview: draft.heldForReview }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
+      ...(draft.rewrite === undefined ? {} : { rewrite: draft.rewrite }),
       ...(draft.source === undefined ? {} : { source: draft.source }),
       ...(draft.state === undefined ? {} : { state: draft.state }),
       ...(draft.statement === undefined ? {} : { statement: draft.statement }),

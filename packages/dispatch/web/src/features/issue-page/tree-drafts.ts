@@ -13,6 +13,7 @@ import type {
   IssueCoverage,
   IssueDetails,
   ReferenceTarget,
+  TextRewrite,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
@@ -125,6 +126,9 @@ export interface Draft {
   heldForReview?: true;
   reference?: string;
   replaced: boolean;
+  /** The rewrite of this ask's, comment's or message's words, as its read carries it
+   *  (`TreeNode.rewrite`). */
+  rewrite?: TextRewrite;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
   source?: TextSource;
   /** How it stands, for a type the model gives a state (`TreeNode.state`); absent on a check
@@ -830,6 +834,9 @@ function addAsks(
     draft.state = askState(ask);
     draft.text = ask.question;
     draft.tree = ask.question_tree;
+    // A rewrite of the question - a person's Rewrite or the reviewer's - which its row draws the
+    // badge of, and the wording it replaced while the badge shows it (`TreeNode.rewrite`).
+    if (ask.rewrite !== undefined) draft.rewrite = ask.rewrite;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
     // A decision block the reviewer holds (`held_for_review`) is the open question it is, and
@@ -893,6 +900,8 @@ interface Turn {
   readonly kind: "comment" | "message";
   /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
+  /** The reviewer's rewrite of `body`, where it held the turn and posted it rewritten. */
+  readonly rewrite?: TextRewrite;
 }
 
 /**
@@ -925,6 +934,10 @@ interface Turn {
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
+ *
+ * A turn the reviewer held and posted rewritten keeps the read's `rewrite` beside its words, so
+ * its row draws the badge and, while the badge shows it, the words the agent wrote
+ * (`TreeNode.rewrite`).
  */
 function addTurns(
   drafts: Map<string, Draft>,
@@ -953,6 +966,7 @@ function addTurns(
         (comment.ask_id === null
           ? (context.nodeIdOf(changeOf.get(comment.id) ?? "") ?? null)
           : (asks.get(comment.ask_id) ?? comment.ask_id)),
+      rewrite: comment.rewrite,
     })),
     ...(reads.messages ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
@@ -964,6 +978,7 @@ function addTurns(
         id: message.id,
         kind: "message" as const,
         replyTo: message.in_reply_to,
+        rewrite: message.rewrite,
       })),
   ].filter((turn) => !history.has(turn.id));
   for (const turn of turns) {
@@ -975,6 +990,7 @@ function addTurns(
     draft.source = textSourceOf(turn.kind, turn.id);
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
+    if (turn.rewrite !== undefined) draft.rewrite = turn.rewrite;
   }
 }
 
