@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -103,7 +102,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {
@@ -366,8 +365,8 @@ func indexOtherRendererVersionOne(t *testing.T, tx pgx.Tx, artifact, markdown st
 	}
 	stored := respelledVersionBlocks(t, tree, markdown, cuts)
 	insertRenderedVersion(t, tx, artifact, 1, markdown, pmdoc.RendererVersion-1, versionOneAt)
-	if _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
+	if _, won, _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil); err != nil || !won {
+		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
 	return tree, stored
 }
@@ -379,9 +378,9 @@ func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks 
 	t.Helper()
 	versionTwoAt := versionOneAt.Add(time.Hour)
 	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	moved, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
-	if err != nil {
-		t.Fatalf("index version 2: %v", err)
+	moved, won, _, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
+	if err != nil || !won {
+		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}
 	return versionTwoAt, moved
 }
@@ -934,43 +933,4 @@ func TestUniqueBlocksKeepsTheFirstHolderOfEachID(t *testing.T) {
 	if !slices.Equal(nodes, want) || long != 2 || longest != 3200 {
 		t.Fatalf("uniqueBlocks = %#v, %d long, longest %d; want %#v, 2 long, longest 3200", nodes, long, longest, want)
 	}
-}
-
-// IndexBlocks is the tests' one call for a document version's whole block index: ReadBlockIndex,
-// PlanBlocks, KeepRespelled, Cited and Queue back to back, as docs' planBlockIndex runs them, the
-// queued statements run at once as a batch of their own. It writes no window: the row it records
-// marks the document owed them, and the window arm writes them (WriteDocumentWindows).
-func IndexBlocks(
-	ctx context.Context,
-	tx pgx.Tx,
-	artifactID string,
-	version int,
-	versionAt time.Time,
-	markdown string,
-	blocks []model.ArtifactBlock,
-	located []text.Located,
-	pointers []Pointer,
-) ([]Target, error) {
-	index, err := ReadBlockIndex(ctx, tx, artifactID)
-	if err != nil {
-		return nil, err
-	}
-	indexing, err := PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers)
-	if err != nil {
-		return nil, err
-	}
-	if err := indexing.KeepRespelled(ctx, tx); err != nil {
-		return nil, err
-	}
-	cited, err := indexing.Cited(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		indexing.Queue(b)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return append(indexing.Moved(), cited...), nil
 }
