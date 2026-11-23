@@ -16,7 +16,10 @@ body: |-
   App's deliveries again.
   Dispatch settles a queued message failed, and the build announcer tries again at its next pass. A
   session's consumer filter now keeps every topic of its row whatever the deployed stream captures,
-  so a message stored on the topic once the stream captures it again is delivered. It leaves out a
+  so a message stored on the topic once the stream captures it again is delivered. For the same
+  reason a publish's `recipients` and `recipients_connected` no longer leave out a session whose
+  topic the deployed stream does not store, which replaces the recipient-count entry's clause that
+  they do. The filter leaves out a
   topic that does not begin with the literal `notifications.`, and every wildcard topic that fed a
   merge of the filter that would reach another session's messages. Such a topic no longer leaves
   silently: the registration's answer names it as not registered and why on every registration, the
