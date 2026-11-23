@@ -193,8 +193,8 @@ nothing of you. Your acceptance comes before it where the issue's task holds you
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
-role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
-handoff where the task has a tester step, and the reviewer's approval of the head by SHA where it
+role. You then read `dispatch results --issue <issue>` at the head that step passed, the handoff of
+each tester step where the task has one, and the reviewer's approval of the head by SHA where it
 has a reviewer step (the daemon refuses a sign-off while an issue beneath it is still in the
 workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:

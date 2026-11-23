@@ -128,8 +128,8 @@ child's notices come to you
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker runs and
 the acceptance is yours (`skill://legion-architect`, section 6): read
-`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where the
-task has a tester step, and the reviewer's approval of the head by SHA where it has a reviewer
+`dispatch results --issue <issue>` at the head that step passed, the handoff of each tester step
+where the task has one, and the reviewer's approval of the head by SHA where it has a reviewer
 step
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
@@ -200,4 +200,4 @@ role — yours with the trailing `-<role>` replaced, or one the `roleToken` help
 `@legion/contracts` computes (`legion-<project>-<key>-<role>` with the issue key lower-cased; for
 example, project `acme`, issue `LEGION-41`, role `architect` encodes to
 `legion-acme-legion-41-architect`) — reaches the agent named for that role, which need not be the
-one that works that role's step.
+one that works the step of that role you mean: write to that step's agent on its own topic.

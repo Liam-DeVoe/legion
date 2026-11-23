@@ -340,7 +340,21 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// the completion is of (completionPosition.run): where the role works the issue's phase, its
 	// row where the task stands, and otherwise the row of the entry it serves, so a late report of a
 	// role's later step is held to that step's run, whichever place the task returned to since.
+	//
+	// Where the role works the issue's phase, a completion from a claim of the role that does not
+	// work the step is refused first, HANDOFF_NOT_THE_STEPS_WORKER (intake.StepsWorkerFence), as
+	// the workflow refuses it before its own fence: the fence would refuse it HANDOFF_STALE_ENTRY,
+	// whose words promise the claim the task of the entry the phase is on, and that task goes to the
+	// step's agent alone. A role that does not work the issue's phase meets the fence's
+	// HANDOFF_NOT_CURRENT_PHASE here, which promises nothing, and the workflow judges the rest of
+	// its completion, the report of a run the task has left, in its own order (pastCompletion).
 	run := position.run(grant.Role, entry, works)
+	if works {
+		if refusal := intake.StepsWorkerFence(grant.Issue, grant.Role, grant.Claim, run.holder, run.served, run.stepTask); refusal != nil {
+			s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+			return
+		}
+	}
 	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)

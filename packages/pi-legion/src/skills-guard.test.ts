@@ -765,12 +765,12 @@ test("the controller reads every held reason, and a stopped task's phase in its 
 test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
   const missing = [
     ...lacks("legion-retro/SKILL.md", [
-      /Read the evidence[^.;]*the implementer's handoff/,
-      /tester's handoff[^.;]*has a tester step/,
-      /--phase review[^.;]*has a reviewer step/,
+      /Read the evidence[^.;]*the handoff of each implementer step/,
+      /handoff of each tester step where it has one/,
+      /review of each reviewer step where it has one[^.;]*--phase review/,
       /no reviewer step[^.;]*unresolved bot threads/,
       /no reviewer step[^.;]*review-thread replies and resolutions/,
-      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*tester's handoff/,
+      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*handoff of each tester step/,
       /no reviewer step[^.;]*bot threads in `Threads` at the head you found/,
     ]),
     // The body step that changes only path-derived lines leaves room for those updates, and

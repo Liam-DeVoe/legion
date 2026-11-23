@@ -219,7 +219,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
   "completing), " +
-  "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+  "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row of the step the task stands at names, because the phase was entered " +
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
   "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
@@ -320,7 +320,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "controller's report issue's icebox, because that issue holds no work. " +
   "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
-  "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+  "issue and role reach the claim that works the role's step that started last (the step the task stands at, where it is " +
+  "that role's); two claims of one issue can hold one role, so name the " +
   "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
   "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -511,7 +512,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     claim: {
       type: "string",
       description:
-        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does",
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role other than the one that works the role's step that started last; leave it out to reach that claim",
     },
   },
   required: ["op"],

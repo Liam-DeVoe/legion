@@ -14,13 +14,13 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 Only a task whose `Steps:` line names `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where the task has a tester step, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where the task has a tester step, the handoff of each tester step: `dispatch handoff-read --issue <issue> --phase test` reads the newest, and `--version <n>` an earlier step's;
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each check at the last step's head;
 
 3. where the task has a reviewer step, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
 
-4. where the task has a reviewer step, each claim of the reviewer's prose, against the code at that head;
+4. where the task has a reviewer step, each claim in the review of each reviewer step, against the code at that head;
 
 5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 

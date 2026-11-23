@@ -444,8 +444,8 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the check's first look to the claim that works the tester's step,
-  in its session, and every other claim of a child is retired. A root's are suspended with the
+  With `tester`, the merge hands the check's first look to the claim that works the tester's step
+  that started last, in its session, and every other claim of a child is retired. A root's are suspended with the
   rest of its tree for the linger, and retired when the linger ends. With `off`, no check opens
   at all: a child's close retires every claim of the child and releases its pod, and a root's
   close suspends every claim of its tree for the linger. The loader refuses any other value,

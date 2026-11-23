@@ -906,16 +906,26 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // the report of the run that pass ended is taken as it is there. A task its owner stopped stands at
 // the step the stop ended: the report of a run that left that phase earlier - a review the review
 // event moved back to implementing before the stop - is taken as it is there, and the report of the
-// role that works the phase it stands at is none of a phase that role has left, so it is answered
-// as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
-// step it stands at now; the test of the run itself is ranUnreported, on row, the role's row of the
-// run the completion reports (Walk.completionRow).
-func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token, row record.PhaseRow) (bool, error) {
+// run of the step it stands at is none of a phase its role has left, so it is answered as the run
+// the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever step it
+// stands at now. A role that works the step its issue stands at has left a phase only where the
+// report is of the role's run of another step: the place of row (Walk.runPlace of reported) against
+// the place its task stands at (Walk.Place), so of a reviewer at steps 2 and 4 whose step 2 an
+// approval moved on from with no report, that report is taken after a stop at step 4. A walk with
+// no plan rows holds each phase once, so there the role alone decides. w is the walk of issue's run;
+// the test of the run itself is ranUnreported, on row, the role's row of the run the completion
+// reports (Walk.completionRow).
+func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, token claim.Token, reported phase.Phase,
+	row record.PhaseRow) (bool, error) {
 	at := issue.Phase
 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
 	}
-	if works := issue.RoleAt(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
+	works := issue.RoleAt(at)
+	if at == phase.Admitted || works == "" || phase.LeftBy(role, at) == "" {
+		return false, nil
+	}
+	if place, ok := w.runPlace(row, reported); works == role && (!w.Stored || !ok || place == w.Place) {
 		return false, nil
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token, row)
@@ -1100,25 +1110,19 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// the step: taken, it would move the issue and write its own claim on the row, and every later
 	// start and message of the step would reach it. It is refused before anything is written, and
 	// left unspent, so the same report applies should a later entry of the step give it to that
-	// claim. A row that runs no step of the plan names no worker, and a completion that names no
-	// claim, from a route before the claim was carried, is judged by its role as before.
+	// claim (intake.StepsWorkerFence).
 	//
 	// One such completion is the entry fence's to answer first: a completion of an entry its own
 	// claim served (record.ServedClaim), on a step of the role the task has since left for another
 	// agent's step. The fence refuses it HANDOFF_NOT_CURRENT_PHASE naming that agent and telling
 	// the claim no task of the step comes to it (intake.AnotherAgentsStep), which says more than
 	// this refusal does. Any other completion from a claim that does not work the step is refused
-	// here before the fence, whose HANDOFF_STALE_ENTRY would promise it the task of an entry its
-	// claim never served.
+	// here before the fence, as the completion route refuses it before its own (api's
+	// answerCompletion), since the fence's HANDOFF_STALE_ENTRY would promise it the task of an
+	// entry its claim never served.
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
-	notTheStepsWorker := func() intake.Result {
-		return intake.Result{Refusal: refused("HANDOFF_NOT_THE_STEPS_WORKER", fmt.Sprintf(
-			"%s is a claim of the %s of %s, and %s works its step: only that claim's completion reports the step; this completion changed nothing",
-			fact.Claim, fact.Role, issue.Key, row.Claim)).Refusal, Unspent: true}
-	}
-	worksTheStep := row.StepTask == "" || row.Claim == "" || fact.Claim == "" || fact.Claim == row.Claim
-	if !worksTheStep && served != fact.Claim {
-		return notTheStepsWorker(), nil
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
 	// this lock (api's answerCompletion). An entry raised between that read and this transaction —
@@ -1135,8 +1139,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
-	if !worksTheStep {
-		return notTheStepsWorker(), nil
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, "", row.StepTask); refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
 	// reports code the pull request no longer stands on, and one that names no head once such a

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -129,7 +130,7 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 			message := refused(t, answer, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
 				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
-				"the entry this completion serves is of another step of this role",
+				"the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them",
 				"nothing was recorded",
 			} {
 				if !strings.Contains(message, want) {
@@ -185,6 +186,49 @@ func TestALateCompletionOfARolesLaterStepIsHeldToThatStep(t *testing.T) {
 			}
 			if keys := completionKeys(t, h, key); len(keys) != 1 || !strings.HasSuffix(keys[0], ":p4") {
 				t.Fatalf("the completion keys of %s = %q, want one, naming step 4 (:p4)", key, keys)
+			}
+		})
+	}
+}
+
+// The route refuses a completion from a claim of the role that does not work the step before its
+// entry fence, as the workflow does. In `implementer:a tester:a reviewer`, the tester's row names
+// key a's agent on step 2 at entry 2, and the tester's own claim, serving entry 1, which no row of
+// the role stands on, completes at a commit the pull request has left: the route answers 409
+// HANDOFF_NOT_THE_STEPS_WORKER naming key a's agent and applies no fact. The control is the same
+// completion where the row names the tester's own claim: the fence answers HANDOFF_STALE_ENTRY.
+// Before, the route asked the fence alone, and answered the other claim HANDOFF_STALE_ENTRY too,
+// whose words promise it the task of entry 2, which goes to key a's agent.
+func TestTheRouteRefusesAClaimThatDoesNotWorkTheStepBeforeItsFence(t *testing.T) {
+	const key = "LEGION-208"
+	const keyed = claim.Token("legion-legion-legion-208-implementer")
+	for _, tc := range []struct {
+		name  string
+		keyed bool
+		code  string
+	}{
+		{"the row names key a's agent", true, "HANDOFF_NOT_THE_STEPS_WORKER"},
+		{"the control: the row names the tester's own claim", false, intake.StaleEntryCode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, key, phase.Testing)
+			seedPullRequest(t, h, key, headSHA)
+			tester := newLiveClaim(t, h, key, claim.RoleTester)
+			holder := tester.token
+			if tc.keyed {
+				holder = keyed
+			}
+			seedStepsAt(t, h, key, []string{"implementer:a", "tester:a", "reviewer"}, 2, claim.RoleTester, holder, map[int]int64{2: 2})
+			takeTask(t, h, tester.token, "outbox:77", "test "+key, 1, 1)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: strings.Repeat("ab", 20), HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, tc.code)
+			if tc.keyed && (!strings.Contains(message, string(keyed)+" works its step") || strings.Contains(message, intake.StaleEntryInstruction)) {
+				t.Fatalf("the refusal = %q, want it to name %s as the step's worker and promise no task", message, keyed)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
 			}
 		})
 	}
