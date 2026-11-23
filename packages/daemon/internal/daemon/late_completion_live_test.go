@@ -237,7 +237,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 		strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
-	r.dispatch = startHandoffDispatch(t, root)
+	r.dispatch = startHandoffDispatch(t, root, "")
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}

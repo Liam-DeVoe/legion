@@ -419,10 +419,14 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// leave it, and GitHub reports the merge. On this release that phase is merging, which
 		// the merger holds until its merge closes the issue (dispatch://INFRA-714 R2), so this
 		// is not finish's done: a merge of an issue already done closes nothing and opens no
-		// check.
+		// check. The merge queues the close, and Dispatch's echo of it lands the close, which opens
+		// the check (R20 and R24 of dispatch://INFRA-3320: the daemon's close lands on Dispatch's
+		// done).
 		mergingPhase(t, pool, root)
 		applyFact(t, pool, "api", "merged:"+root, intake.PullRequestMerged{Repo: startedAgainRepo, Number: 42,
 			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, startedAgainEngine(cfg))
+		applyFact(t, pool, "dispatch", "closed:"+root, intake.DispatchIssue{Key: root, ResolvedRepo: startedAgainRepo, Seq: 6,
+			Type: "issue.closed", Status: "done", Title: root, Rank: root, DaemonActor: true}, startedAgainEngine(cfg))
 		testwait.Eventually(t, "the merge to open "+root+"'s production check", func() bool {
 			var open bool
 			if err := pool.QueryRow(context.Background(),

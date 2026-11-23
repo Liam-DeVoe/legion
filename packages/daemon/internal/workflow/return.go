@@ -49,7 +49,7 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	case fact.Status != "todo":
 		return nil
 	case issue.Phase == phase.Held && issue.Hold != nil:
-		return e.releaseHeldRoot(ctx, tx, issue, fact)
+		return e.releaseHeldRoot(ctx, tx, issue, fact, false)
 	}
 	return e.retryFailedArchitect(ctx, tx, issue)
 }
@@ -102,9 +102,10 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // here: the line, the children's close or the person's answer is what starts it.
 //
 // A held issue returns held, its architect told nothing new: a todo releases the hold as a todo
-// on any held issue in work does (releaseHeldRoot), and any other status leaves the hold for the
-// architect's retry. The architect above the issue, where an issue above it is in Legion's work, is
-// told the issue is back in work.
+// on any held issue in work does (releaseHeldRoot), except that the worker of the phase the hold
+// came from is started at a new phase entry, as every return's worker is, and any other status
+// leaves the hold for the architect's retry. The architect above the issue, where an issue above it
+// is in Legion's work, is told the issue is back in work.
 func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	back := observedIssue(issue, fact)
 	back.Status = fact.Status
@@ -132,7 +133,7 @@ func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if fact.Status != "todo" {
 			return nil
 		}
-		return e.releaseHeldRoot(ctx, tx, back, fact)
+		return e.releaseHeldRoot(ctx, tx, back, fact, true)
 	}
 	queued, err := e.queuedRoot(ctx, tx, back)
 	if err != nil || queued {

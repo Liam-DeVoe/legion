@@ -150,7 +150,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 		cliHome: t.TempDir(), claimants: map[claim.Token]*handoffClaimant{},
 	}
 	r.rt.InPod = true
-	r.dispatch = startHandoffDispatch(t, root)
+	r.dispatch = startHandoffDispatch(t, root, "")
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -1078,20 +1078,20 @@ func (c *handoffClaimant) complete(req api.HandoffCompleteRequest) (int, api.Fai
 	return status, failure
 }
 
-// handoffDispatch is the real Dispatch server this run builds and runs (startScratchDispatchOn's,
-// with NATS off), and the requests the driver sends it. Its port is kept across a restart, since
-// the daemon's dispatch_url and the CLI's DISPATCH_URL name it.
+// handoffDispatch is the real Dispatch server this run builds and runs (startScratchDispatchOn's),
+// and the requests the driver sends it. Its port is kept across a restart, since the daemon's
+// dispatch_url and the CLI's DISPATCH_URL name it.
 type handoffDispatch struct {
 	*scratchDispatch
 	client *http.Client
 }
 
 // startHandoffDispatch starts the run's Dispatch server from root's packages/envoy on a database
-// of its own. Dispatch's own log goes beside the daemon's in the evidence directory when the
-// script names one.
-func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
+// of its own, publishing its events on natsURL, or with NATS off where natsURL is "". Dispatch's
+// own log goes beside the daemon's in the evidence directory when the script names one.
+func startHandoffDispatch(t *testing.T, root, natsURL string) *handoffDispatch {
 	t.Helper()
-	options := scratchDispatchOptions{root: root}
+	options := scratchDispatchOptions{root: root, natsURL: natsURL}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
 		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {

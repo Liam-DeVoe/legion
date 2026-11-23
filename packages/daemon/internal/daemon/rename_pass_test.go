@@ -641,8 +641,9 @@ func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *test
 	var logged syncBuffer
 	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: transferredRepositories(),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
+	// trees is the store newOutbox wires; it holds no lifecycle of either issue, so no close reserves a cleanup.
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
-		project: "legion", stateDir: stateDir}
+		trees: outboxTreeStore(t, pool), project: "legion", stateDir: stateDir}
 	runner.podEnded = w.podEndsOn(rt)
 
 	for _, closed := range []record.Issue{root, child} {

@@ -564,9 +564,14 @@ func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // executor finishes it without a write (the daemon's outbox status), and where the status it
 // would have written is the one the record already held it was dropped at the queue and there is
 // no row at all. The row this line queues names the todo, so it is the one that writes.
-func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+//
+// returning is whether the todo is a return to work after a stop (ReturnToWork): the start of the
+// held phase's worker then raises the phase entry as every return's start does (retryPhase), so
+// each queued effect of the entry before the stop is refused where it commits (R20 of
+// dispatch://INFRA-3320). A todo on a held issue that never left Legion's work raises none.
+func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue, returning bool) error {
 	released := observedIssue(issue, fact)
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false, returning)
 	if err != nil {
 		return err
 	}
@@ -2101,7 +2106,7 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
 	// line for the release both carry; a decision that names none keeps the daemon's.
-	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
+	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false, false)
 	return intake.Result{}, err
 }
 
@@ -2124,7 +2129,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
+	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession, false)
 	return intake.Result{}, err
 }
 
@@ -2161,7 +2166,11 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a role's move back raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
-// StopForChildren): R9 holds only the starts each from a phase before retro.
+// StopForChildren): R9 holds only the starts each from a phase before retro. A release that is a
+// return to work after a stop, returning (releaseHeldRoot from ReturnToWork), starts the worker at
+// a new phase entry instead, through the start every return's worker is given (start, as
+// resumeRun's is, from the phase itself), so each queued effect of the entry before the stop is
+// refused where it commits (R20 of dispatch://INFRA-3320).
 //
 // Its callers have established that the issue is in Legion's work, which is what holds an issue
 // out of it where the stop left it.
@@ -2170,7 +2179,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // reads (releaseHeldRoot): from, where nothing moved, awaiting_children where a child holds the
 // start, and otherwise the phase the move took the issue to, read back from the record because the
 // move's own row chose that target (transition).
-func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession, returning bool) (phase.Phase, error) {
 	issue.Phase, issue.Hold = from, nil
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
@@ -2220,7 +2229,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	work := task(issue, record.PhaseRow{}, pr, reason)
+	if returning {
+		return from, e.start(ctx, tx, issue, phase.RoleFor(from), work, from)
+	}
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), work, freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that

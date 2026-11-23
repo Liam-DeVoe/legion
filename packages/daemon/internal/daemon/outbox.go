@@ -1206,10 +1206,10 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 
 // rereadWanted says whether a row may write again after its issue changed under it, read as read
 // shows it now and at another status than the row's: never over a status neither the row's nor
-// the one it observed, which is somebody's move made after the row's read, and otherwise as the
-// row's kind judges (stillWanted).
+// the one it observed, which is somebody's move made after the row's read (statusMoved), and
+// otherwise as the row's kind judges (stillWanted).
 func (r *outbox) rereadWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) (bool, error) {
-	if read.Status != payload.ObservedStatus {
+	if statusMoved(payload, read) {
 		r.log.Info("outbox status write finished without writing: its issue was moved to another status after the row read it",
 			"row", row.ID, "issue", row.Issue, "status", payload.Status, "observed", payload.ObservedStatus, "dispatch", read.Status)
 		return false, nil
@@ -1729,8 +1729,21 @@ func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
 // statusMoved says whether somebody moved the issue since the row read the status it observed:
 // Dispatch shows neither that status nor the one the row carries, so the row's write is
 // superseded by a change made after it was queued.
+//
+// The daemon's own close (record.CloseStatusRow) is superseded so only by a status out of the
+// workflow (record.OutOfWorkflow): a person's stop or close, which ends the run the close was
+// queued for. Any other status Dispatch shows is still in work, and the close writes over it: the
+// record still owes the close (record.PendingClose) at its run and phase entry, which the write
+// checks once the record has applied Dispatch's events up to its read (readStands, closeStands),
+// and nothing writes the close again once its row is gone, so the issue would wait in its phase
+// for a done nobody writes. The status the close observed is the record's own, which a status
+// write of an earlier phase entry the entry fence refused can leave Dispatch behind (R20 and R24
+// of dispatch://INFRA-3320).
 func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
-	return issue.Status != payload.ObservedStatus && issue.Status != payload.Status
+	if issue.Status == payload.ObservedStatus || issue.Status == payload.Status {
+		return false
+	}
+	return payload.Kind != record.CloseStatusRow || record.OutOfWorkflow(issue.Status)
 }
 
 // ordinaryRule judges the workflow moving an issue along inside the workflow
@@ -1863,12 +1876,11 @@ func (closeRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxR
 	return closeStands(ctx, r, row, payload)
 }
 
-// stillWanted asks the same question after Dispatch refused the write. The caller has already
-// required Dispatch to show the status the row observed, so nobody has moved the issue since, and
-// what is left is whether the close is still owed. The ordinary rule cannot be asked here — it
-// drops a row whose issue has left the workflow, which is every close, so one refusal would leave
-// the issue open in Dispatch for good behind a close nobody ever wrote. That is the reason this
-// kind exists.
+// stillWanted asks the same question after Dispatch refused the write. A close is written over
+// any status in work Dispatch shows (statusMoved), so what is left is whether the close is still
+// owed. The ordinary rule cannot be asked here — it drops a row whose issue has left the workflow,
+// which is every close, so one refusal would leave the issue open in Dispatch for good behind a
+// close nobody ever wrote. That is the reason this kind exists.
 func (closeRule) stillWanted(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, _ dispatch.Issue) (bool, error) {
 	return closeStands(ctx, r, row, payload)
 }

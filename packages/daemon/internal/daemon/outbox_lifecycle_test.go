@@ -28,23 +28,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// A supervise row serves one generation of its issue. A held tree (its implementer's claim failed)
-// is closed by a human, whose backlog lingers it and queues a suspend for every claim, then set
-// back to todo before those rows run. Generation 2 starts the implementer again; when the
-// generation-1 rows run, they must finish without acting, never suspending the new generation's
-// worker (nothing would restart it: the phase waits for that worker's handoff).
+// A supervise row serves one run of its issue: every queued effect names the issue's generation and
+// does nothing to a later one (R17 of dispatch://INFRA-3320). The release before left a root at
+// phase done when a person moved it to the backlog, its implementer's claim failed and its linger's
+// suspend of every claim still queued at generation 1. A person's todo on it opens a new run,
+// generation 2 (R20: a todo on an issue the release before left at phase done; decision 8 of
+// dispatch://INFRA-4730), while a backlog and a todo on an issue this release stopped resume the
+// same run. Generation 2 starts the implementer again; when the generation-1 rows run, they must
+// finish without acting, never suspending the new run's worker (nothing would restart it: the phase
+// waits for that worker's handoff).
 func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing},
-		Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
-	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
-	}); err != nil {
-		t.Fatalf("put slot: %v", err)
-	}
+	// The root as the release before left it at the person's backlog: phase done, holding its own
+	// gate, its copy row naming no parent (putChainIssue).
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done,
+		Generation: 1, Status: "backlog", Rank: "U", LastDispatchSeq: 6, HoldsGate: true}
+	putChainIssue(t, pool, records, root)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	token, err := claim.NewToken("legion", root.Key, claim.RoleImplementer)
 	if err != nil {
@@ -74,13 +75,26 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
 	}
 
-	for _, observed := range []intake.DispatchIssue{
-		{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: root.Title, Rank: "U"},
-		{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: "U", HandedOver: true},
-	} {
-		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-"+observed.Status, observed, handlers...); err != nil {
-			t.Fatalf("%s: %v", observed.Status, err)
+	// The release before's linger queued a suspend of every claim at generation 1, which the outbox
+	// has not run yet.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for _, role := range claim.Roles {
+			if err := record.EnqueueFenced(ctx, tx, records, root.Key, record.SuperviseRequest{Op: "suspend", Tree: root.Key, Role: role,
+				Generation: 1, Reason: "LEGION-208 is backlog"}, time.Now()); err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		t.Fatalf("queue the linger's suspends: %v", err)
+	}
+	todo := intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: "U", HandedOver: true}
+	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-todo", todo, handlers...); err != nil {
+		t.Fatalf("todo: %v", err)
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, "select generation from issues where key = $1", root.Key).Scan(&generation); err != nil || generation != 2 {
+		t.Fatalf("after the todo the root stands at generation %d (%v), want the new run, generation 2", generation, err)
 	}
 	start := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Task: "Continue. Phase: implementing.", Generation: 2}, time.Now())
 	start.ID = 9001
@@ -107,6 +121,95 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 	}
 	if left := unfinishedSuperviseRows(t, pool); left != 0 {
 		t.Fatalf("unfinished supervise rows = %d, want generation 1's finished without acting", left)
+	}
+}
+
+// A held issue's return to work raises its phase entry, as every return does (R20 of
+// dispatch://INFRA-3320: the return raises the entry, and each queued effect of the entry before
+// the stop is refused where it commits, a stop among them). A held root (its implementer's claim
+// failed) with its planner resident is moved to the backlog by a person, which queues a suspend
+// of every claim at the entry it stands at, and set back to todo before the outbox runs them, which
+// releases the hold and starts the implementer again. When the rows run, the planner's suspend of
+// the stopped entry finishes without acting, and the return's start relaunches the implementer.
+// Control: with the return's start at the stopped entry (retryPhase's restart, which raises none),
+// the suspend stops the planner.
+func TestAHeldIssuesReturnLeavesTheStoppedEntrysSuspendUnrunAndStartsItsWorker(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing},
+		Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5, HoldsGate: true}
+	putChainIssue(t, pool, records, root)
+	holdSlot(t, pool, root.Key)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	implementer := mustClaimToken(t, root.Key, claim.RoleImplementer)
+	failed, _, err := sup.Create(ctx, supervise.Claim{Token: implementer, Project: "legion", Tree: root.Key, Issue: root.Key, Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
+	_ = failed.Handle(ctx, supervise.RequestSpawn{Claim: implementer})
+	if got := failed.Claim().State; got != supervise.StateFailed {
+		t.Fatalf("implementer = %s, want failed", got)
+	}
+	planner := mustClaimToken(t, root.Key, claim.RolePlanner)
+	resident, _, err := sup.Create(ctx, supervise.Claim{Token: planner, Project: "legion", Tree: root.Key, Issue: root.Key, Role: claim.RolePlanner, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.deps.Conns.(*fake.Conns).Register(planner, fake.NewConn())
+	if err := resident.Handle(ctx, supervise.RequestSpawn{Claim: planner}); err != nil {
+		t.Fatalf("spawn the planner: %v", err)
+	}
+	handleAll(t, resident, supervise.StreamHello{Claim: planner, Generation: resident.Claim().Generation},
+		supervise.RequestRegister{Claim: planner, Generation: resident.Claim().Generation, Session: "ses-plan", SessionFile: "/tmp/plan.jsonl"},
+		supervise.RequestReady{Claim: planner, Generation: resident.Claim().Generation, Session: "ses-plan"})
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	handlers := []intake.Handler{engine, admit.New(records, engine, 2, "LEGION", quietLogger())}
+	runner := &outbox{
+		dispatchProject: "LEGION",
+		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		githubAPI: newBranchGitHub(t, nil, branchExists).url,
+		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, notices: &outboxPublisher{}, handlers: handlers, log: quietLogger(), now: time.Now,
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{}, nil
+		},
+		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
+	}
+
+	for _, observed := range []intake.DispatchIssue{
+		{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: root.Title, Rank: "U"},
+		{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: "U"},
+	} {
+		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-"+observed.Status, observed, handlers...); err != nil {
+			t.Fatalf("%s: %v", observed.Status, err)
+		}
+	}
+	for range 2 {
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run the stop's and the return's rows: %v", err)
+		}
+	}
+	plannerSuspends := 0
+	for _, call := range rt.CallsOf("Suspend") {
+		if call.Locator.Claim == planner {
+			plannerSuspends++
+		}
+	}
+	if got := resident.Claim().State; got != supervise.StateReady || plannerSuspends != 0 {
+		t.Fatalf("after the return the planner is %s with %d suspensions, want ready and never suspended: the stop's suspend is of the entry the return left", got, plannerSuspends)
+	}
+	if left := unfinishedSuperviseRows(t, pool); left != 0 {
+		t.Fatalf("unfinished supervise rows = %d, want the stop's finished without acting and the return's start run", left)
+	}
+	relaunched := failed.Claim()
+	if relaunched.State == supervise.StateFailed {
+		t.Fatalf("after the return the implementer is %s, want its claim started again by the return's start", relaunched.State)
+	}
+	handleAll(t, failed, supervise.RequestRegister{Claim: implementer, Generation: relaunched.Generation, Session: "ses-impl", SessionFile: "/tmp/impl.jsonl"},
+		supervise.RequestReady{Claim: implementer, Generation: relaunched.Generation, Session: "ses-impl"})
+	if got := failed.Claim().State; got != supervise.StateReady {
+		t.Fatalf("the relaunched implementer is %s after its registration, want ready", got)
 	}
 }
 
@@ -189,7 +292,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner}); err != nil {
 		t.Fatalf("start the planning turn: %v", err)
 	}
-	// The linger outlasts the test's clock, so the close's suspends are all the close does here.
+	// The clock moves an hour at each run, so every row the run before queued is due at the next.
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
@@ -216,14 +319,15 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 		}
 		return got
 	}
-	// stops counts the runtime's stops and relaunches of the planner's process.
+	// stops counts the runtime's stops and relaunches of the planner's process. A release names its
+	// claim in what it releases (runtime.Known), not in a locator.
 	stops := func() (suspends, releases, launches int) {
 		t.Helper()
 		for _, call := range rt.Calls() {
 			switch {
 			case call.Method == "Suspend" && call.Locator.Claim == planner:
 				suspends++
-			case call.Method == "Release" && call.Locator.Claim == planner:
+			case call.Method == "Release" && call.Released.Claim == planner:
 				releases++
 			case (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == planner:
 				launches++
@@ -308,23 +412,28 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 		t.Fatalf("answering suspended the planner %d times, released it %d times and launched it %d times, want once launched and never stopped", suspends, releases, launches)
 	}
 
-	// A person closes the issue: its tree lingers, and the close suspends the planner, keeping its
-	// session for a re-admission to resume.
+	// A person closes the issue: the close retires the planner once, releasing its process and
+	// keeping its session for a later run to resume. At a close the daemon retires each claim of the
+	// issue (workflow/leave.go's issue_close), and no tree lingers to suspend it (R20 of
+	// dispatch://INFRA-3320).
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
-	run("the close's suspends")
+	run("the close's retirements")
 	closed := machine.Claim()
-	if suspends, _, _ := stops(); closed.State != supervise.StateSuspended || closed.Session != before.Session || closed.SessionFile != before.SessionFile || suspends != 1 {
-		t.Fatalf("after the close the planner is %+v with %d suspensions, want suspended once with its session kept", closed, suspends)
+	if suspends, releases, _ := stops(); closed.State != supervise.StateRetired || closed.Session != before.Session || closed.SessionFile != before.SessionFile || suspends != 0 || releases != 1 {
+		t.Fatalf("after the close the planner is %+v, suspended %d and released %d times, want retired, released once with its session kept", closed, suspends, releases)
 	}
 }
 
-// An issue's close suspends its workers, and a worker the close finds in a turn is suspended once
+// An issue's stop suspends its workers, and a worker the stop finds in a turn is suspended once
 // that turn ends rather than in the middle of a tool call (LEGION-283): the suspend row runs, the
 // claim answers that the suspension is held, the row is retried and the worker stays working with
 // no stop; once the turn ends the worker is suspended once with its session kept, and the row's
-// retry finishes it.
+// retry finishes it. The stop is a person's backlog, the move out of Legion's work that suspends
+// (R20 of dispatch://INFRA-3320). A close no longer suspends: at a person's done the daemon retires
+// each claim of the issue at once (workflow/leave.go's issue_close), a root's as a child's always
+// was, and no tree lingers.
 func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -364,7 +473,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	runner := &outbox{
 		dispatchProject: "LEGION",
 		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: "done"}}, notices: &outboxPublisher{},
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: "backlog"}}, notices: &outboxPublisher{},
 		handlers: []intake.Handler{engine}, now: func() time.Time { return clock }, log: quietLogger(),
 	}
 	// suspendRow is the planner's suspend rows left unfinished, and the most attempts one has had.
@@ -377,12 +486,12 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 		return rows, attempts
 	}
 
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
-		t.Fatalf("close the issue: %v", err)
+	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-backlog", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: issue.Title, Rank: "U"}, engine); err != nil {
+		t.Fatalf("stop the issue: %v", err)
 	}
 	clock = clock.Add(time.Second)
 	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the close's suspends: %v", err)
+		t.Fatalf("run the stop's suspends: %v", err)
 	}
 	if rows, attempts := suspendRow(); machine.Claim().State != supervise.StateWorking || rows != 1 || attempts != 1 || len(rt.CallsOf("Suspend")) != 0 {
 		t.Fatalf("while its turn runs the planner is %s with %d suspend rows run %d times and %d suspensions, want working, the row run once and waiting, none",
@@ -605,13 +714,16 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// deployment's limits, and the two the claim itself recorded — why its process was last found
 	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
 	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
-	// holding no task dies uncounted — which the record says in as many words.
+	// holding a task dies uncounted — which the record says in as many words. It names the run and
+	// the phase entry it was queued at, every notice's fence (R17 of dispatch://INFRA-3320,
+	// record.Notice's Generation and Entry): generation 1, at the first entry.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
 			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
-			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure}}
+			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure},
+		Generation: 1, Entry: 1}
 	if failed.LastDeathCause == "" || failed.LastStartFailure == "" {
 		t.Fatalf("the failed planner recorded death %q and start failure %q; want both, since the record below is what carries them to the architect",
 			failed.LastDeathCause, failed.LastStartFailure)
@@ -667,8 +779,9 @@ func unfinishedSuperviseRows(t *testing.T, pool *store.Pool) int {
 }
 
 // A child a human moves out of the workflow (here backlog, mid-test) leaves the table: its claims
-// are suspended and its phase parked, so its tester's next completion advances nothing and no
-// status write lands over the human's backlog.
+// are suspended and its phase kept, as a stop keeps it (R20 of dispatch://INFRA-3320: the phase, the
+// sessions, the branch and the pull request stay), so its tester's next completion advances nothing
+// and no status write lands over the human's backlog.
 func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -710,8 +823,8 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	if err := pool.QueryRow(ctx, "select phase from issues where key = 'LEGION-209'").Scan(&childPhase); err != nil {
 		t.Fatal(err)
 	}
-	if childPhase != phase.Done {
-		t.Fatalf("backlogged child phase = %s after its tester's completion, want parked in done", childPhase)
+	if childPhase != phase.Testing {
+		t.Fatalf("backlogged child phase = %s after its tester's completion, want testing, the phase its stop kept", childPhase)
 	}
 	rows, err := pool.Query(ctx, "select id, kind, issue, payload from outbox where kind = 'dispatch_status' order by id")
 	if err != nil {
