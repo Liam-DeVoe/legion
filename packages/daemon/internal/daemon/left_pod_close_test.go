@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -59,8 +58,8 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
 	// The planner's machine reads its clock from here, so a test can stamp a turn at a moment of its
-	// own (turnedBeforeQuiet).
-	sup.deps.Clock = &leftPodClock{}
+	// own (turnedBeforeQuiet). The clock is the wall clock until a test sets one.
+	sup.deps.Clock = &heldClock{}
 	sup.store = st
 
 	token := mustClaimToken(t, child.Key, claim.RolePlanner)
@@ -423,30 +422,6 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	}
 }
 
-// leftPodClock is the left pod rig's supervisor clock (newLeftPodRig): time.Now(), or at while at is
-// set, so a test can have the planner's machine stamp a turn (supervise.Claim.LastTurnStart) at a
-// moment of its choosing.
-type leftPodClock struct {
-	stillClock
-	mu sync.Mutex
-	at time.Time
-}
-
-func (c *leftPodClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.at.IsZero() {
-		return time.Now()
-	}
-	return c.at
-}
-
-func (c *leftPodClock) set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.at = at
-}
-
 // turnedBeforeQuiet runs a turn of the rig's planner through its machine, started and ended forty
 // minutes ago, before the pod went quiet half an hour ago (quietPod, run again after the turn's
 // writes), and answers its start as the database holds it. The machine stamps the turn with its
@@ -458,19 +433,23 @@ func (c *leftPodClock) set(at time.Time) {
 // hold too.
 func turnedBeforeQuiet(t *testing.T, rig *idleRig) time.Time {
 	t.Helper()
-	clock, ok := rig.sup.deps.Clock.(*leftPodClock)
+	clock, ok := rig.sup.deps.Clock.(*heldClock)
 	if !ok {
-		t.Fatalf("the rig's supervisor clock is %T, want newLeftPodRig's leftPodClock", rig.sup.deps.Clock)
+		t.Fatalf("the rig's supervisor clock is %T, want newLeftPodRig's heldClock", rig.sup.deps.Clock)
 	}
 	at := time.Now().Add(-40 * time.Minute).UTC().Truncate(time.Microsecond).Add(321 * time.Nanosecond)
-	clock.set(at)
+	clock.mu.Lock()
+	clock.at = at
+	clock.mu.Unlock()
 	for _, ev := range []supervise.Event{supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token}} {
 		if err := rig.machine.Handle(context.Background(), ev); err != nil {
 			t.Fatalf("handle %T for %s: %v", ev, rig.token, err)
 		}
 	}
 	rig.machine.Wait()
-	clock.set(time.Time{})
+	clock.mu.Lock()
+	clock.at = time.Time{}
+	clock.mu.Unlock()
 	if got := rig.machine.Claim().LastTurnStart; !got.Equal(at) {
 		t.Fatalf("the planner's machine stamped its turn at %v, want %v", got, at)
 	}
@@ -590,9 +569,11 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 // the suspend would end the turn and the Sandbox suspension after it would delete the disk that
 // work is on. So each `suspend` the check queues carries the pass's newest turn start
 // (record.SuperviseRequest.TurnStart), and the suspend of a claim that started a turn after it
-// finishes without acting, as a release's role stop is cancelled by a turn after its mark: the
-// planner stays live in its pod, the Sandbox suspension waits for it (store.IssueSuspension), and
-// the next pass reads the workspace again.
+// finishes without acting, as a release's role stop is cancelled by a turn after its mark. The
+// close's Sandbox suspension carries the same turn start (record.IssueSuspend.TurnStart) and
+// finishes without acting too (store.IssueSuspension), so nothing of the close outlives the hold:
+// the planner stays live in its pod, and once an operator suspends it later, no row of the close
+// is left to delete the pod and its disk without a read. The next pass decides the close again.
 //
 // The control runs the same stop with no turn since the check: the planner is suspended by the
 // daemon and the Sandbox goes, the turn start of the planner's old turn notwithstanding.
@@ -634,13 +615,33 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 			t.Fatalf("the stored planner = %s with process %+v, want it live with the process it had", got.State, got.Locator)
 		}
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
-			t.Fatalf("teardowns asked = %v, want the park's alone: the close's Sandbox suspension waits for the live planner", asked)
+			t.Fatalf("teardowns asked = %v, want the park's alone: the close's Sandbox suspension finished with its stop", asked)
 		}
 		if _, suspended := rig.rt.reads(); suspended != 1 {
 			t.Fatalf("Sandbox teardowns the store authorized = %d, want the park's one", suspended)
 		}
-		if rows := rig.rows(t); slices.Contains(rows, "supervise:suspend") {
-			t.Fatalf("rows after the drain = %v, want the stop finished without acting", rows)
+		if rows := rig.rows(t); slices.Contains(rows, "supervise:suspend") || slices.Contains(rows, "issue_suspend") {
+			t.Fatalf("rows after the drain = %v, want the close's stop and its Sandbox suspension finished without acting", rows)
+		}
+
+		// An operator suspends the planner later (the api's suspendEvent), so no claim of the issue
+		// may run any more. Nothing of the held close may delete the pod and its disk now: no read
+		// has been made since the turn, and the next pass decides the close again.
+		if err := rig.machine.Handle(ctx, supervise.RequestSuspend{Claim: rig.token, Reason: "the operator suspended it",
+			By: supervise.SuspendedByOperator}); err != nil {
+			t.Fatalf("the operator's suspension of %s: %v", rig.token, err)
+		}
+		rig.machine.Wait()
+		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator {
+			t.Fatalf("the planner after the operator's suspension = %s by %s, want it suspended by the operator", got.State, got.SuspendedBy)
+		}
+		rig.drain(t)
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
+			t.Fatalf("teardowns asked after the operator's suspension = %v, want the park's alone: the held close deleted the pod with no read",
+				asked)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns the store authorized after the operator's suspension = %d, want the park's one", suspended)
 		}
 	})
 
