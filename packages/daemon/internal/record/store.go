@@ -2460,10 +2460,11 @@ var liveClaimStates = []string{
 }
 
 // RoleHolder is one live claim of an issue, the role it holds and the session that holds it:
-// Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
-// (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
-// the agent of a key on a step of another role, beside that role's own claim of an earlier version
-// of the plan, or two agents at two steps of the role — and each is a holder of its own.
+// Claim is the claim's token, and WorksStep whether the claim works its role's step that started
+// last (WorkerClaim, which reads the role's row now), the claim the record gives that step. Two
+// claims of one issue can hold one role — the agent of a key on a step of another role, beside that
+// role's own claim of an earlier version of the plan, or two agents at two steps of the role — and
+// each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
