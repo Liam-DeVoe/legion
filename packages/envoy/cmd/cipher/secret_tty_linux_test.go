@@ -59,22 +59,64 @@ func openPTY(t *testing.T) (controller *os.File, terminal int) {
 // form's readHidden and valueReadWindow) puts them back in such cleanups, and a test that failed
 // while its reader still ran would put them back while that goroutine reads them, a data race.
 // Cleanups run last-registered first, so call it after the swaps and before the goroutine starts.
-// The cleanup hangs the terminal up (closing controller ends a blocked read of it), runs release
-// (nil for none) to free a stand-in that holds the reader, and waits up to 10 s for done, which the
-// goroutine closes as it returns.
+// The cleanup hangs the terminal up, runs release to end the reader (closing the stop its
+// readTerminal stand-in reads through stoppable, and freeing anything else that holds it), and
+// waits up to 10 s for done, which the goroutine closes as it returns. The hang-up alone does not
+// end every reader: gVisor's pseudo-terminal wakes no poll for it, so a reader blocked there would
+// read the variables after they were put back.
 func endReaderFirst(t *testing.T, controller *os.File, release func(), done <-chan struct{}) {
 	t.Helper()
 	t.Cleanup(func() {
 		_ = controller.Close()
-		if release != nil {
-			release()
-		}
+		release()
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
-			t.Error("the terminal's reader did not end within 10s of the hang-up, so the variables it reads are put back while it runs")
+			t.Error("the terminal's reader did not end within 10s of its stop, so the variables it reads are put back while it runs")
 		}
 	})
+}
+
+// stoppable is real, but the wait for the terminal or the wake pipe is its own, in polls of at
+// most 50 ms, so a read ends once stop is closed even where the kernel never wakes the poll: it
+// then answers EIO, as a read of a hung-up terminal does. Once either descriptor is ready (input,
+// a hang-up, a watcher event) it hands the read to real with no wait, so real answers exactly as
+// it would have; real's (0, nil) means both a hang-up's end of input and a timeout, so cutting
+// real's own wait into slices could not tell them apart. A wait the caller bounds ends at its
+// own timeout with real's (0, nil) for a timeout.
+func stoppable(real func(fd, wake int, buf []byte, timeout int) (int, error), stop <-chan struct{}) func(fd, wake int, buf []byte, timeout int) (int, error) {
+	return func(fd, wake int, buf []byte, timeout int) (int, error) {
+		end := time.Now().Add(time.Duration(timeout) * time.Millisecond)
+		for {
+			select {
+			case <-stop:
+				return 0, unix.EIO
+			default:
+			}
+			slice := 50
+			if timeout >= 0 {
+				slice = max(0, min(slice, int(time.Until(end)/time.Millisecond)))
+			}
+			fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}, {Fd: int32(wake), Events: unix.POLLIN}}
+			ready, err := unix.Poll(fds, slice)
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			if err != nil || ready > 0 {
+				return real(fd, wake, buf, 0)
+			}
+			if timeout >= 0 && !time.Now().Before(end) {
+				return 0, nil
+			}
+		}
+	}
+}
+
+// stopper is a stop and the func that closes it, once however often it is called.
+func stopper() (stop <-chan struct{}, closeStop func()) {
+	c := make(chan struct{})
+	var once sync.Once
+	return c, func() { once.Do(func() { close(c) }) }
 }
 
 // lflag is the terminal's local mode flags.
@@ -252,6 +294,8 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	readHidden = readHiddenAtTerminal
 	real := readTerminal
 	t.Cleanup(func() { readTerminal = real })
+	stop, closeStop := stopper()
+	read := stoppable(real, stop)
 	// draining closes at the reader's first wait after the read that ended the line: the drain of
 	// what follows the line. The terminal turns the typed carriage return into a line feed.
 	draining := make(chan struct{})
@@ -261,7 +305,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 			drainSeen = true
 			close(draining)
 		}
-		n, err := real(fd, wake, buf, timeout)
+		n, err := read(fd, wake, buf, timeout)
 		if n > 0 && bytes.ContainsAny(buf[:n], "\r\n") {
 			lineEnded = true
 		}
@@ -273,7 +317,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	ended := make(chan struct{})
-	endReaderFirst(t, controller, nil, ended)
+	endReaderFirst(t, controller, closeStop, ended)
 	go func() {
 		defer close(ended)
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
@@ -545,16 +589,18 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			controller, terminal := openPTY(t)
 			real := readTerminal
 			t.Cleanup(func() { readTerminal = real })
+			stop, closeStop := stopper()
+			read := stoppable(real, stop)
 			consumed, hungUp := make(chan struct{}), make(chan struct{})
 			var once, hangUp sync.Once
 			hangsUp := func() { hangUp.Do(func() { close(hungUp) }) }
-			read := 0
+			readCount := 0
 			readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
-				n, err := real(fd, wake, buf, timeout)
+				n, err := read(fd, wake, buf, timeout)
 				if n > 0 {
-					read += n
+					readCount += n
 				}
-				if read >= len(tc.paste) {
+				if readCount >= len(tc.paste) {
 					once.Do(func() { close(consumed) })
 					<-hungUp
 				}
@@ -562,7 +608,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			}
 			answer := make(chan promptRead, 1)
 			ended := make(chan struct{})
-			endReaderFirst(t, controller, hangsUp, ended)
+			endReaderFirst(t, controller, func() { closeStop(); hangsUp() }, ended)
 			go func() {
 				defer close(ended)
 				line, err := readHidden(terminal, time.Time{}, nil, nil)
