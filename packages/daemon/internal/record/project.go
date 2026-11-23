@@ -1043,16 +1043,19 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 }
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
-// the moment the daemon starts it until it stands in accepting, retro or merging, which hold
-// none, or until it is done or Dispatch takes it out of the workflow (InWorkflow). Every other
-// phase keeps the row — admitted, awaiting_person, the four worker phases and a hold the record
-// names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its review keeps
-// its place against the cap and wins none back from the line when the wait ends. A wait on
-// another issue is the one wait that is not read here: an issue the daemon has started that waits
-// on one gives its row back and stands in the line for one again, by the rule beside this
-// (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
-// That rule reads this one first, so an issue in accepting, retro or merging waits on nothing
-// there (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
+// the moment the daemon starts it until it stands in accepting, retro, merging or
+// awaiting_children, which hold none, or until it is done or Dispatch takes it out of the
+// workflow (InWorkflow). Every other phase keeps the row — admitted, awaiting_person, the four
+// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
+// for a person or for its review keeps its place against the cap and wins none back from the line
+// when the wait ends. A parent in awaiting_children gives its row back while its open children
+// work under slots of their own, and a start of planning through reviewing that its return makes
+// waits in the line for one again (workflow's ReturnFromChildren). Any other wait on another
+// issue is not read here: an issue the daemon has started that waits on one gives its row back
+// and stands in the line for one again, by the rule beside this (blockers.waitsOf, admit's
+// releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this one
+// first, so an issue in accepting, retro, merging or awaiting_children waits on nothing there
+// (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
 // docs/site/src/content/docs/legion/concepts.md.
 //
 // The cap bounds the work in progress, and an issue in accepting, retro or merging writes no more

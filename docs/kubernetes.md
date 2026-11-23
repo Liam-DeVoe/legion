@@ -3126,9 +3126,13 @@ On that path the clear does no harm: the same block drops `phases.entry_task`, a
 So the hold is entry 1's work as the earlier release composed it, or the phase's resume task, which is the hold of the reviewer, whose `entry_task` the roll forward of `20261116234034_phase_reviewed_head` gives its round's two sentences again, and of a row the fill left empty; either way the return decorates the held task once.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
-The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to the first step of the issue's walk after the implementer's, since no round before the wait ran on a base that carries each needed child's merge.
-That step is `testing` for an issue with no plan rows at its generation, whose run walks today's line, and otherwise the step after the implementer's in `public.plan_steps` for the issue's task in `public.plan_tasks` at its generation (`reviewing` on a plan of an implementer and a reviewer), where the statement also moves the task (`running_kind` and `position`), since the issue's phase and its task's place are two records of where it stands.
-An issue whose pull request merged during the wait goes back to the very start it held, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
+The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren` and `record.ReturnStep`).
+A held start of `planning` or `implementing` goes back to that phase, and so does any held start whose pull request merged during the wait, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
+A held start of `testing`, `reviewing` or `accepting` whose pull request did not merge goes to the step right after the implementer's in the issue's walk, since no round before the wait ran on a base that carries each needed child's merge.
+It does so only where the walk has an implementer step and the held start's own step stands after it: where the walk has no implementer step, has no step of the held start, or has that step at or before the implementer's, the issue goes back to the held start itself.
+For an issue with no plan rows at its generation, whose run walks today's line, the step after the implementer's is `testing`.
+For an issue with plan rows, the walk is the steps in `public.plan_steps` of the issue's task in `public.plan_tasks` at its generation, and the issue goes to the phase of that step's role, whatever the role is: `reviewing` on a plan of an implementer and a reviewer, and `planning` on a plan that puts the planner right after the implementer.
+Through the wait the task stood at the held start's place, so where the issue goes to another step, the statement also moves the task to that step's place (`running_kind` and `position`), since the issue's phase and its task's place are two records of where it stands.
 It clears the held start, `children_wait_children` with it, which the shape check requires of every other phase.
 It clears `children_waited_at` as well: the earlier release's retry below hands a worker the phase entry its row already names, raised before the wait, and this release, rolled forward with the column standing, would refuse a completion of such an entry that arrives after the issue left its phase (workflow's `leftItsPhase`).
 Its `returning` list is the record of what it moved: the key and the phase it stands in now, whether its pull request merged (`merged`), and the held start, the held task, the held reason and the held children as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
@@ -3138,11 +3142,11 @@ Keep it: the earlier release queues no start for any of these issues, and the st
 ```sql
 with moved as (
   select i.key, i.children_wait_start as held_start, i.children_wait_task as held_task, i.children_wait_reason as held_reason,
-    i.children_wait_children as held_children, i.generation, pr.merged, walk.task, walk.after_position,
+    i.children_wait_children as held_children, i.generation, pr.merged, run.task, walk.after_position,
     case
       when i.children_wait_start in ('planning', 'implementing') or pr.merged then i.children_wait_start
-      when walk.task is null then 'testing'
-      else walk.after_implementing
+      when run.task is null then 'testing'
+      else coalesce(walk.after_implementing, i.children_wait_start)
     end as back_to,
     (select string_agg(format('%s (pull request #%s)', w.child, p.number), ', ' order by w.position)
        from unnest(i.children_wait_children) with ordinality as w(child, position)
@@ -3153,15 +3157,24 @@ with moved as (
     select exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') as merged
   ) as pr
   left join lateral (
-    select t.task, s.position as after_position,
-      case s.role when 'tester' then 'testing' when 'reviewer' then 'reviewing' when 'acceptance' then 'accepting' end
-        as after_implementing
-    from public.plan_tasks as t
-    join public.plan_steps as impl
-      on impl.issue = t.issue and impl.generation = t.generation and impl.task = t.task and impl.role = 'implementer'
+    select t.task from public.plan_tasks as t where t.issue = i.key and t.generation = i.generation
+  ) as run on true
+  left join lateral (
+    select s.position as after_position,
+      case s.role
+        when 'planner' then 'planning' when 'implementer' then 'implementing' when 'tester' then 'testing'
+        when 'reviewer' then 'reviewing' when 'acceptance' then 'accepting'
+      end as after_implementing
+    from public.plan_steps as impl
     join public.plan_steps as s
-      on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = impl.position + 1
-    where t.issue = i.key and t.generation = i.generation
+      on s.issue = impl.issue and s.generation = impl.generation and s.task = impl.task and s.position = impl.position + 1
+    join public.plan_steps as held
+      on held.issue = impl.issue and held.generation = impl.generation and held.task = impl.task
+        and held.position > impl.position
+        and held.role = case i.children_wait_start
+          when 'testing' then 'tester' when 'reviewing' then 'reviewer' when 'accepting' then 'acceptance'
+        end
+    where impl.issue = i.key and impl.generation = i.generation and impl.task = run.task and impl.role = 'implementer'
   ) as walk on true
   where i.phase = 'awaiting_children'
 ),
@@ -3189,7 +3202,7 @@ So, once the earlier daemon is up, start each one by hand, for the role of the p
 The earlier release's retry below starts the phase with a task of its own, whose reason is the operator's retry (`restartPhase` and `retryPhase` in that release's `workflow/engine.go`), so it carries neither the held task nor the held reason.
 Give each worker that work in a comment on the issue before the retry.
 Where the held start is `planning` or `implementing`, or `merged` is true, give the held task, since that task carries the reason (a tester's failures, a review's words).
-Otherwise the issue went to the first step of its walk after the implementer's, `testing` on today's line, from a held `testing`, `reviewing` or `accepting`: give the held start and the held reason, as this release's return names them in that step's task.
+Otherwise the issue went from a held `testing`, `reviewing` or `accepting` to the phase the statement returned, by the rule above, which is `testing` on today's line: give the held start and the held reason, as this release's return names them in that step's task.
 In either case, name each child in `held_merged` with its pull request, as this release's return does; where it is null, no held child merged.
 For a tester, add the sentence every testing task of a parent ends with in this release (workflow's `baseMergeRun`), which the earlier release's task lacks, word for word, unless the held task you give ends with it already:
 

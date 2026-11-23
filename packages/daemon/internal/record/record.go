@@ -456,8 +456,9 @@ const (
 // wait on the children began; and Children the children that held the wait. The daemon resumes
 // the parent from this when no open child is left (workflow's ReturnFromChildren): a held
 // planning or implementing starts that phase, and a held testing, reviewing or accepting starts
-// the first step of the issue's walk after the implementer's (ReturnStep), testing on today's
-// line, unless the pull request merged during the wait, when the start goes back as it was held.
+// the first step of the issue's walk after the implementer's where that step stands at or before
+// it (ReturnStep), testing on today's line, and the held start itself where the walk holds no such
+// step or the pull request merged during the wait.
 // Each task the return starts names every child of Children that merged during the wait.
 type ChildrenWait struct {
 	Start  phase.Phase
