@@ -69,13 +69,13 @@ import (
 //     `postgres://h/u:<pw>%40db`).
 //
 // A password (password, sslpassword) is held to none of these: pgx never prints sslpassword, and
-// ConnectError masks a password such as `Postgres:Admin1` wherever one prints. Every other key is
-// held to the URL-credential rule alone, so `application_name=https://ci.example/run/1` and
-// `options='-c app.url=https://…'` load. A Cloud SQL socket
-// (`host=/cloudsql/acme-postgres:us-central1:db`), an IPv6 host or hostaddr, a host list, a port
-// given apart from the host (keyword `port=`, a URL's `host:port`) and an IAM user
-// (`sa@project.iam`) are kept. A keyword DSN with none of these (`host=… password=…`) is never
-// refused: its password is a value of its own, which ConnectError masks.
+// ConnectError masks a password such as `Postgres:Admin1` wherever one prints. Every other key but
+// the four printed values (user, dbname or database, host, hostaddr) is held to the URL-credential
+// rule alone, so `application_name=https://ci.example/run/1` and `options='-c app.url=https://…'`
+// load. A Cloud SQL socket (`host=/cloudsql/acme-postgres:us-central1:db`), an IPv6 host or
+// hostaddr, a host list, a port given apart from the host (keyword `port=`, a URL's `host:port`)
+// and an IAM user (`sa@project.iam`) are kept. A keyword DSN with none of these (`host=…
+// password=…`) is never refused: its password is a value of its own, which ConnectError masks.
 //
 // One shape stays: a user holding a password and an "@" but no ":" (`user=<pw>@host`) has the
 // shape of a Cloud SQL IAM user name (`sa@project.iam`), and is kept.

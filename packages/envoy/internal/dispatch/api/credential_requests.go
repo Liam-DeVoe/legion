@@ -84,7 +84,7 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 			if errors.As(tokenErr.Err, &pathErr) {
 				reason = fileerr.Class(tokenErr.Err)
 			}
-			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "setting", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "reason", reason)
+			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "setting", tokenErr.Setting, "reason", reason)
 			writeError(w, "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
 			return
 		}
