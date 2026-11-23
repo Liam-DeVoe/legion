@@ -3642,13 +3642,20 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // durable, which this row requires, as the one-binder row does.
 //
 // The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START),
-// long before this row's envelope is published. That pass serves the period its start falls in, an
-// epoch-aligned bucket of duty.LeasePeriod(ReconcileInterval), four and a half minutes, so the
-// next pass needs a tick due past that bucket's end, and each process's first tick comes a uniform
-// draw within ReconcileInterval of its own start. Such a pass reads again the pull request this
-// row's envelope names, and it lands inside the second the fetches are counted in
-// (deliverySecondFetchWindow) by a chance of about that second in minutes: in almost every run it
-// comes outside the row, rather than inside it.
+// long before this row's envelope is published, and no pass after that. A later pass would read
+// again the pull request the envelope names: the envelope names no head repository, so the intake
+// writes that pull request's head row unread (Intake.recordPullRequestHead), and a pass re-reads
+// every merged head row no read has reached (ListStalePullRequestHeads). A pass inside the second
+// the fetches are counted in (deliverySecondFetchWindow) would make a second fetch on correct
+// code. So the reconcile ticks here on staggeredSweepPeriod
+// (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), and its lease period, duty.LeasePeriod of that, has
+// one bucket from 1970's start to 2072. The first pass at start serves that bucket, and every
+// later attempt of either process falls in it: the other process's pass at start, and each
+// jittered tick due before 2072, wherever its draw puts it. Each finds the period served, or the
+// lease held while the first pass runs, and runs nothing (duty.Exclusive). At
+// delivery.ReconcileInterval the period was four and a half minutes, and a first tick due past its
+// end, a uniform draw within five minutes of each start, ran a pass that fell inside that second
+// now and then.
 func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testing.T) {
 	durable := bus.DispatchDeliveryDurable
 	// The merged pull request the row publishes. Its author has to be one the settings name: a
@@ -3668,6 +3675,7 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 	fake.Release()
 	env := githubAppEnv(t, fake.URL())
 	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
+	env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = staggeredSweepPeriod.String()
 	pair.start(t, env)
 
 	conn := testnats.Connect(t, pair.nats)
@@ -4744,14 +4752,17 @@ func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 // staggeredSweepPeriod is the period a row gives a leased loop in place of production's, so that
 // two processes' ticks fall in one period: the webhook redelivery sweep's interval in
 // TestALeasedLoopRunsOnceAcrossAStaggeredStart (DISPATCH_TEST_REDELIVERY_INTERVAL, in place of
-// redeliver.Interval's two minutes), and the document compaction sweep's in
+// redeliver.Interval's two minutes), the document compaction sweep's in
 // TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses (DISPATCH_TEST_COMPACTION_SWEEP_PERIOD, in
-// place of docs.CompactionSweepPeriod's hour). A period is a bucket of a tick's due time,
-// floor(epoch / period) (duty.Exclusive): the compaction sweep's, a RunLeased loop's, is this
-// period, whose first bucket runs from 1970 to 2084, and the redelivery sweep's, a jittered loop's,
-// is nine tenths of it (duty.LeasePeriod), whose first bucket runs from 1970 to 2072. Both
-// processes' first ticks fall in that one bucket however long their starts take, and neither
-// ticks again while the row runs.
+// place of docs.CompactionSweepPeriod's hour), and the delivery reconcile's in
+// TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce
+// (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL, in place of delivery.ReconcileInterval's five
+// minutes). A period is a bucket of a tick's due time, floor(epoch / period) (duty.Exclusive): the
+// compaction sweep's, a RunLeased loop's, is this period, whose first bucket runs from 1970 to
+// 2084, and the redelivery sweep's and the delivery reconcile's, jittered loops', are nine tenths
+// of it (duty.LeasePeriod), whose first bucket runs from 1970 to 2072. Both processes' first ticks
+// fall in that one bucket however long their starts take, and a later tick while the row runs, if
+// a jittered draw brings one, falls in it too and finds the period served.
 const staggeredSweepPeriod = 1_000_000 * time.Hour
 
 // ───── a sign-in across the processes ───────────────────────────────────────
