@@ -40,16 +40,17 @@ import (
 //     days between its two starts, and its series' first input days move as in B and E; and one
 //     whose runs went loses every row and member.
 //
-// A page with none of them writes each day it names in a transaction of its own, as before
-// (writeProjectDay). A page with one builds, in memory and with every read outside a write
-// transaction, the days it names and the span of each series that moved (buildSpan), compares
-// the span's rows and members with the stored ones, and writes the named days, the span's moved
-// rows and members, and the stored figures of the days that moved in the transaction that moves
-// its cursors (rebuild, commitPage): one commit, whose eval_days changes are one per eval and
-// carry the rebuild's mark (MarkRebuild), so an evals view is recomputed for them at once and no
-// reader sees a state between the one before the change and the one after it. It moves no walk:
-// the span ends at the last day the stored rows are whole through (eval_days_serving), and the walk
-// builds each later day from the first input days of the days before it, the span's among them.
+// A page with none of them writes every day it names of a family in one transaction of their own
+// (writeProjectDays): one commit, whose eval_days changes are one per eval. A page with one
+// builds, in memory and with every read outside a write transaction, the days it names and the
+// span of each series that moved (buildSpan), compares the span's rows and members with the stored
+// ones, and writes the named days, the span's moved rows and members, and the stored figures of
+// the days that moved in the transaction that moves its cursors (rebuild, commitPage): one commit,
+// whose eval_days changes are one per eval and carry the rebuild's mark (MarkRebuild), so an
+// evals view is recomputed for them at once and no reader sees a state between the one before the
+// change and the one after it. It moves no walk: the span ends at the last day the stored rows are
+// whole through (eval_days_serving), and the walk builds each later day from the first input days
+// of the days before it, the span's among them.
 //
 // What else rebuilds many days is no span. A database or a project first seen is walked, its days
 // built in the open a batch a pass, each day a commit of its own. A release, a lost change cursor
@@ -85,12 +86,15 @@ type namedDay struct {
 }
 
 // pageDays is the days of one family a page writes whole, in the order it named them, and name,
-// which reads one more day's input and adds it (a day an item of another left, nameLeft).
+// which reads one more day's input and adds it (a day an item of another left, nameLeft), and,
+// where the family's days are read several at once, read, which reads the input of the days it is
+// given before name adds each (refresh.readDeliveries); nil where name reads its day alone.
 type pageDays struct {
 	family dayFamily
 	order  []projectDay
 	days   map[projectDay]*namedDay
 	name   func(ctx context.Context, project string, day time.Time) error
+	read   func(ctx context.Context, days []projectDay) error
 }
 
 func newPageDays(family dayFamily) *pageDays {
@@ -146,39 +150,37 @@ func (r *refresh) nameLegion(ctx context.Context, days *pageDays, project string
 	return nil
 }
 
-// nameLeft adds to days each day an item of one of them leaves, as writeProjectDay records it
+// nameLeft adds to days each day an item of one of them leaves, as writeProjectDays records it
 // owed: the day eval_day_members holds the item under, and the day of the deploy run that shipped
 // a pull request the day moves to another run or counts no more. The day it left counts the item
 // until it is written again, so it is written with the days that took the item from it. It reads
-// them as the stored members stand, before any of the days is written, and again of the days it
-// adds, up to owedRounds times.
+// them as the stored members stand, before any of the days is written, of every day at once
+// (Store.leftDays), and again of the days it adds, up to owedRounds times.
 func (r *refresh) nameLeft(ctx context.Context, days *pageDays) error {
 	checked := 0
 	for range owedRounds {
-		var left []projectDay
+		named := make([]ProjectDay, 0, len(days.order)-checked)
 		for _, key := range days.order[checked:] {
-			named := days.days[key]
-			// The day's members a run at a time, as its write takes them (memberRuns).
-			for _, run := range memberRuns(named.project, named.raw.Members, days.family.families) {
-				rows, err := r.store.database.Pool.Query(ctx, leftDaysStatement, leftDaysArgs(named.project, named.day, run, days.family.families)...)
-				if err != nil {
-					return fmt.Errorf("read the days %s's items of %s left: %w", named.project, named.day.Format(time.DateOnly), err)
-				}
-				var day time.Time
-				if _, err := pgx.ForEachRow(rows, []any{&day}, func() error {
-					left = append(left, projectDay{project: named.project, day: measures.Midnight(day)})
-					return nil
-				}); err != nil {
-					return fmt.Errorf("read the days %s's items of %s left: %w", named.project, named.day.Format(time.DateOnly), err)
-				}
-			}
+			day := days.days[key]
+			named = append(named, ProjectDay{Project: day.project, Day: day.day, Members: day.raw.Members})
+		}
+		left, err := r.store.leftDays(ctx, named, days.family.families)
+		if err != nil {
+			return err
 		}
 		checked = len(days.order)
+		left = slices.DeleteFunc(left, func(key projectDay) bool {
+			_, found := days.days[key]
+			return found
+		})
+		if len(left) > 0 && days.read != nil {
+			if err := days.read(ctx, left); err != nil {
+				return err
+			}
+		}
 		for _, key := range left {
-			if _, found := days.days[key]; !found {
-				if err := days.name(ctx, key.project, key.day); err != nil {
-					return err
-				}
+			if err := days.name(ctx, key.project, key.day); err != nil {
+				return err
 			}
 		}
 		if checked == len(days.order) {
@@ -482,14 +484,12 @@ func (b *rebuild) widen(project, evalID string, first, last time.Time) {
 	addSpan(b.spans[project], evalID, first, last)
 }
 
-// writeRows writes the rebuild's day rows in tx: each named day's, as writeProjectDay writes them,
+// writeRows writes the rebuild's day rows in tx: the named days', as writeProjectDays writes them,
 // then the span's moved rows (upsertDays) and the keys its days no longer hold, and every row of a
 // repository that holds no run any more.
 func (b *rebuild) writeRows(ctx context.Context, tx pgx.Tx) error {
-	for _, day := range b.days {
-		if err := writeDayRowsIn(ctx, tx, day, b.family.slugs, b.build); err != nil {
-			return err
-		}
+	if err := writeDayRowsIn(ctx, tx, b.days, b.family.slugs, b.build); err != nil {
+		return err
 	}
 	if err := upsertDays(ctx, tx, b.rows, b.build); err != nil {
 		return err
@@ -513,14 +513,12 @@ func (b *rebuild) writeRows(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// writeMembers writes the rebuild's members in tx, after its rows: each named day's, as
-// writeProjectDay writes them, the span's that moved (writeMovedMembers), and every member of a
+// writeMembers writes the rebuild's members in tx, after its rows: the named days', as
+// writeProjectDays writes them, the span's that moved (writeMovedMembers), and every member of a
 // repository that holds no run any more.
 func (b *rebuild) writeMembers(ctx context.Context, tx pgx.Tx) error {
-	for _, day := range b.days {
-		if err := writeDayMembersIn(ctx, tx, day, b.family.families); err != nil {
-			return err
-		}
+	if err := writeDayMembersIn(ctx, tx, b.days, b.family.families); err != nil {
+		return err
 	}
 	if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
 		return err
@@ -661,10 +659,11 @@ type keptMove struct {
 // writeNamed writes the days of one family a page names (days), and with them each day an item of
 // theirs left (nameLeft). Where the days move no series' first input day and kept names no change
 // of a day the stored rows are whole through, or no rebuild has flipped the family's rows yet (its
-// rebuild then builds every day itself), it writes each day in a transaction of its own
-// (writeProjectDay), by the stored first input days, with its zero rows where the stored rows are
-// whole through it (servingNext), and answers nil. Otherwise it builds the span (span.go's rules)
-// and answers the rebuild the caller commits with its cursors, having written nothing.
+// rebuild then builds every day itself), it writes every day in one transaction of their own
+// (writeProjectDays), by the stored first input days, with its zero rows where the stored rows are
+// whole through it (servingNext), and answers nil: one commit, which logs one change of each eval
+// the days moved. Otherwise it builds the span (span.go's rules) and answers the rebuild the caller
+// commits with its cursors, having written nothing.
 func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove) (*rebuild, error) {
 	if err := r.nameLeft(ctx, days); err != nil {
 		return nil, err
@@ -721,16 +720,20 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		}
 	}
 	if len(tracked) == 0 && len(covered) == 0 && len(gone) == 0 {
+		var written []ProjectDay
 		for _, key := range days.order {
 			named := days.days[key]
 			day := named.finalize(firsts[key.project], computed(key.project, key.day))
 			if len(day.Rows) == 0 && !named.explicit {
 				continue
 			}
-			if err := r.store.writeProjectDay(ctx, family, day, r.build, true); err != nil {
-				return nil, err
-			}
-			r.report.days[builtDay{family: family.walk, project: key.project, day: key.day}] = true
+			written = append(written, day)
+		}
+		if err := r.store.writeProjectDays(ctx, family, written, r.build, true); err != nil {
+			return nil, err
+		}
+		for _, day := range written {
+			r.report.days[builtDay{family: family.walk, project: day.Project, day: measures.Midnight(day.Day)}] = true
 		}
 		if len(trackMoves(days, firsts)) > 0 {
 			// A first input day moved on a day the stored rows are not whole through: the pass reads

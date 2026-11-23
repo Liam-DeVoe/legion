@@ -18,15 +18,16 @@ import (
 )
 
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
-// delivery population is read once (readDeliveryDay), by the rules the delivery routes read their
-// window by: delivery.ReadDeploys and ReadMergedRows' two reads (ListPullRequestsInWindow and
-// ReadApplyRows), whose answer the routes' one read of a window, delivery.ReadWindowRows, gives
-// too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds it), and ReadCIRows, which the routes
-// read with; each row of it is attributed to the projects it counts for; each project's rows are
-// built into day parts by the measures package's day builders, the builders the delivery routes
-// build their window's parts with (DeliveryDay.Rows); and the refresher writes the parts as that
-// project's rows of the day (refresh.writeDelivery, through writeDeliveryDay), which the eval
-// routes and the delivery routes fold through the same folds.
+// delivery population is read once (readDeliveryDays, every day a page names at once), by the
+// rules the delivery routes read their window by: delivery.ReadDeploys and ReadMergedRows' two
+// reads (ListPullRequestsInWindow and ReadApplyRows), whose answer the routes' one read of a
+// window, delivery.ReadWindowRows, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds
+// it), and ReadCIRows, which the routes read with; each row of it is attributed to the projects it
+// counts for; each project's rows are built into day parts by the measures package's day builders,
+// the builders the delivery routes build their window's parts with (DeliveryDay.Rows); and the
+// refresher writes the parts as that project's rows of the day (refresh.writeDelivery, through
+// writeDeliveryDay, and a page's days through writeProjectDays), which the eval routes and the
+// delivery routes fold through the same folds.
 //
 // A day holds the population pull requests merged that day (merge-to-production,
 // first-commit-to-production, open-to-production, pr-open-to-merge and rework-share), the deploy
@@ -237,37 +238,56 @@ type repoReads struct {
 	ci       delivery.CIRows
 }
 
-// readDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, with
-// each of repos as the deploy repository, and attributes each to its projects. Its reads answer
-// what the delivery routes' read of a window of that day answers with that repository as the
-// deploy repository: the day's deploys and the rows before the day their shipped sets read
-// (delivery.ReadDeploys), the pull requests merged in the day (delivery.ListPullRequestsInWindow)
-// and every deploy run created from the day's start on (delivery.ReadApplyRows), which are
-// delivery.ReadMergedRows' two reads and whose answer the routes' one read,
-// delivery.ReadWindowRows, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds it); the
-// day's CI runs (delivery.ReadCIRows); and what attributes them (readAttribution): the projects of
-// the issues those pull requests name and of the pull requests the day's PR-checks runs are of.
-// The pull requests are read once, and every other read once for each repository. Each deploy's
-// shipped pull requests are delivery.Deploys.ShippedBy's, the rule the routes count with_prs by;
-// the pull requests merged before the day are read for them alone. A repository's deploy runs
-// created from the day's start on are taken from applyRows where it holds them
-// (delivery.ApplyRows.Since): rows a walk read once from the first of its days, which every later
-// day of the walk takes its part of rather than reading every run created from its own start to
-// now again. The reads of the rows depend on none of each other, and are read side by side, and
-// then the two reads of what attributes them, side by side too.
+// readDeliveryDay reads the delivery and CI rows of the UTC day day is on, as readDeliveryDays
+// reads one day.
 func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, repos []keptRepo, day time.Time,
 	applyRows map[string]*delivery.ApplyRows) (deliveryRead, error) {
+	reads, err := s.readDeliveryDays(ctx, settings, repos, []time.Time{measures.Midnight(day)}, applyRows)
+	if err != nil {
+		return deliveryRead{}, err
+	}
+	return reads[0], nil
+}
+
+// readDeliveryDays reads the delivery and CI rows of each of days (UTC midnights, in order and
+// each once), under settings, with each of repos as the deploy repository, and attributes each to
+// its projects: answers index-aligned with days. Its reads answer, for each day, what the delivery
+// routes' read of a window of that day answers with that repository as the deploy repository: the
+// day's deploys and the rows before the day their shipped sets read (delivery.ReadDeploys), the
+// pull requests merged in the day (delivery.ListPullRequestsInWindow) and the deploy runs created
+// from the day's start on that can ship them (the routes' bound, windowApplyRunsCreated), which are
+// delivery.ReadWindowRows' rows (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds them to
+// delivery.ReadMergedRows' two reads); the day's CI runs (delivery.ReadCIRows); and what
+// attributes them (readAttribution): the projects of the issues those pull requests name and of
+// the pull requests the day's PR-checks runs are of. Each read is made once for every day
+// (delivery.ListPullRequestsOnDays, ReadDaysDeploys and ReadCIDays), so a page naming many days
+// makes as many statements of each as a page naming one, every job of each day's PR-checks runs
+// aside, which is read a day at a time, a few days side by side; the pull requests are read once,
+// and every other read once for each repository. Each deploy's shipped pull requests are
+// delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
+// before a day are read for them alone. A repository's deploy runs created from a day's start on
+// are taken from applyRows where it holds them (delivery.ApplyRows.Since): rows a walk read once
+// from the first of its days, every run created from then to now, which every later day of the
+// walk takes its part of. The reads of the rows depend on none of each other, and are read side by
+// side, and then the two reads of what attributes them, side by side too.
+func (s *Store) readDeliveryDays(ctx context.Context, settings delivery.DeliverySettings, repos []keptRepo, days []time.Time,
+	applyRows map[string]*delivery.ApplyRows) ([]deliveryRead, error) {
 	pool := s.database.Pool
-	day = measures.Midnight(day)
-	end := day.AddDate(0, 0, 1)
 	cards := measures.DeployCards(settings)
 	cardNames := measures.DeployCardJobNames(cards)
 
-	var prs []delivery.DeliveryPullRequest
-	reads := make([]repoReads, len(repos))
+	// repoDays is what the days read of one repository as the deploy repository.
+	type repoDays struct {
+		settings delivery.DeliverySettings
+		since    time.Time
+		deploys  delivery.DaysDeploys
+		ci       []delivery.CIRows
+	}
+	var prs [][]delivery.DeliveryPullRequest
+	reads := make([]repoDays, len(repos))
 	parts := []func(context.Context) error{func(ctx context.Context) (err error) {
-		if prs, err = delivery.ListPullRequestsInWindow(ctx, pool, day, end); err != nil {
-			return fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)
+		if prs, err = delivery.ListPullRequestsOnDays(ctx, pool, days); err != nil {
+			return fmt.Errorf("read the pull requests of %s: %w", daysOf(days), err)
 		}
 		return nil
 	}}
@@ -277,67 +297,82 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 		one.settings.DeployRepo = repo
 		parts = append(parts,
 			func(ctx context.Context) (err error) {
-				if one.deploys, err = delivery.ReadDeploys(ctx, pool, one.settings, day, end); err != nil {
-					return fmt.Errorf("read the deploys of %s on %s: %w", repo, day.Format(time.DateOnly), err)
+				if one.deploys, err = delivery.ReadDaysDeploys(ctx, pool, one.settings, days, applyRows[repo] == nil); err != nil {
+					return fmt.Errorf("read the deploys of %s on %s: %w", repo, daysOf(days), err)
 				}
 				return nil
 			},
 			func(ctx context.Context) (err error) {
-				if held := applyRows[repo]; held != nil {
-					one.applies, err = held.Since(day)
-				} else {
-					one.applies, err = delivery.ReadApplyRows(ctx, pool, one.settings, day)
-				}
-				if err != nil {
-					return fmt.Errorf("read the deploy runs of %s from %s on: %w", repo, day.Format(time.DateOnly), err)
-				}
-				return nil
-			},
-			func(ctx context.Context) (err error) {
-				if one.ci, err = delivery.ReadCIRows(ctx, pool, repo, day, end, cardNames); err != nil {
-					return fmt.Errorf("read the CI runs of %s on %s: %w", repo, day.Format(time.DateOnly), err)
+				if one.ci, err = delivery.ReadCIDays(ctx, pool, repo, days, cardNames); err != nil {
+					return fmt.Errorf("read the CI runs of %s on %s: %w", repo, daysOf(days), err)
 				}
 				return nil
 			})
 	}
 	if err := store.ReadSideBySide(ctx, parts...); err != nil {
-		return deliveryRead{}, err
-	}
-	held := [][]delivery.DeliveryPullRequest{prs}
-	for _, one := range reads {
-		held = append(held, one.deploys.Earlier.PullRequests)
+		return nil, err
 	}
 	var issueKeys []string
-	for _, list := range held {
+	var checks []delivery.DeliveryRun
+	named := map[string]bool{}
+	addKeys := func(list []delivery.DeliveryPullRequest) {
 		for _, pr := range list {
-			if pr.IssueKey != nil {
-				issueKeys = append(issueKeys, *pr.IssueKey)
+			if pr.IssueKey != nil && !named[*pr.IssueKey] {
+				named[*pr.IssueKey], issueKeys = true, append(issueKeys, *pr.IssueKey)
 			}
 		}
 	}
-	var checks []delivery.DeliveryRun
-	for _, one := range reads {
-		checks = append(checks, one.ci.Checks.Runs...)
+	for d := range days {
+		addKeys(prs[d])
+		for _, one := range reads {
+			addKeys(one.deploys.Deploys[d].Earlier.PullRequests)
+			checks = append(checks, one.ci[d].Checks.Runs...)
+		}
 	}
 	attribute, err := readAttribution(ctx, s, issueKeys, checks)
 	if err != nil {
-		return deliveryRead{}, err
+		return nil, err
 	}
 
-	read := deliveryRead{Day: day, repos: deployRepoNames(repos), days: make([]DeliveryDay, 0, len(repos)+1)}
-	alone := DeliveryDay{Day: day, cards: cards}
-	for _, pr := range prs {
-		// A pull request whose opening is not known yet (a partial row) has no lead time to
-		// count, as the delivery routes leave it out of theirs.
-		if pr.CreatedAt != nil {
-			alone.prs = append(alone.prs, attribute.pullRequest(pr, nil, nil))
+	built := make([]deliveryRead, len(days))
+	for d, day := range days {
+		read := deliveryRead{Day: day, repos: deployRepoNames(repos), days: make([]DeliveryDay, 0, len(repos)+1)}
+		alone := DeliveryDay{Day: day, cards: cards}
+		for _, pr := range prs[d] {
+			// A pull request whose opening is not known yet (a partial row) has no lead time to
+			// count, as the delivery routes leave it out of theirs.
+			if pr.CreatedAt != nil {
+				alone.prs = append(alone.prs, attribute.pullRequest(pr, nil, nil))
+			}
 		}
+		read.days = append(read.days, alone)
+		for _, one := range reads {
+			held := &one.deploys.Applies
+			if walked := applyRows[one.settings.DeployRepo]; walked != nil {
+				held = walked
+			}
+			applies, err := held.Since(day)
+			if err != nil {
+				return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", one.settings.DeployRepo, day.Format(time.DateOnly), err)
+			}
+			read.days = append(read.days, attribute.dayAs(day, cards, prs[d], repoReads{
+				settings: one.settings, since: one.since, deploys: one.deploys.Deploys[d], applies: applies, ci: one.ci[d],
+			}))
+		}
+		built[d] = read
 	}
-	read.days = append(read.days, alone)
-	for _, one := range reads {
-		read.days = append(read.days, attribute.dayAs(day, cards, prs, one))
+	return built, nil
+}
+
+// daysOf names days in an error: the one day, or the first and the last.
+func daysOf(days []time.Time) string {
+	switch len(days) {
+	case 0:
+		return "no day"
+	case 1:
+		return days[0].Format(time.DateOnly)
 	}
-	return read, nil
+	return fmt.Sprintf("%d days from %s to %s", len(days), days[0].Format(time.DateOnly), days[len(days)-1].Format(time.DateOnly))
 }
 
 // dayAs is the day's rows as read with one.settings.DeployRepo as the deploy repository: prs, the

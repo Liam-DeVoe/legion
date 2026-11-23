@@ -630,8 +630,10 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	// The arrays a second write of the day sends, holding one item, one row and one reading fewer.
 	again, kept, written := members[1:], rows[1:], ids[1:]
 	families, memberDeployRepos, keys, shippedBy := make([]string, len(again)), make([]string, len(again)), make([]string, len(again)), make([]string, len(again))
+	memberProjects, memberDays := make([]string, len(again)), make([]time.Time, len(again))
 	for i, member := range again {
 		families[i], memberDeployRepos[i], keys[i], shippedBy[i] = member.Family, member.DeployRepo, member.RowKey, member.ShippedBy
+		memberProjects[i], memberDays[i] = "EVAL", day
 	}
 	projects, evals, rowDeployRepos := make([]string, len(kept)), make([]string, len(kept)), make([]string, len(kept))
 	series, repos, days := make([]string, len(kept)), make([]string, len(kept)), make([]time.Time, len(kept))
@@ -674,24 +676,29 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	}{
 		{
 			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
-			arguments:  []any{"EVAL", day, families, memberDeployRepos, keys, shippedBy, deliveryDayFamilies, KindDelivery, []string(nil), []string(nil)},
-			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text[]", "text", "text[]", "text[]"},
-			literals: []string{"'EVAL'", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array['']",
-				"array['delivery', 'ci']", "'delivery'", "null::text[]", "null::text[]"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, memberProjects, memberDays, families, memberDeployRepos, keys, shippedBy,
+				deliveryDayFamilies, KindDelivery, []string(nil), []string(nil)},
+			parameters: []string{"text[]", "date[]", "text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "text[]", "text", "text[]", "text[]"},
+			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL']", "array[" + date + "]::date[]", "array['delivery']",
+				"array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array['']", "array['delivery', 'ci']", "'delivery'", "null::text[]",
+				"null::text[]"},
 		},
 		{
 			name: "goneMembersDeleteStatement", statement: goneMembersDeleteStatement,
-			arguments:  []any{"EVAL", deliveryDayFamilies, day, families, memberDeployRepos, keys, []string(nil), []string(nil)},
-			parameters: []string{"text", "text[]", "date", "text[]", "text[]", "text[]", "text[]", "text[]"},
-			literals: []string{"'EVAL'", "array['delivery', 'ci']", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']",
-				"null::text[]", "null::text[]"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, deliveryDayFamilies, memberProjects, families, memberDeployRepos, keys, memberDays,
+				[]string(nil), []string(nil)},
+			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text[]"},
+			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['delivery', 'ci']", "array['EVAL']", "array['delivery']",
+				"array['acme/deploy-00']", "array['pull_request:acme/web#1']", "array[" + date + "]::date[]", "null::text[]", "null::text[]"},
 		},
 		{
 			name: "deleteStaleDaysStatement", statement: deleteStaleDaysStatement,
-			arguments:  []any{"EVAL", day, evalIDs, writerComputation, evals, rowDeployRepos, series, repos, []string(nil), []string(nil)},
-			parameters: []string{"text", "date", "text[]", "text", "text[]", "text[]", "text[]", "text[]", "text[]", "text[]"},
-			literals: []string{"'EVAL'", date, "array['EVAL/deploy-frequency']", "'computation'", "array['EVAL/deploy-frequency']",
-				"array['acme/deploy-00']", "array['deploys']", "array['acme/repo-00000']", "null::text[]", "null::text[]"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, evalIDs, writerComputation, projects, evals, rowDeployRepos, series, repos, days,
+				[]string(nil), []string(nil)},
+			parameters: []string{"text[]", "date[]", "text[]", "text", "text[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text[]"},
+			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'computation'", "array['EVAL']",
+				"array['EVAL/deploy-frequency']", "array['acme/deploy-00']", "array['deploys']", "array['acme/repo-00000']", "array[" + date + "]::date[]",
+				"null::text[]", "null::text[]"},
 		},
 		{
 			name: "deleteStaleSettingsDaysStatement", statement: deleteStaleSettingsDaysStatement,
