@@ -51,6 +51,7 @@ import {
   blockAttributeLabel,
   type CheckState,
   coverageGapKind,
+  coverageNotes,
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
@@ -104,6 +105,9 @@ export interface Draft {
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
    *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
+  /** The coverage read's own lines a requirement it holds draws in its body
+   *  (`TreeNode.coverageNotes`); absent where the read holds none, and on every other draft. */
+  coverageNotes?: string[];
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
   gaps: GapKind[];
@@ -1230,6 +1234,10 @@ function addRequirements(
   }
   // The spec, which a statement's words are a block of and its references resolve against.
   const specId = primarySpec(reads.issue)?.id;
+  // The coverage read's own lines, which name no requirement's gap: while a document of the issue
+  // is still being indexed, its line, which the server writes in place of every missing check
+  // (`coverageNotes`). Each requirement draws them, since its counts wait on that document too.
+  const notes = coverageNotes(reads.coverage);
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -1239,6 +1247,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
+    if (notes.length > 0) draft.coverageNotes = notes;
     draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapers.get(id));
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};

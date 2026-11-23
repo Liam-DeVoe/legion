@@ -559,8 +559,10 @@ type approvalRequestResponse struct {
 	Approval   artifactApprovalRead `json:"approval"`
 	// Coverage is one line per requirement of the spec with no check, as the approver reads
 	// them (coverage.go); never a missing plan task, since the plan comes after the
-	// approval, and empty for any document that is not an issue's spec. A gap refuses
-	// nothing: the request is recorded as it always was.
+	// approval, and empty for any document that is not an issue's spec. While a document of
+	// the issue owes its block index it names no requirement as lacking a check, and carries
+	// one line per such document in their place (owedGap). A gap refuses nothing: the request
+	// is recorded as it always was.
 	Coverage []string `json:"coverage"`
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.

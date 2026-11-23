@@ -556,6 +556,27 @@ test("a requirement no decision shaped sits under the issue as a node nothing ex
   expect(placementsOf(root, settled).map((one) => one.parent)).toEqual([KEY]);
 });
 
+// While a document of the issue is still being indexed the coverage read names no requirement as
+// lacking a check, and writes that document's line among its own gaps in their place: each
+// statement carries no gap and that line, in its own words, to draw where its gaps are.
+test("a statement whose coverage waits on a document still being indexed carries its line and no gap", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const root = buildIssueTree({
+    coverage: {
+      ...coverage([requirement("r1", "The page waits for the index.")]),
+      gaps: [owed],
+      owed_documents: [{ artifact_id: spec.id, version: 12 }],
+    },
+    documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
+    issue: issueDetails([spec]),
+  });
+
+  const statement = nodeOf(root, blockNodeId(SPEC, "r1"));
+  expect(statement?.gaps).toEqual([]);
+  expect(statement?.coverageNotes).toEqual([owed]);
+});
+
 // R9: a decision the model marks unsure carries the mark its row says in one word, and one the
 // model does not mark carries none.
 test("a decision the model marks unsure is marked so, and one it does not is not", () => {

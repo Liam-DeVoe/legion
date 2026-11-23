@@ -194,6 +194,11 @@ export interface TreeNode {
   readonly chips: readonly NodeChip[];
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
+  /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
+   *  page's words (`coverageNotes`): while a document of the issue is still being indexed, that
+   *  document's line, which the server writes in place of every missing check, so the requirement
+   *  is drawn lacking none and says why. Absent where the read holds none. */
+  readonly coverageNotes?: readonly string[];
   /** What the model holds about the node that a row has no line for, drawn in its body. */
   readonly facts: readonly NodeFact[];
   readonly gaps: readonly GapKind[];
@@ -668,6 +673,7 @@ function assemble(
       children,
       chips: draft.chips,
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
+      ...(draft.coverageNotes === undefined ? {} : { coverageNotes: draft.coverageNotes }),
       facts: draft.facts,
       gaps: draft.gaps,
       held: heldBy(children),

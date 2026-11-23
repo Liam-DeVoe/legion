@@ -48,7 +48,7 @@ import {
   type ResultCommitStands,
 } from "@legion/contracts";
 
-import type { Actor } from "../../api/types";
+import type { Actor, IssueCoverage } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import {
@@ -594,10 +594,49 @@ export const GAP_WORDS = freeze({
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
  * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing.
+ * gap the page draws (R10), so that line answers nothing, and so does the line of a document
+ * still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
+}
+
+/**
+ * The line the coverage read writes for a document of the issue that owes its block index, in
+ * place of every missing check and plan task while it does (the server's `owedGap`): `<file
+ * name> version <n> is still being indexed; its coverage shows once that ends.`.
+ */
+const OWED_COVERAGE_LINE =
+  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
+
+/**
+ * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
+ * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
+ * of a document still being indexed, the line's own words. While a document owes its block
+ * index the server names no requirement as lacking a check, so the page draws none as lacking
+ * one either, and says instead which document's coverage waits and at which version; that line
+ * names a file, which the server's words name and no word of the page could. Any other line
+ * draws nothing.
+ */
+export function coverageLineWords(line: string): string | undefined {
+  const kind = coverageGapKind(line);
+  if (kind !== undefined) return GAP_LINES[kind];
+  return OWED_COVERAGE_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
+ * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
+ * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
+ * document still being indexed, which says why no requirement is drawn as lacking a check: today's
+ * Spec tab draws these over its list of requirements (`SpecRequirements`), and the outline in the
+ * body of each statement (`TreeNode.coverageNotes`).
+ */
+export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
+  return (coverage?.gaps ?? []).flatMap((line) => {
+    const words = coverageGapKind(line) === undefined ? coverageLineWords(line) : undefined;
+    return words === undefined ? [] : [words];
+  });
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist

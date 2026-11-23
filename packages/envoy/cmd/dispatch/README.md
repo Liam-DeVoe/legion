@@ -5765,6 +5765,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
   A requirement at `proposed` is a question still open and raises neither gap, here or in an approval request's answer (`missingCheckGaps`); one at `settled` or `live` is counted as every requirement is.
+  While `owed_documents` names a document of the issue that owes its block index, no requirement raises either gap, in `gaps` or in its own `gaps`, since the counts may not hold what that document holds yet;
+  `gaps` holds in their place one line for each such document, `<file name> version <n> is still being indexed; its coverage shows once that ends.` (`owedGap`), and an approval request's answer carries the same lines where it would name the missing checks.
 
   Nothing is ever refused for a gap.
 
@@ -6081,11 +6083,12 @@ Each item below names a path with its method and identity, then its purpose.
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
   It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-  it is empty for a document that is not a spec.
 
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+  - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
+    it is empty for a document that is not a spec.
+    While a document of the issue owes its block index, it names no requirement with no check and carries in their place the coverage read's line for each such document, `<file name> version <n> is still being indexed; its coverage shows once that ends.`.
+    It never names a missing plan task, since the plan comes after the approval;
+    a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 
@@ -6488,10 +6491,11 @@ Each item below names a status and code, then its meaning.
   A refusal for proof names the project instead, and says that the request's credential does not prove the session.
   The check holds the issues of a project only once Dispatch has taken a role-holder publication for an issue of that project, which marks it (`project_role_holder_marks`), so nothing changes for a project until its daemon publishes its first role holders.
   A create under no parent is not checked, nor is an anchored comment, ask or suggestion: such a write adds only its writer's mark around words others wrote, and a comment or a suggestion is how a worker proposes a change to the architect.
-  The same check holds every write of a requirement, criterion or check node of such an issue, or of a value or a relation out of one (`refuseSpecWriterOfNode`): its state and its settle (`POST /api/v1/issues/{key}/nodes/{id}/state`, `.../settle`), a pointer out of it, a requirement's `constrained_by` (`.../pointers`), and an edit of the issue's tree artifact that creates, changes, removes or moves one (`refuseSpecWriterOfTreeEdit`).
-  Its message then names the node by its type and its `dispatch://` address, and its log line carries the node.
-  A plan node, a result, a lens, a finding, a risk and a constraint are no such nodes, and a relation out of one of them into such a node, a risk's `prevented_by` among them, is a relation out of it, so a worker still writes each.
-  The pre-mortem conversion's `moved_to` runs out of the document it retires, so the conversion is not checked.
+
+  - The same check holds every write of a requirement, criterion or check node of such an issue, or of a value or a relation out of one (`refuseSpecWriterOfNode`): its state and its settle (`POST /api/v1/issues/{key}/nodes/{id}/state`, `.../settle`), a pointer out of it, a requirement's `constrained_by` (`.../pointers`), and an edit of the issue's tree artifact that creates, changes, removes or moves one (`refuseSpecWriterOfTreeEdit`).
+    Its message then names the node by its type and its `dispatch://` address, and its log line carries the node.
+    A plan node, a result, a lens, a finding, a risk and a constraint are no such nodes, and a relation out of one of them into such a node, a risk's `prevented_by` among them, is a relation out of it, so a worker still writes each.
+    The pre-mortem conversion's `moved_to` runs out of the document it retires, so the conversion is not checked.
 
 - `409 DOC_SCHEMA`
 
