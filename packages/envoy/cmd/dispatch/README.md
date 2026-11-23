@@ -4491,6 +4491,13 @@ Each item below names a path with its method and identity, then its purpose.
   The `/ws/live` `project-timeline` view (project, window, query: the search, the facets and `limit`, 1 up to the most rows a window holds, and no `offset`) carries the same body for its limit of rows from the newest; a page grows it by subscribing the same `sub` again with a higher `limit` and a resume holding its rows, and is sent only the rows it lacks.
   `400 INVALID_PROJECT` for a key that is not a project key, `400 INVALID_QUERY` for a malformed query, `404 PROJECT_NOT_FOUND`, `404 DELIVERY_NOT_CONFIGURED` without a `delivery_settings` row.
 
+- `/api/v1/projects/{key}/deploy-runs/{id}?repo=` (GET; cookie, trusted header, or bearer)
+
+  One run with every job it ran, by start, each with its result and timings, `{id, url, jobs}` as `GET /api/v1/delivery/runs/{id}` answers a run: the drill-down of a run row of the project's timeline.
+  A run id is one repository's, so `repo` (required) names the repository the run is in, as the timeline's `deploy` and `failed_run` rows do; it must be the repository of a `github_workflow` deploy source of a project with delivery on.
+  The run is answered where it counts for the project its path names as the timeline's rows are kept (`evals.Attribution`): a deploy run on main counts for the projects of the pull requests it ships first, whichever project's source the repository is, so a deploy in another project's repository that shipped this project's pull request opens here.
+  `400 INVALID_PROJECT` for a key that is not a project key, `400 RUN_ID_INPUT` for an id that is not a positive integer, `400 INVALID_QUERY` for no `repo` or `repo` named twice, `404 PROJECT_NOT_FOUND`, `404 NOT_FOUND` for a repository no delivery-on project's source reads, for no such run of it, and for a run that counts for no project with this key.
+
 - `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).

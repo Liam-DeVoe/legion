@@ -205,6 +205,15 @@ type projectTimelineQuery struct {
 	Offset int `query:"offset"`
 }
 
+// projectDeployRunQuery is GET /api/v1/projects/{key}/deploy-runs/{id}'s query: the repository the
+// run is in, which the run id alone does not name, since a project's deploy sources read several.
+type projectDeployRunQuery struct {
+	// Repo is the owner/name of the repository the run is in, as the project timeline's deploy and
+	// failed_run rows name it: the repository of a github_workflow deploy source of a project with
+	// delivery on. It is required.
+	Repo string `query:"repo"`
+}
+
 // issueResultsQuery is GET /api/v1/issues/{key}/results's query.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
@@ -856,6 +865,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/projects/{key}/timeline": {
 		Status: http.StatusOK, Response: projectTimelineResponse{}, Params: projectTimelineQuery{},
+	},
+	"GET /api/v1/projects/{key}/deploy-runs/{id}": {
+		Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}, Params: projectDeployRunQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},

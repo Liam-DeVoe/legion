@@ -370,8 +370,9 @@ type DeliveryTimelineResponse struct {
 	SessionPRCounts map[string]int                   `json:"session_pr_counts"`
 }
 
-// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}`: the drill-down's job
-// list, with each job's result and timings.
+// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}` and
+// `GET /api/v1/projects/{key}/deploy-runs/{id}`: the drill-down's job list, with each job's result
+// and timings.
 type DeliveryRunJobDetailView struct {
 	Name        string                 `json:"name"`
 	StartedAt   *time.Time             `json:"started_at"`
@@ -379,8 +380,9 @@ type DeliveryRunJobDetailView struct {
 	Conclusion  *DeliveryJobConclusion `json:"conclusion"`
 }
 
-// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`: one run of the deploy repository with
-// every job it ran, ordered by when each started (a job that never started last, then by name).
+// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`, one run of the deploy repository, and
+// `GET /api/v1/projects/{key}/deploy-runs/{id}`, one run of a deploy source's repository: the run
+// with every job it ran, ordered by when each started (a job that never started last, then by name).
 type DeliveryRunDetailView struct {
 	ID   int64                      `json:"id"`
 	URL  string                     `json:"url"`

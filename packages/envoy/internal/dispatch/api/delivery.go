@@ -765,15 +765,14 @@ func nextUTCMidnight(t time.Time) time.Time {
 }
 
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of the deploy repository with
-// every job it ran, in ListRunJobs' order (by when each started, a job that never started last,
-// then by name), for the drill-down's job lists.
+// every job it ran (readDeliveryRun, deliveryRunDetail), for the drill-down's job lists.
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	runID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || runID < 1 {
-		writeError(w, "RUN_ID_INPUT", http.StatusBadRequest, "run id must be a positive integer")
+	runID, err := parseDeliveryRunID(r.PathValue("id"))
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -782,25 +781,52 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	pool := s.deps.Store.Pool
-	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
+	run, err := readDeliveryRun(ctx, pool, settings.DeployRepo, runID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
-			return
-		}
 		s.writeHandlerError(w, err)
 		return
 	}
-	jobs, err := delivery.ListRunJobs(ctx, pool, settings.DeployRepo, runID)
+	detail, err := deliveryRunDetail(ctx, pool, run)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, detail)
+}
+
+// parseDeliveryRunID reads a run id of the path: a positive integer, else 400 RUN_ID_INPUT.
+func parseDeliveryRunID(value string) (int64, error) {
+	runID, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || runID < 1 {
+		return 0, errorf(http.StatusBadRequest, "RUN_ID_INPUT", "run id must be a positive integer")
+	}
+	return runID, nil
+}
+
+// readDeliveryRun reads run runID of repo, or answers 404 NOT_FOUND where repo holds no such run:
+// a run id is one repository's.
+func readDeliveryRun(ctx context.Context, pool *store.Pool, repo string, runID int64) (delivery.DeliveryRun, error) {
+	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, repo, runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return delivery.DeliveryRun{}, errorf(http.StatusNotFound, "NOT_FOUND", "no run %d of %s", runID, repo)
+	}
+	return run, err
+}
+
+// deliveryRunDetail is run with every job it ran, in ListRunJobs' order (by when each started, a
+// job that never started last, then by name), each with its result and timings: the drill-down's
+// job lists, which GET /api/v1/delivery/runs/{id} and GET /api/v1/projects/{key}/deploy-runs/{id}
+// both answer.
+func deliveryRunDetail(ctx context.Context, pool *store.Pool, run delivery.DeliveryRun) (delivery.DeliveryRunDetailView, error) {
+	jobs, err := delivery.ListRunJobs(ctx, pool, run.Repo, run.RunID)
+	if err != nil {
+		return delivery.DeliveryRunDetailView{}, err
 	}
 	views := make([]delivery.DeliveryRunJobDetailView, len(jobs))
 	for i, job := range jobs {
 		views[i] = delivery.DeliveryRunJobDetailView{Name: job.Name, StartedAt: job.StartedAt, CompletedAt: job.CompletedAt, Conclusion: job.Conclusion}
 	}
-	WriteJSON(w, http.StatusOK, delivery.DeliveryRunDetailView{ID: run.RunID, URL: run.URL, Jobs: views})
+	return delivery.DeliveryRunDetailView{ID: run.RunID, URL: run.URL, Jobs: views}, nil
 }
 
 func deliveryJobViews(jobs []delivery.DeliveryRunJob) []delivery.DeliveryRunJobView {
