@@ -390,14 +390,16 @@ test("below xl, the shut-sheet rule is the compact sheet's alone: it hides no ca
 // editor is bound (`useDetailsDrawsConversation`); on the page that is after the build the first
 // batch comes out of. So Details open with no editor bound waits for the batch, below `xl` and at
 // `xl` and above, where a margin outside Details is the desktop column, which reads at once; so
-// does Details closed at `xl` and above; and Details open with the editor bound reads before the
-// batch, below `xl` and at `xl` and above. The bound rows bind the editor with the batch still
-// held, which the page does not do, so that their reads show what `seen` says for Details alone:
-// with `seen` false in Details, they wait for the batch.
+// does Details closed at `xl` and above, with no editor bound and with the editor bound, where
+// Details draws the conversation but no reader sees it; and Details open with the editor bound
+// reads before the batch, below `xl` and at `xl` and above. The bound rows bind the editor with
+// the batch still held, which the page does not do, so that their reads show what `seen` says for
+// Details alone: with `seen` false in Details, they wait for the batch.
 test.each([
   [1024, "open", "unbound", "after"],
   [1440, "open", "unbound", "after"],
   [1440, "closed", "unbound", "after"],
+  [1440, "closed", "bound", "after"],
   [1024, "open", "bound", "before"],
   [1440, "open", "bound", "before"],
 ] as const)("at %i px with Details %s and the document's editor %s, the margin reads its comments and answered asks %s the document's first batch", async (width, drawer, editor, when) => {

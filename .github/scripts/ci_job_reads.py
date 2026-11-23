@@ -3133,6 +3133,10 @@ GATES = [
          "packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts:207, the new URL there, holds the workflow's "
          "budgets to the measurements beside them, and e2e/__tests__/unit-repeat.test.ts:1364 runs the test step's own "
          f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+        (".github/scripts/dispatch-browser-shard-suite.sh",
+         "packages/dispatch/e2e/__tests__/shard-split.test.ts:132, the new URL there, reads the leg count from the "
+         "script's `--shard` denominator and holds each row to one leg at that count, and "
+         f"{at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/__tests__/psql-password.test.ts:161 sources it, and "
                                            "packages/dispatch/e2e/acceptance/replace-blocks.sh:113 does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                            f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
