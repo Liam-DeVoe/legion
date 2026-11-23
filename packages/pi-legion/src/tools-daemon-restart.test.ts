@@ -291,7 +291,13 @@ test("register_plan's stopped check is the daemon's answer: passed on once, and 
   const stopped = JSON.parse(daemonFixture("plan-check-stopped.json")) as { error: string };
   const live = liveDaemon({ path: "/legion/v1/plans/register", status: 503, body: stopped });
   const clock = virtualClock();
-  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 0), clock, [], "LEGION-208");
+  const tool = toolFor(
+    "architect",
+    restartingClient(live.url, refusingOrigin(), 0),
+    clock,
+    [],
+    "LEGION-208"
+  );
 
   const { result, updates } = await run(tool, {
     op: "register_plan",

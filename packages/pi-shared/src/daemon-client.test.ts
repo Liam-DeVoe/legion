@@ -610,7 +610,10 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
 test("register_plan's 503 PLAN_CHECK_STOPPED is the daemon's answer, handed back once and never read as a dropped attempt", async () => {
   const stopped = daemonFixture("plan-check-stopped.json");
   const { fetch, requests } = daemon(() => Response.json(stopped, { status: 503 }));
-  const client = createLegionDaemonClient("http://daemon.test", { pluginContract: CONTRACT, fetch });
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   let clock = 0;
   const waits: number[] = [];
   const refused = await retryWhileDaemonRestarts(
