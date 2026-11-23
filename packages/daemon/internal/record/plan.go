@@ -165,7 +165,7 @@ type PlanStep struct {
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
 	// gives before the step is written and nothing else writes. A step of the key owner holds
-	// none (20261117213545 named every other step a release before the column wrote).
+	// none (20261123203837 named every other step a release before the column wrote).
 	Agent claim.Agent
 }
 

@@ -8,9 +8,9 @@ import (
 )
 
 // podResumeRepairVersion is the version of the migration this file tests.
-const podResumeRepairVersion = 20261123114449
+const podResumeRepairVersion = 20261123203842
 
-// claimTables is what 20261121183336 and 20261122072945 shape, read as text: each index and
+// claimTables is what 20261123203838 and 20261123203839 shape, read as text: each index and
 // constraint of pod_resumes and pod_wake_backstops, and each column's default and nullability.
 func claimTables(t *testing.T, store *Store) []string {
 	t.Helper()
@@ -23,19 +23,22 @@ func claimTables(t *testing.T, store *Store) []string {
 			from information_schema.columns where table_name in ('pod_resumes', 'pod_wake_backstops') order by 1`))
 }
 
-// A database can have run 20261121183336 and 20261122072945 in a shape each had before any release
-// carried it, and recorded both, so it never runs their present shapes. Three such shapes stood:
-// 20261121183336 naming each resume's claim and keeping one open resume per role; the same beside
-// 20261122074350, which then made the open resume one per claim and is no migration of this
-// release; and the head 4caa2ff1, where 20261121183336 gave every resume the empty string as its
-// claim and named none, 20261122074350 kept the one open resume per role for the resumes of no
-// claim beside one open resume per claim for the others, and 20261122072945 did the same to the
-// backstops. 20261123114449 brings each to the present shapes, those a database that ran neither
-// is given: every resume and backstop names a claim, the column refuses the empty string and has
-// no default, one open resume and one open backstop per claim over every row, none per role, and
-// no version row of 20261122074350, whose file no release carries. Of two open resumes, or two
-// open backstops, of one claim, the newest stands. Its way back deletes its own version row alone,
-// and the roll-forward runs it again, which changes nothing.
+// A database can have run the pod_resume_claim and pod_wake_backstop_claim migrations in a shape
+// each had before any release carried it, and recorded both, so it never runs their present
+// shapes. Three such shapes stood: pod_resume_claim naming each resume's claim and keeping one open
+// resume per role; the same beside 20261122074350, which made the open resume one per claim and is
+// no migration of this release; and the head 4caa2ff1, where pod_resume_claim gave every resume the
+// empty string as its claim and named none, 20261122074350 kept the one open resume per role for
+// the resumes of no claim beside one open resume per claim for the others, and
+// pod_wake_backstop_claim did the same to the backstops. Each case writes its shape over a database
+// migrated to just before 20261123203838 and records each migration it stands for under the
+// version this release gives it, so Migrate does not run that migration again. 20261123203842
+// brings each to the present shapes, those a database that ran neither is given: every resume and
+// backstop names a claim, the column refuses the empty string and has no default, one open resume
+// and one open backstop per claim over every row, none per role, and no version row of
+// 20261122074350, whose file no release carries. Of two open resumes, or two open backstops, of
+// one claim, the newest stands. Its way back deletes its own version row alone, and the
+// roll-forward runs it again, which changes nothing.
 func TestTheOpenResumeRepairGivesADatabaseOfAnEarlierShapeOneOpenResumePerClaim(t *testing.T) {
 	ctx := context.Background()
 	fresh := emptyStore(t)
@@ -47,24 +50,24 @@ func TestTheOpenResumeRepairGivesADatabaseOfAnEarlierShapeOneOpenResumePerClaim(
 		name    string
 		earlier []string
 	}{
-		{name: "20261121183336 naming each resume's claim alone", earlier: []string{
+		{name: "pod_resume_claim naming each resume's claim alone", earlier: []string{
 			`alter table pod_resumes add column claim text not null default ''`,
 			`update pod_resumes set claim = 'legion-' || project || '-' || lower(issue) || '-' || role`,
 			`alter table pod_resumes alter column claim drop default, add constraint pod_resumes_claim_check check (claim <> '')`,
-			`insert into schema_version (version) values (20261121183336)`,
+			`insert into schema_version (version) values (20261123203838)`,
 		}},
-		{name: "20261121183336 and 20261122074350", earlier: []string{
+		{name: "pod_resume_claim and 20261122074350", earlier: []string{
 			`alter table pod_resumes add column claim text not null default ''`,
 			`update pod_resumes set claim = 'legion-' || project || '-' || lower(issue) || '-' || role`,
 			`alter table pod_resumes alter column claim drop default, add constraint pod_resumes_claim_check check (claim <> '')`,
-			`insert into schema_version (version) values (20261121183336)`,
+			`insert into schema_version (version) values (20261123203838)`,
 			`drop index pod_resumes_one_open_per_role`,
 			`create unique index pod_resumes_one_open_per_claim on pod_resumes (project, issue, claim) where first_turn_at is null and closed_at is null`,
 			`insert into schema_version (version) values (20261122074350)`,
 		}},
 		{name: "the head 4caa2ff1, whose resumes and backstops name no claim", earlier: []string{
 			`alter table pod_resumes add column claim text not null default ''`,
-			`insert into schema_version (version) values (20261121183336)`,
+			`insert into schema_version (version) values (20261123203838)`,
 			`drop index pod_resumes_one_open_per_role`,
 			`create unique index pod_resumes_one_open_per_role on pod_resumes (project, issue, role) where first_turn_at is null and closed_at is null and claim = ''`,
 			`create unique index pod_resumes_one_open_per_claim on pod_resumes (project, issue, claim) where first_turn_at is null and closed_at is null and claim <> ''`,
@@ -73,7 +76,7 @@ func TestTheOpenResumeRepairGivesADatabaseOfAnEarlierShapeOneOpenResumePerClaim(
 			`drop index pod_wake_backstops_open`,
 			`create unique index pod_wake_backstops_open on pod_wake_backstops (project, issue, role) where not fired and claim = ''`,
 			`create unique index pod_wake_backstops_open_claim on pod_wake_backstops (project, issue, claim) where not fired and claim <> ''`,
-			`insert into schema_version (version) values (20261122072945)`,
+			`insert into schema_version (version) values (20261123203839)`,
 			// A resume and a backstop the release before wrote, or one of that head's for a claim
 			// it did not name: each names no claim, and is older than the tester's own below.
 			`insert into pod_resumes (release_id, project, issue, role, kind, at) values (0, 'legion', 'LEGION-208', 'tester', 'delivery', now() - interval '1 hour')`,
@@ -147,9 +150,9 @@ func TestTheOpenResumeRepairGivesADatabaseOfAnEarlierShapeOneOpenResumePerClaim(
 			refused(`insert into pod_wake_backstops (project, issue, role, claim, due_at) values ('legion', 'LEGION-208', 'reviewer', '', now())`,
 				"pod_wake_backstops_claim_check")
 			versions := func() []string {
-				return rowsAsText(t, store, `select version::text from schema_version where version in (20261122074350, 20261123114449) order by version`)
+				return rowsAsText(t, store, `select version::text from schema_version where version in (20261122074350, 20261123203842) order by version`)
 			}
-			if got := versions(); len(got) != 1 || got[0] != "20261123114449" {
+			if got := versions(); len(got) != 1 || got[0] != "20261123203842" {
 				t.Fatalf("the version rows of 20261122074350 and the repair are %q, want the repair's alone", got)
 			}
 
@@ -160,7 +163,7 @@ func TestTheOpenResumeRepairGivesADatabaseOfAnEarlierShapeOneOpenResumePerClaim(
 			if _, err := store.Migrate(ctx); err != nil {
 				t.Fatalf("roll forward after the way back: %v", err)
 			}
-			if got := versions(); len(got) != 1 || got[0] != "20261123114449" {
+			if got := versions(); len(got) != 1 || got[0] != "20261123203842" {
 				t.Fatalf("the version rows after the roll-forward are %q, want the repair's alone", got)
 			}
 			if got := claimTables(t, store); !slices.Equal(got, present) {

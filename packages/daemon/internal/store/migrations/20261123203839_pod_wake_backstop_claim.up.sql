@@ -1,4 +1,4 @@
--- 20261122072945_pod_wake_backstop_claim.up.sql — the claim a backstop wakes, on the backstop.
+-- 20261123203839_pod_wake_backstop_claim.up.sql — the claim a backstop wakes, on the backstop.
 --
 -- pod_wake_backstops.claim is the token of the claim the backstop is armed for
 -- (store.PodWakeBackstop.Claim): the worker of the issue's open phase when it was armed, the claim
@@ -44,7 +44,7 @@
 -- drop index if exists pod_wake_backstops_open;
 -- create unique index pod_wake_backstops_open on pod_wake_backstops (project, issue, role) where not fired;
 -- alter table pod_wake_backstops drop column if exists claim;
--- delete from schema_version where version = 20261122072945;
+-- delete from schema_version where version = 20261123203839;
 -- commit;
 alter table pod_wake_backstops add column claim text not null default '';
 update pod_wake_backstops set claim = 'legion-' || project || '-' || lower(issue) || '-' || role;

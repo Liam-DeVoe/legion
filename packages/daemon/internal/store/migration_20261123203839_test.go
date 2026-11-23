@@ -9,9 +9,9 @@ import (
 
 // podWakeBackstopClaimVersion is the version of the migration this file tests, so the test can
 // migrate through everything before it whatever lands beside it.
-const podWakeBackstopClaimVersion = 20261122072945
+const podWakeBackstopClaimVersion = 20261123203839
 
-// 20261122072945 keys an open backstop by the claim it wakes (pod_wake_backstops.claim). A
+// 20261123203839 keys an open backstop by the claim it wakes (pod_wake_backstops.claim). A
 // backstop the release before armed was armed for its role's worker, the claim whose token that
 // release builds from the role, so the migration names that token on it, and the column then
 // refuses a backstop that names no claim. Two claims of one role each hold an open backstop of

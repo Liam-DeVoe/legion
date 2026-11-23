@@ -11,9 +11,9 @@ import (
 
 // podResumeClaimVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const podResumeClaimVersion = 20261121183336
+const podResumeClaimVersion = 20261123203838
 
-// 20261121183336 names on each resume the claim its wake brought back (pod_resumes.claim) and
+// 20261123203838 names on each resume the claim its wake brought back (pod_resumes.claim) and
 // makes the open resume one per claim, not one per role. A resume the release before wrote was the
 // wake of its role's own claim, the claim whose token the release before builds from the role, so
 // the migration names that token on it: the token claim.NewToken gives the resume's project, issue

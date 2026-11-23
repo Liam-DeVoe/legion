@@ -1,4 +1,4 @@
--- 20261123033101_claim_role_change.up.sql — the record that a claim took another role, for its
+-- 20261123203841_claim_role_change.up.sql — the record that a claim took another role, for its
 -- agent to be told that the GitHub tokens of its earlier role are no longer its to use.
 --
 -- claims.role_change is supervise.Claim.RoleChange: written where a claim takes the role of its
@@ -33,6 +33,6 @@
 --
 -- begin;
 -- alter table claims drop column if exists role_change;
--- delete from schema_version where version = 20261123033101;
+-- delete from schema_version where version = 20261123203841;
 -- commit;
 alter table claims add column role_change jsonb;

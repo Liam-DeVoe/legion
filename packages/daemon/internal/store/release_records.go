@@ -26,7 +26,7 @@ type PodRelease struct {
 	Roles []string
 	// Claims are the tokens of the claims the release suspended, sorted (pod_releases.claims).
 	// Two claims can hold one role, so this names what Roles cannot. A record the release before
-	// 20261122102933 wrote names none.
+	// 20261123203840 wrote names none.
 	Claims []string
 	// At is when the release completed.
 	At time.Time
@@ -48,7 +48,7 @@ type PodResume struct {
 	// Role is the role the wake was for.
 	Role string
 	// Claim is the token of the claim the wake brought back (pod_resumes.claim). Every resume
-	// names one: 20261121183336 named the role's own claim on each resume the release before wrote.
+	// names one: 20261123203838 named the role's own claim on each resume the release before wrote.
 	Claim string
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.

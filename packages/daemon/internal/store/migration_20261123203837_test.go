@@ -16,7 +16,7 @@ import (
 
 // planStepAgentVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const planStepAgentVersion = 20261117213545
+const planStepAgentVersion = 20261123203837
 
 // planStepAgents is each plan_steps row of the store, as `<issue> <generation>/<task>/<position>
 // <agent>`, ordered by those four: what the migration names, and what the way back drops.
@@ -47,7 +47,7 @@ func seedPlanSteps(t *testing.T, store *Store, issue string, generation int, ste
 	}
 }
 
-// 20261117213545 adds the name of each step's agent (record.PlanStep.Agent) and names every row
+// 20261123203837 adds the name of each step's agent (record.PlanStep.Agent) and names every row
 // it finds with the name record.NameAgents gave it. A step with no key is named for its role, which
 // named its agent in the release before. A step of the key owner has no name, since its agent is
 // the tree's architect. A step of any other key takes the role of the key's first row of its

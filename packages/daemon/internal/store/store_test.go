@@ -1104,13 +1104,13 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
 // column. So does a migration that changes a table a version of the list creates, as
-// 20261117213545 adds a column to 20261117034837's plan_steps: left out, it is applied as main's,
+// 20261123203837 adds a column to 20261117034837's plan_steps: left out, it is applied as main's,
 // before that table exists; and one that replaces an index a version of the list creates, as
-// 20261121183336 replaces 20261105183200's pod_resumes_one_open_per_role, and as 20261123114449
-// reads pod_resumes.claim and closed_at, which 20261121183336 and 20261105183200 add. It also reads
-// pod_wake_backstops.claim, which 20261122072945 adds; that version is not in the list, but a
+// 20261123203838 replaces 20261105183200's pod_resumes_one_open_per_role, and as 20261123203842
+// reads pod_resumes.claim and closed_at, which 20261123203838 and 20261105183200 add. It also reads
+// pod_wake_backstops.claim, which 20261123203839 adds; that version is not in the list, but a
 // database main migrated applies it in the first pass, and every other applies it in ascending
-// order, so it stands before 20261123114449 either way. 20261119203047 is the last migration that
+// order, so it stands before 20261123203842 either way. 20261119203047 is the last migration that
 // writes outbox_kind_check: it stands above main's 20261119003157, which writes it too, and main's
 // 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
 // 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
@@ -1124,8 +1124,8 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117034837: true, 20261117064152: true, 20261117213545: true, 20261119003157: true,
-	20261119203047: true, 20261121183336: true, 20261123114449: true,
+	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261123203837: true, 20261123203838: true, 20261123203842: true,
 }
 
 const idleRelease = 20261101222956

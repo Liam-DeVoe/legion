@@ -1,4 +1,4 @@
--- 20261117213545_plan_step_agent.up.sql — the name of the agent of each step of a plan (record's
+-- 20261123203837_plan_step_agent.up.sql — the name of the agent of each step of a plan (record's
 -- agents.go and plan.go).
 --
 -- plan_steps.agent is record.PlanStep.Agent: the name of the step's agent, the last part of its
@@ -31,7 +31,7 @@
 --   update claims set role = substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$')
 --   where role <> substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$');
 --   alter table plan_steps drop column if exists agent;
---   delete from schema_version where version = 20261117213545;
+--   delete from schema_version where version = 20261123203837;
 --   commit;
 --   SQL
 --

@@ -1825,10 +1825,10 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 - A narrowing — a type made smaller, a nullable column made `not null`, a check added
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
-No migration is an exception to that rule but one, `20261122130956` (below), after which the release before cannot write `issue_role_holders` while both serve: every other change that cannot be written that way is split into releases that can, and no release stops every server process.
+No migration is an exception to that rule but one, `20261123203843` (below), after which the release before cannot write `issue_role_holders` while both serve: every other change that cannot be written that way is split into releases that can, and no release stops every server process.
 `0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
 So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
-The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it but that of `20261122130956`.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it but that of `20261123203843`.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2187,7 +2187,7 @@ A census that refuses on it is repaired on the release still serving, before the
 **`0117` was deployed with no server of the earlier release running:
 deploy it that way, and never start a release older than `0117` over it again.**
 A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica.
-The last such migration before `20261122130956_issue_role_holders_by_session` is `20261111210103` (below); `20261122130956` is the one exception after it (below, and `internal/dispatch/store/README.md`), and every other release after `20261111210103` rolls.
+The last such migration before `20261123203843_issue_role_holders_by_session` is `20261111210103` (below); `20261123203843` is the one exception after it (below, and `internal/dispatch/store/README.md`), and every other release after `20261111210103` rolls.
 Stop the earlier release, or scale it to zero, before the new release boots and migrates:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica (`packages/envoy/infra/README.md`);
 a deployment running more than one replica, which rolls, is scaled to zero first.
@@ -2774,7 +2774,7 @@ The check is dropped without `cascade` and added back `not valid`, so no stored 
 It narrows nothing, so it rolls: the release before it writes only the six, which the wider check takes, and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 
-Migration `20261122130956_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step, at the constant defaults `''` and `false`.
+Migration `20261123203843_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step, at the constant defaults `''` and `false`.
 Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim of an earlier version of the plan), and the route refused a set that named a role twice, so the second claim's session held no role.
 Every statement is catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 **It is the one migration after `20261111210103` that does not roll.**

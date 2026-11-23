@@ -1,4 +1,4 @@
--- 20261122130956_issue_role_holders_by_session.up.sql — each session that holds a role of an issue,
+-- 20261123203843_issue_role_holders_by_session.up.sql — each session that holds a role of an issue,
 -- two sessions of one role among them, with the claim it holds the role by.
 --
 -- 20261116163813 keyed issue_role_holders by (issue_key, role), as the daemon then kept one claim
@@ -43,7 +43,7 @@
 -- begin;
 -- delete from issue_role_holders h using issue_role_holders o where o.issue_key = h.issue_key and o.role = h.role and o.session <> h.session and (o.works_step, o.recorded_at, o.session) > (h.works_step, h.recorded_at, h.session);
 -- alter table issue_role_holders drop column claim, drop column works_step, add primary key (issue_key, role);
--- delete from schema_migrations where version = 20261122130956;
+-- delete from schema_migrations where version = 20261123203843;
 -- commit;
 alter table issue_role_holders
   drop constraint issue_role_holders_pkey,
