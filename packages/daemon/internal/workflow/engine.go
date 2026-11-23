@@ -292,6 +292,8 @@ func (e *Engine) handle(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intak
 		return e.handoff(ctx, tx, fact)
 	case intake.DispatchCheckState:
 		return e.checkState(ctx, tx, fact)
+	case intake.FixJobRead:
+		return e.fixJobRead(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:

@@ -3,13 +3,16 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // A fix is the first implementation step of a task started again beside the task's other steps,
@@ -259,6 +262,193 @@ func (e *Engine) tellImplementer(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
+	for _, to := range addressed {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fixRunsAt says whether the run at place is the run of the step the running fix of issue's task
+// runs again (Issue.RunningFix): that run stands beside the issue's own step while the fix runs,
+// and the fix's end ends it (endFix). A fix still reading its job has started no run.
+func (e *Engine) fixRunsAt(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.StepPlace) (bool, error) {
+	if issue.RunningFix == 0 || !w.Stored || place.Kind != record.PlaceStep || place.Task != w.Task {
+		return false, nil
+	}
+	fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil {
+		return false, err
+	}
+	return fix.State == record.FixRunning && fix.Place == place.Place, nil
+}
+
+// fixJobRead applies the answer of the read of a fix's failed job (record.FixJobRead): the fix
+// starts (startFix), naming the job the read found, or the read's error where it found none. A
+// fact whose fix no longer reads its job — it ended, or the issue left the run it was of — changes
+// nothing, which the log says.
+func (e *Engine) fixJobRead(ctx context.Context, tx pgx.Tx, fact intake.FixJobRead) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Key)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	fix, err := e.store.RunningFix(ctx, tx, fact.Key, fact.Generation, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if issue.Generation != fact.Generation || fix == nil || fix.Fix != fact.Fix || fix.State != record.FixReading {
+		e.logOnCommit(ctx, "workflow: the read of a fix's job changes nothing: the fix no longer reads its job", "issue", fact.Key,
+			"generation", fact.Generation, "task", fact.Task, "fix", fact.Fix)
+		return intake.Result{}, nil
+	}
+	fix.JobName, fix.JobURL, fix.ReadFailed = fact.Name, fact.URL, fact.ReadFailed
+	return intake.Result{}, e.startFix(ctx, tx, *issue, *fix)
+}
+
+// startFix starts fix, whose job's read has answered, in one transaction: the implementer's row
+// raises an entry at the fix's place with the fix's task (enterAt), whose start writes the start
+// of a new run of that step naming the fix's check; the fix runs at that entry, so the issue
+// record names it (Issue.RunningFix) and the fences of a start and of a delivery hold its task
+// (record.PhaseHolds); and its start is queued for the phase of its step, beside the line of
+// starts that wait for a slot, with its working copy made at the fix's head (started). The issue
+// stays where it stands, and each other step of the task that was handed work in this run is told
+// of the fix (tellStepsOfFix).
+func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fix record.TaskFix) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if !w.Stored || fix.Place < 1 || fix.Place > len(w.Steps) {
+		return fmt.Errorf("start fix %d of task %s of %s: its place %d is no step of the task", fix.Fix, fix.Task, issue.Key, fix.Place)
+	}
+	at := w.steps()[fix.Place-1]
+	role := RoleFor(at)
+	task, err := e.fixTask(ctx, tx, issue, w, fix, at)
+	if err != nil {
+		return err
+	}
+	entry, sent, err := e.enterAt(ctx, tx, issue, &w, role, at, task, false, false, fix.Check)
+	if err != nil {
+		return err
+	}
+	now := e.now()
+	fix.State, fix.Entry, fix.StartedAt = record.FixRunning, entry, &now
+	if err := e.store.UpdateFix(ctx, tx, fix); err != nil {
+		return err
+	}
+	fixing := issue
+	fixing.Phase, fixing.Hold = at, nil
+	if err := e.started(ctx, tx, fixing, role, sent, entry, startMarks{stored: true, fix: fix.Fix, fixFrom: fix.Head}); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a fix starts beside the task's steps", "issue", issue.Key, "task", fix.Task, "fix", fix.Fix,
+		"check", fix.Check, "head", fix.Head, "job", fix.JobName, "readFailed", fix.ReadFailed, "phase", issue.Phase)
+	return e.tellStepsOfFix(ctx, tx, issue, w, fix)
+}
+
+// fixTask is the task of fix, a run of the step that runs as at: the task a start of that step
+// is told (task), in that step's phase, its working copy line naming the fix's own working copy
+// (fixDirOf), and right after it the sentence of the fix (fixSentence).
+func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, at phase.Phase) (string, error) {
+	fixing := issue
+	fixing.Phase, fixing.Hold = at, nil
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	dir := fixDirOf(e.cfg.WorkspaceDir)
+	standing, err := standingText(fixing, dir, w, rows)
+	if err != nil {
+		return "", err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	held, err := e.store.HeadStates(ctx, tx, issue.Key, prRepo(issue, pr), fix.Head)
+	if err != nil {
+		return "", err
+	}
+	copyLine := WorkingCopy(fixing, dir).lines
+	standing.lines = copyLine + fixSentence(issue.Key, fix, held.States[fix.Check].CICase) + strings.TrimPrefix(standing.lines, copyLine)
+	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
+}
+
+// prRepo is the repository of issue's pull request on record, or the issue's own where it has none.
+func prRepo(issue record.Issue, pr *record.PullRequest) string {
+	if pr != nil {
+		return pr.Repo
+	}
+	return issue.Repo
+}
+
+// fixDirOf is dir, the directory the runtime gives an issue's working copy, as the directory of a
+// fix's own working copy beside it (workspace.FixDir): nil and "" stay none.
+func fixDirOf(dir func(record.Issue) string) func(record.Issue) string {
+	if dir == nil {
+		return nil
+	}
+	return func(issue record.Issue) string {
+		if at := dir(issue); at != "" {
+			return workspace.FixDir(at)
+		}
+		return ""
+	}
+}
+
+// fixSentence is the sentence of fix's task that names what it fixes: its check, the head the
+// check failed at, and its CI job as the read found it: its name, how it ended (ciCase) and its
+// page; its name and how to find its run where Dispatch holds no page; and the read's error and
+// how to find the run where the read found no job.
+func fixSentence(key string, fix record.TaskFix, ciCase string) string {
+	find := fmt.Sprintf("find its run from %s with dispatch results --issue %s", fix.Head, key)
+	switch {
+	case fix.JobName == "" && fix.ReadFailed != "":
+		return fmt.Sprintf(" This is a fix: check %s failed at %s (Dispatch could not be read for its job: %s; %s).", fix.Check, fix.Head, fix.ReadFailed, find)
+	case fix.JobURL == "":
+		return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s; Dispatch holds no address of its page, so %s).", fix.Check, fix.Head, jobOf(fix), find)
+	}
+	return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s ended %s, page %s).", fix.Check, fix.Head, fix.JobName, ciCase, fix.JobURL)
+}
+
+// jobOf is the name of fix's CI job, or "of the check" where the read found none.
+func jobOf(fix record.TaskFix) string {
+	if fix.JobName == "" {
+		return "of the check"
+	}
+	return fix.JobName
+}
+
+// tellStepsOfFix sends one role message of fix to the worker of each other step of w's task that
+// was handed work in this run (its phases row holds the task of an entry): the fix runs, the
+// failure is the fix's, and nothing is pushed to the task's branch until the fix ended. A step that
+// has not started is told by its start (task). The owner, whose acceptance step is no worker's,
+// is told nothing here.
+func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix) error {
+	words := plan.Words(namedSteps(w.Steps))
+	var recipients []roleRecipient
+	for i, at := range w.steps() {
+		role := RoleFor(at)
+		if i+1 == fix.Place || role == "" || role == claim.RoleArchitect {
+			continue
+		}
+		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		if err != nil {
+			return err
+		}
+		if row.Entry > 0 && row.EntryTask != "" {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
+		}
+	}
+	addressed, err := e.addressRoles(issue.Project, recipients, nil)
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own. "+
+		"Leave that failure to the fix: your report does not fail for it, and you run its job no more. "+
+		"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push, and the fix takes it.",
+		fix.Task, issue.Key, fix.Check, fix.Head, jobOf(fix), fix.Place, words[fix.Place-1])
 	for _, to := range addressed {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
