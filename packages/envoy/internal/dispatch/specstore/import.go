@@ -46,12 +46,15 @@ var levelKinds = map[string]specgraph.Kind{
 }
 
 // LevelStatement is one statement of a level as its documents give it: its id, its text, its
-// parent from the level's structure, and the notes' kind, about and supports, as written.
+// parent from the level's structure, the notes' kind, about and supports, as written, and each
+// field its notes write where the reader cannot place it (Unread), which the import holds the
+// statement for.
 type LevelStatement struct {
 	ID, Text, Parent string
 	Kind             string
 	About, Supports  []string
 	Noted            bool
+	Unread           []string
 }
 
 // Level is a level read from its two documents: its statements in their order, and its
