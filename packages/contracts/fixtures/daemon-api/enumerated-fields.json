@@ -163,6 +163,204 @@
   },
   {
     "answer": "state",
+    "keyPath": "issues.*.otherClaims.*.claim.state",
+    "values": [
+      {
+        "value": "failed",
+        "since": 222
+      },
+      {
+        "value": "idle",
+        "since": 222
+      },
+      {
+        "value": "launch_uncertain",
+        "since": 222
+      },
+      {
+        "value": "launching",
+        "since": 222
+      },
+      {
+        "value": "queued",
+        "since": 222
+      },
+      {
+        "value": "ready",
+        "since": 222
+      },
+      {
+        "value": "registered",
+        "since": 222
+      },
+      {
+        "value": "retired",
+        "since": 222
+      },
+      {
+        "value": "shim_connected",
+        "since": 222
+      },
+      {
+        "value": "suspended",
+        "since": 222
+      },
+      {
+        "value": "working",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.otherClaims.*.claim.updateState",
+    "values": [
+      {
+        "value": "answered",
+        "since": 222
+      },
+      {
+        "value": "asked",
+        "since": 222
+      },
+      {
+        "value": "none",
+        "since": 222
+      },
+      {
+        "value": "open",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.otherClaims.*.claim.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 222
+      },
+      {
+        "value": "launch_refused",
+        "since": 222
+      },
+      {
+        "value": "never_registered",
+        "since": 222
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 222
+      },
+      {
+        "value": "provider_error",
+        "since": 222
+      },
+      {
+        "value": "stale_plugin",
+        "since": 222
+      },
+      {
+        "value": "unrecorded",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.otherClaims.*.claim.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 222
+      },
+      {
+        "value": "launch_refused",
+        "since": 222
+      },
+      {
+        "value": "never_registered",
+        "since": 222
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 222
+      },
+      {
+        "value": "provider_error",
+        "since": 222
+      },
+      {
+        "value": "stale_plugin",
+        "since": 222
+      },
+      {
+        "value": "unrecorded",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.otherClaims.*.claim.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 222
+      },
+      {
+        "value": "admitted",
+        "since": 222
+      },
+      {
+        "value": "awaiting_person",
+        "since": 222
+      },
+      {
+        "value": "done",
+        "since": 222
+      },
+      {
+        "value": "held",
+        "since": 222
+      },
+      {
+        "value": "implementing",
+        "since": 222
+      },
+      {
+        "value": "integrating",
+        "since": 222
+      },
+      {
+        "value": "merging",
+        "since": 222
+      },
+      {
+        "value": "planning",
+        "since": 222
+      },
+      {
+        "value": "retro",
+        "since": 222
+      },
+      {
+        "value": "reviewing",
+        "since": 222
+      },
+      {
+        "value": "step",
+        "since": 222
+      },
+      {
+        "value": "testing",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "issues.*.architect.updateState",
     "values": [
       {
@@ -1319,6 +1517,204 @@
       {
         "value": "working",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "otherClaims.*.claim.state",
+    "values": [
+      {
+        "value": "failed",
+        "since": 222
+      },
+      {
+        "value": "idle",
+        "since": 222
+      },
+      {
+        "value": "launch_uncertain",
+        "since": 222
+      },
+      {
+        "value": "launching",
+        "since": 222
+      },
+      {
+        "value": "queued",
+        "since": 222
+      },
+      {
+        "value": "ready",
+        "since": 222
+      },
+      {
+        "value": "registered",
+        "since": 222
+      },
+      {
+        "value": "retired",
+        "since": 222
+      },
+      {
+        "value": "shim_connected",
+        "since": 222
+      },
+      {
+        "value": "suspended",
+        "since": 222
+      },
+      {
+        "value": "working",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "otherClaims.*.claim.updateState",
+    "values": [
+      {
+        "value": "answered",
+        "since": 222
+      },
+      {
+        "value": "asked",
+        "since": 222
+      },
+      {
+        "value": "none",
+        "since": 222
+      },
+      {
+        "value": "open",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "otherClaims.*.claim.failure.cause",
+    "values": [
+      {
+        "value": "died",
+        "since": 222
+      },
+      {
+        "value": "launch_refused",
+        "since": 222
+      },
+      {
+        "value": "never_registered",
+        "since": 222
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 222
+      },
+      {
+        "value": "provider_error",
+        "since": 222
+      },
+      {
+        "value": "stale_plugin",
+        "since": 222
+      },
+      {
+        "value": "unrecorded",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "otherClaims.*.claim.pendingCause",
+    "values": [
+      {
+        "value": "died",
+        "since": 222
+      },
+      {
+        "value": "launch_refused",
+        "since": 222
+      },
+      {
+        "value": "never_registered",
+        "since": 222
+      },
+      {
+        "value": "prompt_retires_exhausted",
+        "since": 222
+      },
+      {
+        "value": "provider_error",
+        "since": 222
+      },
+      {
+        "value": "stale_plugin",
+        "since": 222
+      },
+      {
+        "value": "unrecorded",
+        "since": 222
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "otherClaims.*.claim.pendingTask.phase",
+    "values": [
+      {
+        "value": "accepting",
+        "since": 222
+      },
+      {
+        "value": "admitted",
+        "since": 222
+      },
+      {
+        "value": "awaiting_person",
+        "since": 222
+      },
+      {
+        "value": "done",
+        "since": 222
+      },
+      {
+        "value": "held",
+        "since": 222
+      },
+      {
+        "value": "implementing",
+        "since": 222
+      },
+      {
+        "value": "integrating",
+        "since": 222
+      },
+      {
+        "value": "merging",
+        "since": 222
+      },
+      {
+        "value": "planning",
+        "since": 222
+      },
+      {
+        "value": "retro",
+        "since": 222
+      },
+      {
+        "value": "reviewing",
+        "since": 222
+      },
+      {
+        "value": "step",
+        "since": 222
+      },
+      {
+        "value": "testing",
+        "since": 222
       }
     ]
   },

@@ -917,9 +917,10 @@ The state names the same claims on every read, after a restart or not, each with
 legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
-Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows: it ends in the
-name of the claim's agent, the role of that agent's first step, whatever role its step is on now.
+Act only on the claims this list names, and leave out any you suspended on purpose. A claim of an
+issue has the token `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows:
+it ends in the name of the claim's agent, the role of that agent's first step, whatever role its
+step is on now; the project's controller claim is `legion-<project>-controller`.
 The line and `legion state` name a role's own claim by its issue and role, and the claim of an agent
 named for another role by its token beside them (`WIDGETS-12 tester (claim
 legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue read apart.

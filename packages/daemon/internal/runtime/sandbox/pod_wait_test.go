@@ -129,11 +129,12 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 	}
 }
 
-// A claim runs in the slot of its agent (slotOf) and on the role of its step, and a launch into a
-// pod the runtime keeps needs both of that pod: the slot's launcher, Secret and volumes, and the
-// role's own resources, its role_config_files overlays among them. A keyed agent's slot and its
-// step's role can be two names, so a launch into a pod built before a role of the deployment waits
-// where the pod lacks either, its text naming the one it lacks, and goes on where it holds both.
+// A claim runs in the slot of its agent (claim.Token.Slot) and on the role of its step, and a
+// launch into a pod the runtime keeps needs both of that pod: the slot's launcher, Secret and
+// volumes, and the role's own resources, its role_config_files overlays among them. A keyed
+// agent's slot and its step's role can be two names, so a launch into a pod built before a role of
+// the deployment waits where the pod lacks either, its text naming the one it lacks, and goes on
+// where it holds both.
 func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -142,8 +143,8 @@ func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *test
 		// lacks is what the refusal names, "" for a launch that goes on.
 		lacks string
 	}{
-		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "the slot checker"},
-		{"the pod lacks the role of the step", workerToken, "checker", "the role checker"},
+		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "checker, the slot of the claim's agent"},
+		{"the pod lacks the role of the step", workerToken, "checker", "checker, the role of its step"},
 		{"the pod holds the slot and the role", workerToken, claim.RoleReviewer, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

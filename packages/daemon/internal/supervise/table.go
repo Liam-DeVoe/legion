@@ -2585,6 +2585,9 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func resume(m *Machine, ctx context.Context, ev Event) error {
+	if err := m.podStillRefuses(); err != nil {
+		return err
+	}
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
@@ -2644,6 +2647,10 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
+	}
+	if err := m.podStillRefuses(); err != nil {
+		m.log.Info("supervise: not resumed by rule: the pod that refused its last launch still stands", "rule", rule, "error", err)
+		return err
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 	return m.revive(ctx, exemptWake(ev), resume.Start, nil)

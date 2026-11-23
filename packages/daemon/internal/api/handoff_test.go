@@ -2284,3 +2284,24 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 		})
 	}
 }
+
+// Two claims of one issue can hold the tester's role: key a's agent, `…-implementer`, on the
+// tester's step, and the tester's own claim. The same report from each is a completion of its own,
+// so the two take two keys, and the workflow's refusal of the one, recorded under its key, never
+// answers the other's completion HANDOFF_ALREADY_RECORDED. The role's own claim, and a grant that
+// names no claim, keep the key a completion had before.
+func TestTwoClaimsOfOneRoleCompleteUnderKeysOfTheirOwn(t *testing.T) {
+	keyed := credential.Grant{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-implementer"}
+	own := credential.Grant{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-tester"}
+	if completionWho(keyed) == completionWho(own) {
+		t.Fatalf("key a's agent and the tester's own claim both complete as %q, want a key each", completionWho(own))
+	}
+	for _, grant := range []credential.Grant{own, {Issue: "LEGION-209", Role: claim.RoleTester}} {
+		if got := completionWho(grant); got != "tester" {
+			t.Fatalf("the claim %q of the tester completes as %q, want the key it had, tester", grant.Claim, got)
+		}
+	}
+	if got := completionWho(keyed); got != "tester@implementer" {
+		t.Fatalf("key a's agent completes as %q, want tester@implementer", got)
+	}
+}

@@ -117,6 +117,43 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-b", "tester")
 }
 
+// Two claims of one issue can hold one role: the agent of a key on the tester's step, beside the
+// tester's own claim of an earlier version of the plan. The daemon publishes the session of each,
+// with the claim it holds the role by and whether that claim works the role's step, and Dispatch
+// stores both: each session holds the role, the set reads back with both, and a later set that
+// names one of them leaves the other's session with no role.
+func TestTwoClaimsOfOneRoleBothHoldIt(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	claimOf := func(agent string) string {
+		project, number, _ := strings.Cut(strings.ToLower(issue), "-")
+		return "legion-acme-" + project + "-" + number + "-" + agent
+	}
+	keyed := issueRoleHolder{Role: "tester", Session: "ses-keyed", Claim: claimOf("implementer"), WorksStep: true}
+	own := issueRoleHolder{Role: "tester", Session: "ses-own", Claim: claimOf("tester")}
+	holders := func(answer issueRoleHolders) []issueRoleHolder {
+		got := []issueRoleHolder{}
+		for _, holder := range answer.Holders {
+			got = append(got, issueRoleHolder{Role: holder.Role, Session: holder.Session, Claim: holder.Claim, WorksStep: holder.WorksStep})
+		}
+		return got
+	}
+
+	want := []issueRoleHolder{keyed, own}
+	if got := holders(publishRoleHolders(t, handler, issue, []issueRoleHolder{own, keyed})); !slices.Equal(got, want) {
+		t.Fatalf("the publish answered %#v, want both claims of the tester %#v", got, want)
+	}
+	if got := holders(readRoleHolders(t, handler, issue)); !slices.Equal(got, want) {
+		t.Fatalf("the read answered %#v, want both claims of the tester %#v", got, want)
+	}
+	requireHeldRole(t, database, issue, "ses-keyed", "tester")
+	requireHeldRole(t, database, issue, "ses-own", "tester")
+
+	publishRoleHolders(t, handler, issue, []issueRoleHolder{keyed})
+	requireHeldRole(t, database, issue, "ses-keyed", "tester")
+	requireHeldRole(t, database, issue, "ses-own", "")
+}
+
 // The daemon publishes again at each boot and at each start and end of a claim. A pair that did
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
@@ -180,9 +217,13 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 		"the role controller":     {"holders": []issueRoleHolder{{Role: "controller", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
 		"a role with a capital":   {"holders": []issueRoleHolder{{Role: "Checker", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
 		"a role of 33 characters": {"holders": []issueRoleHolder{{Role: "c" + strings.Repeat("h", 32), Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
-		"a role named twice": {"holders": []issueRoleHolder{
-			{Role: "tester", Session: "ses-a"}, {Role: "tester", Session: "ses-b"},
+		"a claim named twice": {"holders": []issueRoleHolder{
+			{Role: "tester", Session: "ses-a", Claim: "legion-acme-acme-1-tester"}, {Role: "tester", Session: "ses-b", Claim: "legion-acme-acme-1-tester"},
 		}, "actor": daemonSessionOf("ACME")},
+		"a claim of another issue": {"holders": []issueRoleHolder{{Role: "tester", Session: "ses-a", Claim: "legion-acme-acme-999-tester"}},
+			"actor": daemonSessionOf("ACME")},
+		"a claim that is no claim token": {"holders": []issueRoleHolder{{Role: "tester", Session: "ses-a", Claim: "tester"}},
+			"actor": daemonSessionOf("ACME")},
 		"an empty session": {"holders": []issueRoleHolder{{Role: "tester", Session: "  "}}, "actor": daemonSessionOf("ACME")},
 		"a session named twice": {"holders": []issueRoleHolder{
 			{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-a"},

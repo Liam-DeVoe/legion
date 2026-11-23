@@ -1083,10 +1083,11 @@ follow the session that asked, so a person's other session sees the request but 
 grant, and a session that resumes on another box gets its own grant back even after another
 session of that person enrolled first.
 A claim is the one owner a grant follows.
-A role's next pod comes up under a session of its own, which the carry cannot follow, so the next
-enrollment of a claim also takes the grants and the pending requests a dormant enrollment of that
-claim still holds, after the carry has taken what its own session left; a pod of the claim that is
-still running keeps what it holds (`enroll.go`, `adopt`).
+A role's next pod that resumes the claim's session takes what that session left by the carry, as
+any session does, but one that comes up under a new session, given the claim afresh, is one the
+carry cannot follow, so the next enrollment of a claim also takes the grants and the pending
+requests a dormant enrollment of that claim still holds, after the carry has taken what its own
+session left; a pod of the claim that is still running keeps what it holds (`enroll.go`, `adopt`).
 The next pod can also come up before the pod before it is ended, when the daemon's revoke lands late
 or never and the old enrollment lives until its lease lapses.
 Then the end of the old enrollment, when it comes, hands what it holds to the running pod of the
@@ -1129,12 +1130,13 @@ And a person's revoke ends the grant at once.
 The broker cannot tell an operator moving pods from one account to another from an attack, so a
 pair of service accounts is the operator's word that the move is intended.
 While it stands, a pod of either account can claim any session name the other holds, not only its
-own role's, so a pod of one project's account can claim a name a shared account holds for another
-project's role.
+own claim's, so a pod of one project's account can claim a name a shared account holds for another
+project's claim.
 It takes none of what that session holds, because a pair moves what a session holds only between
 the two accounts' pods one daemon launched (`enroll.go`, `adopt`).
-Two things bound this for Legion's pods: the daemon gives each role only its own name, and a name
-leaves the shared account once its role's pod has moved.
+Two things bound this for Legion's pods: the daemon gives each claim only its own session's name,
+the name of the session its agent keeps whatever role its step is on, and a name leaves the shared
+account once that claim's pod has moved.
 Remove a pair once no live pod runs as the old account.
 
 A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,

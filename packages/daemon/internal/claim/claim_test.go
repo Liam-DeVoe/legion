@@ -401,6 +401,44 @@ func TestATokenEndsInItsAgent(t *testing.T) {
 	}
 }
 
+// A claim token gives back the project token it was built from, so the token of another claim of
+// its issue can be built with NewToken's checks, and a token that names no agent of an issue gives
+// none.
+func TestATokenGivesItsProject(t *testing.T) {
+	for token, want := range map[Token]string{
+		"legion-legion-infra-12-implementer-2": "legion",
+		"legion-acme-acme-1-checker":           "acme",
+	} {
+		if project, ok := token.Project(); !ok || project != want {
+			t.Errorf("%s.Project() = %q, %t; want %q", token, project, ok, want)
+		}
+	}
+	for _, token := range []Token{ControllerToken("legion"), "legion-acme-acme-1-controller", "legion-acme-acme-1", ""} {
+		if project, ok := token.Project(); ok {
+			t.Errorf("%s.Project() = %q, want none: it names no agent of an issue", token, project)
+		}
+	}
+}
+
+// The slot of a claim's process is the agent its token ends in, which can be no role, and the
+// controller's name for the controller's token; a token that names neither has no slot.
+func TestATokensSlotIsItsAgentOrTheControllers(t *testing.T) {
+	for token, want := range map[Token]Agent{
+		"legion-legion-infra-12-implementer-2": "implementer-2",
+		"legion-legion-infra-12-tester":        "tester",
+		ControllerToken("legion"):              Agent(RoleController),
+	} {
+		if slot, ok := token.Slot(); !ok || slot != want {
+			t.Errorf("%s.Slot() = %q, %t; want %q", token, slot, ok, want)
+		}
+	}
+	for _, token := range []Token{"legion-legion-infra-12", "legion-legion-infra-12-Tester", "legion-legion-infra-12-controller", ""} {
+		if slot, ok := token.Slot(); ok {
+			t.Errorf("%s.Slot() = %q; want no slot", token, slot)
+		}
+	}
+}
+
 // NewToken is the token of a role's agent, and it still refuses a name that is no role: its callers
 // read that refusal as "no claim of this key". A deployment's role can be any name of the role
 // grammar, an agent's name such as `implementer-2` among them, so the controller's name is the one

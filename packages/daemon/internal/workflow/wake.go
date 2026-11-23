@@ -79,11 +79,11 @@ type Pods interface {
 	// outbox row, so a notice held for an absent architect has still spent its count.
 	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
 	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
-	// OpenPodBackstop is whether issue's claim token, which holds role now, has a backstop armed
-	// and not yet fired: a release that left the claim with its phase open armed it, so the
-	// backstop brings the pod back. The cutover's repair reads it to pass over a merger something
-	// will still wake (cutoverMergerRepair).
-	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role) (bool, error)
+	// OpenPodBackstop is whether issue's claim token has a backstop armed and not yet fired: a
+	// release that left the claim with its phase open armed it, so the backstop brings the pod
+	// back. The cutover's repair reads it to pass over a merger something will still wake
+	// (cutoverMergerRepair).
+	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, token claim.Token) (bool, error)
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the claim it woke, token, in the woken
@@ -364,8 +364,7 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts. The claim it wakes is the one it was
 // armed for (fact.Claim), the worker of the open phase at its release, where that claim stands
-// released; a backstop the release before armed names none and wakes the agent that works the
-// backstop's role's step (Engine.workerClaim).
+// released.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -378,13 +377,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	worker := fact.Claim
-	if worker == "" {
-		if worker, err = e.workerClaim(ctx, tx, *issue, fact.Role); err != nil {
-			return intake.Result{}, err
-		}
-	}
-	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
+	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(fact.Claim))
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
@@ -473,28 +466,18 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 
 // OpenWorker is the claim of the worker of issue's open phase, and "" where there is none: the
 // claim the record gives the step of the open phase's role (OpenRoleOf, which at step is the role
-// of the running step, read with the issue), through record.WorkerClaim over the issue's phases
-// rows, read in tx. That claim can be a keyed agent's, whose token names another role, beside the
-// role's own claim of an earlier version of the plan, so a role does not name it. It answers which
-// claim a pause's stop arms a backstop for — an architect gets none, because nothing of its own is
-// due and a sub-architect woken for nothing would hold a pod open for the backstop period — and
-// project is the project's token, as record.WorkerClaim takes it.
-func OpenWorker(ctx context.Context, phases PhaseReader, tx pgx.Tx, project string, issue record.Issue) (claim.Token, error) {
+// of the running step, read with the issue), through record.ReadWorkerClaim over the issue's
+// phases rows, read in tx. That claim can be a keyed agent's, whose token names another role,
+// beside the role's own claim of an earlier version of the plan, so a role does not name it. It
+// answers which claim a pause's stop and a release arm a backstop for — an architect gets none,
+// because nothing of its own is due and a sub-architect woken for nothing would hold a pod open for
+// the backstop period — and project is the project's token, as record.WorkerClaim takes it.
+func OpenWorker(ctx context.Context, phases record.PhaseReader, tx pgx.Tx, project string, issue record.Issue) (claim.Token, error) {
 	role := OpenRoleOf(issue)
 	if role == "" {
 		return "", nil
 	}
-	rows, err := phases.Phases(ctx, tx, issue.Key)
-	if err != nil {
-		return "", fmt.Errorf("read the phases of %s: %w", issue.Key, err)
-	}
-	return record.WorkerClaim(project, issue.Key, role, rows)
-}
-
-// PhaseReader reads an issue's phases rows (record.Store.Phases), what OpenWorker needs of a
-// record store.
-type PhaseReader interface {
-	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]record.PhaseRow, error)
+	return record.ReadWorkerClaim(ctx, phases, tx, project, issue.Key, role)
 }
 
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works

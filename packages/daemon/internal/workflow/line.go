@@ -108,29 +108,28 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-// AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
-// one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
-// one key name one agent; for the retro, the agent of the task's last step of the type
-// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
-// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
-// there the role stands for the agent (Engine.stepToken).
-func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
+// stepAt is the step whose agent does the work of place on w, the one place the workflow reads a
+// step's agent from (Engine.stepToken): for a step, that step, so the steps of one key are one
+// agent; for the retro, the task's last step of the type implementation, which runs it. A walk with
+// no plan rows holds none, and neither does the merge or a place the task does not hold: there the
+// role stands for the agent.
+func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	if !w.Stored {
-		return ""
+		return record.PlanStep{}, false
 	}
 	switch place.Kind {
 	case record.PlaceStep:
 		if place.Position >= 1 && place.Position <= len(w.Steps) {
-			return w.Steps[place.Position-1].AgentName()
+			return w.Steps[place.Position-1], true
 		}
 	case record.PlaceRetro:
 		for i := len(w.Steps) - 1; i >= 0; i-- {
 			if w.Steps[i].Type == plan.TypeImplementation {
-				return w.Steps[i].AgentName()
+				return w.Steps[i], true
 			}
 		}
 	}
-	return ""
+	return record.PlanStep{}, false
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where

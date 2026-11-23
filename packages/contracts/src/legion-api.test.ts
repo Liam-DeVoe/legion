@@ -2771,9 +2771,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), and the stranded claims' token's (contract 222), which
-  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`). So the
-  // narrowing changes this one block and, beside it, only what those two bands change.
+  // 221 reads them (`belowDeploymentRoles`), and contract 222's, which serves each claim nothing
+  // will wake and each claim view without its `token`, and each issue without its `otherClaims`
+  // (`withoutStrandedTokens`, `withoutClaimTokens`). So the narrowing changes this one block and,
+  // beside it, only what those two bands change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2792,8 +2793,34 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   } = fixtureBody("state.json");
   const below = belowDeploymentRoles(rest) as Record<string, unknown>;
   const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
+  const withoutToken = (view: unknown): unknown => {
+    if (typeof view !== "object" || view === null) return view;
+    const { token: _token, ...kept } = view as Record<string, unknown>;
+    return kept;
+  };
+  const issues = Object.fromEntries(
+    Object.entries((below.issues ?? {}) as Record<string, Record<string, unknown>>).map(
+      ([key, { otherClaims: _others, architect, workers, ...issue }]) => [
+        key,
+        {
+          ...issue,
+          ...(architect === undefined ? {} : { architect: withoutToken(architect) }),
+          ...(workers === undefined
+            ? {}
+            : {
+                workers: Object.fromEntries(
+                  Object.entries(workers as Record<string, Record<string, unknown>>).map(
+                    ([role, worker]) => [role, { ...worker, claim: withoutToken(worker.claim) }]
+                  )
+                ),
+              }),
+        },
+      ]
+    )
+  );
   expect(narrowedRest).toEqual({
     ...below,
+    issues,
     ...(stranded === undefined
       ? {}
       : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),

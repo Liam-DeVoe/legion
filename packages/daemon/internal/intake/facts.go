@@ -1033,8 +1033,10 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
-// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries By alone of the three,
+// the claim that asked it, which the workflow holds to the claim the role's row names on its step
+// (two claims of one issue can hold one role); it carries PhaseEntry too, which the architect's
+// move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1194,8 +1196,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
 // (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
-// AgentUnnamed for a version in which a fresh agent would need the name of its role that another
-// agent of the plan holds from an earlier version, refused before anything is written),
+// AgentUnnamed for a version in which an agent would need a name, its key's or its role's, that
+// another agent of the plan holds from an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1384,8 +1386,15 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — the
+	// agent of a key on a step of another role, beside that role's own claim of an earlier version
+	// of the plan — so the role does not name the claim: only the failure of the claim that works
+	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
+	// which keeps the role's rule.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
@@ -1438,6 +1447,23 @@ type SessionStoreFault struct {
 }
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
+
+// PodRefusedLaunch is a launch of a claim refused because the issue's pod cannot run it until that
+// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
+// suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
+// is told on the issue and to the controller at the first refusal and hourly while the pod
+// stands. Queue asks for a start of the claim, which a refused launch no outbox start stood behind
+// needs, so that whatever replaces the pod resumes the claim.
+type PodRefusedLaunch struct {
+	Issue  string
+	Role   claim.Role
+	Claim  claim.Token
+	Pod    string
+	Detail string
+	Queue  bool
+}
+
+func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
@@ -1677,10 +1703,9 @@ const (
 // at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
 // is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
 // since the release, and a backstop of an issue the record no longer holds does nothing. Role is
-// the role that claim held then; a backstop the release before armed names no claim, and wakes the
-// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
-// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
-// while the daemon was down fires once after it starts.
+// the role that claim held then. It is never decoded from an event — the daemon's own pass reads
+// the due rows and applies one fact per row, under the row's id, so a backstop that came due while
+// the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
@@ -1694,10 +1719,14 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
-// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is). Claim
+// is the claim the sweep read: two claims of one issue can hold one role, and the handler judges
+// only the one that works the role's step, so a fact of the other is passed over; "" on a fact
+// from before the claim was carried, which the handler reads as the step's worker's.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -1709,10 +1738,12 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
 // Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
 // an event, and its handler tells the architect and sends nothing (internal/daemon's
-// workerBackgroundEventID says what its id is).
+// workerBackgroundEventID says what its id is). Claim is the claim the sweep read, as
+// WorkerSilent's is.
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string
@@ -1805,12 +1836,13 @@ func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
 }
 
-// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
-// a fresh agent of its own, would take name, its role's, which another agent of the plan holds from
-// an earlier version (record.NameAgents). This release runs one agent of each role for an issue,
-// so such a version is refused as a plan before anything is written, never as an error of the write.
+// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
+// would take name — the name its key held in an earlier version, or its role's — which another
+// agent of the plan holds from an earlier version (record.NameAgents, record.UnnamedAgents). This
+// release runs one agent of each role for an issue, so such a version is refused as a plan before
+// anything is written, never as an error of the write.
 func AgentUnnamed(task string, place int, name string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s of its role "+
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s, which this step's agent would take, "+
 		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
 }
 

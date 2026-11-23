@@ -47,7 +47,7 @@ func TestALaterVersionThatWouldRenameAKeyIsRefusedAsAPlan(t *testing.T) {
 	}
 
 	id := planID(key, gen, 2)
-	reason := "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer of its role from an earlier version; " +
+	reason := "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer, which this step's agent would take, from an earlier version; " +
 		"this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."
 	want := &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason,
 		Reasons: []plan.Refusal{{Task: "a", Reason: reason}}}

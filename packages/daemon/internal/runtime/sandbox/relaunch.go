@@ -212,6 +212,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return runtime.Locator{}, err
 	}
+	// prepare holds spec's claim to an agent's token of the issue or the controller's, each of
+	// which names the slot the claim's process runs in.
+	slot, _ := spec.Claim.Slot()
 	r.forget(spec.Claim)
 	release, err := r.lockPod(ctx, l.name)
 	if err != nil {
@@ -280,15 +283,20 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0))
 	if !replace {
 		// A pod it would keep that was built before the deployment defined the slot this claim
-		// runs in (slotOf, its agent's name) or the role of its step has no launcher, Secret or
-		// volume of that slot, or none of that role's own resources (its role_config_files
+		// runs in (claim.Token.Slot, its agent's name) or the role of its step has no launcher,
+		// Secret or volume of that slot, or none of that role's own resources (its role_config_files
 		// overlays): replacing it here would end every role in it and delete the issue's disk
 		// with whatever they did not push, so the launch writes nothing and waits for the pod's
 		// update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole, rolesDrift),
-		// naming what the pod lacks. A launch whose slot and role the template holds goes on.
-		if lacks := templateLacks(templateRoles(s), slotOf(spec.Claim), spec.Role); lacks != "" {
-			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without %s: %w",
-				spec.Claim, pod.UID, spec.Issue, lacks, runtime.ErrAwaitsPodUpdate)
+		// naming what the pod lacks (runtime.PodLacks, over the roles its template was built with;
+		// a template no launcher of this layout wrote holds none, and lacks nothing). A launch whose
+		// slot and role the template holds goes on.
+		held := templateRoles(s)
+		if lacks := runtime.PodLacks(func(name claim.Role) bool {
+			return len(held) > 0 && !slices.Contains(held, name)
+		}, slot, spec.Role); lacks != "" {
+			return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built without %s",
+				spec.Claim, pod.UID, spec.Issue, lacks)}
 		}
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -413,6 +421,31 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
 			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
 	}
+	// A launch into a pod it keeps writes its slot's credential, and its start names it, which the
+	// launcher waits for; a launcher of an image before that wait, in a pod the release before
+	// built, starts a child at once, as whatever App the slot's gh files held. The outbox's fence
+	// before a re-role cannot see such a launcher right after the daemon restarts, while no
+	// launcher is connected, so the launch judges the launcher of the pod it got. One that would
+	// start the slot as another App than its files may hold (slotAppChanges) ends here, before
+	// anything is done in the pod, as a launch into a pod built without its slot or role does: the
+	// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate). The start goes to
+	// a launcher of this same pod (serveLeakCheck), whose image is the pod's for its life.
+	if !replace {
+		session, err := r.launchers.await(starting, spec.Claim, string(pod.UID))
+		if err != nil {
+			return fail("wait for its role launcher's connection", err)
+		}
+		if !session.credentialWait {
+			changes, err := r.slotAppChanges(starting, pod, spec)
+			if err != nil {
+				return fail("read the App its slot holds", err)
+			}
+			if changes {
+				return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built before its launchers waited for a start's credential, so its slot %s would start the %s at once as the App its gh files held",
+					spec.Claim, pod.UID, spec.Issue, slot, spec.Role)}
+			}
+		}
+	}
 	// A launcher still running an earlier generation of this claim's slot runs a process the
 	// supervisor has already given up on: it is stopped before the new generation starts, so two
 	// generations of a slot, one agent's, never run side by side.
@@ -422,7 +455,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	if err := r.recordAddresses(starting, s, slotOf(spec.Claim), spec.Generation, l.enrolls(r)); err != nil {
+	if err := r.recordAddresses(starting, s, launcherOf(slot), spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
@@ -450,11 +483,23 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure. A
 	// launch into a pod it keeps writes its slot's credential first, for the App of the step its
 	// claim does now, and its start names it, which the launcher waits for: no Secret is written
-	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds).
+	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds). From just
+	// before that write until the launch ends, no refresh writes the slot (markSlotLaunch), so the
+	// slot holds the very token the start names. The launcher's wait is bounded by what remains of
+	// this launch's own wait on the start before the stop grace, so its refusal arrives while this
+	// launch still waits, and the stop that follows a start this launch gave up on finds no child.
 	if !replace {
+		unmark, err := r.markSlotLaunch(starting, slotKey{sandbox: pod.Name, slot: slot})
+		if err != nil {
+			return fail("wait out the refresh of its slot's github credential", err)
+		}
+		defer unmark()
 		credential, err := r.writeLaunchCredential(starting, pod, spec)
 		if err != nil {
 			return fail("write its slot's github credential", err)
+		}
+		if credential != nil {
+			credential.WaitMs = int(max(time.Until(deadline), time.Millisecond).Milliseconds())
 		}
 		l.gitHubCredential = credential
 	}
@@ -1212,6 +1257,7 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 	if err != nil {
 		return err
 	}
+	launching, _ := l.spec.Claim.Slot()
 	for _, role := range l.roles {
 		token, err := launcherToken()
 		if err != nil {
@@ -1229,7 +1275,7 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 		}
 		meta := r.secretMeta(s, *l, roleSecretName(s.Name, role))
 		launched := ""
-		if role == slotOf(l.spec.Claim) {
+		if claim.Agent(role) == launching {
 			launched = launchedRecord(l.spec.Generation, l.spec.Role)
 		}
 		if meta.Annotations == nil {
@@ -1307,21 +1353,22 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			"sandbox", l.name, "err", err)
 		holders = map[slotKey]slotHolder{}
 	}
-	holders[slotKey{sandbox: l.name, slot: slotOf(l.spec.Claim)}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
+	launching, _ := l.spec.Claim.Slot()
+	holders[slotKey{sandbox: l.name, slot: launching}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
 	memo := appauth.NewBundles(r.gitHubCredential)
-	for i, slot := range l.roles {
+	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
-		if slot == claim.RoleController {
+		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			var role claim.Role
-			if role, err = r.slotAppRole(minting, holders, l.name, slot, ""); err == nil {
-				bundle, err = memo.Bundle(minting, role, l.spec.Repository)
+			// The pod's launcher of role serves the slot of role's name.
+			var app claim.Role
+			if app, err = r.slotAppRole(minting, holders, l.name, claim.Agent(role), ""); err == nil {
+				bundle, err = memo.Bundle(minting, app, l.spec.Repository)
 			}
 		}
-		role := slot
 		cancel()
 		switch {
 		case role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner):

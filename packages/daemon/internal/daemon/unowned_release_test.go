@@ -101,13 +101,13 @@ func (r *idleRig) storedClaim(t *testing.T, token claim.Token) supervise.Claim {
 func (r *idleRig) awaitedWake(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := r.pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, due_at)
-		values ('legion', $1, 'implementer', now() + interval '55 minutes')`, r.issue.Key); err != nil {
+	if _, err := r.pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, due_at)
+		values ('legion', $1, $2, 'implementer', now() + interval '55 minutes')`, r.issue.Key, string(r.token)); err != nil {
 		t.Fatalf("arm the earlier release's backstop: %v", err)
 	}
-	if _, err := r.pool.Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-		values (0, 'legion', $1, 'implementer', $2, now())`,
-		r.issue.Key, pods.WakeChecks); err != nil {
+	if _, err := r.pool.Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at)
+		values (0, 'legion', $1, 'implementer', $2, $3, now())`,
+		r.issue.Key, string(r.token), pods.WakeChecks); err != nil {
 		t.Fatalf("seed the open resume the earlier release's wake left: %v", err)
 	}
 }
@@ -116,8 +116,7 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 // nothing has closed, each as one line, so a test can compare what a release found with what it
 // left. A teardown that armed a backstop would have cancelled the open ones of the issue first
 // (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
-// back for that claim (migration 20261122074350, one open resume per claim; this resume names no
-// claim, as the release before wrote it, so it holds its role).
+// back for that claim (migration 20261121183336, one open resume per claim).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()

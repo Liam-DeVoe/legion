@@ -1584,7 +1584,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		}
 		return
 	}
-	asking = slices.DeleteFunc(asking, func(c supervise.Claim) bool { return queued[c.Role] })
+	asking = slices.DeleteFunc(asking, func(c supervise.Claim) bool { return queued.Of(c.Token, c.Role) })
 	if len(asking) == 0 {
 		return
 	}
@@ -1953,24 +1953,27 @@ func workingClaims(group []supervise.Claim) []string {
 }
 
 // backgroundHold is the background hold over a round's pod replacement
-// (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each role whose activity
+// (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each claim whose activity
 // report names background work that runs, with the kinds that report names, and unreported is
-// each role that has sent no report since its last turn started, in the group's order. It holds
-// the replacement when it names a role; the zero value names none.
+// each claim that has sent no report since its last turn started, in the group's order. Each
+// claim is named by its agent (heldName), which names one claim of the issue: two claims can hold
+// one role, the agent of a key on a step of another role beside that role's own claim, and the
+// one's kinds are not the other's. It holds the replacement when it names a claim; the zero value
+// names none.
 type backgroundHold struct {
 	running    map[string][]string
 	unreported []string
 }
 
-// holds is whether the hold names a role.
+// holds is whether the hold names a claim.
 func (h backgroundHold) holds() bool {
 	return len(h.running) > 0 || len(h.unreported) > 0
 }
 
 // attributes is the hold as a log line names it (dispatch://INFRA-4203 R4): background, an
-// object from each role of running to the kinds its report names, and unreported, the roles with
-// no report since their last turn. Each of the two is written only when it names a role, so no
-// line that names the round carries an empty list.
+// object from each claim of running, by its agent (heldName), to the kinds its report names, and
+// unreported, the claims with no report since their last turn. Each of the two is written only
+// when it names a claim, so no line that names the round carries an empty list.
 func (h backgroundHold) attributes() []any {
 	var attributes []any
 	if len(h.running) > 0 {
@@ -1982,9 +1985,9 @@ func (h backgroundHold) attributes() []any {
 	return attributes
 }
 
-// refusal is the hold as the last word's refusal names it (replacementDue): each role of running,
-// in role order, with the kinds its report names, and then each role with no report since its
-// last turn.
+// refusal is the hold as the last word's refusal names it (replacementDue): each claim of running,
+// by its agent in name order, with the kinds its report names, and then each claim with no report
+// since its last turn.
 func (h backgroundHold) refusal() string {
 	named := make([]string, 0, len(h.running)+len(h.unreported))
 	for _, role := range slices.Sorted(maps.Keys(h.running)) {
@@ -2024,14 +2027,25 @@ func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 			if hold.running == nil {
 				hold.running = map[string][]string{}
 			}
-			hold.running[string(c.Role)] = c.ActivityKinds
+			hold.running[heldName(c)] = c.ActivityKinds
 		case claim.WorkUnreported:
-			hold.unreported = append(hold.unreported, string(c.Role))
+			hold.unreported = append(hold.unreported, heldName(c))
 		case claim.WorkSettled:
 			// A report read since the last turn started that names nothing running holds nothing.
 		}
 	}
 	return hold
+}
+
+// heldName is how the background hold names c: the slot its process runs in (claim.Token.Slot),
+// its agent's name, which is the name of its role for the role's own claim and stays the agent's
+// when a step of another role re-roles it. A token that names no slot, which no claim in a pod
+// holds, is named by the token itself, never by a role it does not end in.
+func heldName(c supervise.Claim) string {
+	if slot, ok := c.Token.Slot(); ok {
+		return string(slot)
+	}
+	return string(c.Token)
 }
 
 // podProcess is the process the round's pod is ended through: the first claim of the group that

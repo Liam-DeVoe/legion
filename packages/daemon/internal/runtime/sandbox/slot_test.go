@@ -23,17 +23,18 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 		t.Fatalf("Cut(%s) names no issue", workerToken)
 	}
 	agent := claim.Token(issue + "-implementer-2")
-	for token, want := range map[claim.Token]claim.Role{
+	for token, want := range map[claim.Token]claim.Agent{
 		agent:           "implementer-2",
-		workerToken:     claim.RoleTester,
-		controllerToken: claim.RoleController,
+		workerToken:     claim.Agent(claim.RoleTester),
+		controllerToken: claim.Agent(claim.RoleController),
 	} {
-		if got := slotOf(token); got != want {
-			t.Errorf("slotOf(%s) = %q, want %q", token, got, want)
+		if got, ok := token.Slot(); !ok || got != want {
+			t.Errorf("%s.Slot() = %q, %t; want %q", token, got, ok, want)
 		}
 	}
-	if _, issuePod := podKindFor(slotOf(agent)).(issuePod); !issuePod {
-		t.Errorf("podKindFor(slotOf(%s)) = %T, want the issue pod", agent, podKindFor(slotOf(agent)))
+	slot, _ := agent.Slot()
+	if _, issuePod := podKindFor(launcherOf(slot)).(issuePod); !issuePod {
+		t.Errorf("podKindFor(launcherOf(%s)) = %T, want the issue pod", slot, podKindFor(launcherOf(slot)))
 	}
 	loc := sandboxLocator(agent, recorded)
 	if err := loc.Validate(); err != nil {

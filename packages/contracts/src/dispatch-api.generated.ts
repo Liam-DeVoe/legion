@@ -5467,14 +5467,18 @@ export interface components {
       truncated: boolean;
     };
     IssueRoleHolder: {
+      claim?: string;
       role: string;
       session: string;
+      works_step?: boolean;
     };
     IssueRoleHolderRecord: {
+      claim: string;
       /** Format: date-time */
       recorded_at: string;
       role: string;
       session: string;
+      works_step: boolean;
     };
     IssueRoleHolders: {
       holders: components["schemas"]["IssueRoleHolderRecord"][] | null;

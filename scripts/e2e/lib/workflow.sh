@@ -588,8 +588,8 @@ reviewer_commented() {
 reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
 # head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
-# being a record on the Dispatch issue. The merge carries the run's retro learnings onto the smoke
-# main, and clean_smoke_main removes them.
+# being a record on the Dispatch issue. Retro commits nothing either, so the merge carries no retro
+# learning onto the smoke main; clean_smoke_main removes what merges from before that change left.
 approve_as_reviewer() {
   local issue=$1 app
   app=$(role_app reviewer) || return 1
@@ -642,8 +642,8 @@ release_smoke_main() {
   note "released $repo main ($smoke_main_lock)"
 }
 # smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings a merged proof pull request carries there, or under .legion/, which only a merge
-# from before handoffs moved to Dispatch can have left.
+# retro learnings merged proof pull requests carried there before retro stopped committing, or under
+# .legion/, which only a merge from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
@@ -909,7 +909,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which each proof merge carries, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges carried before retro stopped committing, and any .legion/ handoffs a merge from before handoffs moved to Dispatch left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state
@@ -1069,6 +1069,12 @@ handoff_word() {
 role_handoff_record() {
   daemon_state | jq -r --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].handoffRecord // empty | "\(.id) \(.version)"'
 }
+# role_handoff_recorded ISSUE ROLE: ROLE's completion of its current file-backed phase has named a
+# Dispatch handoff record (role_handoff_record prints one). A review round ends on the reviewer's
+# decision, whether or not the reviewer has completed (the daemon's roundRejected and
+# roundApproved, workflow/review.go), so a check of the reviewer's record first waits for it with
+# this, bounded (until_true), rather than reading it at the move the decision made.
+role_handoff_recorded() { [ -n "$(role_handoff_record "$1" "$2")" ]; }
 # assert_handoff_record ISSUE ROLE PHASE ROUND: ROLE's completion of that phase round named a
 # Dispatch handoff record, and Dispatch holds that record (GET /api/v1/handoffs/<id>) as ISSUE's
 # handoff of the phase's word at the version the completion reported, written by the session ROLE's
