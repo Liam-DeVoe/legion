@@ -91,11 +91,12 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 // its write at revision 0, reads the key back on that write's refusal, and, finding the delete
 // marker (nats.ErrKeyDeleted), sends the write again at the marker's revision and returns that
 // write's error as it is (kv.go:737-738): neither nats.ErrKeyExists nor nats.ErrKeyRevisionMismatch
-// wraps it, so the leader's 10164 is caught by IsCASConflict's code alone. The store's role claim
-// takes this path whenever it writes at revision 0 over a deleted record. The store's interest
-// write does not: it replaces a delete marker by an Update at the revision the stream's leader
-// reports for the marker (store's createInterest), and nats.go names that Update's lost race
-// nats.ErrKeyRevisionMismatch, which IsCASConflict matches by class.
+// wraps it, so the leader's 10164 is caught by IsCASConflict's code alone. The delivery ledger's
+// Attempt takes this path when it creates a pair's record over the delete marker a Clear left
+// (dedupe.KV). The store's interest write and role claim do not: each writes with an Update at the
+// revision of the entry its read found, a delete marker's included (putInterestAt,
+// roleClaimToWrite), and nats.go names that Update's lost race nats.ErrKeyRevisionMismatch, which
+// IsCASConflict matches by class.
 //
 // The read must be answered while the routes are frozen. A direct get, which every bucket of this
 // build reads by, goes to whichever copy's queue subscriber the server picks, a remote one as

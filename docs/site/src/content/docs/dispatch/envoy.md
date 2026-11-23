@@ -565,7 +565,7 @@ session never receives it.
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
-| `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
+| `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. Each listener pod holds a budget of its own. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
 
 A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
 the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its
@@ -847,10 +847,10 @@ health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; aft
 `503 {"status":"unavailable","error":"nats unavailable"}` while the bus does not answer, the check
 that turns `/healthz` `503`, and `200 {"status":"serving"}` otherwise, again as soon as the bus
 answers. It reads no store. It is the path for a balancer that sends requests to `/v1`, such as
-the edge listener's, since `/healthz` answers `200` `starting` from the listener's first answer,
-while `/v1` still answers `503`. It also takes a listener whose bus is cut out of the balancer's
-backends, which the pod's readiness does not: GKE's standalone network endpoint groups keep an
-endpoint whose readiness fails.
+the edge listener's, since `/healthz` is the pod's readiness probe and reads more than `/v1`
+needs, the active pod's durable consumer among them. It also takes a listener whose bus is cut
+out of the balancer's backends, which the pod's readiness does not: GKE's standalone network
+endpoint groups keep an endpoint whose readiness fails.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that

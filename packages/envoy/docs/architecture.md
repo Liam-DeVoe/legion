@@ -401,7 +401,8 @@ then parses them: an event whose signature does not check is a `401` whatever it
 Slack's `url_verification` handshake included, which Slack signs as it signs every request. The
 three routes read against one byte budget the listener holds, `ENVOY_WEBHOOK_BODY_BUDGET` bytes
 (64 MiB when unset), which the start logs as `listener webhook body budget: <bytes> bytes (<MiB>
-MiB) held at once across every webhook route` (`webhook.BodyBudget`). A body is charged as its
+MiB) held at once across every webhook route` (`webhook.BodyBudget`); each listener pod holds a
+budget of its own, since every pod of a machine serves the webhooks. A body is charged as its
 bytes arrive, never past its route's cap (GitHub 25 MiB, Slack and Ghost Wispr 1 MiB) or its
 declared length, and stays charged until its handler returns, a refusal included, so a sender
 that sends only headers holds nothing. One read at a time may take the total past the budget, by

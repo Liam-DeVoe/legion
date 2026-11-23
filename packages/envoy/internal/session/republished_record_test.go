@@ -472,9 +472,10 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 
 // N1b/N9/N9b: when the session's own writer's record has caught up in this registry's cache before
 // the clearing write (the ordering the lost-race row above does not reach, since the write lands on
-// its first try), PutClearingGap writes that record back with only the claim's machine,
-// self-subscription and projects changed, keeping its gap mark, its whole delivery set (Delivery,
-// Epoch, ConsumerStart), its client instance and its capabilities. Keeping Delivery without
+// its first try), PutClearingGap writes that record back with only the claim's machine and
+// self-subscription written, its port written out and its UpdatedAt stamped, keeping its projects,
+// its gap mark, its whole delivery set (Delivery, Epoch, ConsumerStart), its client instance and
+// its capabilities. Keeping Delivery without
 // ConsumerStart would read as a consumer holding every stored message; clearing the instance or
 // capabilities would unprotect a live session's role and mode. It answers that record as it read
 // it, before its write: the client instance cmd/listener's roleSetHandler falls back to. Control
@@ -534,8 +535,9 @@ func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *t
 	want := wantRead
 	want.SelfSubscribed = true
 	// The whole written entry is compared (as the H1 row does), so a display field dropped, or a new
-	// SessionEntry field added later, fails the row: only the machine, self-subscription, projects and
-	// time change; the gap mark, the whole delivery set and the client instance, capabilities and
+	// SessionEntry field added later, fails the row: only the machine, the self-subscription, the
+	// port and the time change; the projects, the gap mark, the whole delivery set and the client
+	// instance, capabilities and
 	// display fields are kept.
 	got := after
 	got.UpdatedAt = 0
