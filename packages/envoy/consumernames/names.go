@@ -661,11 +661,17 @@ func (n *Names) reserveFresh(ctx context.Context, sel Selection, record Record, 
 
 // abandonCandidate is record with op's candidate retired and kept until its client's wait for the
 // candidate's create has ended: now, on this process's clock, and the bound the reserving
-// process's create ran under (op.CreateWithin), or this family's own (Config.CreateBound) for an
-// operation that records none.
+// process's create ran under (op.CreateWithin), no longer than this family's own
+// (Config.CreateBound), which is also the bound for an operation that records none. Every process
+// of a family runs its creates under the one bound its creator sets, so a longer op.CreateWithin
+// is a value a writer of the record chose: taken as it is, it would keep the candidate named, and
+// read at every retirement, for as long as that writer said. A reserver whose bound is longer than
+// this process's (a build that raised it, beside one that did not) can then land a create after
+// the candidate is dropped: a create applied past the bound its retirer knows, the stated limit
+// (README, "Lifetime").
 func (n *Names) abandonCandidate(record Record, op Op) Record {
 	within := op.CreateWithin
-	if within <= 0 {
+	if within <= 0 || within > n.cfg.CreateBound {
 		within = n.cfg.CreateBound
 	}
 	return record.abandon(op.Candidate, n.cfg.Now().Add(within))

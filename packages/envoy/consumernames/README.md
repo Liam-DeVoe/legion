@@ -46,7 +46,7 @@ revision:
 | `start` | the saved start, written before any destructive step |
 | `last_floor` | the current consumer's last ack floor, with the name and the stream identity it was read on |
 | `retired` | names never selected again; only these are ever deleted by a cleanup |
-| `abandoned` | the retired candidates whose create may still have been in flight when Step 0 or a retry retired them, each with the time until which its client still waits for it: the retirement and the operation's `create_within` |
+| `abandoned` | the retired candidates whose create may still have been in flight when Step 0 or a retry retired them, each with the time until which its client still waits for it: the retirement and the operation's `create_within`, no longer than the retirer's own `Config.CreateBound` |
 | `restore` | a rollback in progress |
 
 - **Lifetime.** A record is never deleted and never expires. Publishing a new `current` clears
@@ -59,13 +59,17 @@ revision:
   since the operation's reservation, its `Config.Reserved` hook's time included, and sends no
   create past it: the bound its requests run under, the session family's consumer requests' 10 s,
   the listener's durable calls' 10 s. A retirement comes after the reservation, so its `until`, on
-  the retirer's clock, is no earlier than the end of the client's wait for the create. The dropper
-  reads `until` on its own clock, which can be another host's, and the settle age is the skew it
-  allows. Two stated limits remain. `CreateBound` is only the client's deadline: nats-server
-  serves a queued API request whenever it reaches it, so a create the server applies past the
-  bound its client waited leaves a consumer no record names. So does a dropper whose clock is
-  ahead of the retirer's by more than the settle age, when the create lands after the dropper
-  dropped its name. Neither loses a message or deletes a consumer it should not: such a consumer
+  the retirer's clock, is no earlier than the end of the client's wait for the create. The
+  retirer takes the operation's `create_within` no longer than its own `CreateBound`, since every
+  process of a family runs one bound, so a record cannot stretch the time a name is kept and read.
+  The dropper reads `until` on its own clock, which can be another host's, and the settle age is
+  the skew it allows. Three stated limits remain. `CreateBound` is only the client's deadline:
+  nats-server serves a queued API request whenever it reaches it, so a create the server applies
+  past the bound its client waited leaves a consumer no record names. So does a dropper whose
+  clock is ahead of the retirer's by more than the settle age, when the create lands after the
+  dropper dropped its name, and a reserver whose `CreateBound` is longer than the retirer's (a
+  build that raised it, running beside one that did not), when its create lands after the
+  retirer's `until`. None loses a message or deletes a consumer it should not: such a consumer
   holds a slot of the stream's consumer limit until the cutover hold's streams census removes it,
   or its own inactive threshold does. That threshold is no bound on a replicated hub: a session
   consumer's is at least 1 h but restarts at every leader election of the consumer

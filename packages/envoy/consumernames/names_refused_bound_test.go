@@ -100,3 +100,52 @@ func TestAKeyRefusedAtEveryCallKeepsABoundedRecord(t *testing.T) {
 		})
 	}
 }
+
+// A retirement keeps an abandoned candidate for the bound its create ran under (Op.CreateWithin),
+// never longer than the family's own (Config.CreateBound): every process of a family runs its
+// creates under the one bound its creator sets, so a longer one is a record a writer chose, and it
+// would keep the name, and the read of it at every retirement, for as long as that writer said.
+// Here a record's open create carries an hour, and both of Step 0's retirements, a Resolve's
+// (abandon) and an Ensure's (rereserve), keep its candidate until now plus the family's 10 s.
+// Controls: an operation that records no bound, or a shorter one, keeps its candidate for the
+// family's bound or its own.
+func TestARetirementKeepsACandidateNoLongerThanTheFamilysCreateBound(t *testing.T) {
+	const key = "ses-1"
+	ctx := context.Background()
+	for _, call := range []struct {
+		name string
+		run  func(n *Names, h *harness) error
+	}{
+		{name: "Resolve", run: func(n *Names, _ *harness) error { _, err := n.Resolve(ctx, key); return err }},
+		{name: "Ensure", run: func(n *Names, h *harness) error {
+			_, _, err := n.Ensure(ctx, key, CreateRequest{Create: h.server.create(key), First: first(1)})
+			return err
+		}},
+	} {
+		for _, c := range []struct {
+			name   string
+			within time.Duration
+			kept   time.Duration
+		}{
+			{name: "an hour, past the family's bound", within: time.Hour, kept: testCreateBound},
+			{name: "control: none recorded", within: 0, kept: testCreateBound},
+			{name: "control: 5 s, within the family's bound", within: 5 * time.Second, kept: 5 * time.Second},
+		} {
+			t.Run(call.name+", a create bound of "+c.name, func(t *testing.T) {
+				h := newHarness()
+				candidate := FreshName("session")
+				h.store.put(key, Record{Key: key, Start: 1, Op: &Op{Kind: OpCreate, Owner: "reserver", Candidate: candidate, CreateWithin: c.within, ReservedAt: h.clock.Now()}})
+				h.clock.advance(time.Minute)
+				if err := call.run(h.names("p1"), h); err != nil {
+					t.Fatal(err)
+				}
+				rec := h.store.record(t, key)
+				until, ok := rec.abandonedUntil(candidate)
+				if want := h.clock.Now().Add(c.kept); !ok || !until.Equal(want) {
+					t.Fatalf("after the %s the record keeps %s until %s (abandoned: %t), want until %s, now plus %s; the record is %+v",
+						call.name, candidate, until.Format(time.RFC3339), ok, want.Format(time.RFC3339), c.kept, rec)
+				}
+			})
+		}
+	}
+}

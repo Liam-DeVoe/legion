@@ -85,7 +85,8 @@ type Record struct {
 	Retired []string `json:"retired,omitempty"`
 	// Abandoned are the retired candidates whose create may still have been in flight when they
 	// were retired (Step 0's or a retry's), each with the time until which its client still waits
-	// for it: the retirement and the create's own bound (Op.CreateWithin), on the retirer's clock.
+	// for it: the retirement and the create's own bound (Op.CreateWithin, no longer than the
+	// retirer's own Config.CreateBound), on the retirer's clock.
 	// Cleanup drops one the server does not hold only once it reads it absent at or after that time
 	// and its own settle age (Config.SettleAge, the clock skew it allows), so a create that lands
 	// within its bound, after the candidate was retired, leaves a consumer the record still names,
@@ -121,7 +122,8 @@ type Op struct {
 	StartPending bool `json:"start_pending,omitempty"`
 	// CreateWithin is how long the reserving process's create of Candidate can run (its
 	// Config.CreateBound): a process that retires the candidate without seeing its create end
-	// keeps it named for that long after (Record.Abandoned).
+	// keeps it named for that long after, no longer than its own Config.CreateBound
+	// (Record.Abandoned, Names.abandonCandidate).
 	CreateWithin time.Duration `json:"create_within,omitempty"`
 	// Native is the native policy the candidate's create keeps, for a native first create, whose
 	// Record.Start is then the numeric boundary recovery creates at instead, or 0 where the first
