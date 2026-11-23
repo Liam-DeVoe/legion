@@ -15,7 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
-	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -316,17 +316,6 @@ func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
 	}
 }
 
-// nowClock is the passes' clock with the moment it reads taken from now: a row that walks the
-// verify loop through minutes of its backoff sets the moment each pass reads, and every wait a
-// pass arms stays on the passes' clock, which the row does not move, as writerClock keeps a
-// writer's waits apart from the moments it stamps.
-type nowClock struct {
-	clock.Clock
-	now func() time.Time
-}
-
-func (c nowClock) Now() time.Time { return c.now() }
-
 // verifyGaveUp is the verify loop's ERROR line when it gives an episode up (permanentVerifyFailure).
 const verifyGaveUp = "ci verify gave up an episode: no later read of the head mends its failure"
 
@@ -343,7 +332,10 @@ func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoe
 	settlements := h.subscribe()
 	start := h.clock.Now()
 	clock := start
-	h.reconciler.Clock = nowClock{Clock: h.clock, now: func() time.Time { return clock }}
+	// The passes read the moment clock holds, which the row sets for each pass as it walks the
+	// verify loop through minutes of its backoff, and every wait a pass arms stays on the passes'
+	// clock, which the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -404,7 +396,10 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	settlements := h.subscribe()
 	start := h.clock.Now()
 	clock := start
-	h.reconciler.Clock = nowClock{Clock: h.clock, now: func() time.Time { return clock }}
+	// The passes read the moment clock holds, which the row sets for each pass as it walks the
+	// verify loop through 31 minutes, and every wait a pass arms stays on the passes' clock, which
+	// the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -535,7 +530,9 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	h.listHead()
 	settlements := h.subscribe()
 	clock := h.clock.Now()
-	h.reconciler.Clock = nowClock{Clock: h.clock, now: func() time.Time { return clock }}
+	// The passes read the moment clock holds, which the row moves past the verify retry, and every
+	// wait a pass arms stays on the passes' clock, which the row does not move.
+	h.reconciler.Clock = clocktest.WithNow(h.clock, func() time.Time { return clock })
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	running := checkSuite(901, "in_progress", "", otherApp, "2026-11-22T00:05:01Z")

@@ -17,6 +17,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -25,14 +26,16 @@ import (
 )
 
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
-// hands t, where no earlier test made a session bucket.
+// hands t, where no earlier test made a session bucket. The client owns the stream, so its close
+// waits for its stream keeper to end, and the cleanup closes it through the shared wait
+// (bustest.Close).
 func setupNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -646,7 +649,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 		t.Fatalf("sanity: Ping before close: %v", err)
 	}
 
-	client.Close()
+	bustest.Close(t, client)
 
 	if err := reg.Ping(); err == nil {
 		t.Fatal("Ping after conn close should return error")
@@ -664,16 +667,13 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	}
 
 	url := client.Conn.ConnectedUrl()
-	client.Close()
+	bustest.Close(t, client)
 	testwait.Eventually(t, "the watcher to report its end once its connection closed", func() bool { return registry.WatchErr() != nil })
 	if err := registry.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the registry unhealthy")
 	}
 
-	replacement, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect replacement: %v", err)
-	}
+	replacement := testnats.Connect(t, url)
 	defer replacement.Close()
 	if err := registry.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch registry: %v", err)
@@ -682,7 +682,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("ping after rewatch: %v", err)
 	}
 
-	js, err := replacement.JetStream()
+	js, err := replacement.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open replacement JetStream: %v", err)
 	}

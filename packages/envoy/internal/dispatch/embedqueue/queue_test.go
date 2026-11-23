@@ -1481,8 +1481,8 @@ func eventually(t *testing.T, what string, done func() bool) {
 	testwait.Eventually(t, what, done)
 }
 
-// runQueue runs Run with deps until the test ends, and fails the test if Run does not return
-// promptly once its context ends.
+// runQueue runs Run with deps until the test ends, and fails the test, at the shared wait's
+// give-up, if Run does not return once its context ends.
 func runQueue(t *testing.T, deps Deps) {
 	t.Helper()
 	t.Cleanup(startQueue(t, context.Background(), deps))

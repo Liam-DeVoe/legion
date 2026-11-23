@@ -35,7 +35,7 @@ type Installer struct {
 	// RetryInterval.
 	Retry time.Duration
 	// Clock is what the retry timer runs on: clock.Real() when nil, as in the server, and a
-	// test's clocktest.Fake, which arms the retry only when the test moves it.
+	// test's clocktest.Fake, which fires the retry only when the test moves it.
 	Clock clock.Clock
 	// OnSwitch runs after a read that moved the schema this process serves: the installed
 	// value changed, its version or any element of it. The server refreshes its row of the

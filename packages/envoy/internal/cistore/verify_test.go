@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -652,7 +653,7 @@ func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
 const verifyGaveUp = "checks verify gave up; the head is not announced until Dispatch answers a later episode"
 
 // verifyRun drives a summary loop of a store on a clock the test moves, which the store stamps its
-// claims and records by too (verifyClock), so a test runs the loop at the production timeouts and
+// claims and records by too (newVerifyRun), so a test runs the loop at the production timeouts and
 // backoffs without waiting them out. It notes the clock's offset from start at each pass that
 // started an episode (a wait under a claim generation it had not seen) and at each that gave one
 // up (one more verifyGaveUp line).
@@ -670,21 +671,14 @@ type verifyRun struct {
 func newVerifyRun(t *testing.T, s *Store, start time.Time) *verifyRun {
 	run := &verifyRun{t: t, z: testSummarizer(s, 0), pub: &recPub{}, logs: &logtest.Buffer{}, start: start, clock: start, seen: map[uint64]bool{}}
 	run.logger = logging.NewWithWriter("test", run.logs)
-	s.clock = verifyClock{Clock: clock.Real(), run: run}
+	// The store's clock in a verifyRun: the moments the store stamps (a claim's ClaimedAt, a
+	// record's LastEventAt) are the run's, so its claims stand on the clock the summary loop judges
+	// them by, and its waits (the backoff after a lost compare-and-swap, a record's RecordWait) run
+	// on the real clock, as each is a pause of the pass that makes it: on the run's clock, which
+	// moves only between passes, a pass that lost a race would wait for ever.
+	s.clock = clocktest.WithNow(clock.Real(), func() time.Time { return run.clock })
 	return run
 }
-
-// verifyClock is the store's clock in a verifyRun: the moments the store stamps (a claim's
-// ClaimedAt, a record's LastEventAt) are the run's, so its claims stand on the clock the summary
-// loop judges them by, and its waits (the backoff after a lost compare-and-swap, a record's
-// RecordWait) run on the real clock, as each is a pause of the pass that makes it: on the run's
-// clock, which moves only between passes, a pass that lost a race would wait for ever.
-type verifyClock struct {
-	clock.Clock
-	run *verifyRun
-}
-
-func (c verifyClock) Now() time.Time { return c.run.clock }
 
 // until runs a pass every 30 seconds of the clock, up to offset past start, and fails the test at
 // any publication.

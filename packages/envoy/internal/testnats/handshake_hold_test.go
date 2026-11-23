@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -60,7 +61,9 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 // the connection's socket ends: once the row closes the socket the client dialed, with the proxy
 // still frozen, nats.go lets the lock go and a read of the connection's status answers. The control
 // is HoldWriteLock on the same rig: its lock is the row's own, so the read still waits after the
-// close, which shows that the rig tells the two apart.
+// close, which shows that the rig tells the two apart. The row connects through the hold as
+// Connect does, through the shared wait, which makes a connect that failed again, each dial
+// carrying the wait's give-up as its socket's deadline (socketDialer, giveUpDialer).
 func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T) {
 	for _, stalled := range []bool{true, false} {
 		name := "HoldStalledWrite"
@@ -69,11 +72,12 @@ func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T)
 		}
 		t.Run(name, func(t *testing.T) {
 			hold := StartHandshakeHold(t, URL(t))
-			dialer := &socketDialer{}
-			conn, err := natsgo.Connect(hold.URL(), natsgo.SetCustomDialer(dialer), natsgo.NoReconnect())
-			if err != nil {
-				t.Fatalf("connect through the hold: %v", err)
-			}
+			dialer := &socketDialer{giveUpDialer: giveUpDialer{t: t}}
+			dial := testwait.Until(t, fmt.Sprintf("a connection through the hold at %s", hold.URL()), func() (dialAttempt, bool) {
+				conn, err := natsgo.Connect(hold.URL(), natsgo.SetCustomDialer(dialer), natsgo.NoReconnect())
+				return dialAttempt{conn: conn, err: err}, err == nil
+			})
+			conn := dial.conn
 			t.Cleanup(conn.Close)
 			socket := dialer.last.Load()
 			if socket == nil {
@@ -106,13 +110,16 @@ func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T)
 	}
 }
 
-// socketDialer dials as nats.go's own dialer does and keeps the last socket it handed out.
+// socketDialer dials as giveUpDial's dialer does (giveUpDialer), so the socket carries the shared
+// wait's give-up as its deadline until the connect returns, and keeps the last socket it handed
+// out: once the row's wait has ended, the socket of the connect that succeeded, the last it made.
 type socketDialer struct {
+	giveUpDialer
 	last atomic.Pointer[net.Conn]
 }
 
 func (d *socketDialer) Dial(network, address string) (net.Conn, error) {
-	conn, err := (&net.Dialer{Timeout: natsgo.DefaultTimeout}).Dial(network, address)
+	conn, err := d.giveUpDialer.Dial(network, address)
 	if err == nil {
 		d.last.Store(&conn)
 	}

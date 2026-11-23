@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -318,16 +319,29 @@ func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
 
 // TestSilenceEndsNoWaitOnTheHorizon holds what main's UntilTheDeadline row
 // (TestAWatchOfATestThatWaitsUntilTheDeadlineIsEndedBySilenceNowhere) held, for every wait on the
-// horizon here: a horizon that says nothing ends no wait. A result arrives silence after the wait
-// began, past the 3 s main's watch gave a horizon that never warned (its Base) and the 3 s it gave
-// one that had stopped warning (its Extension), and Wait returns it: on a horizon that never
-// warned, and on one that warned once of a foreign holder after the wait began and then said
-// nothing. A watch that a silence ended, by either of main's lengths or by any span shorter than
-// silence, fails the row by name, naming the result it waited for. The late result stands for a
-// server the machine is merely slow to run (dispatch://INFRA-3904); its delay is the row's one
-// span, since a wait that a silence did not end leaves no state to read before the result comes.
+// horizon here: a horizon that says nothing ends no wait. It holds that on a horizon that never
+// warned and on one that warned once of a foreign holder after the watch began and then said
+// nothing, in two proofs, neither of which holds a span.
+//
+// In a synctest bubble, a watch begun at the bubble's start answers no failure when it is asked at
+// once, which reads the once-warned horizon's warning, nor when it is asked again once the bubble
+// has idled an hour (testwait.IdleAnHour): a silence bound of up to an hour on any clock the watch
+// might read, timed from the watch's start or from the last warning it read, main's 3 s Base and
+// Extension among them, would have fired inside that hour. An hour is six times go test's default
+// -timeout, so no wait under that default meets a longer silence than the bubble holds.
+//
+// Outside a bubble, Wait returns a result the row sends only once the watch has read the horizon's
+// warnings readsBeforeTheResult times: its own first read, then one read at each ask of the wait
+// that found no result. So the wait goes on asking through the silence, and the result alone ends
+// it. Wait cannot run in the bubble, because it waits through the shared wait, which calls
+// t.Deadline, and a bubble's t forbids that call.
+//
+// A watch that the silence ended fails the row by name in either proof.
 func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
-	const silence = 4 * time.Second
+	// readsBeforeTheResult is how many reads of the horizon's warnings come before the result is
+	// sent: the watch's first read (NewWatch) and five asks of the wait, each of which reads them
+	// once it finds no result (Watch.Failure).
+	const readsBeforeTheResult = 6
 	for _, row := range []struct {
 		name   string
 		logged []Warning
@@ -337,23 +351,45 @@ func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			// The watch reads the warnings first as it begins (NewWatch), so row.logged, which every
-			// later read answers, is logged after the wait began.
-			began := false
-			warnings := func() []Warning {
-				if !began {
-					began = true
-					return nil
+			synctest.Test(t, func(t *testing.T) {
+				watch := NewWatch(saying(row.logged, nil), "dispatch_test_ab")
+				if failure := watch.Failure("the result"); failure != "" {
+					t.Fatalf("the watch failed at the bubble's start: %s", failure)
 				}
-				return row.logged
-			}
+				testwait.IdleAnHour()
+				if failure := watch.Failure("the result"); failure != "" {
+					t.Fatalf("an hour of silence on the bubble's clock failed the watch: %s", failure)
+				}
+			})
 			arrived := make(chan string, 1)
-			late := time.AfterFunc(silence, func() { arrived <- "the late result" })
-			defer late.Stop()
-			if got := Wait(t, fmt.Sprintf("a result %v after the wait began", silence), arrived, warnings, "dispatch_test_ab", nil); got != "the late result" {
-				t.Fatalf("Wait answered %q; want the late result", got)
+			warnings := saying(row.logged, func(reads int) {
+				if reads == readsBeforeTheResult {
+					arrived <- "the result"
+				}
+			})
+			what := fmt.Sprintf("a result sent once the horizon's warnings were read %d times", readsBeforeTheResult)
+			if got := Wait(t, what, arrived, warnings, "dispatch_test_ab", nil); got != "the result" {
+				t.Fatalf("Wait answered %q; want the result", got)
 			}
 		})
+	}
+}
+
+// saying is a horizon's warnings as a watch begun on it reads them: none at its first read, which
+// the watch makes as it begins (NewWatch), and logged at every read after it, so logged was said
+// after the watch began. read, when not nil, is told the count of reads at each, the read it is
+// told of included.
+func saying(logged []Warning, read func(reads int)) func() []Warning {
+	reads := 0
+	return func() []Warning {
+		reads++
+		if read != nil {
+			read(reads)
+		}
+		if reads == 1 {
+			return nil
+		}
+		return logged
 	}
 }
 

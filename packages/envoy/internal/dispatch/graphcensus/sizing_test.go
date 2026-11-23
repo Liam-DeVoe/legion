@@ -930,7 +930,8 @@ func publishAFallbackCopy(t *testing.T, database *store.Store) {
 
 // runTheOutbox runs the real outbox over database (outbox.New, Run), every role held by
 // censusRoleHolder and every send acknowledged at once, until settled answers true, and then
-// stops it and waits for it to stop, so nothing it writes lands after this returns.
+// stops it and waits for it to stop, so nothing it writes lands after this returns. settled's
+// answer is the one reading it has, so the wait for it prints none.
 func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -946,12 +947,12 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 		cancel()
 		testwait.Receive(t, "the outbox to stop once its context ended", done)
 	}()
-	testwait.Until(t, "the outbox to "+what, func() (bool, bool) {
+	testwait.Eventually(t, "the outbox to "+what, func() bool {
 		var ok bool
 		if err := database.Pool.QueryRow(context.Background(), settled).Scan(&ok); err != nil {
 			t.Fatalf("read whether the outbox did %s: %v", what, err)
 		}
-		return ok, ok
+		return ok
 	})
 }
 

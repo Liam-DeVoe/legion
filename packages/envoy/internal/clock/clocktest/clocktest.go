@@ -54,6 +54,12 @@
 // or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
 // never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
 // instead.
+//
+// # Another source's moments
+//
+// WithNow is a clock whose waits run on one clock and whose Now reads another source, for code
+// whose stamps must stand on the moments a test sets while its own pauses run on a clock the test
+// does not move.
 package clocktest
 
 import (
@@ -94,6 +100,24 @@ func New(start time.Time) *Fake { return &Fake{now: start} }
 
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
 func Held() *Fake { return &Fake{held: true, wall: time.Now} }
+
+// WithNow is c with the moment it reads taken from now: every timer, sleep and deadline context
+// runs on c, and Now answers now's moment. It is for code whose waits must run on c while the
+// moments it stamps or judges are another source's, such as a writer whose backoff after a lost
+// compare-and-swap is a pause of its own, on a clock nothing has to move, while the moments it
+// stamps stand on a fake the test moves: on that fake, the pause would end only when the test
+// moved it.
+func WithNow(c clock.Clock, now func() time.Time) clock.Clock {
+	return nowFrom{Clock: c, now: now}
+}
+
+// nowFrom is WithNow's clock: c's waits, with Now read from now.
+type nowFrom struct {
+	clock.Clock
+	now func() time.Time
+}
+
+func (c nowFrom) Now() time.Time { return c.now() }
 
 // Now is the fake's moment plus every step StepWall has made.
 func (c *Fake) Now() time.Time {

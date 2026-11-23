@@ -224,15 +224,15 @@ func decoded[T any](t *testing.T, body []byte) T {
 func sessionActor(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
 
 // awaitTrue waits until query, a select of one boolean over args, answers true, through the
-// shared wait.
+// shared wait. The answer is the one reading the query has, so the wait prints none.
 func (r *writersRig) awaitTrue(t *testing.T, what, query string, args ...any) {
 	t.Helper()
-	testwait.Until(t, what, func() (bool, bool) {
+	testwait.Eventually(t, what, func() bool {
 		var done bool
 		if err := r.database.Pool.QueryRow(context.Background(), query, args...).Scan(&done); err != nil {
 			t.Fatalf("read whether %s: %v", what, err)
 		}
-		return done, done
+		return done
 	})
 }
 
