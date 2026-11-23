@@ -214,15 +214,25 @@ func main() {
 		fmt.Println("UNKNOWN: scanned no non-test file")
 		os.Exit(2)
 	}
-	sort.Slice(requests, func(i, j int) bool { return requests[i].pos < requests[j].pos })
+	// Rows sort by position, then by callee, so two calls on one line print in one order whatever
+	// else the census found: sort.Slice is not stable.
+	sortRows := func(rows []row) {
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].pos != rows[j].pos {
+				return rows[i].pos < rows[j].pos
+			}
+			return rows[i].callee < rows[j].callee
+		})
+	}
+	sortRows(requests)
 	for _, r := range requests {
 		fmt.Printf("REQ\t%s\t%s\n", r.pos, r.callee)
 	}
-	sort.Slice(others, func(i, j int) bool { return others[i].pos < others[j].pos })
+	sortRows(others)
 	for _, r := range others {
 		fmt.Printf("LOCAL\t%s\t%s\n", r.pos, r.callee)
 	}
-	sort.Slice(funcs, func(i, j int) bool { return funcs[i].pos < funcs[j].pos })
+	sortRows(funcs)
 	for _, r := range funcs {
 		fmt.Printf("FUNC\t%s\t%s\n", r.pos, r.callee)
 	}
