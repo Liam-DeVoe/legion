@@ -1806,10 +1806,14 @@ Each pass of the settlement resumption arms at most 50 owed documents, closed an
 The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
 A settlement takes a lease on its document's pending-settlement row as it begins its work on the document, once it holds one of the four settlement slots and before it warms a cold room, whichever way it was armed and in whichever process (`doc_settlements_pending.leased_until`, `docs.leaseSettlementPending`), and the pass skips a row whose lease has not run out.
 Arming a document moves its room's generation, and a settlement whose generation moved after it read the room ends writing nothing, so before the lease a document whose every settlement took longer than a period was armed again under each one and never committed.
-The lease is held while the settlement runs, and is at most 210 seconds (`docs.settlementLease`), the sum of the bounds on what can follow it:
-the settlement's own 60-second deadline, which every settlement runs under however it started and which covers its wait for a slot and its passes;
+The lease is held while the settlement runs, and is 212 seconds (`docs.settlementLease`), the sum of the bounds on what can follow it:
+the settlement's own 60-second deadline, which every settlement runs under however it started and which covers its wait for a slot and its passes up to their write phase;
 a cold room's load, which no deadline of the settlement's stops, whose reads run under two 60-second bounds of their own, one on the stored history and one on the issue and the row;
-and the 30 seconds a pass that has written into its room has to finish.
+the 30 seconds a pass that has written into its room has to finish;
+and the 2-second floor of a pass's write phase.
+A pass's write phase - the one batch of every statement it queued, a version's block index with its graph nodes and tuples among them, and its commit - runs apart from that deadline and that finish, under a bound of its own, or under what the deadline or the finish has left where that is longer (`docs.writePhase`): the 2-second floor and 900 µs for each block of the document (`docs.settlementWriteBound`), three times the 292 µs a block measured on a version of 150,001 blocks, whose write phase ran 43.8 s and whose bound is 2 minutes 17 seconds.
+A write phase the database leaves unanswered is cut at that bound, and the settlement ends as one past its deadline, left to the resumption.
+A pass whose write phase's bound could outlast the lease - a document of over a hundred thousand blocks or so - extends the lease to cover it before it opens its transaction, where the lease is still its settlement's (`docs.extendSettlementLease`), so the lease can run past 212 seconds for such a document.
 A settlement that commits deletes the row and its lease with it, and one that ends any other way (it ran out of time, the database did not serve it, a newer write's settlement superseded it, it failed) gives the lease back as it returns, once nothing it started can still commit (`docs.releaseSettlementLease`), so the next pass arms the document at once.
 The give-back clears the lease only where the row still holds the one that settlement took, so a newer settlement's lease stands.
 Only a settlement whose process dies, or whose lease, commit or give-back went unanswered, leaves its lease to run out, and the first pass after that arms the document again.

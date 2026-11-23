@@ -192,6 +192,36 @@ func leaseSettlementPending(ctx context.Context, settlements *store.Pool, room s
 	return &until, nil
 }
 
+// extendSettlementLeaseStatement is extendSettlementLease's one statement: it moves the end of the
+// lease on the document $1's pending-settlement row to the database's now() plus $3 seconds where
+// the row still holds the lease that ends at $2 and that end is sooner, answers the new end, and
+// writes nothing where the row has gone, another settlement has leased it since or the lease
+// already ends later.
+const extendSettlementLeaseStatement = `
+	update doc_settlements_pending set leased_until = now() + make_interval(secs => $3)
+	where artifact_id = $1 and leased_until = $2 and leased_until < now() + make_interval(secs => $3)
+	returning leased_until`
+
+// extendSettlementLease extends the lease a settlement of room took (leaseSettlementPending),
+// which ends at until, to hold from now, for a pass whose write phase the lease does not cover
+// (settlementPass.leaseThroughWrite), and answers the lease's new end, nil where it wrote nothing:
+// the lease is no longer that settlement's, as releaseSettlementLease's compare-and-clear finds
+// it, or already ends later. The settlement keeps the end answered, so its give-back still clears
+// the lease it holds. Like the lease, it is one statement of its own on the settlements pool,
+// through the connection the settlement's slot holds for it there, outside any transaction, under
+// the settlement's deadline (ctx).
+func extendSettlementLease(ctx context.Context, settlements *store.Pool, room string, until time.Time, hold time.Duration) (*time.Time, error) {
+	var extended time.Time
+	err := settlements.QueryRow(ctx, extendSettlementLeaseStatement, room, until, hold.Seconds()).Scan(&extended)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("extend the lease on the document's pending settlement over the write phase: %w", err)
+	}
+	return &extended, nil
+}
+
 // settlementLeaseReleaseBound bounds a settlement's give-back of its lease
 // (releaseSettlementLease), which runs apart from the settlement's own deadline, since a settlement
 // that ran past that deadline gives its lease back too.

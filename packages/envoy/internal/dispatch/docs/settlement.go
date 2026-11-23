@@ -122,6 +122,10 @@ type settlement struct {
 	doc         *crdt.Doc
 	settlements *store.Pool
 	generation  uint64
+	// caller is the context the settlement's caller handed it (settleRoomWithin), before the
+	// settlement's own deadline (settleTimeout): what still ends the write phase of a pass that
+	// has not written into its room, which runs apart from that deadline (writePhase).
+	caller context.Context
 	// lease is the end of the lease the settlement holds on the document's pending-settlement row
 	// (leaseSettlementPending), nil before it takes one, where the document owed none, and once
 	// its commit has deleted the row and the lease with it (commitVersion). settleRoomWithin gives
@@ -247,8 +251,10 @@ func skipUnreadableSettlement(room string, err error) bool {
 // leaving what follows to its caller: a timer's settlement, the one Shutdown runs under its drain
 // budget, one settleOwedNow runs under its caller's context. Every one of them also runs under a
 // deadline of its own, settleTimeout from here, so whichever way a settlement started it ends at
-// that deadline or at its caller's, whichever comes first, but for the two parts no deadline stops
-// (settlementTimeout).
+// that deadline or at its caller's, whichever comes first, but for the three parts no deadline
+// stops (settlementTimeout): a pass's write phase among them, which runs under a bound that grows
+// with the document (writePhase) and, in a pass that has written nothing into its room, still
+// ends at its caller's end.
 // Before anything else - before it loads a cold room - it waits for one of the settlementWorkers
 // slots, holding no connection, so every way a settlement starts is bounded and the excess waits
 // there. When parent or the deadline ends first, in that wait or after it, the settlement's
@@ -311,23 +317,25 @@ func skipUnreadableSettlement(room string, err error) bool {
 // the repairs, or finds the document moved under its read, is followed by another, at most
 // maxSettlePasses in all and maxSettleRereads reads again.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	settle := &settlement{service: s, room: room, generation: generation, caller: parent}
 	parent, cancel := context.WithTimeoutCause(parent, s.settleTimeout, errSettlementTimeout)
 	defer cancel()
-	settle := &settlement{service: s, room: room, generation: generation}
 	// stopShort is the outcome of a settlement that stopped short with err having written
-	// nothing into the room: a retry, unless its deadline or parent has ended, the pools refused it
-	// a connection or its warm-up's load ran out its reads' bound (settleOverloaded), the document
-	// has been removed or Shutdown refused the write. The generation it counts that retry's
-	// failure against is the one the settlement stands at now, which its passes move as they read
-	// the room again. An err that is the append gate's refusal of an update the room took after its
-	// issue closed is no fault to retry: it ends the settlement (endOnRefusedUpdate).
+	// nothing into the room: a retry, unless its deadline, its write phase's bound (writePhase)
+	// or parent has ended, the pools refused it a connection or its warm-up's load ran out its
+	// reads' bound (settleOverloaded), the document has been removed or Shutdown refused the
+	// write. A write phase cut at its bound is a settlement past its deadline (settlePastDeadline).
+	// The generation it counts that retry's failure against is the one the settlement stands at
+	// now, which its passes move as they read the room again. An err that is the append gate's
+	// refusal of an update the room took after its issue closed is no fault to retry: it ends the
+	// settlement (endOnRefusedUpdate).
 	settle.stopShort = func(removed func(context.Context) bool, err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
 		}
 		next := settleRetry
 		switch {
-		case errors.Is(context.Cause(parent), errSettlementTimeout):
+		case errors.Is(context.Cause(parent), errSettlementTimeout), errors.Is(err, errSettlementWriteTimeout):
 			next = settlePastDeadline
 		case parent.Err() != nil:
 			next = settleOutOfBudget
@@ -539,6 +547,9 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	if step, outcome := pass.take(); step != settleOn {
 		return step, outcome
 	}
+	if err := pass.leaseThroughWrite(parent); err != nil {
+		return settleDone, pass.stoppedShort(err)
+	}
 	ctx, err := pass.begin(parent)
 	if err != nil {
 		return settleDone, pass.stoppedShort(err)
@@ -656,8 +667,8 @@ func lockSettlementFence(ctx context.Context, tx pgx.Tx, artifactID string) erro
 // out, and the document's advisory lock, which such a request waits on until the write lock bound
 // runs out, so one orphaned with its connection would hold them, refusing those requests, until
 // Postgres noticed. No wait inside it outlasts that bound by design: what it waits for before it
-// writes into its room is bounded by the settlement's deadline (settlementTimeout), and what it
-// has left after by settlementFinishBound.
+// writes into its room is bounded by the settlement's deadline (settlementTimeout), what it has
+// left after by settlementFinishBound, and its write phase by a bound of its own (writePhase).
 func (p *settlementPass) begin(parent context.Context) (context.Context, error) {
 	ledger := &Ledger{service: p.service, ownTx: true, treePool: p.settlements}
 	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), p.cursor)
@@ -672,6 +683,38 @@ func (p *settlementPass) begin(parent context.Context) (context.Context, error) 
 	ledger.writer = tx
 	p.ledger, p.tx = ledger, tx
 	return ctx, nil
+}
+
+// leaseThroughWrite extends the settlement's lease on its document's pending-settlement row
+// (leaseSettlementPending) over this pass's write phase, before the pass opens its transaction:
+// the lease counts a write phase at its floor (settlementLease), and the bound of one grows with
+// the blocks of the tree the pass read (settlementWriteBound). The pass ends by ctx's deadline,
+// the settlement's, then the finish of a pass that has written into its room
+// (settlementFinishBound) and then its write phase (writePhase), so a lease that ends sooner is
+// extended to there (extendSettlementLease): one that ran out under the write phase would let a
+// pass arm the document again, as one that runs out under any part of a settlement does. Only a
+// document of many blocks needs it - some 130,000 or more where the room was warm, since the lease
+// still holds the two cold reads such a settlement never made - and any other's pass writes
+// nothing here. The extension is a statement of its own on the settlements pool,
+// outside any transaction, as the lease is: made inside the pass's transaction, no pass of the
+// resumption would read it before that transaction ended.
+func (p *settlementPass) leaseThroughWrite(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if p.lease == nil || !ok {
+		return nil
+	}
+	hold := time.Until(deadline) + settlementFinishBound + settlementWriteBound(len(p.offsets))
+	if !time.Now().Add(hold).After(*p.lease) {
+		return nil
+	}
+	until, err := extendSettlementLease(ctx, p.settlements, p.room, *p.lease, hold)
+	if err != nil {
+		return err
+	}
+	if until != nil {
+		p.lease = until
+	}
+	return nil
 }
 
 // take is what the pass takes of its room before it opens a transaction, under no lock of the
@@ -1030,11 +1073,14 @@ func (p *settlementPass) commitStamp(ctx context.Context) (settleStep, settleOut
 	if err := recordStampedAskAuthors(ctx, p.tx, room, p.renamed, p.carried); err != nil {
 		return settleDone, p.abandon(err)
 	}
-	// The write phase: every statement this pass decided on, in the order it made them.
-	if err := p.ledger.runQueue(ctx, nil); err != nil {
-		return settleDone, p.abandon(err)
+	// The write phase: every statement this pass decided on, in the order it made them, under the
+	// bound of its own a write phase runs to (writePhase).
+	write, endWrite := writePhase(ctx, nil, len(p.offsets))
+	defer endWrite()
+	if err := p.ledger.runQueue(write, nil); err != nil {
+		return settleDone, p.abandon(writeFailed(write, err))
 	}
-	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, authorCapture{}, nil); err != nil {
+	if advanced, err := s.commitSettlement(write, p.tx, p.ledger, room, authorCapture{}, nil); err != nil {
 		return settleDone, p.commitFailed(advanced, fmt.Errorf("commit document identity update: %w", err))
 	}
 	p.finishSlots()
@@ -1186,12 +1232,15 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 	if err := p.appendReconciliationEvents(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}
-	// The write phase: every statement this pass decided on, in the order it made them.
-	if err := p.ledger.runQueue(ctx, nil); err != nil {
-		return settleDone, p.abandon(err)
+	// The write phase: every statement this pass decided on, in the order it made them, under the
+	// bound of its own a write phase runs to (writePhase).
+	write, endWrite := writePhase(ctx, nil, len(p.offsets))
+	defer endWrite()
+	if err := p.ledger.runQueue(write, nil); err != nil {
+		return settleDone, p.abandon(writeFailed(write, err))
 	}
 	p.published = p.ledger.events
-	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, authorCapture{state: state}, func(err error) {
+	if advanced, err := s.commitSettlement(write, p.tx, p.ledger, room, authorCapture{state: state}, func(err error) {
 		// The room forgets the author of each ask block the commit indexed under the commit's own
 		// hold, so no reader that finds the block's ask row committed then finds the room still
 		// owing its author.
@@ -1424,9 +1473,14 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	if err := p.appendReconciliationEvents(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}
-	// The write phase: every statement this pass decided on, in the order it made them.
-	if err := p.ledger.runQueue(ctx, nil); err != nil {
-		return settleDone, p.abandon(err)
+	// The write phase: every statement this pass decided on, in the order it made them. It runs
+	// apart from the settlement's deadline, under a bound of its own that grows with the
+	// document's blocks, its version's block index among those statements (writePhase): ended by
+	// the deadline, a version of many blocks would never be written.
+	write, endWrite := writePhase(ctx, p.caller, len(p.offsets))
+	defer endWrite()
+	if err := p.ledger.runQueue(write, nil); err != nil {
+		return settleDone, p.abandon(writeFailed(write, err))
 	}
 	p.published = p.ledger.events
 	// The commit marks the in-flight credits the version listed consumed before it releases the
@@ -1438,7 +1492,7 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	if versioning {
 		consumed = p.credit.capture
 	}
-	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, consumed, func(err error) {
+	if advanced, err := s.commitSettlement(write, p.tx, p.ledger, room, consumed, func(err error) {
 		// This runs before the publish below, the order Ledger.Commit keeps for every other
 		// version write, so a subscriber acting on this version's artifact.version event acts
 		// after it.

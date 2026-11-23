@@ -1982,7 +1982,9 @@ const (
 	// to resume.
 	settleOutOfBudget
 	// settlePastDeadline is a settlement that ran past its own deadline (settleTimeout,
-	// errSettlementTimeout), which every settlement runs to (settleRoomWithin). The
+	// errSettlementTimeout), which every settlement runs to (settleRoomWithin), or one whose write
+	// phase, which runs apart from that deadline, ran past the bound of its own
+	// (errSettlementWriteTimeout, writePhase) having written nothing into its room. The
 	// pending-settlement row leaves it to resume too, so a settlement that cannot finish gives its
 	// slot and its connection back and fails no room.
 	settlePastDeadline

@@ -6,7 +6,11 @@ body: |-
   out of time or finds no connection free rolls back, keeps its document owed and is resumed
   later without counting as a failure. A settlement that has already written into its room - a
   block-id stamp, an ask repair - finishes storing it apart from that deadline, so the room stays
-  resident with its editors connected rather than failing over work all but committed. A
-  settlement renders the document before it locks the document's owner row, so it no longer holds
-  that row, and every writer of the issue queued behind it, across a render. A document whose ask
-  blocks need repairs gets them in one commit and its version in the next.
+  resident with its editors connected rather than failing over work all but committed. Its writes
+  run apart from that deadline too, under a bound that grows with the document - 2 seconds and
+  0.9 ms a block, never less than the deadline leaves them - so a version of 150,000 blocks, whose
+  writes take some 45 seconds once its blocks are graph nodes and tuples, is written rather than
+  cut at the minute and resumed for ever. A settlement renders the document before it locks the
+  document's owner row, so it no longer holds that row, and every writer of the issue queued
+  behind it, across a render. A document whose ask blocks need repairs gets them in one commit and
+  its version in the next.
