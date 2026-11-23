@@ -368,17 +368,18 @@ func main() {
 	// address and one account there (projectAccessClients). config.Load holds the two settings to
 	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
 	// one, only when this broker can ask whether its project is private
-	// (policy.Loader.ProjectChecks). projectClient is the same client as projectAccess, for the hold
+	// (policy.Loader.ProjectChecks). projectAccess is projectClient, for the hold
 	// gate below, which reads its person answers (hold.Config.Access) from the cache the token
 	// exchange fills. The client keeps the member kind of each person answer it fetches in
 	// person_member_kind, so that while Dispatch cannot be asked a person last answered a full member
 	// is served as one and everyone else is refused 503 MEMBER_KIND_UNCHECKABLE, as before, and each
 	// project answer in project_standing for the request machine's person rule
 	// (projectaccess.Client.Keep).
-	projectAccess, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
-	projectClient, _ := projectAccess.(*projectaccess.Client)
+	projectClient, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	var projectAccess projectaccess.Access
 	if projectClient != nil {
 		projectClient.Keep(st, slog.Default(), registry)
+		projectAccess = projectClient
 	}
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
@@ -1380,10 +1381,13 @@ func projectAccessHTTPClient() *http.Client {
 // projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
 // broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
 // over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
-// are nil, as interfaces, when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL
-// holds none. main wires the broker with these, and the test of the client's connections reads its
-// project access through this same call, so a client built here on another transport fails it.
-func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.ProjectRepositoriesReader) {
+// are nil when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL holds none. The
+// project access client is the concrete client, which main keeps answers on (Client.Keep) and
+// builds the hold gate on; main puts it in an Access field only where it is not nil, since a nil
+// *Client in an interface is a non-nil Access. main wires the broker with these, and the test of the
+// client's connections reads its project access through this same call, so a client built here on
+// another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api.ProjectRepositoriesReader) {
 	if baseURL == "" {
 		return nil, nil
 	}

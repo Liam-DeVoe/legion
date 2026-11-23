@@ -437,10 +437,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
 	}
+	// Projects is set below only when the rig holds a Dispatch client: config.projectAccess is a
+	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
+	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
-		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -459,7 +461,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators, Projects: config.projectAccess,
+		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	// The token exchange's entries, built once and given to both the OAuth provider and the API
