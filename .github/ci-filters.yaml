@@ -656,11 +656,12 @@ contracts:
   - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
   - 'packages/test-fixtures/src/**'
   # why: .github/ci-notes/ci.md#contracts-bun-run-checkapi-renders-schemasdispatch-openapijson-into
-# why: .github/ci-notes/ci.md#guide_layout_files-the-five-guides-scriptssemantic-line-breaksguidestestts-reads-the-checker-it
+# why: .github/ci-notes/ci.md#guide_layout_files-the-six-guides-scriptssemantic-line-breaksguidestestts-reads-the-checker-it
 guide_layout_files: &guide_layout_files
   - 'scripts/semantic-line-breaks.guides.test.ts'
   - 'scripts/semantic-line-breaks.ts'
   - 'AGENTS.md'
+  - 'CONTRIBUTING.md'
   - 'scripts/e2e/README.md'
   - 'docs/kubernetes.md'
   - 'packages/envoy/AGENTS.md'
