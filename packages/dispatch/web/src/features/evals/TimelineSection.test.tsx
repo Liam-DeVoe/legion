@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { evalItem, evalsAnswer } from "../../__tests__/evals-fixture";
+import { evalItem, evalsAnswer, WINDOW } from "../../__tests__/evals-fixture";
 import {
   type IntersectionControl,
   installIntersectionObserver,
@@ -70,9 +70,22 @@ beforeEach(() => {
     );
   });
   const daemon = spyOn(api, "getLegionDaemon").mockResolvedValue(DAEMON);
+  // The tab reads the detail of each eval no section draws by name, which `answerEvals`' are, to
+  // learn whether it declares charts: none, and no method.
+  const detail = spyOn(api, "getEval").mockResolvedValue({
+    compare: null,
+    doc_text: null,
+    freshness: { refresher_age_seconds: null, rows_updated_at: null },
+    items: [],
+    limit: 1,
+    offset: 0,
+    total: 1,
+    window: WINDOW,
+  });
   restores.push(
     () => chart.mockRestore(),
-    () => daemon.mockRestore()
+    () => daemon.mockRestore(),
+    () => detail.mockRestore()
   );
 });
 afterEach(() => {
