@@ -180,12 +180,16 @@ type Engine struct {
 	// noFixRule takes the fix rule out of the tail of every fact (apply), everyRoleToldCI tells a
 	// CI settlement of a task that takes a fix to every role, as for any other task (tellChecks),
 	// fixStartInLine writes a fix's start into the line of starts that wait for a slot, as
-	// every other start is written (started), and noWayKept leaves the way a fix took unwritten
-	// (afterFix). Only a test sets any of them, as the control of the rule it takes out.
+	// every other start is written (started), noWayKept leaves the way a fix took unwritten
+	// (afterFix), noEndHold holds no task's end for its CI (retroHold), and noFixJoin takes out the
+	// fix rule's join of a failure to the fix that runs (fixFailure). Only a test sets any of them,
+	// as the control of the rule it takes out.
 	noFixRule       bool
 	everyRoleToldCI bool
 	fixStartInLine  bool
 	noWayKept       bool
+	noEndHold       bool
+	noFixJoin       bool
 }
 
 var _ intake.Handler = (*Engine)(nil)

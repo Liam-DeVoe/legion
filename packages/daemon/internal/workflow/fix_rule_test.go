@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -279,10 +282,10 @@ func TestASecondFailureAtTheHeadJoinsTheFixThatIsStarting(t *testing.T) {
 	})
 }
 
-// A check failing at the head of a task held for its fix at its end joins the fix that runs:
-// one fix holds both failures, the implementer is told the new one is part of its fix, and the
-// issue read names the one fix that runs.
-func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
+// runningAtTheEnd is LEGION-208's task held for its fix at its end: k-ci failed at fixHead while
+// the review ran, the review approved, and fix 1 running.
+func runningAtTheEnd(t *testing.T) *fixRig {
+	t.Helper()
 	r := reviewing(t)
 	r.fails(fixHead, "k-ci")
 	move(t, r.pool, r.engine, "LEGION-208", TriggerReviewApproved, "", record.PhaseRow{})
@@ -298,6 +301,16 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 		fix.State, fix.Entry, fix.StartedAt = record.FixRunning, 2, &at
 		return r.engine.store.UpdateFix(ctx, tx, *fix)
 	})
+	return r
+}
+
+// A check failing at the head of a task held for its fix at its end joins the fix that runs:
+// one fix holds both failures, the implementer is told the new one is part of its fix, and the
+// issue read names the one fix that runs. The control, kept: with the join taken out (the seam
+// noFixJoin) the end's branch starts a second fix, which the store refuses (record.ErrFixOpen),
+// and the fact fails.
+func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
+	r := runningAtTheEnd(t)
 
 	r.fails(fixHead, "k-ci2")
 
@@ -307,6 +320,87 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.RunningFix != 1 {
 		t.Fatalf("the issue read names running fix %d, want 1", issue.RunningFix)
 	}
+
+	t.Run("the control: with the join taken out the store refuses a second fix and the fact fails", func(t *testing.T) {
+		r := runningAtTheEnd(t)
+		r.engine.noFixJoin = true
+		r.serial++
+		state := ofSet(inCI(stateOf("k-ci2", "no", "fail", "ci"), "failure"), fixChecks...)
+		state.Serial = r.serial
+		fact, id := checkstatetest.Decoded(t, "LEGION-208", statesRepo, fixHead, state)
+
+		_, err := intake.ApplyFact(t.Context(), r.pool, "dispatch", id, fact, r.engine, admissionStub{})
+
+		if !errors.Is(err, record.ErrFixOpen) {
+			t.Fatalf("the failure with the join taken out = %v, want the store's refusal of a second open fix", err)
+		}
+		assertStrings(t, "the fixes after the failed fact", r.fixes(), []string{fixOf(1, "running", "k-ci")})
+	})
+}
+
+// A task with no implementation step takes no fix: held for CI at its end, its check failing
+// there in two events, its owner is told once, by one ci-failed notice naming the check and the
+// head, and the failure is the owner's.
+func TestATaskWithNoImplementationStepTellsItsOwnerOnce(t *testing.T) {
+	r := newFixRig(t, returnEngine(), []string{"tester", "reviewer"}, TriggerTesterPassed)
+	r.ciRunsAtTheEnd()
+	r.approves()
+
+	r.fails(fixHead, "k-ci")
+	r.fails(fixHead, "k-ci")
+
+	assertStrings(t, "the fixes", r.fixes(), nil)
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "owner", 0)})
+	r.assertToldOwnerOnce("k-ci")
+}
+
+// keptByTheImplementer is LEGION-208 on `implementer tester`, its implementer told of k-ci
+// failing at fixHead (a row of the implementer's, written by hand where the task takes no fix),
+// which completes at fixHead with no commit, and its tester's pass: the task reaches its end
+// with k-ci failing there.
+func keptByTheImplementer(t *testing.T, fixesCI bool) *fixRig {
+	t.Helper()
+	r := newFixRig(t, returnEngine(), []string{"implementer", "tester"})
+	if !fixesCI {
+		r.releaseBefore()
+	}
+	r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"))
+	r.fails(fixHead, "k-ci")
+	if !fixesCI {
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			_, err := r.engine.store.PutCIFailure(ctx, tx, record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: "a",
+				Check: "k-ci", Head: fixHead, WentTo: record.CIFailureToImplementer, At: stepClock})
+			return err
+		})
+	}
+	assertStrings(t, "the failures before the end", r.failures(), []string{failureOf("k-ci", "implementer", 0)})
+	r.moveFact(TriggerImplementationReady, "", record.PhaseRow{})
+	r.moveFact(TriggerTesterPassed, "", record.PhaseRow{})
+	return r
+}
+
+// A failure the implementer was told of and kept is acted on at the end: the task, which takes a
+// fix, reaches its end with the check failing at the head, and in the same fact a fix starts for
+// it and the failure's row takes its number, the hold for CI becoming the hold for the fix.
+func TestAFailureTheImplementerKeptStartsAFixAtTheEnd(t *testing.T) {
+	r := keptByTheImplementer(t, true)
+
+	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1)})
+	r.assertEndHold(record.HoldForFix)
+	if told := r.ciFailed(); len(told) != 0 {
+		t.Fatalf("the ci-failed notices = %+v, want none: a fix took the failure", told)
+	}
+}
+
+// The twin task, which takes no fix, with the same row of the implementer's: at its end no fix
+// starts, and its owner is told once.
+func TestAFailureTheImplementerKeptTellsTheOwnerWithoutTheFlag(t *testing.T) {
+	r := keptByTheImplementer(t, false)
+
+	assertStrings(t, "the fixes", r.fixes(), nil)
+	r.assertEndHold(record.HoldForCI)
+	r.assertToldOwnerOnce("k-ci")
 }
 
 // A failure while the planner runs, before the task's first implementation step, starts no fix
