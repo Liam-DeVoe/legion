@@ -4524,13 +4524,12 @@ DATABASE_URL=… DISPATCH_BIN=<old build> VERIFICATION_RESULTS_E2E_ONLY=read-com
 # The head of 5ea6b2ffb2, for stores-agree and for limit-of-one:
 DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=stores-agree \
   VERIFICATION_RESULTS_E2E_OLD_BUILD=1 bash scripts/e2e/verification-results.sh
-# → FAIL stores-agree: before a pass, 51 pull request(s) have two issues: #10001 under <key> in the
+# → FAIL stores-agree: before a pass, 101 pull request(s) have two issues: #10001 under <key> in the
 #   timeline and <key> in the results; …
 DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=limit-of-one \
   VERIFICATION_RESULTS_E2E_OLD_BUILD=1 bash scripts/e2e/verification-results.sh
 # → FAIL limit-of-one: the pass logged rate_limit_scope=no rate_limit_scope, want installation:259;
-#   #13 has no texts with its messages (no texts table); #14 is still partial; #15 reads partial
-#   true, want false
+#   #13 has no texts with its messages (no texts table); #14 is still partial; #15 is missing
 # A driver whose reader of the log sees no attribution line, with no VERIFICATION_RESULTS_E2E_OLD_BUILD:
 DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=older-rows bash <tree with that driver>/scripts/e2e/verification-results.sh
 # → setup the boundary of one pass failed: … the log holds 0 more attribution line(s) than at the
