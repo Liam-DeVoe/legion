@@ -42,7 +42,6 @@ import {
   drawnBlocks,
   framesOfTheBuild,
   liveEditorRoot,
-  namedEditor,
   seedDocument,
   serverDrawnBlocks,
   shortDocument,
@@ -356,8 +355,9 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     // its build is held, so each reading of her editor below is answered at once.
     await transport.release();
     await hold.held(theBuildHeldWithinMs);
-    // Whether her editor had been named by the reading that first found his words in it.
-    let namedFirst = false;
+    // How many blocks her editor held, at any depth, at the reading that first found his words
+    // in it: the same count `blocksBuilt` reads her whole editor by below.
+    let heldAtHisWords: number | undefined;
     try {
       for (const word of written) {
         writer.write(word);
@@ -366,17 +366,17 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
         .poll(
           async () => {
             const her = await page.evaluate(
-              ({ editor, named, text }) => ({
+              ({ blocks, editor, text }) => ({
+                blocks: document.querySelectorAll(blocks).length,
                 hisWords: document.querySelector(editor)?.textContent?.includes(text) ?? false,
-                named: document.querySelector(named) !== null,
               }),
               {
+                blocks: `${liveEditorRoot} [data-block-id]`,
                 editor: `${liveEditorRoot} [contenteditable="true"]`,
-                named: namedEditor,
                 text: hisTitle,
               }
             );
-            namedFirst = her.named;
+            heldAtHisWords = her.blocks;
             return her.hisWords;
           },
           {
@@ -388,18 +388,23 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     } finally {
       hold.release();
     }
-    // His words were in her editor before it was named, so they crossed her build: a build that
-    // went on past its hold could have ended before they landed, and what this row reads below
-    // would then be of an editor that was already finished.
+    // His words were in her editor while it held part of the document, so they crossed her
+    // build: a build that went on past its hold could have ended before they landed, and what
+    // this row reads below would then be of an editor that was already finished. An editor with
+    // no name yet is not one still being built: the last batch, the binding's adoption and the
+    // name are tasks apart, with frames between them, and a reading there finds every block in
+    // it. The whole is read once her editor is named, when the build is over; his words made no
+    // block of their own.
+    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
+    const whole = await blocksBuilt(page);
     expect(
-      namedFirst,
-      "his words reached her editor only after it was named, so they crossed no build and this " +
-        "run says nothing about an edit that does"
-    ).toBe(false);
+      heldAtHisWords ?? whole,
+      "his words reached her editor only once it held the whole document, so they crossed no " +
+        "build and this run says nothing about an edit that does"
+    ).toBeLessThan(whole);
 
     // Alice's editor holds every word he wrote while it was being built, in the block he wrote
     // them in, from the moment it is named.
-    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
     expect(
       await documentEditor(page).textContent(),
       "her editor was named without the words he wrote into it while it was being built"

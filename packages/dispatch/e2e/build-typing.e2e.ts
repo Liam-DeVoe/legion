@@ -53,7 +53,9 @@ function paragraph(index: number): string {
  *  takes eight blocks and none after it more than four times the one before (`nextBatch` in
  *  `packages/proof-editor/src/progressive-build.ts`), so 8, then 32 at the most, then the rest.
  *  With a frame of the page between every two batches (`holdTheBuild`), a character typed a
- *  frame has batches landing around it. */
+ *  frame has batches landing around it. They are every top-level block the document has - the
+ *  issue's title is the page's, not the document's - so an editor whose root holds fewer than
+ *  this many is one the batches are still filling (`BuildState`). */
 const BLOCKS = 120;
 
 const SPEC = `${Array.from({ length: BLOCKS }, (_, index) => paragraph(index)).join("\n\n")}\n`;
@@ -62,15 +64,29 @@ const SPEC = `${Array.from({ length: BLOCKS }, (_, index) => paragraph(index)).j
  *  `waiting` is before the first batch: the editor's root is in the page from the moment it is
  *  constructed, hidden and holding nothing of the document, and takes no edit until its first
  *  batch lands in it, so no character is ever recorded there. `building` is from that batch
- *  until the whole document is in the editor and the host has swapped its own draw for it,
- *  which is when the editor is given its name (`web/src/features/doc/editor.ts`). `named` is
- *  after that. */
-type BuildState = "building" | "named" | "waiting";
+ *  for as long as the root holds fewer of the document's blocks than the document has
+ *  (`BLOCKS`). `built` is from the last batch until the editor is given its name: the whole
+ *  document is in it, and the binding's adoption of what the batches made and the name the
+ *  host writes once the binding answers are still to come, tasks of their own with frames of
+ *  the page between them (`bind` in `packages/proof-editor/src/lib.ts`,
+ *  `web/src/features/doc/editor.ts`). A character typed there went in after every batch, so
+ *  it is not one typed into the build, and a build run in one task leaves those frames too.
+ *  `named` is after that. */
+type BuildState = "building" | "built" | "named" | "waiting";
+
+/** One character the page typed: where the build had got to as it went in, and how many
+ *  top-level blocks the editor's root held then, which is what tells `building` from
+ *  `built`. */
+interface TypedCharacter {
+  readonly at: BuildState;
+  readonly held: number;
+}
 
 declare global {
   interface Window {
-    /** The state the build was in as each character the page typed went in, in order. */
-    __buildTyping?: BuildState[];
+    /** Each character the page typed, in order, with where the build had got to as it went
+     *  in. */
+    __buildTyping?: TypedCharacter[];
     /** Why the page stopped typing, where something refused it. */
     __buildTypingRefused?: string;
     /** Whether the page ever found the editor standing with no batch in it, which is what
@@ -79,9 +95,21 @@ declare global {
   }
 }
 
+/** What the page is given to type (`theReaderTypes`): the first `chars` characters of `word`,
+ *  at the start of the first block holding `quote`, into a document of `blocks` top-level
+ *  blocks. */
+interface TheTyping {
+  readonly blocks: number;
+  readonly chars: number;
+  readonly quote: string;
+  readonly word: string;
+}
+
 /**
  * Has the page itself type the first `chars` characters of `word` at the start of the first
- * block holding `quote`, one character a frame, from the earliest frame the editor takes one.
+ * block holding `quote`, one character a frame, from the earliest frame the editor takes one,
+ * and record with each character where the build had got to (`TypedCharacter`), read against
+ * the `blocks` top-level blocks the document has.
  *
  * The typing is the page's own, not this side's: which state of the build a character lands in
  * is what these rows are about, and a `page.keyboard` press is a round trip's business. Each
@@ -93,10 +121,10 @@ declare global {
  */
 async function theReaderTypes(
   page: Parameters<typeof documentEditor>[0],
-  plan: { chars: number; quote: string; word: string }
+  plan: TheTyping
 ): Promise<void> {
-  await page.addInitScript((typing: { chars: number; quote: string; word: string }) => {
-    const typed: BuildState[] = [];
+  await page.addInitScript((typing: TheTyping) => {
+    const typed: TypedCharacter[] = [];
     window.__buildTyping = typed;
     /** Collapses the caret before the first `quote` among the text a caret can enter, the way
      *  a click there does. */
@@ -129,12 +157,18 @@ async function theReaderTypes(
       // The editor the batches are filling wears no name of its own; once it has one, it is
       // the same element under both selectors.
       const live = document.querySelector('.proof-editor[data-write-path="live"]');
+      const editor = document.querySelector<HTMLElement>('.proof-editor [contenteditable="true"]');
+      // The editor's root holds one element for each top-level block the batches have placed,
+      // read before this character goes in, which makes no block of its own.
+      const held = editor?.childElementCount ?? 0;
       const at: BuildState =
         document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null
           ? "named"
           : live === null
             ? "waiting"
-            : "building";
+            : held < typing.blocks
+              ? "building"
+              : "built";
       if (at === "waiting") {
         if (document.querySelector(".proof-editor") !== null) {
           window.__buildTypingSawPreBatch = true;
@@ -142,7 +176,6 @@ async function theReaderTypes(
         requestAnimationFrame(step);
         return;
       }
-      const editor = document.querySelector<HTMLElement>('.proof-editor [contenteditable="true"]');
       if (editor === null || !(editor.textContent ?? "").includes(typing.quote)) {
         requestAnimationFrame(step);
         return;
@@ -158,19 +191,19 @@ async function theReaderTypes(
         window.__buildTypingRefused = String(error);
         return;
       }
-      typed.push(at);
+      typed.push({ at, held });
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }, plan);
 }
 
-/** The state of the build as each of the `chars` characters the page was given went in, once
- *  it has typed them all. */
+/** Where the build had got to as each of the `chars` characters the page was given went in,
+ *  once it has typed them all. */
 async function whatTheReaderTyped(
   page: Parameters<typeof documentEditor>[0],
   chars: number
-): Promise<BuildState[]> {
+): Promise<TypedCharacter[]> {
   await expect
     .poll(() => page.evaluate(() => window.__buildTypingRefused ?? window.__buildTyping?.length), {
       ...PROBE,
@@ -231,6 +264,12 @@ test.beforeEach(async () => {
 // batch lands between two of the word's characters on every machine, however fast it builds.
 // None of them reads how long anything took, so none throttles the renderer to make the build
 // last, and none is kept to Chromium, the one engine a throttle can be given.
+//
+// What these rows count as a character typed into the build is one typed while the editor held
+// part of the document, read off how many blocks its root held (`BuildState`), and never one
+// typed only before the editor was named: the last batch, the binding's adoption and the name
+// are tasks apart, with frames of the page between them, and a build run in one task leaves
+// those frames too.
 
 // The reader is at the document before the editor has any of it: the root is constructed and
 // hidden while the socket is still held, and takes no keystroke until its first batch lands.
@@ -245,7 +284,12 @@ test("a word typed at a block's start from before the first batch is stored as t
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
+    await theReaderTypes(page, {
+      blocks: BLOCKS,
+      chars: WORD.length,
+      quote: paragraph(0),
+      word: WORD,
+    });
     await holdTheBuild(page, { eachBoundary: "a frame" });
     await openWithTheBuildHeld(page, issue.key);
 
@@ -256,9 +300,10 @@ test("a word typed at a block's start from before the first batch is stored as t
         "about a word begun before the first one"
     ).toBe(true);
     // And the word's first character went in while the build ran: in the frame after the
-    // first batch and before the second, which the frame between the two gives every run.
+    // first batch and before the second, which the frame between the two gives every run, with
+    // part of the document in the editor and the rest still to come.
     expect(
-      typed[0],
+      typed[0]?.at,
       "the word's first character went in after the build was over, so this run says nothing " +
         "about a word begun before the first batch and carried on into the build"
     ).toBe("building");
@@ -279,16 +324,29 @@ test("a word typed at a block's start while the batches are still being placed i
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
+    await theReaderTypes(page, {
+      blocks: BLOCKS,
+      chars: WORD.length,
+      quote: paragraph(0),
+      word: WORD,
+    });
     await holdTheBuild(page, { eachBoundary: "a frame" });
     await openWithTheBuildHeld(page, issue.key);
 
     const typed = await whatTheReaderTyped(page, WORD.length);
     expect(
-      typed,
+      typed.map((each) => each.at),
       "the build was over before the word was typed, so this run says nothing about a word " +
         "typed into one"
     ).toContain("building");
+    // And a batch landed between two of the word's characters: two of them went in with the
+    // editor's root holding different counts of the document's blocks, so the caret placed for
+    // the first was carried over a batch before the second went in.
+    expect(
+      new Set(typed.filter((each) => each.at === "building").map((each) => each.held)).size,
+      "no batch landed between two of the word's characters, so this run says nothing about " +
+        "a caret a later batch moves"
+    ).toBeGreaterThan(1);
 
     await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
     await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
@@ -313,15 +371,27 @@ test("a word typed at a block's start across the build's hand-over to the bindin
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, { chars: typedByThePage, quote: paragraph(0), word: WORD });
+    await theReaderTypes(page, {
+      blocks: BLOCKS,
+      chars: typedByThePage,
+      quote: paragraph(0),
+      word: WORD,
+    });
     await holdTheBuild(page, { eachBoundary: "a frame" });
     await openWithTheBuildHeld(page, issue.key);
 
     const typed = await whatTheReaderTyped(page, typedByThePage);
     expect(
-      typed,
+      typed.map((each) => each.at),
       "the build was over before the page typed anything, so this run crosses no hand-over"
     ).toContain("building");
+    // And a batch landed between two of the characters the page typed into the build, as in
+    // the row above.
+    expect(
+      new Set(typed.filter((each) => each.at === "building").map((each) => each.held)).size,
+      "no batch landed between two of the word's characters, so this run says nothing about " +
+        "a caret a later batch moves"
+    ).toBeGreaterThan(1);
 
     // The rest of the word goes in from the caret the editor was left holding: the reader
     // never asked for it to move, and the binding took the document over under them in
