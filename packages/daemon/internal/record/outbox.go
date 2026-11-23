@@ -1115,10 +1115,12 @@ func NoticePerClaim(kind NoticeKind) bool {
 // than starting fresh (supervise's RequestIssueClose); "pause_stop" is a project pause's stop of
 // one live claim (store's Pause), which stops its process and keeps its session, phase and task as
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
-// and does nothing once that pause has ended; "slot_credential" writes the gh credential of the
-// claim's slot for the App the slot holds as the record stands when the row runs
-// (runtime.SlotRole), which the end of a step its owner ran queues so the owner's slot holds the
-// owner's own App again (workflow's endStep), and stops nothing. A daemon of a release before it
+// and does nothing once that pause has ended; "slot_credential" writes the slot of the owner of
+// the issue's task back to the App of the owner's own role, which the end of every step whose
+// start named an architect queues (workflow's ownerSlotCredential), and stops nothing: it writes
+// only where the slot holds that App as the record stands when the row runs (runtime.SlotRole),
+// and nothing where the owner's next step of another App runs already, whose owner-step writes
+// the slot for that App (the daemon's slotCredential). A daemon of a release before it
 // refuses the op, and its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back
 // below the release whose owner does a step").
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.

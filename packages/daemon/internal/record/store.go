@@ -2857,9 +2857,10 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
-// its claims and then acts on what it read — a start launches the role the issue's phase names, a
-// suspend stops the roles a start launched, a workspace removal takes the workspace they used — and
-// they were written to run one after another, each in the state its predecessor leaves (OutboxLane).
+// its claims and then acts on what it read — a start launches the claim its row names (else the
+// worker of the step of the row's role), a suspend stops the roles a start launched, a workspace
+// removal takes the workspace they used — and they were written to run one after another, each in
+// the state its predecessor leaves (OutboxLane).
 // A lifecycle lane runs its rows that way on its own, but a lane is one daemon's: with the rule in
 // SQL, two daemons of a rolling restart never run one issue's lifecycle rows side by side, since the
 // second lists and claims nothing of the issue's while the first's lease is live. The state's
