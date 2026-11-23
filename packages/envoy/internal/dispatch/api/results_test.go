@@ -158,8 +158,10 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 
 // writeHeadOnBase stores one pull request head row whose base branch the caller names: the
 // row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
-// merged. The conflict clause writes every column either caller means to write, so a second
-// row for the same pull request leaves none of them as the first write left it.
+// merged. The base branch stands at ciJobBaseSHA, as a writer of this release stores the
+// revision GitHub names, which the stand-in for GitHub names for a pull request no test moves.
+// The conflict clause writes every column either caller means to write, so a second row for the
+// same pull request leaves none of them as the first write left it.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
@@ -167,11 +169,11 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 		attributed = &issueKey
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now())
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at)
+		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now())
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, baseRef, state, attributed); err != nil {
+			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key
+	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
