@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Dispatch refuses an approval request, and a person's approval, of a covered document whose text
@@ -597,4 +600,64 @@ func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
 		t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, statement.PrimaryArtifactID, nil))
+}
+
+// The judgment of the form reads the issues under its root as everyReader (approvedSpecTexts), the
+// reader that the rule of graph_reader.go names for a read whose answer every reader reads, and no
+// acting person: an issue under the root reserved for its author gives the judgment no approved
+// component name, also in the judgment of that author's own approval, so a person's name whose part
+// is that component's name is still a name there. No route writes an issue reserved for its author
+// yet, so the test writes the issue's node at the store, through the store's own writer and the
+// visibility that a write that asked for `author` would get (graphstoretest.VisibilityFor, handed
+// graphstore.ProvesAuthor), as the tests of node_visibility_test.go write theirs. The control: the
+// same issue, not reserved, gives the name, and the same approval passes.
+func TestTheGateReadsTheIssuesUnderItsRootAsEveryReader(t *testing.T) {
+	user := formFault{node: "reach-owner", kind: specform.KindStatement, broken: "Each issue reaches Dispatch Admin before its owner starts work.",
+		rule: "person", detail: `it names a person: "Dispatch Admin"`}
+	for _, reserved := range []bool{true, false} {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		seedPeople(t, tree.database, "dispatch.admin@example.com")
+		component := createFormIssue(t, tree.handler, tree.root, "The components",
+			"# Components\n\n## Dispatch (component `dispatch`)\n\nThe server keeps each issue and each document.\n")
+		if response := reviewFormDocument(t, tree.handler, component.PrimaryArtifactID, "approved", ""); response.Code != http.StatusCreated {
+			t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if reserved {
+			reserveIssueForAuthor(t, tree.database, component.Key)
+		}
+		statement := createFormIssue(t, tree.handler, tree.root, "Uses a component name", user.document(user.broken))
+		approval := reviewFormDocument(t, tree.handler, statement.PrimaryArtifactID, "approved", "")
+		if reserved {
+			requireFormRefusal(t, "the author's approval beside the components reserved for that author", approval,
+				specform.ActApproval, user.lines(1), user.findings(statement, 1)...)
+		} else if approval.Code != http.StatusCreated {
+			t.Errorf("the control: the approval beside the components that every reader reads: status=%d body=%s, want 201", approval.Code, approval.Body.String())
+		}
+	}
+}
+
+// reserveIssueForAuthor writes the store's node of the issue key reserved for its author, alice
+// (privateNodeAuthor), who approves the documents of the form tests (reviewFormDocument).
+func reserveIssueForAuthor(t *testing.T, database *store.Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	author := privateNodeAuthor()
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
+	if err != nil {
+		t.Fatalf("reserve issue %s for its author: %v", key, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of issue %s: %v", key, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+		Kind: "issue", ID: key, Supertag: "issue", Visibility: visibility, State: graphstore.StateLive,
+		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: author, SourceEvent: graphstore.NoEvent,
+	}}, nil); err != nil {
+		t.Fatalf("write the reserved issue %s: %v", key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reserved issue %s: %v", key, err)
+	}
 }
