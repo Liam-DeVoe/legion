@@ -533,6 +533,13 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
+	// The comment's row, written from the create request's own body and the visibility its route
+	// decided, with the node and node columns it names; it reads no row of either side.
+	"api/comment_create.go#queueCommentRow": "the create request's own body and the visibility its route decided",
+	// What the comment states, caused by its comment.created event: its node, its base attributes,
+	// the artifacts it is anchored to and owned by, and who wrote it (the author's node and the
+	// authored_by tuple), all from the comment the create stored; it reads no row of either side.
+	"api/comment_create.go#queueCommentCreated": "the comment the create stored and the event it appended for it",
 	// An edit of a comment's words writes its row from the request's body, and, made for a run,
 	// restates the comment's node from that row it locked and caused by its own event, so the
 	// run's change of the comment is named (changed_by_run), as an edit of an ask's words names
@@ -629,7 +636,7 @@ var indexPasses = map[string]string{
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
 	// is named (changed_by_run). It reads no row of either side to decide what the other says.
-	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	"api/issue_patch.go#writeIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
 	// An issue's relations its create and its PATCH state (dispatch://INFRA-1253 R9, R10): the
 	// claims and tuples the request names, read against the issue's own row, the issue_links rows
 	// it holds and the tuples its node states only to state what moved, and the node of the item
