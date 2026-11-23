@@ -245,10 +245,10 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // start of every step: at the end of its join (taskJoined), at its join again at the issue's
 // generation (joinAgain) and at the hand-on of its freed agent (handOn). Its task is told where its
 // work stands (standingPart) and its own pull request (record.Store.PullRequestOfTask). Where the
-// start that waited was a start again of the task at its first step (Walk.StartReason), the task
-// is told why, and its entry counts as a move back, as that start's own would have had it waited for
-// nothing (restartTask). said is the log line, which names the issue, the task, its place and role,
-// and args.
+// start that waited was a start again of the task at its first step or a move back
+// (Walk.StartReason), the task is told why, and its entry counts as a move back, as that start's own
+// would have had it waited for nothing (restartTask, transition). said is the log line, which names
+// the issue, the task, its place and role, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk, said string, args ...any) error {
 	role := w.RoleAt(w.Place)
 	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {

@@ -13,10 +13,11 @@
 -- refused as a conflict the merge of the task's join branch into the task's branch, which the
 -- task's own work there makes at a start again; the first step merges it by hand on the task's
 -- branch (record's SetJoinUnmerged). Each join writes both again. plan_tasks.start_reason is why
--- the task started again at its first step (record's SetStartReason), '' for a first start: the
--- start again of a stopped task waits for the join of its needs, and the step that starts after
--- that wait tells its agent why and counts as a move back, as a start again that waits for nothing
--- does. Every move of the task clears it.
+-- the step the task stands at was started (record's SetStartReason): a start again at its first
+-- step, or a move back to an earlier step; '' for a first start. A start again of a stopped task
+-- waits for the join of its needs, and a moved-back step can wait for its agent, and the step that
+-- starts after such a wait tells its agent why and counts as a move back, as a start that waits
+-- for nothing does. Every move of the task clears it.
 --
 -- plan_branches is each branch name a generation of an issue gave to one of its tasks. GitHub keeps
 -- a branch and its commits after the task that held it was stopped and a later version removed it,
