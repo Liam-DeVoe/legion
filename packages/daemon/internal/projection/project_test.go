@@ -834,12 +834,14 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 }
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
-// holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
-// it waits on another issue before then, when it gives the row back and is not named here
-// (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
-// of it is running this second. An issue with no row of its own waits for nothing here: it
-// stands in neither list.
+// holders it finds and reads no phase of its own. An issue holds one of the cap's rows while the
+// daemon has started it in a phase that keeps one (record.KeepsSlot): every phase but accepting,
+// retro and merging, which hold none (in the default steps, the phases after its review), so an
+// issue whose first step is an acceptance starts on none, and a step after accepting takes one
+// again. It gives the row back while it waits on another issue in a phase that keeps one, and is
+// not named here then (admit's releaseSlotsForWaits). A root waiting on a person keeps its row,
+// so it is named here though no worker of it is running this second. An issue with no row of its
+// own waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
