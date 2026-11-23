@@ -360,6 +360,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   try {
     writer = await theOtherPersonsPen(artifactId, { theirWords: theirWordsPattern });
     const page = await alice.newPage();
+    // Throttled, and not held between batches through `holdTheBuild` as the rows of
+    // `large-documents-build.e2e.ts` are. What this row does to the build is tied to the build's
+    // own announced progress, not to the machine's speed: he writes a word each time her page
+    // announces another step of blocks built, until it says half the document is built. And
+    // what it claims is timed: a timer served for every 2 s of the build and none waiting more
+    // than 6 s (`aTimerEveryMs`, `aTimerWaitsAtMostMs`). Those are readings of real batches
+    // running at 4x, and a hold would empty them: a held build leaves the page idle.
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
     const herBuild = await whatTheBuildServes(page, {

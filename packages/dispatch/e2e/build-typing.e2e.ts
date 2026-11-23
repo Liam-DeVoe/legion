@@ -28,15 +28,20 @@ import { expect, test } from "@playwright/test";
 
 import { createIssue, createProject, getArtifactText } from "./api";
 import { documentEditor, documentTransport } from "./editor";
-import { throttleTheCpu } from "./large-documents-page";
+import { holdTheBuild } from "./large-documents-build-hold";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /** Every fact these rows poll for lands in milliseconds once the write is on its way. */
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** How long a throttled build of this document may take before a wait on it reads as a hang. */
-const BUILD_TIMEOUT_MS = 120_000;
+/** How long a wait on this document's build may run before it reads as a hang. Sized for a
+ *  build with nothing throttling the renderer, which is every build in this file: 120 short
+ *  paragraphs, three batches at the fewest (`BLOCKS`), each a frame apart where a row paces
+ *  them (`holdTheBuild`), after the page's own load and draw. 30 s is half a row's own budget
+ *  (`testTimeout`, e2e/playwright.config.ts), so a wait that runs it out fails by its own name
+ *  inside the row rather than at the row's timeout. */
+const BUILD_TIMEOUT_MS = 30_000;
 
 /** The paragraph at `index` of the seeded document, each with words of its own so a row can
  *  name one and the markdown it is in can be compared whole. */
@@ -44,9 +49,11 @@ function paragraph(index: number): string {
   return `Paragraph ${index} of the ledger.`;
 }
 
-/** Blocks enough that the build takes several batches under the throttle, so a character typed
- *  a frame has batches landing around it: the first batch takes eight blocks and each batch
- *  after it is sized by what the one before cost. */
+/** Blocks enough that the build takes three batches at the fewest on any machine: the first
+ *  takes eight blocks and none after it more than four times the one before (`nextBatch` in
+ *  `packages/proof-editor/src/progressive-build.ts`), so 8, then 32 at the most, then the rest.
+ *  With a frame of the page between every two batches (`holdTheBuild`), a character typed a
+ *  frame has batches landing around it. */
 const BLOCKS = 120;
 
 const SPEC = `${Array.from({ length: BLOCKS }, (_, index) => paragraph(index)).join("\n\n")}\n`;
@@ -176,7 +183,7 @@ async function whatTheReaderTyped(
 
 /** Opens the issue's spec with the document's socket held, so the editor is constructed and
  *  standing with no batch in it, and lets the socket through once the reader's own draw of the
- *  document is on the screen: from there the build runs under the throttle. */
+ *  document is on the screen, which is where the build begins. */
 async function openWithTheBuildHeld(
   page: Parameters<typeof documentEditor>[0],
   issueKey: string
@@ -217,109 +224,114 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-// The throttle is Chromium's own (`Emulation.setCPUThrottlingRate`), which no other engine the
-// suite runs can be given. It times nothing here: it stretches the build so that a frame of
-// the page's own falls inside it, which is the state these rows are about.
-test.describe(() => {
-  test.skip(
-    ({ browserName }) => browserName !== "chromium",
-    "the build is stretched with Chromium's CPU throttle, which no other engine takes"
-  );
+// The three rows below type into the build itself, a character a frame. Each has every boundary
+// between two of the build's batches wait for one frame of the page and no longer
+// (`holdTheBuild`, `large-documents-build-hold.ts`), installed before the navigation: a
+// character goes in between every two batches until the page has typed what it was given, so a
+// batch lands between two of the word's characters on every machine, however fast it builds.
+// None of them reads how long anything took, so none throttles the renderer to make the build
+// last, and none is kept to Chromium, the one engine a throttle can be given.
 
-  // The reader is at the document before the editor has any of it: the root is constructed and
-  // hidden while the socket is still held, and takes no keystroke until its first batch lands.
-  // What this row holds the editor to is that a word begun from there is stored whole and in
-  // one piece, at the start of the block it was aimed at.
-  // SLOW(>=2s): a 120-block document built under 4x CPU throttling, typed into a character a
-  // frame.
-  test("a word typed at a block's start from before the first batch is stored as typed", async ({
-    browser,
-  }) => {
-    const issue = await makeIssue();
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      await throttleTheCpu(page);
-      await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
-      await openWithTheBuildHeld(page, issue.key);
+// The reader is at the document before the editor has any of it: the root is constructed and
+// hidden while the socket is still held, and takes no keystroke until its first batch lands.
+// What this row holds the editor to is that a word begun from there is stored whole and in
+// one piece, at the start of the block it was aimed at.
+// SLOW(>=2s): a 120-block document built with a frame between every two batches, typed into a
+// character a frame.
+test("a word typed at a block's start from before the first batch is stored as typed", async ({
+  browser,
+}) => {
+  const issue = await makeIssue();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
+    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await openWithTheBuildHeld(page, issue.key);
 
-      const typed = await whatTheReaderTyped(page, WORD.length);
-      expect(
-        await page.evaluate(() => window.__buildTypingSawPreBatch),
-        "the editor was never found standing with no batch in it, so this run says nothing " +
-          "about a word begun before the first one"
-      ).toBe(true);
-      expect(typed.length).toBe(WORD.length);
+    const typed = await whatTheReaderTyped(page, WORD.length);
+    expect(
+      await page.evaluate(() => window.__buildTypingSawPreBatch),
+      "the editor was never found standing with no batch in it, so this run says nothing " +
+        "about a word begun before the first one"
+    ).toBe(true);
+    // And the word's first character went in while the build ran: in the frame after the
+    // first batch and before the second, which the frame between the two gives every run.
+    expect(
+      typed[0],
+      "the word's first character went in after the build was over, so this run says nothing " +
+        "about a word begun before the first batch and carried on into the build"
+    ).toBe("building");
+    expect(typed.length).toBe(WORD.length);
 
-      await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
-      await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
-    } finally {
-      await alice.close();
-    }
-  });
+    await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
+    await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
+  } finally {
+    await alice.close();
+  }
+});
 
-  // SLOW(>=2s): the same throttled build, typed into while its batches land.
-  test("a word typed at a block's start while the batches are still being placed is stored as typed", async ({
-    browser,
-  }) => {
-    const issue = await makeIssue();
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      await throttleTheCpu(page);
-      await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
-      await openWithTheBuildHeld(page, issue.key);
+// SLOW(>=2s): the same build, typed into while its batches land.
+test("a word typed at a block's start while the batches are still being placed is stored as typed", async ({
+  browser,
+}) => {
+  const issue = await makeIssue();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
+    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await openWithTheBuildHeld(page, issue.key);
 
-      const typed = await whatTheReaderTyped(page, WORD.length);
-      expect(
-        typed,
-        "the build was over before the word was typed, so this run says nothing about a word " +
-          "typed into one"
-      ).toContain("building");
+    const typed = await whatTheReaderTyped(page, WORD.length);
+    expect(
+      typed,
+      "the build was over before the word was typed, so this run says nothing about a word " +
+        "typed into one"
+    ).toContain("building");
 
-      await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
-      await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
-    } finally {
-      await alice.close();
-    }
-  });
+    await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
+    await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
+  } finally {
+    await alice.close();
+  }
+});
 
-  // The last two states in one row, because a word crossing them is what proves either: the
-  // page types the word's first half while the batches are still placing blocks, and the rest
-  // goes in after the editor has been handed over to the binding and named - the finished
-  // editor - from the caret the reader was left holding. A row that typed into the finished
-  // editor alone would prove nothing here: that state was never the broken one, and a word
-  // typed there went in where it was asked for before this fix as well.
-  // SLOW(>=2s): the same throttled build, with the word's two halves on either side of the
-  // hand-over from the batches' own write path to the binding.
-  test("a word typed at a block's start across the build's hand-over to the binding, and on into the finished editor, is stored as typed", async ({
-    browser,
-  }) => {
-    const issue = await makeIssue();
-    const typedByThePage = 4;
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      await throttleTheCpu(page);
-      await theReaderTypes(page, { chars: typedByThePage, quote: paragraph(0), word: WORD });
-      await openWithTheBuildHeld(page, issue.key);
+// The last two states in one row, because a word crossing them is what proves either: the
+// page types the word's first half while the batches are still placing blocks, and the rest
+// goes in after the editor has been handed over to the binding and named - the finished
+// editor - from the caret the reader was left holding. A row that typed into the finished
+// editor alone would prove nothing here: that state was never the broken one, and a word
+// typed there went in where it was asked for before this fix as well.
+// SLOW(>=2s): the same build, with the word's two halves on either side of the hand-over from
+// the batches' own write path to the binding.
+test("a word typed at a block's start across the build's hand-over to the binding, and on into the finished editor, is stored as typed", async ({
+  browser,
+}) => {
+  const issue = await makeIssue();
+  const typedByThePage = 4;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await theReaderTypes(page, { chars: typedByThePage, quote: paragraph(0), word: WORD });
+    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await openWithTheBuildHeld(page, issue.key);
 
-      const typed = await whatTheReaderTyped(page, typedByThePage);
-      expect(
-        typed,
-        "the build was over before the page typed anything, so this run crosses no hand-over"
-      ).toContain("building");
+    const typed = await whatTheReaderTyped(page, typedByThePage);
+    expect(
+      typed,
+      "the build was over before the page typed anything, so this run crosses no hand-over"
+    ).toContain("building");
 
-      // The rest of the word goes in from the caret the editor was left holding: the reader
-      // never asked for it to move, and the binding took the document over under them in
-      // between.
-      await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
-      await page.keyboard.type(WORD.slice(typedByThePage));
-      await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
-    } finally {
-      await alice.close();
-    }
-  });
+    // The rest of the word goes in from the caret the editor was left holding: the reader
+    // never asked for it to move, and the binding took the document over under them in
+    // between.
+    await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
+    await page.keyboard.type(WORD.slice(typedByThePage));
+    await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
+  } finally {
+    await alice.close();
+  }
 });
 
 /** The seeded document with a block of `word` after paragraph `index`, which is what pressing

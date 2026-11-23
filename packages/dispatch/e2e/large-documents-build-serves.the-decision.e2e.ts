@@ -249,6 +249,13 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
     // Throttled here and not before the load: the build the press crosses begins with the
     // release below, and the boot, the draw and the reader's own picking above it are setup no
     // reading of this row is taken of (`throttleTheCpu`).
+    //
+    // And throttled, not held between batches through `holdTheBuild` as the rows of
+    // `large-documents-build.e2e.ts` are. The press is fired from the first batch's own task
+    // (`theReaderAnswersAtTheFirstBatch`), so the build's own progress places it and the
+    // machine's speed does not. What the row claims is timed: the answer out within half a
+    // second of the press (`theAnswerLeavesWithinMs`). That is a reading of real batches running
+    // at 4x, and a hold would empty it: a held build leaves the page idle.
     await throttleTheCpu(page);
     await transport.release();
     const firstBatchMs = await build.firstBatch(theFirstBatchWithinMs);
