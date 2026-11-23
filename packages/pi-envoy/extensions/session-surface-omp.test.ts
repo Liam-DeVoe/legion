@@ -1445,3 +1445,62 @@ test.skipIf(skip)(
   },
   120_000
 );
+
+/** A notice the Legion daemon published, as the listener forwards it to the role holder's agent
+ *  subject: `agent` its source, no sender session, at `urgency` (card-delivery-omp.test.ts's
+ *  `daemonEnvelope`). */
+function daemonNotice(summary: string, urgency: string): string {
+  const label = randomUUID();
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_event_id: `source-${label}`,
+    topic: "notifications.role.legion-acme-acme-1-architect",
+    dedupe_key: `envoy.role.forward.publish.${label.replaceAll("-", "")}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    urgency,
+  });
+}
+
+// A `low` card of the daemon (`lowCard`) goes to an idle host as `nextTurn` with no turn: the host
+// stores it and the terminal shows it, with no `message_end` (README, "A card whose envelope says
+// `low`"). Every card the session displays reaches the live view (README, the collapsed card's
+// paragraph; dispatch://INFRA-5271 R1), so the live view shows the notice the next turn reads,
+// before that turn, as it shows a `med` one.
+test.skipIf(skip)(
+  "a low card the session stores is in the live view's replay, before the turn that reads it",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "Start." });
+    const first = await session.nextTurn("the first turn");
+    first.reply([text("Started.")]);
+    await session.settled();
+
+    const low = `phase-finished on ACME-1 ${randomUUID()}`;
+    await session.relay(daemonNotice(low, "low"), "the low notice");
+    // The host stores the low card with no turn: it is in the session file.
+    await session.until("the low card in the session file", async () =>
+      (await session.entries()).some((line) => line.includes(low)) ? true : undefined
+    );
+    const med = `checks-red on ACME-1 ${randomUUID()}`;
+    await session.relay(daemonNotice(med, "med"), "the med notice");
+    const turn = await session.nextTurn("the turn the med notice started");
+    expect(conversation(turn.request)).toContain(low);
+    turn.reply([text("Read both.")]);
+    await session.settled();
+
+    const replayed = await session.replay();
+    const texts = replayed.frames
+      .filter((frame) => frame.kind === "message")
+      .map((frame) => frameText(frame.message as Record<string, unknown>));
+    const medShown = texts.indexOf(`Envoy message from agent:\n\n${med}`);
+    expect(medShown).toBeGreaterThan(-1);
+    const lowShown = texts.indexOf(`Envoy message from agent:\n\n${low}`);
+    expect(lowShown).toBeGreaterThan(-1);
+    expect(lowShown).toBeLessThan(medShown);
+  },
+  120_000
+);
