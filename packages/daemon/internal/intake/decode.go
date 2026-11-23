@@ -695,10 +695,10 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 // decodePullRequest decodes a pull request's lifecycle event on an issue's branch
 // (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
 // event, so it is acknowledged without a transaction: the workflow records a pull request only on
-// an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// repository the daemon hears whose other pull requests open and move many times a minute would
-// otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
-// them changing nothing. Every action carries head_ref.
+// an issue's branch that a task of the issue holds (PullRequestOpened), and every later event
+// applies only to a recorded one. A repository the daemon hears whose other pull requests open and
+// move many times a minute would otherwise cost the daemon one transaction under the fact lock
+// (ApplyFact) for every one, all of them changing nothing. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {

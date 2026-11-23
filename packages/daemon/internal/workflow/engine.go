@@ -3334,12 +3334,19 @@ func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return record.WorkerClaim(project, issue.Key, role, rows)
 }
 
-// issueForBranch is the issue whose branch (claim.IssueBranch) or one of whose tasks' branches
-// (claim.BranchIssue) branch is, when it is recorded on repo, as its record keeps GitHub's
-// spelling (record.Issue.GitHubRepo), compared as sameRepository compares two names — without
-// case, as GitHub compares names, and a configured rename's two names as one repository: a pull
-// request on legion/<KEY> in another repository is never <KEY>'s. The task of a pull request on
-// branch is read from the branch wherever it is needed (viewOfPullRequest, record.PullRequest.Task).
+// issueForBranch is the issue a pull request on branch is recorded for (pullRequestOpened, its one
+// caller): the issue of branch's shape (claim.BranchIssue), when it is recorded on repo, as its
+// record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as sameRepository compares two
+// names — without case, as GitHub compares names, and a configured rename's two names as one
+// repository: a pull request on legion/<KEY> in another repository is never <KEY>'s. It is nil
+// where a task of the issue's plan holds no such branch, or for an issue with no plan rows the
+// branch is not its own (record.StoredPlan.HoldsBranch, the rule the merge's close reads too): a
+// person's or a fork's pull request on a name of a task's shape that no task was given, and one
+// whose row the record deleted when it let it go, delivered or reopened again, are no issue's. The
+// one task of a plan of one that has not started holds the issue's own branch only where its
+// generation gave that branch to no task (record.Store.BranchGiven), since its start then gives
+// it a branch of its own. The task of a pull request on branch is read from the branch wherever it
+// is needed (viewOfPullRequest, record.PullRequest.Task).
 func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
 	key, ok := claim.BranchIssue(branch)
 	if !ok {
@@ -3348,6 +3355,23 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil || !e.sameRepository(issue.GitHubRepo, repo) {
 		return nil, err
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	holds := stored.HoldsBranch(issue.Key, branch)
+	if holds && stored.HoldsBranchBeforeItsStart(issue.Key, branch) {
+		given, err := e.store.BranchGiven(ctx, tx, issue.Key, issue.Generation, branch)
+		if err != nil {
+			return nil, err
+		}
+		holds = !given
+	}
+	if !holds {
+		e.logOnCommit(ctx, "workflow: a pull request on a branch no task of its issue holds is not recorded",
+			"issue", issue.Key, "generation", issue.Generation, "branch", branch)
+		return nil, nil
 	}
 	return issue, nil
 }

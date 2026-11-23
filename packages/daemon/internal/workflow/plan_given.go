@@ -218,12 +218,13 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // the plan.`, in the version's transaction: GitHub keeps a pull request open until someone closes
 // it. A row's task is read from its branch against the plan in force (record.PullRequest.Task), so
 // the rows are read before the removed tasks go (DeleteTasks). A row left behind would be no
-// task's, and one on the issue's own branch would read as the pull request of a task that waits
-// with no branch of its own (record.StoredPlan.TasksOfBranch), and as the issue's merge where that
-// task merges; so a closed or merged row goes too. A task a later version adds back starts on a
-// branch of its own (record.Store.AssignTaskBranch), and no fact of the closed pull request finds
-// a row. It runs for a version of the issue's own generation alone (givenVersion.recorded): a row's
-// task is read at that generation, and a plan waiting at generation 0 has no task that started.
+// task's, and one on the issue's own branch would read as the pull request of the task a version
+// leaves alone, which holds that branch before its start as the one task of a plan of one
+// (record.StoredPlan.TasksOfBranch), and as the issue's merge; so a closed or merged row goes too.
+// A task a later version adds back starts on a branch of its own (record.Store.AssignTaskBranch),
+// and no fact of the closed pull request finds a row. It runs for a version of the issue's own
+// generation alone (givenVersion.recorded): a row's task is read at that generation, and a plan
+// waiting at generation 0 has no task that started.
 func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
 	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
 	if err != nil {
