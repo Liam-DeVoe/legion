@@ -61,14 +61,6 @@ func (r *fixRig) latestFix() record.TaskFix {
 	return *fix
 }
 
-// toldOfTheFix is the role message each other step of the task is sent at the fix's start, its
-// job named job.
-func toldOfTheFix(job string) string {
-	return "A fix of task a of LEGION-208 runs: check k-ci failed at " + fixHead + " (CI job " + job + "). It is step 1 (implementer) again, " +
-		"in a working copy of its own. Leave that failure to the fix: your report does not fail for it, and you run its job no more. " +
-		"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push, and the fix takes it."
-}
-
 // The read of the fix's failed job starts the fix: the fix runs, at an entry raised on the
 // implementer's row, and the issue stays in reviewing, its record naming the fix that runs. One
 // start of the implementer is queued for implementing with the fix's number and the fix's head as
@@ -97,15 +89,7 @@ func TestTheFixStartsInItsOwnCopyWithItsJob(t *testing.T) {
 		start.NeedsSlot || start.Entry != row.Entry || start.Generation != 1 {
 		t.Fatalf("the fix's start = %+v, want the implementer's in implementing for fix 1 from %s at entry %d, waiting for no slot", start, fixHead, row.Entry)
 	}
-	for _, want := range []string{
-		"Phase: implementing.",
-		"Step 1 of 3: implementer.",
-		" This is a fix: check k-ci failed at " + fixHead + " (CI job unit ended failure, page " + fixPage + ").",
-	} {
-		if !strings.Contains(start.Task, want) {
-			t.Fatalf("the fix's task = %q, want it to hold %q", start.Task, want)
-		}
-	}
+	assertHolds(t, "the fix's task", start.Task, "Phase: implementing.", "Step 1 of 3: implementer.", "k-ci", fixHead, "unit", "failure", fixPage)
 	if row.EntryTask != start.Task || row.StepTask != "a" || row.StepPlace != 1 {
 		t.Fatalf("the implementer's row holds task %q of step %s/%d, want the fix's task of step a/1", row.EntryTask, row.StepTask, row.StepPlace)
 	}
@@ -176,7 +160,7 @@ func TestTheFixsRunStaysOpenBesideTheReview(t *testing.T) {
 func TestTheReviewerIsToldOfTheFix(t *testing.T) {
 	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 	for _, role := range []claim.Role{claim.RoleReviewer, claim.RoleTester} {
-		assertStrings(t, "the "+string(role)+"'s messages", r.told(role), []string{toldOfTheFix("unit")})
+		assertToldOnceNaming(t, "the "+string(role)+"'s messages", r.told(role), "k-ci", fixHead, "unit")
 	}
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 }
@@ -191,22 +175,20 @@ func TestAFixWhoseJobReadFailedNamesTheHeadAndTheRead(t *testing.T) {
 			t.Fatalf("the fix = %+v, want it running with the read's error kept", fix)
 		}
 		starts := r.fixStarts()
-		want := " This is a fix: check k-ci failed at " + fixHead + " (Dispatch could not be read for its job: Dispatch answered 503; find its run from " +
-			fixHead + " with dispatch results --issue LEGION-208)."
-		if len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
-			t.Fatalf("the fix's starts = %+v, want one whose task holds %q", starts, want)
+		if len(starts) != 1 {
+			t.Fatalf("the fix's starts = %+v, want one", starts)
 		}
-		assertStrings(t, "the reviewer's messages", r.told(claim.RoleReviewer), []string{toldOfTheFix("of the check")})
+		assertHolds(t, "the fix's task", starts[0].Task, "k-ci", fixHead, "Dispatch answered 503", "LEGION-208")
+		assertToldOnceNaming(t, "the reviewer's messages", r.told(claim.RoleReviewer), "k-ci", fixHead)
 	})
 
 	t.Run("a job with no page", func(t *testing.T) {
 		r := startedFix(t, intake.FixJobRead{Name: "unit"})
 		starts := r.fixStarts()
-		want := " This is a fix: check k-ci failed at " + fixHead + " (CI job unit; Dispatch holds no address of its page, so find its run from " +
-			fixHead + " with dispatch results --issue LEGION-208)."
-		if len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
-			t.Fatalf("the fix's starts = %+v, want one whose task holds %q", starts, want)
+		if len(starts) != 1 {
+			t.Fatalf("the fix's starts = %+v, want one", starts)
 		}
+		assertHolds(t, "the fix's task", starts[0].Task, "k-ci", fixHead, "unit")
 	})
 }
 

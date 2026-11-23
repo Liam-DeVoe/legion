@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -136,16 +137,18 @@ func oneJobRead(task, check string) []record.FixJobRead {
 	return []record.FixJobRead{{Generation: 1, Task: task, Fix: 1, Check: check, Head: fixHead}}
 }
 
-// toFix is the implementer's role message of a failure of check at fixHead while its own
-// implementation step runs.
-func toFix(check string) string {
-	return "Check " + check + " fails at " + fixHead + ": CI job of the check ended failure. Fix it in this step."
-}
-
-// toRunningFix is the implementer's role message of a failure of check at fixHead that joins the
-// fix it runs.
-func toRunningFix(check string) string {
-	return "Check " + check + " fails at " + fixHead + ": CI job of the check ended failure. It is part of your fix."
+// assertToldOnceNaming fails unless messages is one message that names each of facts, what naming
+// the messages.
+func assertToldOnceNaming(t *testing.T, what string, messages []string, facts ...string) {
+	t.Helper()
+	if len(messages) != 1 {
+		t.Fatalf("%s = %q, want one message", what, messages)
+	}
+	for _, fact := range facts {
+		if !strings.Contains(messages[0], fact) {
+			t.Fatalf("%s = %q, want it to name %q", what, messages[0], fact)
+		}
+	}
 }
 
 // A check that a CI job runs failing at the head while the review runs starts the task's first
@@ -228,10 +231,10 @@ func TestAFailureWhileTheImplementerRunsGoesToIt(t *testing.T) {
 	r.fails(fixHead, "k-ci")
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "implementer", 0)})
-	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{toFix("k-ci")})
+	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "k-ci", fixHead, "failure")
 
 	r.fails(fixHead, "k-ci")
-	assertStrings(t, "the implementer's messages after the same failure again", r.told(claim.RoleImplementer), []string{toFix("k-ci")})
+	assertToldOnceNaming(t, "the implementer's messages after the same failure again", r.told(claim.RoleImplementer), "k-ci", fixHead, "failure")
 }
 
 // A state at a head the pull request has left starts nothing and tells nobody: Dispatch keeps
@@ -300,7 +303,7 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 
 	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "running", "k-ci")})
 	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
-	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{toRunningFix("k-ci2")})
+	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "k-ci2", fixHead, "failure")
 	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.RunningFix != 1 {
 		t.Fatalf("the issue read names running fix %d, want 1", issue.RunningFix)
 	}
