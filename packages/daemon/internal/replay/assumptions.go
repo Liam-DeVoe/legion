@@ -22,8 +22,9 @@ type Assumption struct {
 // to 22), the conflict path of the rule main (23), a daemon's downtime (24) and its reading of
 // outside blockers (25), then the tool's own: each a reason a fact is left out of a replay or an
 // outbox row is finished without acting (26 to 33: FactSources, OutboxHandling), the trace's
-// inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred), and
-// the recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict). A
+// inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred), the
+// recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict), and the
+// rank a tree's root is shown at under the recorded order of first starts (36: firstStartRanks). A
 // run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
@@ -131,6 +132,9 @@ var Assumptions = []Assumption{
 	{Number: assumeKeptOpenLoop,
 		Text:      "A stretch whose recorded conflict loop runs to the window's end keeps that conflict, and its issue runs its own loop.",
 		Direction: "Doubtful, and the direction is unknown: the record holds no work of the issue after such a stretch but its loop, so a draw of no conflict, or of another loop, would leave the issue idle to the window's end; kept, the stretch conflicts in every replay, more often than the fitted rate gives, which overstates the conflicts of every rule alike. The tool counts the conflicts it keeps."},
+	{Number: assumeRootRanksByNextStart,
+		Text:      "Under the recorded order of first starts, a tree's root ranks at the earliest recorded first start among the issues of its tree that have not yet taken their first slot.",
+		Direction: "A choice of the main branch, not a fact of the record: a tree's next child takes the place its own recorded start gives it among every tree's work, so the branch starts children in the order the record started them, ahead of a root's later work where the record did so. The branches under rank keep the board's ranks and show how much the choice moves the result."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -144,3 +148,8 @@ const assumeSlotFromBeforeTheReach = 34
 // running to the window's end in the record (driver.keepsOpenLoop), which a run names where it
 // keeps one (Divergence.KeptOpenLoops).
 const assumeKeptOpenLoop = 35
+
+// assumeRootRanksByNextStart is the assumption the main branch's order of first starts rests on,
+// that a tree's root ranks at its tree's next recorded first start (firstStartRanks, driver.rerank),
+// which a run under FirstStarts recorded names where any issue ranks by its first start.
+const assumeRootRanksByNextStart = 36

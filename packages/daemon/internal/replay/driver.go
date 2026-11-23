@@ -154,6 +154,10 @@ type driver struct {
 	log     *slog.Logger
 	tap     *lineTap
 	shadow  *shadow
+	// firstStarts is the order of first starts the branch's FirstStarts, recorded, shows, whose
+	// roots' ranks the replay moves as the issues of their trees take their first slots (rerank);
+	// nil where the branch keeps Dispatch's ranks.
+	firstStarts *firstStarts
 	// token is the project's claim token, which claims and tree lifecycles are keyed by.
 	token string
 
@@ -457,6 +461,11 @@ func (d *driver) observe() error {
 			if _, ok := d.started[key]; !ok {
 				d.started[key] = d.clock.Instant()
 			}
+			if d.firstStarts != nil {
+				for _, root := range d.firstStarts.take(key) {
+					d.rerank(root)
+				}
+			}
 			if d.released {
 				d.used[11] = true
 			}
@@ -502,6 +511,33 @@ func (d *driver) recorded(key string) (*record.Issue, error) {
 		return err
 	})
 	return issue, err
+}
+
+// rerank queues the move of root's rank to the one its tree's next recorded first start gives it
+// (firstStarts.rootRank), at the instant of the first slot that moved it, as a person's change of a
+// rank on the board reaches the daemon: the move in the replay's copy of Dispatch and the
+// issue.updated of the rank it makes there (shadow.rankWrite), then that event applied through the
+// decoder, the preparation's stand-in and the chain (applyEcho), so the daemon's mirror and its
+// next pass read the new rank. Where the rank does not move, as at a later issue's first slot
+// ahead of an earlier one's, nothing is written.
+func (d *driver) rerank(root string) {
+	at := d.clock.Instant()
+	var written []byte
+	d.push(&item{at: at, class: classAct, rec: at, order: lineOrder,
+		dispatch: func() error {
+			rank, shown := d.firstStarts.rootRank(root)
+			raw, wrote, err := d.shadow.rankWrite(root, rank, shown, d.clock.Instant())
+			if wrote {
+				written = raw
+			}
+			return err
+		},
+		run: func() error {
+			if written == nil {
+				return nil
+			}
+			return d.applyEcho(root, written)
+		}})
 }
 
 // run replays the window: the start state at its start, the replay's copy of Dispatch brought to

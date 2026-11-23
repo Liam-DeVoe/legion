@@ -535,14 +535,15 @@ func (d *driver) writeStatus(key, status string, handOver bool) error {
 	return d.applyEcho(key, raw)
 }
 
-// applyEcho applies raw, the event a status write of the replay's own made in the shadow, as the
-// Dispatch consumer applies the event that write makes: decoded, prepared and applied as its id.
+// applyEcho applies raw, the event a write of the replay's own made in the shadow (a status write,
+// or a move of a root's rank, rerank), as the Dispatch consumer applies the event that write makes:
+// decoded, prepared and applied as its id.
 func (d *driver) applyEcho(key string, raw json.RawMessage) error {
 	var head struct {
 		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
-		return fmt.Errorf("read the event of the status write of %s: %w", key, err)
+		return fmt.Errorf("read the event the replay wrote of %s: %w", key, err)
 	}
 	fact, _, err := intake.DecodeDispatchEvent(d.window.Project, key, raw)
 	if err != nil || fact == nil {

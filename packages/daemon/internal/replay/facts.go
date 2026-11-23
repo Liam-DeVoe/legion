@@ -210,7 +210,7 @@ var FactSources = map[string]FactSource{
 	// The facts Dispatch events decode to: each recorded event of the project's issues through
 	// intake.DecodeDispatchEvent, at its recorded time or offset, carrying the replay's copy of
 	// Dispatch (the shadow), with the preparation the daemon's consumer makes stood in for.
-	"DispatchIssue":         {Way: FactInjected, From: "each recorded issue event of the project, through intake.DecodeDispatchEvent and the preparation's stand-in, and the echo of each status write the stub makes"},
+	"DispatchIssue":         {Way: FactInjected, From: "each recorded issue event of the project, through intake.DecodeDispatchEvent and the preparation's stand-in, the echo of each status write the stub makes, and each move of a tree root's rank under FirstStarts recorded"},
 	"DispatchArtifact":      {Way: FactInjected, From: "each recorded artifact.approved, artifact.changes_requested and artifact.version event, and the gate seed the stub executes"},
 	"DispatchAskOpened":     {Way: FactInjected, From: "each recorded ask.opened event"},
 	"DispatchAskRestored":   {Way: FactInjected, From: "each recorded ask event of a restored decision block"},

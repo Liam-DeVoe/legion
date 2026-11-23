@@ -151,8 +151,18 @@ reconstruction error the tool reports; these windows hold the exact one.
 - Under the recorded rule both values give the record's times, since every anchor falls at its
   recorded time. Every window runs `Timing` and `Answer` at `offset`.
 - `AfterSendBack` runs `recorded`: each segment after a send-back keeps its recorded length from its
-  own worker start. `FirstStarts` runs `recorded` and `Merges` runs `fitted`; no window here gives
-  either a choice to make.
+  own worker start. `Merges` runs `fitted`.
+- `FirstStarts` runs `recorded` (assumption 36): each issue the record started in the window is
+  shown in the replay's copy of Dispatch at a rank by its first slot in the window, ahead of every
+  board rank, and each tree's root at the earliest such rank among the issues of its tree that have
+  not yet taken their first slot in the replay, the root's own among them. Each time one of them
+  takes it, the replay moves the root's rank to the next, an `issue.updated` of the rank applied at
+  that instant through the copy of Dispatch and the daemon's mirror, so the next pass orders the
+  line by it. A tree whose recorded starts are all taken shows its root at its board rank, as every
+  other issue is shown, so an issue the record never started waits behind its tree's recorded
+  starts still to come, and then behind every other tree's. A recorded change of a rank the replay
+  shows moves nothing, and the measures read the board's ranks. No window here gives `FirstStarts`
+  or `Merges` a choice to make.
 - `NeverStarted` (assumption 8) is the work of an issue handed to Legion that the record never
   started:
   - `none`: no work. When the replay starts it, it takes its slot and its architect's start opens a

@@ -2,6 +2,7 @@ package replay
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -417,24 +418,22 @@ func inFlightTreeWindow(t *testing.T) Window {
 }
 
 // FirstStarts recorded shows each tree's root at its tree's earliest first start in the window
-// (design 10.7), since the line orders the issues whose first phase can start by their tree root's
-// rank first. The test reads inFlightTreeWindow, where ACME-1 holds its slot from before the start
-// and takes none in the window: it ranks by ACME-2's start at 10:10, 01, above ACME-5's at 11:10,
-// 02, and a replay under main gives the slot to ACME-2 at 10:10, to ACME-5 at 11:10 and to ACME-3
-// at 12:25, as the record did. At its board rank ACME-1 ranked below every first start, and
-// ACME-5 took the slot at 10:10 ahead of ACME-2. Root-first ordering cannot keep the recorded order
-// where a later child of an earlier tree waits at the same pass as a later tree's first start: the
-// child goes first by its root's rank, though a record whose board ranked the later tree higher
-// started that tree first. The link keeps ACME-3 out of the line at 11:10, so this window has no
-// such pass.
+// still to come (design 10.7), since the line orders the issues whose first phase can start by their
+// tree root's rank first. The test reads inFlightTreeWindow, where ACME-1 holds its slot from before
+// the start and takes none in the window: it ranks by ACME-2's start at 10:10, 01, above ACME-5's at
+// 11:10, 02, and once ACME-2 has started by ACME-3's, 03; a replay under main gives the slot to
+// ACME-2 at 10:10, to ACME-5 at 11:10 and to ACME-3 at 12:25, as the record did. At its board rank
+// ACME-1 ranked below every first start, and ACME-5 took the slot at 10:10 ahead of ACME-2. The link
+// keeps ACME-3 out of the line at 11:10, so ACME-1's move decides no pass here;
+// TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn holds passes it decides.
 func TestATreeInFlightAtTheStartRanksByItsFirstChildsStart(t *testing.T) {
 	checkRecordedFirstStarts(t, inFlightTreeWindow(t), map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-5": "02", "ACME-3": "03"},
 		"ACME-2 at 10:10", "ACME-5 at 11:10", "ACME-3 at 12:25")
 }
 
 // checkRecordedFirstStarts reads window's trace, which must place every fact, and checks the ranks
-// firstStartRanks shows its issues at against ranks, and each slot a replay of it under main gives,
-// as the issue and the minute, against taken.
+// firstStartRanks shows its issues at at the window's start against ranks, and each slot a replay of
+// it under main gives, as the issue and the minute, against taken.
 func checkRecordedFirstStarts(t *testing.T, window Window, ranks map[string]string, taken ...string) {
 	t.Helper()
 	trace, err := BuildTrace(window)
@@ -444,7 +443,7 @@ func checkRecordedFirstStarts(t *testing.T, window Window, ranks map[string]stri
 	if len(trace.Unplaced) != 0 {
 		t.Errorf("the trace could not place %+v", trace.Unplaced)
 	}
-	if got := firstStartRanks(trace); !reflect.DeepEqual(got, ranks) {
+	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, ranks) {
 		t.Errorf("the recorded first starts rank %v, want %v", got, ranks)
 	}
 
@@ -457,6 +456,118 @@ func checkRecordedFirstStarts(t *testing.T, window Window, ranks map[string]stri
 	}
 	if !slices.Equal(given, taken) {
 		t.Errorf("the replay gave the slot to %v, want %v", given, taken)
+	}
+}
+
+// interleavedTreesWindow is a window from 10:00 to 11:30 under a cap of 1, its inputs reaching back
+// to the daemon's boot at 07:00, whose record started the children of two trees in turn. ACME-1
+// (rank a1) and ACME-2 (a2), roots, design their trees before the window and wait for their
+// children, filed in backlog at 07:10: ACME-4 (b1), ACME-5 (b2) and ACME-6 (b3) under ACME-1, and
+// ACME-7 (b4) under ACME-2. ACME-3 (a3), a third root, takes the slot at ACME-2's design at 07:40 and
+// holds it to its accepting at 10:00. A person releases the four children to todo at 09:10, so each
+// can start from the window's start. Each child that starts works five minutes in each phase to
+// its accepting, where its slot goes back. ACME-4 takes the slot at 10:00, by ACME-1's rank; a
+// person ranks ACME-2 above ACME-1 (a05) at 10:10, and ACME-7 takes the slot at ACME-4's accepting at
+// 10:20; ACME-5 takes it at ACME-7's at 10:40; and ACME-8 (a0), a root a person hands to Legion at
+// 10:50, takes it at ACME-5's at 11:00 and designs to the window's end. ACME-6 never starts.
+func interleavedTreesWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(11, 30))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	b.file(clock(7, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootPromoted(clock(7, 5), "ACME-1")
+	b.file(clock(7, 6), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.file(clock(7, 7), "ACME-3", filing{Title: "Rotate the warehouse keys", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	children := []struct{ key, root, title, rank string }{
+		{"ACME-4", "ACME-1", "Write the export's header row", "b1"},
+		{"ACME-5", "ACME-1", "Name the header row's columns", "b2"},
+		{"ACME-6", "ACME-1", "Sort the export by shelf", "b3"},
+		{"ACME-7", "ACME-2", "Count the empty shelves", "b4"},
+	}
+	for _, child := range children {
+		b.file(clock(7, 10), child.key, filing{Title: child.title, Parent: child.root, Tree: child.root, Status: "backlog", Rank: child.rank})
+	}
+	waitsForChildren := func(at time.Time, key string, open int) {
+		b.turnEnds(at, key, claim.RoleArchitect)
+		b.registered(at, key, true)
+		b.info(at, "admission: an issue waits for the Dispatch children under it", "issue", key, "tree", key, "generation", 1, "children", open)
+		b.slotReleased(at, key)
+	}
+	waitsForChildren(clock(7, 20), "ACME-1", 3)
+	b.rootPromoted(clock(7, 20), "ACME-2")
+	waitsForChildren(clock(7, 40), "ACME-2", 1)
+	b.rootPromoted(clock(7, 40), "ACME-3")
+	b.rootDesigned(clock(7, 55), "ACME-3")
+	b.segmentEnds(clock(8, 30), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.segmentEnds(clock(9, 0), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	for _, child := range children {
+		b.edit(clock(9, 10), child.key, setStatus("todo"))
+	}
+	b.segmentEnds(clock(9, 30), "ACME-3", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.segmentEnds(clock(10, 0), "ACME-3", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	worksToAccepting := func(at time.Time, key string) {
+		b.childStarts(at, key)
+		b.segmentEnds(at.Add(5*time.Minute), key, phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+		b.segmentEnds(at.Add(10*time.Minute), key, phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+		b.segmentEnds(at.Add(15*time.Minute), key, phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+		b.segmentEnds(at.Add(20*time.Minute), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	}
+	worksToAccepting(clock(10, 0), "ACME-4")
+	b.edit(clock(10, 10), "ACME-2", func(issue *builtIssue) { issue.Rank = "a05" })
+	worksToAccepting(clock(10, 20), "ACME-7")
+	worksToAccepting(clock(10, 40), "ACME-5")
+	b.file(clock(10, 50), "ACME-8", filing{Title: "Archive the old exports", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(11, 0), "ACME-8")
+	return b.build()
+}
+
+// FirstStarts recorded keeps the record's order of first starts across trees (design 10.7,
+// assumption 36): the replay moves a tree root's rank, at each first slot of its tree, to the
+// tree's earliest recorded first start still to come. The test reads interleavedTreesWindow, whose
+// first starts rank ACME-4 01, ACME-7 02, ACME-5 03 and ACME-8 04, and its roots ACME-1 01 and ACME-2
+// 02 at the start, and replays it under main at seeds 1 to 3: each gives the slot to ACME-4 at
+// 10:00, to ACME-7 at 10:20, ACME-1 ranking by then at ACME-5's 03, to ACME-5 at 10:40 and to ACME-8
+// at 11:00, as the record did, and none to ACME-6, which the record never started: it waits behind
+// its tree's recorded starts and, once they are taken, behind ACME-8's. Each run names assumption
+// 36. With ACME-1 held at its tree's earliest start, ACME-5 took the slot at 10:20 ahead of ACME-7,
+// and ACME-6 took it at ACME-5's accepting at 10:40, ahead of ACME-7 and ACME-8, and held it with no
+// work to the window's end.
+func TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn(t *testing.T) {
+	window := interleavedTreesWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	if len(trace.Unplaced) != 0 {
+		t.Errorf("the trace could not place %+v", trace.Unplaced)
+	}
+	atStart := map[string]string{"ACME-1": "01", "ACME-2": "02", "ACME-4": "01", "ACME-5": "03", "ACME-7": "02", "ACME-8": "04"}
+	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, atStart) {
+		t.Errorf("the recorded first starts rank %v at the window's start, want %v", got, atStart)
+	}
+	want := []string{"ACME-4 at 10:00", "ACME-7 at 10:20", "ACME-5 at 10:40", "ACME-8 at 11:00"}
+	for seed := int64(1); seed <= 3; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			out := t.TempDir()
+			result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: seed, Slowdown: 1,
+				PGDSN: replayDSN(t), Out: out})
+			if err != nil {
+				t.Fatalf("replay the window under main at seed %d: %v", seed, err)
+			}
+			var given []string
+			for _, line := range replayLog(t, out) {
+				if line.Msg == "admission: slot taken" {
+					given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
+				}
+			}
+			if !slices.Equal(given, want) {
+				t.Errorf("the replay gave the slot to %v, want %v", given, want)
+			}
+			if !slices.Contains(result.Assumptions, assumeRootRanksByNextStart) {
+				t.Errorf("the run names the assumptions %v, which lack %d, the order of first starts it ran", result.Assumptions, assumeRootRanksByNextStart)
+			}
+		})
 	}
 }
 

@@ -208,9 +208,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.Branch.NeverStarted != MainBranch.NeverStarted {
 		script.drawNeverStarted(trace, cfg.Branch.NeverStarted, rand.New(rand.NewPCG(uint64(cfg.Seed), neverStartedStream)))
 	}
-	ranks := firstStartRanks(trace)
-	if cfg.Branch.FirstStarts == firstStartsRank {
-		ranks = nil
+	var starts *firstStarts
+	if cfg.Branch.FirstStarts != firstStartsRank {
+		starts = firstStartRanks(trace)
 	}
 	merges := newBaseMerges(w, trace)
 	conflicts := windowConflicts(trace, merges)
@@ -251,10 +251,10 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		ctx: ctx, cfg: cfg, window: w, trace: trace, script: script, lines: lines, rule: cfg.Rule.OrMain(),
 		clock: clock, st: st, pool: st.Pool(), records: record.NewStoreWithClock(clock.Now), tap: tap,
 		log:    slog.New(&clockHandler{inner: slog.NewJSONHandler(written, &slog.HandlerOptions{Level: slog.LevelInfo}), clock: clock, tap: tap}),
-		shadow: newShadow(w.Project, ranks), token: token,
+		shadow: newShadow(w.Project, starts.ranks()), firstStarts: starts, token: token,
 		claims: map[claim.Token]supervise.Claim{}, working: map[claim.Token]*piece{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
-		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true},
+		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true, assumeRootRanksByNextStart: starts != nil},
 		snap:     newSnapshots(w.From, w.To, ranksOf(trace)),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 		waiting:  map[int64]waitingRow{}, rankMoments: rankChanges(trace),
@@ -533,8 +533,8 @@ func peakMemory() uint64 {
 }
 
 // withRanks is t with each issue of ranks shown at its rank there in every Dispatch event of it,
-// the ranks the replay's copy of Dispatch shows (firstStartRanks), so the start state records the
-// ranks the replay's events carry; t itself where ranks is empty.
+// the ranks the replay's copy of Dispatch shows at the window's start (firstStarts.ranks), so the
+// start state records the ranks the replay's events carry; t itself where ranks is empty.
 func withRanks(t Trace, ranks map[string]string) Trace {
 	if len(ranks) == 0 {
 		return t
@@ -567,19 +567,25 @@ func withRanks(t Trace, ranks map[string]string) Trace {
 // every rank Dispatch gave any issue of the window. A slot the issue held at the start from before
 // it is no start in the window, nor is a slot of an earlier run. The line orders the issues whose
 // first phase can start by their tree root's rank and then their own (record.Waiting), so each
-// tree's root is shown at the earliest first start of its tree, its own or that of a member of the
-// tree its entry stood in at that start, where that comes before the root's own or the root has
-// none: a root in flight at the start ranks by its first child's start, and its children follow in
-// their recorded order. Every other issue keeps its own rank, after them: a root that left the
-// workflow before the window and was set back to todo waits at its own rank behind the issues the
-// record started, as it did in the record, rather than at the head of the line with no recorded
-// work left to open. So the replay starts the issues in the recorded order where the rule lets it,
-// but for the one case root-first ordering cannot keep: a later child of an earlier tree that waits
-// at the same pass as a later tree's first start goes first by its root's rank, though the record
-// started the later tree first where the board ranked that tree higher. The measures read the true
-// ranks from the trace. Nil where no issue started in the window or no rank sorts below the
+// tree's root is shown at the earliest recorded first start among the issues of its tree that have
+// not yet taken their first slot in the replay: the root itself, and each issue whose entry stood in
+// the root's tree at its first start. The replay moves the root's rank each time one of them takes
+// its first slot (firstStarts.take, driver.rerank), so a root in flight at the start ranks by its
+// first child's start, then by its next child's, and a tree's next child takes the place its own
+// recorded start gives it among every tree's work: the replay starts the issues in the order the
+// record started them, across trees, where the rule lets it (assumption 36). A tree whose recorded
+// starts are all taken shows its root at Dispatch's rank, behind every recorded start still to come,
+// as every issue the record did not start in the window is shown: a root that left the workflow
+// before the window and was set back to todo waits at its own rank behind the issues the record
+// started, as it did in the record, rather than at the head of the line with no recorded work left
+// to open; and an issue the record never started waits behind its tree's recorded starts still to
+// come, and once they are all taken behind every other tree's. One order stays out of reach: a tree
+// whose next recorded start cannot start yet ranks by it all the same, so a later issue of that tree
+// that can start goes ahead of another tree's issue that the record started before it. A recorded
+// change of a rank the replay shows changes nothing it shows (shadow.render), and the measures read
+// the true ranks from the trace. Nil where no issue started in the window or no rank sorts below the
 // window's lowest.
-func firstStartRanks(t Trace) map[string]string {
+func firstStartRanks(t Trace) *firstStarts {
 	type first struct {
 		key, tree string
 		at        time.Time
@@ -621,20 +627,91 @@ func firstStartRanks(t Trace) map[string]string {
 	slices.SortStableFunc(started, func(x, y first) int {
 		return cmp.Or(x.at.Compare(y.at), cmp.Compare(x.rank, y.rank), cmp.Compare(x.key, y.key))
 	})
-	width := len(strconv.Itoa(len(started)))
-	// In the order of the first starts the first rank given a key is the earliest of its own and,
-	// for a tree's root, its members'.
-	ranks := make(map[string]string, len(started))
-	for i, issue := range started {
-		rank := fmt.Sprintf("%s%0*d", prefix, width, i+1)
-		if _, shown := ranks[issue.key]; !shown {
-			ranks[issue.key] = rank
-		}
+	// A tree's root ranks where it is an issue of the project; each issue counts in the tree it
+	// started in, and a root the record started in another tree counts in its own tree as well.
+	roots := map[string]bool{}
+	for _, issue := range started {
 		if root, known := t.Issues[issue.tree]; known && root.Project == t.Project {
-			if _, shown := ranks[issue.tree]; !shown {
-				ranks[issue.tree] = rank
-			}
+			roots[issue.tree] = true
+		}
+	}
+	width := len(strconv.Itoa(len(started)))
+	f := &firstStarts{own: make(map[string]string, len(started)), trees: make(map[string][]string, len(roots)),
+		tree: make(map[string]string, len(started)), taken: map[string]bool{}}
+	for i, issue := range started {
+		f.own[issue.key] = fmt.Sprintf("%s%0*d", prefix, width, i+1)
+		if roots[issue.tree] {
+			f.tree[issue.key] = issue.tree
+			f.trees[issue.tree] = append(f.trees[issue.tree], issue.key)
+		}
+		if roots[issue.key] && issue.tree != issue.key {
+			f.trees[issue.key] = append(f.trees[issue.key], issue.key)
+		}
+	}
+	return f
+}
+
+// firstStarts is the main branch's FirstStarts, recorded, over one window (firstStartRanks): the
+// rank of each issue the record started in the window by its first start, the issues of each tree
+// whose earliest rank still to come its root is shown at, and which of them have taken their first
+// slot in the replay.
+type firstStarts struct {
+	// own is the rank of each issue the record started in the window, by its first start.
+	own map[string]string
+	// trees is each tree root's issues of own, in the order of their first starts: those that
+	// stood in its tree at their first start, and the root itself where it started in another.
+	trees map[string][]string
+	// tree is the root of the tree each issue of own stood in at its first start, where that root
+	// is one of trees.
+	tree map[string]string
+	// taken is each issue of own that has taken its first slot in the replay.
+	taken map[string]bool
+}
+
+// ranks is the rank each issue is shown at now in place of Dispatch's: an issue of own at its own
+// rank, and a root at the rank of its tree's next first start (rootRank), or at Dispatch's where
+// every one is taken. Nil for no first starts.
+func (f *firstStarts) ranks() map[string]string {
+	if f == nil {
+		return nil
+	}
+	ranks := maps.Clone(f.own)
+	for root := range f.trees {
+		if rank, shown := f.rootRank(root); shown {
+			ranks[root] = rank
+		} else {
+			delete(ranks, root)
 		}
 	}
 	return ranks
+}
+
+// rootRank is the rank root is shown at now: the own rank of the first issue of its tree that has
+// not taken its first slot in the replay, and false where every one has, the root then being shown
+// at Dispatch's rank.
+func (f *firstStarts) rootRank(root string) (string, bool) {
+	for _, key := range f.trees[root] {
+		if !f.taken[key] {
+			return f.own[key], true
+		}
+	}
+	return "", false
+}
+
+// take records key's first slot in the replay and answers the roots whose rank it may move: the
+// root of the tree key started in, and key itself where it roots another. It answers none for an
+// issue the record did not start in the window, and for one that has taken its first slot already.
+func (f *firstStarts) take(key string) []string {
+	if _, started := f.own[key]; !started || f.taken[key] {
+		return nil
+	}
+	f.taken[key] = true
+	var roots []string
+	if root, ranked := f.tree[key]; ranked {
+		roots = append(roots, root)
+	}
+	if _, rooted := f.trees[key]; rooted && f.tree[key] != key {
+		roots = append(roots, key)
+	}
+	return roots
 }

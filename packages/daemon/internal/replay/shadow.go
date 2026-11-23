@@ -32,7 +32,8 @@ type shadow struct {
 	project string
 	issues  map[string]*shadowIssue
 	// ranks is the rank each issue is shown at in place of Dispatch's, under the branch's
-	// FirstStarts (firstStartRanks); empty where the branch keeps Dispatch's ranks.
+	// FirstStarts (firstStartRanks), as the replay's first slots have moved them (rankWrite);
+	// empty where the branch keeps Dispatch's ranks.
 	ranks map[string]string
 	// nextID is the id of the next event the replay makes itself (an echo), past every recorded
 	// one, so each fact's id (dispatch-<id>) is the replay's own.
@@ -384,15 +385,58 @@ func (s *shadow) statusWrite(key, status string, handOver bool, at time.Time) (j
 	if status == record.DoneStatus {
 		kind = "issue.closed"
 	}
-	s.nextID++
-	fields := map[string]json.RawMessage{
-		"id": json.RawMessage(fmt.Sprint(s.nextID)), "issue_key": mustJSON(key), "artifact_id": json.RawMessage("null"),
-		"project": mustJSON(iss.project), "type": mustJSON(kind),
-		"actor":  mustJSON(jsonActor{Kind: "session", ID: dispatch.DaemonSession(key)}),
-		"notify": json.RawMessage("true"), "payload": payload,
-	}
-	raw, err := iss.event(fields, at)
+	raw, err := s.made(iss, kind, jsonActor{Kind: "session", ID: dispatch.DaemonSession(key)}, payload, at)
 	return raw, err == nil, err
+}
+
+// rankActor is the actor of the replay's own moves of a rank (rankWrite): the replay itself, as
+// Dispatch names itself (system), since no person, session or daemon of the record made them.
+var rankActor = jsonActor{Kind: "system", ID: "replay-first-starts"}
+
+// rankWrite moves the rank the replay shows key at to rank, or to Dispatch's own where shown is
+// false (FirstStarts recorded, firstStarts.rootRank), and answers the event the move makes in
+// Dispatch at at: an issue.updated of the shadow's payload at the new rank, whose changed fields
+// are the rank, by rankActor, at the issue's next sequence. It answers false where the rank shown
+// does not move, and where the shadow holds no payload of the issue to write over, whose first
+// event then carries the rank. No recorded event is this one: the record's own payload, which the
+// next recorded event's change is read against, stays as it was.
+func (s *shadow) rankWrite(key, rank string, shown bool, at time.Time) (json.RawMessage, bool, error) {
+	if before, had := s.ranks[key]; had == shown && before == rank {
+		return nil, false, nil
+	}
+	if shown {
+		s.ranks[key] = rank
+	} else {
+		delete(s.ranks, key)
+	}
+	iss, ok := s.issues[key]
+	if !ok || iss.payload == nil {
+		return nil, false, nil
+	}
+	iss.seq++
+	iss.stamp(at)
+	moved := maps.Clone(iss.payload)
+	if shown {
+		moved["rank"] = mustJSON(rank)
+	}
+	moved["changed"] = mustJSON([]string{"rank"})
+	payload, err := json.Marshal(moved)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := s.made(iss, "issue.updated", rankActor, payload, at)
+	return raw, err == nil, err
+}
+
+// made is an event the replay makes itself of iss at at, past every recorded one: of kind, by
+// actor, carrying payload, at the sequence iss stands at, and kept in its log.
+func (s *shadow) made(iss *shadowIssue, kind string, actor jsonActor, payload json.RawMessage, at time.Time) (json.RawMessage, error) {
+	s.nextID++
+	return iss.event(map[string]json.RawMessage{
+		"id": json.RawMessage(fmt.Sprint(s.nextID)), "issue_key": mustJSON(iss.key), "artifact_id": json.RawMessage("null"),
+		"project": mustJSON(iss.project), "type": mustJSON(kind), "actor": mustJSON(actor), "notify": json.RawMessage("true"),
+		"payload": payload,
+	}, at)
 }
 
 // jsonActor is a Dispatch event's actor as Dispatch writes it.
