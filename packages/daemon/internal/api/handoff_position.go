@@ -88,7 +88,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	// no other role's.
 	var fix *record.TaskFix
 	if role == claim.RoleImplementer {
-		if fix, err = runningFix(ctx, tx, s.records, issue, task); err != nil {
+		if fix, err = RunningFixOf(ctx, tx, s.records, issue, task); err != nil {
 			return completionPosition{}, err
 		}
 	}
@@ -97,12 +97,14 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		pullRequest: pr, check: check, fix: fix}, tx.Commit(ctx)
 }
 
-// runningFix is the fix of issue's running task that runs beside the issue's step, read in tx: the
-// fix the issue record names (record.Issue.RunningFix), in state running with its entry raised on
-// the implementer's phases row, which the task the fix's start queued carries. It is nil while
+// RunningFixOf is the fix of issue's running task that runs beside the issue's step, read in tx:
+// the fix the issue record names (record.Issue.RunningFix), in state running with its entry raised
+// on the implementer's phases row, which the task the fix's start queued carries. It is nil while
 // none runs: a fix that still reads its failed job has raised no entry, so no task of it is the
-// implementer's work yet, and an issue with no plan rows (task "") runs no fix.
-func runningFix(ctx context.Context, tx pgx.Tx, records record.Store, issue *record.Issue, task string) (*record.TaskFix, error) {
+// implementer's work yet, and an issue with no plan rows (task "") runs no fix. The completion
+// route and the move back read the fix a claim works by it, and the projection the fix the state
+// serves (Issue.Fix), so the three read one fix.
+func RunningFixOf(ctx context.Context, tx pgx.Tx, records record.Store, issue *record.Issue, task string) (*record.TaskFix, error) {
 	if issue.RunningFix == 0 || task == "" {
 		return nil, nil
 	}

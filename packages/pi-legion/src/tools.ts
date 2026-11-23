@@ -460,8 +460,14 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed, or its record's head is not that pushed commit. `dir`, where given, is the
+   * directory the report is found in, in place of the pane's workspace: a running fix's working
+   * copy (the issue record's `fix.dir`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    dir?: string
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
