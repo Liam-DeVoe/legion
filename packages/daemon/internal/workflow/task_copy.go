@@ -55,10 +55,12 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 // through Engine.start, the start of every step, so at no commit does the step wait for nothing with
 // nothing of it started: start raises its entry, or writes that it waits for its agent where that
 // agent runs a step of another task. Its task is told where its work stands and its own pull
-// request, as the start after the wait for an agent tells it (handOn). Any other end of a join
-// changes nothing: one of a generation the issue has left, of a task its plan no longer holds or
-// whose step waits for no join, and one onto another branch or from other needs, a row that a stop
-// and a later version of the task left behind, whose start again queued a join of its own.
+// request, as the start after the wait for an agent tells it (handOn). A task at its parts, where
+// its sub-owner acts, then starts each of its parts that waits for that join (startReady). Any
+// other end of a join changes nothing: one of a generation the issue has left, of a task its plan
+// no longer holds or whose step waits for no join, and one onto another branch or from other
+// needs, a row that a stop and a later version of the task left behind, whose start again queued
+// a join of its own.
 func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoined) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation {
@@ -92,8 +94,19 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
-		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
+	if err := e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
+		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged); err != nil {
+		return intake.Result{}, err
+	}
+	if joined.Place.Kind != record.PlaceParts {
+		return intake.Result{}, nil
+	}
+	now, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil || now == nil {
+		return intake.Result{}, err
+	}
+	_, err = e.startReady(ctx, tx, *now)
+	return intake.Result{}, err
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the

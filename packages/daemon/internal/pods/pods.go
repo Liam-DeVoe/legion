@@ -145,9 +145,9 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 // at the place for a step, and for a retro the task's last step of the type implementation, which
 // runs it. Role, Key, Agent and At are that step's role, agent key, agent name and place
 // (record.PlanStep's Role, AgentKey, Agent and Position), each empty or zero where no step works
-// the place: a merge, and the retro of a task with no step of the type implementation. It holds
-// the rows as the store keeps them and decides nothing: record.RunningOf reads the steps from
-// them.
+// the place: a merge, the retro of a task with no step of the type implementation, and the parts
+// and the report of a task with a sub-owner, whose sub-owner works them. It holds the rows as the
+// store keeps them and decides nothing: record.RunningOf reads the steps from them.
 type RunningRow struct {
 	Task     string `json:"task"`
 	Held     bool   `json:"held"`
@@ -166,9 +166,9 @@ type RunningRow struct {
 // package. It is NULL where the run has no plan rows (issue_plans holds none at its generation),
 // and otherwise a JSON array of one RunningRow for each task of the run in the state running or
 // held whose step's start was delivered (plan_tasks.step_wait is ”), standing at a step its plan
-// rows hold, at its retro or at its merge, in task id order. A step that waits for its join or
-// its agent is in no row, and neither is a task at no act, waiting, stopped, done or left.
-// DecodeRunning reads it.
+// rows hold, at its retro, at its merge, or at its parts or its report, where its sub-owner acts,
+// in task id order. A step that waits for its join or its agent is in no row, and neither is a
+// task at no act, waiting, stopped, done or left. DecodeRunning reads it.
 func RunningColumn(key, generation string) string {
 	return stepsColumn(key, generation, `t.state in ('running', 'held') and t.step_wait = ''`, `t.task`)
 }
@@ -180,8 +180,9 @@ func StoppedColumn(key, generation string) string {
 }
 
 // ActsColumn is RunningColumn's read of every task of the run that stands at an act instead,
-// whatever its state and whatever its step waits for: the step, the retro or the merge each stands
-// at (record.Store.TaskActs). A task at no act is in no row, as in each read of this kind.
+// whatever its state and whatever its step waits for: the step, the retro, the merge, the parts or
+// the report each stands at (record.Store.TaskActs). A task at no act is in no row, as in each read
+// of this kind.
 func ActsColumn(key, generation string) string {
 	return stepsColumn(key, generation, `true`, `t.task`)
 }
@@ -195,7 +196,9 @@ func AgentWaitersColumn(key, generation string) string {
 }
 
 // stepsColumn is the read RunningColumn, StoppedColumn, ActsColumn and AgentWaitersColumn make, of
-// the tasks the SQL condition which names, over their alias t, in the SQL order order names.
+// the tasks the SQL condition which names, over their alias t, in the SQL order order names, that
+// stand at an act: a step their plan rows hold, their retro, their merge, their parts or their
+// report.
 func stepsColumn(key, generation, which, order string) string {
 	return `case when exists (select 1 from issue_plans p where p.issue = ` + key + ` and p.generation = ` + generation + `) then ` +
 		`coalesce((select json_agg(json_build_object('task', t.task, 'held', t.state = 'held', 'kind', t.running_kind, ` +
@@ -206,7 +209,7 @@ func stepsColumn(key, generation, which, order string) string {
 		`and (t.running_kind = 'step' and s.position = t.position or t.running_kind = 'retro' and s.type = 'implementation') ` +
 		`order by s.position desc limit 1) a on true ` +
 		`where t.issue = ` + key + ` and t.generation = ` + generation + ` and ` + which + ` ` +
-		`and (t.running_kind in ('retro', 'merge') or t.running_kind = 'step' and a.role is not null)), '[]') end`
+		`and (t.running_kind in ('retro', 'merge', 'parts', 'reported') or t.running_kind = 'step' and a.role is not null)), '[]') end`
 }
 
 // DecodeRunning reads what RunningColumn answers: planned is false for NULL, a run with no plan

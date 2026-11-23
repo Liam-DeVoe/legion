@@ -524,20 +524,23 @@ func (i Issue) WorkingPhase() phase.Phase {
 // of its run in the state running or held whose start was delivered, its entry raised, so that its
 // step waits for nothing (PlanTask.StepWait). A step whose start waits for the end of its task's
 // join or for its agent is no running step: the task is running and stands at that step, nothing
-// of the step has started, and no reader that gives work reaches it.
+// of the step has started, and no reader that gives work reaches it. The act of a task's sub-owner
+// at the task's parts or its report is one too (OwnerAct), though it is no step.
 //
 // Task and Place are the task and where it stands. Phase is the phase of that place: at a step the
 // phase its role runs as (plan.RunsAs, as the walk's line reads it, plan.Line), retro at the
-// retro and merging at the merge. Role is the role that works the place: at a step the worker of
-// the phase its role runs as (phase.RoleFor of that phase: the architect at the owner's
-// acceptance), or the role itself where it runs as step, a role the deployment defines; the
-// implementer at a retro and the merger at a merge. Agent is the name of the agent that does the
-// work: at a step the step's agent as PlanStep.AgentName reads it, none for a step of the key
-// owner, whose claim is the tree's architect's and names no agent of the issue; at a retro the
-// agent of the task's last step of the type implementation; and the role's own name where no
-// step's agent works the place (a merge, a retro with no such step, an issue with no plan rows),
-// as the role's own claim token names it (claim.Agent). Held says the step is held: its task is
-// held (TaskHeld), or its issue is, which holds each step the issue runs.
+// retro, merging at the merge, and planning at the parts and at the report. Role is the role that
+// works the place: at a step the worker of the phase its role runs as (phase.RoleFor of that
+// phase: the architect at the owner's acceptance), or the role itself where it runs as step, a
+// role the deployment defines; the implementer at a retro, the merger at a merge, and the
+// sub-owner (claim.RoleSubOwner) at the parts and at the report. Agent is the name of the agent
+// that does the work: at a step the step's agent as PlanStep.AgentName reads it, none for a step
+// of the key owner, whose claim is the tree's architect's and names no agent of the issue; at a
+// retro the agent of the task's last step of the type implementation; the task's sub-owner
+// (SubOwnerAgent) at the parts and at the report; and the role's own name where no step's agent
+// works the place (a merge, a retro with no such step, an issue with no plan rows), as the role's
+// own claim token names it (claim.Agent). Held says the step is held: its task is held
+// (TaskHeld), or its issue is, which holds each step the issue runs.
 type RunningStep struct {
 	Task  string
 	Place TaskPlace
@@ -545,6 +548,13 @@ type RunningStep struct {
 	Phase phase.Phase
 	Agent claim.Agent
 	Held  bool
+}
+
+// OwnerAct says whether s is the act of a task's sub-owner, at the task's parts or its report
+// (PlaceParts, PlaceReported), and not a step: the one test of it for every reader of the running
+// steps.
+func (s RunningStep) OwnerAct() bool {
+	return s.Place.Kind == PlaceParts || s.Place.Kind == PlaceReported
 }
 
 // RunningOf is the running steps of issue (Issue.Running) from the read of its run's plan rows
@@ -587,6 +597,9 @@ func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 		step.Phase = phase.Retro
 	case PlaceMerge:
 		step.Phase = phase.Merging
+	case PlaceParts, PlaceReported:
+		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
+		return step
 	default:
 		step.Phase = plan.RunsAs(row.Role)
 	}

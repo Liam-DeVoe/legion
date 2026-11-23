@@ -506,3 +506,63 @@ func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 		}
 	})
 }
+
+// The walk of a task with a sub-owner has no step: its line is planning, the phase of its
+// sub-owner's act, then Legion's own retro and merge where the task merges, and its planning is its
+// parts (PlaceOf), where its start and the gate's opening put it and a move back from its merge to
+// planning returns it. Its parts and its report each derive planning (issuePhaseOf), and a step
+// place derives no phase. The walk of such a task that another task needs, which does not merge,
+// has the line planning alone.
+//
+// The fault it catches is a task with a sub-owner whose merge the merger cannot return, or whose
+// place derives no phase (its control: the walk's line plan.Line(StepsOf(f), merges) alone, retro
+// merging, whose planning has no place, and the case fails).
+func TestTheWalkOfATaskWithASubOwner(t *testing.T) {
+	const key = "LEGION-208"
+	f := record.PlanTask{Issue: key, Generation: 1, Task: "f", OwnerRole: "architect", State: record.TaskWaiting}
+	h := record.PlanTask{Issue: key, Generation: 1, Task: "h", Needs: []string{"f"}, State: record.TaskWaiting}
+	walkOfF := func(tasks ...record.PlanTask) Walk {
+		stored := &record.StoredPlan{Version: record.PlanVersion{Issue: key, Generation: 1, Version: 1}, Tasks: tasks, Steps: map[string][]record.PlanStep{}}
+		merging, _ := stored.MergingTask()
+		return walkOfTask(key, stored, f, merging)
+	}
+	parts := record.TaskPlace{Kind: record.PlaceParts}
+
+	w := walkOfF(f)
+	if place, ok := w.PlaceOf(phase.Planning); !ok || place != parts {
+		t.Fatalf("PlaceOf(planning) of f = %+v, %t, want its parts %+v (the line %v)", place, ok, parts, w.Line)
+	}
+	if want := []phase.Phase{phase.Planning, phase.Retro, phase.Merging}; !w.Merges || !slices.Equal(w.Line, want) {
+		t.Fatalf("the walk of f, which merges, has the line %v (merges %t), want %v", w.Line, w.Merges, want)
+	}
+	if place, ok := w.PlaceOf(phase.Implementing); ok {
+		t.Fatalf("PlaceOf(implementing) of f = %+v, want no place: f has no step", place)
+	}
+	for _, at := range []record.TaskPlace{parts, {Kind: record.PlaceReported}} {
+		if got := issuePhaseOf(w, at, record.TaskRunning); got != phase.Planning {
+			t.Fatalf("issuePhaseOf f running at %+v = %q, want planning, where its sub-owner acts", at, got)
+		}
+	}
+	if got := issuePhaseOf(w, atStep(1), record.TaskRunning); got != "" {
+		t.Fatalf("issuePhaseOf f running at step 1 = %q, want no phase: f has no step", got)
+	}
+	if row, ok := w.row(phase.Admitted, TriggerGateOpened, record.TaskPlace{}, Snapshot{Phase: phase.Admitted}); !ok || row.To != phase.Planning || row.ToPlace != parts {
+		t.Fatalf("the gate's opening of f is the row %+v (%t), want the move into planning at its parts", row, ok)
+	}
+	atMerge := w
+	atMerge.State, atMerge.Place = record.TaskRunning, record.TaskPlace{Kind: record.PlaceMerge}
+	if place, ok, _ := atMerge.backwardPlace(phase.Planning); !ok || place != parts {
+		t.Fatalf("a move back of f from its merge to planning reaches %+v (%t), want its parts", place, ok)
+	}
+	if row, ok := atMerge.row(phase.Merging, TriggerBackward, parts, Snapshot{Phase: phase.Merging}); !ok || row.To != phase.Planning {
+		t.Fatalf("the move back of f from its merge to its parts is the row %+v (%t), want one into planning", row, ok)
+	}
+
+	w = walkOfF(f, h)
+	if want := []phase.Phase{phase.Planning}; w.Merges || !slices.Equal(w.Line, want) {
+		t.Fatalf("the walk of f, which h needs, has the line %v (merges %t), want %v", w.Line, w.Merges, want)
+	}
+	if place, ok := w.PlaceOf(phase.Planning); !ok || place != parts {
+		t.Fatalf("PlaceOf(planning) of f, which h needs, = %+v, %t, want its parts %+v", place, ok, parts)
+	}
+}

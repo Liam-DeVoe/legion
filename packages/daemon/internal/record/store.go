@@ -70,8 +70,8 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last
 // column is no column of issues: it is the read of the issue's running steps from the plan rows of
-// its generation (pods.RunningColumn), one row for each task whose step runs, which scanIssue
-// reads as Issue.Running.
+// its generation (pods.RunningColumn), one row for each task whose step runs or whose sub-owner
+// acts at its parts or its report, which scanIssue reads as Issue.Running.
 var issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
 	pods.RunningColumn("issues.key", "issues.generation")
 
@@ -599,11 +599,12 @@ func (s *Postgres) StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (ste
 
 // TaskActs is the act each task of issue's run stands at, read in tx from the plan rows of its
 // generation as a running step is read (pods.ActsColumn, RunningOf): the step at its place, its
-// retro or its merge, with the role, the phase and the agent of that place, held where the task
-// is held, for every task that stands at an act whatever its state and whatever its step waits
-// for, in task id order. A task at no act has none, and so does an issue with no plan rows at its
-// generation. It is what the served state names each task's act by (api.TaskView), where the
-// issue's running steps (Issue.Running) hold only the steps whose start was delivered.
+// retro, its merge, or its parts or its report, where its sub-owner acts, with the role, the phase
+// and the agent of that place, held where the task is held, for every task that stands at an act
+// whatever its state and whatever its step waits for, in task id order. A task at no act has none,
+// and so does an issue with no plan rows at its generation. It is what the served state names each
+// task's act by (api.TaskView), where the issue's running steps (Issue.Running) hold only the steps
+// whose start was delivered.
 func (s *Postgres) TaskActs(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error) {
 	var acts []byte
 	if err := tx.QueryRow(ctx, "select "+pods.ActsColumn("$1::text", "$2::bigint"), issue.Key, int64(issue.Generation)).Scan(&acts); err != nil {
