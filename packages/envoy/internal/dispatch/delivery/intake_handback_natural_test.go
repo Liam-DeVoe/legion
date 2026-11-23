@@ -134,7 +134,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	tuning := tuningFor(t)
 	tuning.stopBudget = stopBudget

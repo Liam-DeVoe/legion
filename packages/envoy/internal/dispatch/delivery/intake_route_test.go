@@ -119,9 +119,10 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 // comment are acknowledged with no ERROR line, no GitHub call and no database write, the freshness
 // row's last_event_at included.
 func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
@@ -174,9 +175,10 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 // notifications.github.unknown.unknown.comment here. It carries no kind, so it is no kind intake
 // records: acknowledged with no ERROR line, no GitHub call and no write.
 func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
@@ -204,9 +206,10 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 // member: the intake skips it and handles the rest of the payload. The merged pull request is
 // fetched and stored, with no ERROR line, and the event's time is recorded.
 func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{
@@ -261,9 +264,10 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 // logs the malformed run_id at WARN, as it does for every run it cannot process. The envelope is
 // acknowledged, and nothing is written or fetched.
 func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
@@ -301,6 +305,7 @@ func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
 // not a string, cannot be routed. It is malformed: logged at ERROR, acknowledged, and nothing is
 // written or fetched.
 func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
+	t.Parallel()
 	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
 	for _, envelope := range []struct{ name, payload string }{
 		{"not an object", `["pr","closed"]`},
@@ -309,7 +314,7 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 		t.Run(envelope.name, func(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
-			logs := captureLogs(t)
+			logs := captureIntakeLogs(t)
 			fake := newFakeGitHub(t)
 			natsClient := intakeTestClient(t)
 			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
