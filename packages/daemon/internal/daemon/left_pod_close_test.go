@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,9 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	// The planner's machine reads its clock from here, so a test can stamp a turn at a moment of its
+	// own (turnedBeforeQuiet).
+	sup.deps.Clock = &leftPodClock{}
 	sup.store = st
 
 	token := mustClaimToken(t, child.Key, claim.RolePlanner)
@@ -419,19 +423,65 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	}
 }
 
-// turnedBeforeQuiet records a turn of the rig's planner that started forty minutes ago, before the
-// pod went quiet half an hour ago (quietPod), and answers its moment as the database holds it. The
-// pass then carries a turn start that is not zero into its close's check
-// (record.IssueWorkspaceCheck.TurnStart), so a close that dropped that moment on its way would read
-// this old turn as one since the pass and hold.
+// leftPodClock is the left pod rig's supervisor clock (newLeftPodRig): time.Now(), or at while at is
+// set, so a test can have the planner's machine stamp a turn (supervise.Claim.LastTurnStart) at a
+// moment of its choosing.
+type leftPodClock struct {
+	stillClock
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *leftPodClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at.IsZero() {
+		return time.Now()
+	}
+	return c.at
+}
+
+func (c *leftPodClock) set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = at
+}
+
+// turnedBeforeQuiet runs a turn of the rig's planner through its machine, started and ended forty
+// minutes ago, before the pod went quiet half an hour ago (quietPod, run again after the turn's
+// writes), and answers its start as the database holds it. The machine stamps the turn with its
+// clock's nanoseconds, below the microsecond the database keeps (claims.last_turn_start), so the
+// machine's own stamp of this one turn reads later than the database's: a rule that weighed the one
+// against the other would take this old turn for a newer one. The pass carries the database's
+// moment, which is not zero, into its close's check (record.IssueWorkspaceCheck.TurnStart), so a
+// close that dropped that moment on its way would read this old turn as one since the pass and
+// hold too.
 func turnedBeforeQuiet(t *testing.T, rig *idleRig) time.Time {
 	t.Helper()
-	at := time.Now().Add(-40 * time.Minute).UTC().Truncate(time.Microsecond)
-	if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
-		rig.issue.Key, at); err != nil {
-		t.Fatalf("record the planner's turn before the pod went quiet: %v", err)
+	clock, ok := rig.sup.deps.Clock.(*leftPodClock)
+	if !ok {
+		t.Fatalf("the rig's supervisor clock is %T, want newLeftPodRig's leftPodClock", rig.sup.deps.Clock)
 	}
-	return at
+	at := time.Now().Add(-40 * time.Minute).UTC().Truncate(time.Microsecond).Add(321 * time.Nanosecond)
+	clock.set(at)
+	for _, ev := range []supervise.Event{supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token}} {
+		if err := rig.machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("handle %T for %s: %v", ev, rig.token, err)
+		}
+	}
+	rig.machine.Wait()
+	clock.set(time.Time{})
+	if got := rig.machine.Claim().LastTurnStart; !got.Equal(at) {
+		t.Fatalf("the planner's machine stamped its turn at %v, want %v", got, at)
+	}
+	stored := at.Truncate(time.Microsecond)
+	var held time.Time
+	if err := rig.pool.QueryRow(context.Background(), `select last_turn_start from claims where token = $1`,
+		string(rig.token)).Scan(&held); err != nil || !held.Equal(stored) {
+		t.Fatalf("the stored planner's last turn start = %v (%v), want %v, the machine's stamp to the microsecond", held, err, stored)
+	}
+	quietPod(t, rig)
+	return stored
 }
 
 // rowTurnStart is the turnStart the rig's queued row of kind carries, with op the row's supervise op
