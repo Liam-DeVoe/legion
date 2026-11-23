@@ -425,12 +425,14 @@ alias's words in place of its command word, an alias of an alias the same way, a
 alone leaves with none, each read from the configuration of the working directory, as jj reads
 them.
 A command word is a command's first word that is no option and no option's value.
-These commands make no read: one whose command word is a built-in jj command, `jj git push` among
-them; `-h`, `--help`, `-V`, `--version` or a cluster of short flags that starts with `-h` or `-V`,
-with no command word; any command while `COMPLETE` is set for shell completion; any command of a
-process with no table, such as the controller; and a command that comes back into `bin/jj` with
-the words `legion jj` ran it with (below).
+These commands make no read of the aliases: one whose command word is a built-in jj command,
+`jj git push` among them; `-h`, `--help`, `-V`, `--version` or a cluster of short flags that
+starts with `-h` or `-V`, with no command word; any command while `COMPLETE` is set for shell
+completion; any command of a process with no table, such as the controller; and a command that
+comes back into `bin/jj` with the words `legion jj` ran it with (below).
 Any other command, a bare `jj` included, first costs one `jj config list` process (below).
+A push that the step runs on costs one read of the push's configuration as well, unless the read
+of the aliases expanded it and it names no `-R` (below).
 Every command that jj does not run as a `jj git push` runs through that `jj` with the role's own
 words, byte for byte.
 Where `legion jj` cannot expand a command, it prints one line,
@@ -439,10 +441,10 @@ with the role's own words and no step: an alias that is no list of strings, a ta
 with `enabled = false`, a cycle of aliases, a `ui.default-command` that is neither a string nor a
 list of strings, a command word that is no bare name where the configuration names an alias by a
 quoted name, and a read that fails or prints what is no name and JSON value.
-That read, and each read of the worker image's wrapper, prints what jj prints on standard error
-but the warnings that jj prints on every command, such as `Cannot define an alias that overrides
-the built-in command`, and jj's note of a key that a read names and no configuration sets
-(`No matching config key for`), which only a read prints.
+That read, the read of a push's configuration (below), and each read of the worker image's
+wrapper, print what jj prints on standard error but the warnings that jj prints on every command,
+such as `Cannot define an alias that overrides the built-in command`, and jj's note of a key that
+a read names and no configuration sets (`No matching config key for`), which only a read prints.
 A read of the aliases or of `ui.default-command` that fails leaves out jj's error too, and the
 line after it says that the read failed.
 So a warning that jj prints once, such as `Your repo appears to have been copied`, prints once
@@ -466,6 +468,19 @@ pane and the worker image's wrapper expand with `ui.default-command` in front, s
 push, it runs with the step.
 Before a `jj git push`, and before a command that jj expands into one, `legion jj` runs the push
 step on the push as jj expands it.
+In a pane, the step's first command reads the configuration of the repository that the push
+loads, `jj --ignore-working-copy --color=never config list -T '""'` with the push's own `-R`
+arguments and the `--config` and `--config-file` arguments that jj keeps for the push: it takes
+no snapshot, adds no operation, and prints what jj prints once there, such as
+`Your repo appears to have been copied`.
+The step's other reads print nothing of what jj prints on standard error, so without that read
+the first of them would take such a warning from the role.
+In a pod, the worker image's wrapper's read of `git.executable-path`, with the same arguments, is
+that command.
+A push that the read of the aliases expanded makes no such read unless it names `-R`: the read of
+the aliases loaded the same repository.
+A read of the push's configuration that fails stops the push with jj's error and exit status, as
+jj alone fails on the same configuration.
 The step decides from reads with `--ignore-working-copy`.
 Where its first run finds nothing of the push to change, no commit and no word, or where the push
 itself carries `--ignore-working-copy`, every jj command of the step runs with
@@ -577,14 +592,21 @@ runs the step.
 Every `jj` command of a pane starts one `legion` process first.
 Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
 took 95 to 161 ms.
-Any command but those that make no read (above), a bare `jj` included, also starts one
-`jj --ignore-working-copy --color=never config list --include-defaults` through the next `jj`, in
-the working directory and with none of the command's own options, which reads every alias and
-`ui.default-command`, takes no snapshot and reads no commit.
+Any command but those that make no read of the aliases (above), a bare `jj` included, also starts
+one `jj --ignore-working-copy --color=never config list --include-defaults` through the next
+`jj`, in the working directory and with none of the command's own options, which reads every
+alias and `ui.default-command`, takes no snapshot and reads no commit.
 Measured on a scratch clone of cybermonklabs/legion in an issue's pod, 15 runs each, that read
 took 40 to 88 ms (median 56 ms) under jj 0.45.1-sami and 70 to 187 ms (median 115 ms) under jj
 0.38.0; whole jj commands in that clone took 2.2 to 4.9 s with or without `bin/jj`, so the read is
 inside their spread.
+A push that the step runs on also starts the read of its configuration before the step (above),
+`jj --ignore-working-copy --color=never config list -T '""'` with the push's `-R`, `--config` and
+`--config-file` arguments, unless the read of the aliases expanded it and it names no `-R`; that
+read takes no snapshot and reads no commit.
+Measured on 2026-11-23 on a shallow scratch clone of cybermonklabs/legion in an issue's pod, 15
+runs each, that read alone took 38 to 70 ms (median 47 ms) under jj 0.45.1-sami and 78 to 129 ms
+(median 96 ms) under jj 0.38.0.
 `legion controller start` writes the same `jj` into the `bin/` of its own state directory, by the
 same rule, for the operator's controller.
 

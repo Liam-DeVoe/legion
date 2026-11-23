@@ -70,18 +70,20 @@ run() {
 # does not load, a setting jj migrates, aliases that -R, --config or --config-file would define,
 # and a trunk() that does not resolve, with its hint. Each goes with the lines that jj prints as its
 # parts, with no heading: those of a parse error or of jj 0.46's causes, which are blank or start
-# with a space, a digit or `Caused by:`, and trunk()'s second line. jj's note of a key that a read
-# names and no configuration sets, `No matching config key for: <key>` (with no colon in jj 0.38),
-# is left out as well: only a read prints it, and jj alone prints none for the command the wrapper
-# runs. Every other line goes through: a warning that jj prints for the first command in its state
-# and never again, such as `Your repo appears to have been copied` (lib/src/secure_config.rs),
-# which a read may be, and a line after a dropped warning that is no part of it, such as a
-# snapshot's `Rebased 1 descendant commits`. Without the argument `error`, jj's error, which jj
-# prints last, and every line after it, its causes and hints, are left out too: the refusal after
-# such a read says that the read failed. jj prints its warnings of aliases before it reads
-# --color, so where ui.color is always, they hold jj's colours under a read's --color=never too:
-# each line is matched with jj's colours left out (ESC `[`, digits and `;`, then `m`), as
-# jjOnceOnly in legion jj matches it, and printed as it came.
+# with a space, a digit or `Caused by:`, trunk()'s second line, and the `Example: jj config set …`
+# and `For details, see: …` lines of jj 0.38's deprecation of git.auto-local-bookmark and
+# git.push-new-bookmarks. jj's note of a key that a read names and no configuration sets, `No
+# matching config key for: <key>` (with no colon in jj 0.38), is left out as well: only a read
+# prints it, and jj alone prints none for the command the wrapper runs. Every other line goes
+# through: a warning that jj prints for the first command in its state and never again, such as
+# `Your repo appears to have been copied` (lib/src/secure_config.rs), which a read may be, and a
+# line after a dropped warning that is no part of it, such as a snapshot's `Rebased 1 descendant
+# commits`. Without the argument `error`, jj's error, which jj prints last, and every line after
+# it, its causes and hints, are left out too: the refusal after such a read says that the read
+# failed. jj prints its warnings of aliases before it reads --color, so where ui.color is always,
+# they hold jj's colours under a read's --color=never too: each line is matched with jj's colours
+# left out (ESC `[`, digits and `;`, then `m`), as jjOnceOnly in legion jj matches it, and printed
+# as it came.
 once_only() {
   part=''
   while IFS= read -r line || [ -n "$line" ]; do
@@ -104,7 +106,7 @@ once_only() {
     plain=$plain$rest
     if [ "$part" = more ]; then
       case "$plain" in
-        '' | [\ 0-9]* | 'Caused by:'* | 'The `trunk()` alias is temporarily set to '*) continue ;;
+        '' | [\ 0-9]* | 'Caused by:'* | 'The `trunk()` alias is temporarily set to '* | 'Example: jj config set '* | 'For details, see: '*) continue ;;
       esac
     fi
     part=''
@@ -506,6 +508,12 @@ if [ "$final" = push ]; then
   # is an error, a `-R` naming no repository for one, and never an unset value. It is refused after
   # jj's own error, which the read prints (once_only error), because a read that answered nothing
   # cannot vouch for the git the push would run.
+  #
+  # This read loads the configuration of the repository the push loads, so where no read before it
+  # took a warning that jj prints once, such as `Your repo appears to have been copied`, it takes
+  # it, and once_only prints it: legion jj's step, which runs next, would otherwise take it with a
+  # read that prints nothing of its standard error. Under tmux, where this wrapper does not run,
+  # legion jj makes a read of the same configuration before its step (jjStep.readConfiguration).
   configured=$(
     kept=''
     for entry in $occ; do

@@ -35,7 +35,8 @@ import (
 // builtins= line (packages/daemon/docker/jj), the names jj 0.45.1-sami warns of where an alias
 // has one ("Cannot define an alias that overrides the built-in command"); jj 0.38.0 has each of
 // them but arrange and converge. jj ignores an alias of such a name, so a command word among them
-// is never expanded, and the expansion needs no read.
+// is never expanded, and the expansion needs no read of the aliases; a push among them that the
+// step runs on gets the step's read of its configuration (jjStep.readConfiguration).
 var jjBuiltins = []string{
 	"abandon", "absorb", "arrange", "bisect", "bookmark", "commit", "config", "converge", "debug", "describe",
 	"diff", "diffedit", "duplicate", "edit", "evolog", "evolution-log", "file", "fix", "gerrit", "git",
@@ -313,10 +314,10 @@ func (a jjAliases) resolveAliases(line []string) ([]string, error) {
 // expandJJ is args as jj expands them, where the expansion ends at a built-in command word, which
 // readJJPush then reads as it reads a line the role wrote; it is nil where jj runs no built-in
 // command, or where legion jj cannot expand args (jjUnexpandable), and the command then runs with
-// the role's own words. A line whose command word is a built-in name (jjBuiltins) is args, and a
-// line with no command word that holds a word of help or version (jjHelpWord) is nil, each with no
-// read. Every other line costs one read through next in env (readJJAliases), which prints on stderr
-// what jj prints once of it.
+// the role's own words. read is whether it made the read of the aliases. A line whose command word
+// is a built-in name (jjBuiltins) is args, and a line with no command word that holds a word of
+// help or version (jjHelpWord) is nil, each with no read of the aliases. Every other line costs
+// one read through next in env (readJJAliases), which prints on stderr what jj prints once of it.
 //
 // The expansion is jj 0.45's (expand_args): the aliases of the line (resolveAliases); then, where
 // that leaves no command word, as it does a bare `jj`, a line that starts with an option clap does
@@ -328,36 +329,35 @@ func (a jjAliases) resolveAliases(line []string) ([]string, error) {
 // limit of the expansion under jj 0.38.0. A word that no alias names, and a line that the
 // expansion leaves with no command word, end it with no built-in command: jj refuses the word, or
 // runs no push.
-func expandJJ(args []string, next string, env []string, stderr io.Writer) ([]string, error) {
+func expandJJ(args []string, next string, env []string, stderr io.Writer) (line []string, read bool, err error) {
 	at := jjCommandWord(args)
 	switch {
 	case at < 0 && slices.ContainsFunc(args, jjHelpWord):
-		return nil, nil
+		return nil, false, nil
 	case at >= 0 && slices.Contains(jjBuiltins, args[at]):
-		return args, nil
+		return args, false, nil
 	}
 	aliases, err := readJJAliases(next, env, stderr)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	line, err := aliases.resolveAliases(args)
-	if err != nil {
-		return nil, err
+	if line, err = aliases.resolveAliases(args); err != nil {
+		return nil, true, err
 	}
 	if jjCommandWord(line) < 0 {
 		if slices.ContainsFunc(line, jjHelpWord) {
-			return nil, nil
+			return nil, true, nil
 		}
 		words, err := aliases.defaultCommand()
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if line, err = aliases.resolveAliases(slices.Concat(words, line)); err != nil {
-			return nil, err
+			return nil, true, err
 		}
 	}
 	if at := jjCommandWord(line); at < 0 || !aliases.builtin(line[at]) {
-		return nil, nil
+		return nil, true, nil
 	}
-	return line, nil
+	return line, true, nil
 }

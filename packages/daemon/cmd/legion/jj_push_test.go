@@ -1409,23 +1409,31 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 }
 
 // rolePushFailingRows are the step's jj commands that fail, each a recording jj's behaviour and the
-// error it prints.
-var rolePushFailingRows = []struct{ name, behaviour, error string }{
+// error it prints, and whether it is the tmux form's alone: the read of the push's configuration
+// that the pane's legion jj makes before the step's first command, which the pod's form leaves to
+// the pod's wrapper's own read.
+var rolePushFailingRows = []struct {
+	name, behaviour, error string
+	tmux                   bool
+}{
 	{name: "a metaedit that fails", behaviour: rolePushFailsMetaedit, error: "Error: legion test: this metaedit fails"},
 	{name: "a read of the set that fails", behaviour: rolePushFailsSetRead, error: "Error: legion test: this read of the set fails"},
 	{name: "a snapshot that fails", behaviour: rolePushFailsSnapshot, error: "Error: legion test: this snapshot fails"},
+	{name: "D20's read that fails", tmux: true, error: "Error: legion test: this read of the configuration fails",
+		behaviour: `case " $* " in *" config list "*) echo 'Error: legion test: this read of the configuration fails' >&2; status=1; ran=1 ;; esac`},
 }
 
-// When a jj command of the step fails, its metaedit, its read of the set the push sends or its
-// snapshot of the working copy, the push exits with its status after jj's error, and nothing
-// reaches the remote.
+// When a jj command of the step fails, its metaedit, its read of the set the push sends, its
+// snapshot of the working copy or, under the tmux form, its read of the push's configuration
+// before its first command, the push exits with its status after jj's error, and nothing reaches
+// the remote.
 func TestAFailingStepSendsNothing(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
 	for _, row := range rolePushFailingRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			test := func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, row.behaviour)
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -1435,7 +1443,15 @@ func TestAFailingStepSendsNothing(t *testing.T) {
 				if !strings.Contains(stderr, row.error) {
 					t.Errorf("the push printed\n%s\nwant jj's error %q", stderr, row.error)
 				}
-			})
+			}
+			if row.tmux {
+				t.Run(string(rolePushTmux), func(t *testing.T) {
+					t.Parallel()
+					test(t, rolePushTmux)
+				})
+				return
+			}
+			rolePushEachForm(t, test)
 		})
 	}
 }
@@ -1472,10 +1488,12 @@ var rolePushPanesRows = []struct {
 // is a second run of the step: one on the real push takes no snapshot, since the push's words carry
 // the step's --ignore-working-copy, and runs no metaedit, since the commit has its author by then.
 // A push that jj expands from an alias, through that host's jj, runs the step once too. Under the
-// tmux form legion jj reads the aliases once (rolePushCall.isConfigRead), a read which the host's
-// jj brings back into the pane's jj, and that jj passes it on with no read of its own. Under the
-// pod's form the pod's wrapper expands the line, with reads that each name a key, and legion jj
-// makes no read.
+// tmux form legion jj makes one read of the configuration (rolePushCall.isConfigRead) on every
+// row: of the aliases, for the push written as an alias, and, for a push written as `git push`,
+// of the push's configuration before the step's first command. The host's jj brings that read
+// back into the pane's jj, and that jj passes it on with no read of its own. Under the pod's form
+// the pod's wrapper expands the line, with reads that each name a key, and legion jj makes no
+// read.
 func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -1485,12 +1503,12 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				args, reads := rolePushBookmark, 0
+				if form == rolePushTmux {
+					reads = 1
+				}
 				if row.alias != "" {
 					f.jj(impl, "config", "set", "--repo", "aliases.p", row.alias)
 					args = []string{"p", "--bookmark", "legion/K-1"}
-					if form == rolePushTmux {
-						reads = 1
-					}
 				}
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -1524,7 +1542,7 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 					t.Errorf("the recording jj saw the dry runs %q after the step's metaedit, want none: the step ran again on the real push, which the loop guard skips where wrappedJJStepped is the digest of the push's own words, the step's --ignore-working-copy among them (jjStepped)\n%v", again, calls)
 				}
 				if read != reads {
-					t.Errorf("the recording jj saw %d reads of the aliases by legion jj, want %d\n%v", read, reads, calls)
+					t.Errorf("the recording jj saw %d reads of the configuration by legion jj, want %d\n%v", read, reads, calls)
 				}
 			})
 		})

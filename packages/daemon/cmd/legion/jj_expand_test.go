@@ -26,7 +26,14 @@ const rolePushPodRefusalPrefix = "LEAK CHECK SETUP ERROR: the push: "
 // names: jj config set writes neither a table of an alias nor a [[--scope]].
 func (f *rolePushFixture) configure(toml string) {
 	f.t.Helper()
-	path := strings.TrimSpace(f.jj(rolePushImplementer, "config", "path", "--repo"))
+	f.configureIn("--repo", toml)
+}
+
+// configureIn appends toml to the configuration file that `jj config path <scope>` names, scope
+// being --repo or --user (the user's, under the fixture's own HOME).
+func (f *rolePushFixture) configureIn(scope, toml string) {
+	f.t.Helper()
+	path := strings.TrimSpace(f.jj(rolePushImplementer, "config", "path", scope))
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
@@ -42,9 +49,9 @@ func (f *rolePushFixture) configure(toml string) {
 	}
 }
 
-// isConfigRead is whether the call is legion jj's read of the aliases: a `jj config list` that
-// names no key, where each of the pod's wrapper's reads names one (`aliases.<name>`,
-// `ui.default-command`).
+// isConfigRead is whether the call is a read of legion jj's: a `jj config list` that names no key,
+// its read of the aliases or its read of a push's configuration before the step, where each of the
+// pod's wrapper's reads names one (`aliases.<name>`, `ui.default-command`).
 func (c rolePushCall) isConfigRead() bool {
 	return c.pair() == [2]string{"config", "list"} && !slices.ContainsFunc(c.args, func(arg string) bool {
 		return strings.HasPrefix(arg, "aliases.") || arg == "ui.default-command"
@@ -301,16 +308,20 @@ var rolePushAsWrittenRows = []rolePushAsWrittenRow{
 }
 
 // A command that is no push runs as the role wrote it, and one whose word is a built-in command
-// reads nothing. Under the tmux form, with a recording jj ahead of the real one: `jj l` with an
-// alias that is no push prints what jj alone prints, and the recording jj sees one `jj config
-// list`, then the role's words byte for byte, and no command of the step; `jj log` and `jj git push
-// --bookmark legion/K-1` run no `jj config list`; `jj --help`, `-h`, `--version`, `-V` and `-hV`
-// with a push as the default command, and `jj p` under COMPLETE=bash, read nothing, run the role's
-// words alone and send nothing, as jj alone; `jj -R repo q -b b` from the directory above the
-// repository, whose own configuration alone defines q, and `jj --config 'aliases.q=…' q -b b` end
-// in jj's own refusal, as jj alone prints it, and send nothing; a process with no table reads
-// nothing and runs `jj p -b b` as jj alone does, which sends b as it was. The pod's form of these
-// is the pod's wrapper's (packages/daemon/docker/jj), held by internal/leakguard's tests.
+// reads nothing but before a push the step runs on. Under the tmux form, with a recording jj ahead
+// of the real one: `jj l` with an alias that is no push prints what jj alone prints, and the
+// recording jj sees one `jj config list`, then the role's words byte for byte, and no command of
+// the step; `jj log` runs no `jj config list`; `jj git push --bookmark legion/K-1` runs exactly
+// one, and first, the read of the push's configuration that legion jj makes before the step's
+// first command (`jj --ignore-working-copy --color=never config list -T '""'`, with none of the
+// push's -R and --config words, as it holds none), and no read of the aliases; `jj --help`, `-h`,
+// `--version`, `-V` and `-hV` with a push as the default command, and `jj p` under COMPLETE=bash,
+// read nothing, run the role's words alone and send nothing, as jj alone; `jj -R repo q -b b` from
+// the directory above the repository, whose own configuration alone defines q, and `jj --config
+// 'aliases.q=…' q -b b` end in jj's own refusal, as jj alone prints it, and send nothing; a
+// process with no table reads nothing and runs `jj p -b b` as jj alone does, which sends b as it
+// was. The pod's form of these is the pod's wrapper's (packages/daemon/docker/jj), held by
+// internal/leakguard's tests.
 func TestACommandThatIsNoPushRunsAsTheRoleWroteIt(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushAsWrittenRows {
@@ -356,8 +367,16 @@ func TestACommandThatIsNoPushRunsAsTheRoleWroteIt(t *testing.T) {
 		c := f.commitOn(rolePushReviewer, rolePushImplementer, "main", rolePushMessage("work", "implementer"))
 		f.bookmark("legion/K-1", c.commit)
 		f.pushAndCheck(rolePushBookmark, rolePushSends("legion/K-1", c, "implementer", rolePushImplementer))
-		if calls := f.calls(); slices.ContainsFunc(calls, rolePushCall.isConfigRead) {
-			t.Errorf("the recording jj ran %v, want no `jj config list` before a push written as git push", calls)
+		calls := f.calls()
+		read := []string{"--ignore-working-copy", "--color=never", "config", "list", "-T", `""`}
+		reads := 0
+		for _, call := range calls {
+			if call.isConfigRead() {
+				reads++
+			}
+		}
+		if reads != 1 || !slices.Equal(calls[0].args, read) {
+			t.Errorf("the recording jj ran %v, want one `jj config list` before a push written as git push, first, with the words %q: the read of the push's configuration, and no read of the aliases", calls, read)
 		}
 	})
 }

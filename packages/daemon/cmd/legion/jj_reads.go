@@ -189,7 +189,10 @@ func jjWords(prefix string, terms []string, suffix string) []string {
 
 // jj runs one jj command of the step that takes no snapshot and answers what it printed on
 // standard output (output): next, with the caller's options (jjPush.options), then
-// --ignore-working-copy, then args, in env.
+// --ignore-working-copy, then args, in env. It prints nothing of what the command printed on
+// standard error: a read before the step has taken a warning jj prints once and printed it (under
+// tmux the read of the aliases or jjStep.readConfiguration, in a pod the pod's wrapper's reads),
+// and the real push prints the warnings jj prints on every command itself.
 func (s *jjStep) jj(env []string, args ...string) (string, error) {
 	stdout, _, err := s.output(env, slices.Concat(s.push.options, []string{"--ignore-working-copy"}, args))
 	return stdout, err
@@ -299,12 +302,14 @@ var jjEveryCommand = regexp.MustCompile("^(?:Warning: (?:" +
 // jjEveryCommandMore is a line that jj prints after the first line of such a warning
 // (jjEveryCommand) as a part of it, with no heading of its own: a line of the parse error of an
 // alias, which is blank or starts with a space or a digit (`  |`, `1 | foo(`), the causes jj 0.46
-// prints after an alias that does not load (`Caused by:`, `1: …`), and the second line of the
-// warning of trunk() (`The `trunk()` alias is temporarily set to `root()`.`). Any other line after
-// such a warning is no part of it, such as the snapshot's `Rebased 1 descendant commits onto
-// updated working copy`, which jj prints right after the warning of an alias that has the name of
-// a built-in command.
-var jjEveryCommandMore = regexp.MustCompile("^(?:$|[ 0-9]|Caused by:|The `trunk\\(\\)` alias is temporarily set to )")
+// prints after an alias that does not load (`Caused by:`, `1: …`), the second line of the
+// warning of trunk() (`The `trunk()` alias is temporarily set to `root()`.`), and the last two
+// lines of jj 0.38.0's deprecation of git.auto-local-bookmark and git.push-new-bookmarks
+// (`Example: jj config set …`, `For details, see: …`, cli/src/config.rs at v0.38.0). Any other
+// line after such a warning is no part of it, such as the snapshot's `Rebased 1 descendant
+// commits onto updated working copy`, which jj prints right after the warning of an alias that
+// has the name of a built-in command.
+var jjEveryCommandMore = regexp.MustCompile("^(?:$|[ 0-9]|Caused by:|The `trunk\\(\\)` alias is temporarily set to |Example: jj config set |For details, see: )")
 
 // jjErrorHeading is the first line of jj's error, which jj prints last, its causes and hints after
 // it: `Error: `, `Config error: ` or `Internal error: ` (cli/src/command_error.rs).
