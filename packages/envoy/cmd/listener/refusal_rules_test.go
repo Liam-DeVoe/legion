@@ -69,7 +69,7 @@ func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 			if got := busRefusesForGood(tc.err); got != tc.refused {
 				t.Errorf("busRefusesForGood = %v, want %v", got, tc.refused)
 			}
-			if got := roleForwardEnded(context.Background(), nil, subject, tc.err, roleForwardTimeout); got != tc.refused {
+			if got := roleForwardEnded(context.Background(), (*bus.Client)(nil).ReadDeployedStreamCaptures, subject, tc.err, roleForwardTimeout); got != tc.refused {
 				t.Errorf("roleForwardEnded = %v, want %v: the forward and the list disagree", got, tc.refused)
 			}
 			if got := keepFailureHolds(tc.err); got == tc.refused {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,8 +131,10 @@ func TestAForwardThatLeftNothingOnTheWireReachesTheNewHolderWhenTheFirstIsGone(t
 // on the message's first hold: "window_ended_before_publish":true, since nothing was sent and the
 // window runs on the listener's own clock, which a loaded machine spends without the listener
 // running (TestListenerSIGTERMIsAnOrderedShutdown leaves that line uncounted by the mark). The
-// control is the hold of a forward whose acknowledgement was lost: it was published, so its line
-// carries no mark.
+// controls are the hold of a forward whose acknowledgement was lost, which was published, and the
+// hold of a forward whose wait answered the spent window's text with no mark - a window that ended
+// after the publish, as a flush that ran out of it answers: neither line carries the mark, so the
+// mark is read off the error's kind, not its text.
 func TestTheHoldOfAForwardWhoseWindowEndedBeforeItsPublishSaysSo(t *testing.T) {
 	held := func(t *testing.T, r pinRig, item contracts.Envelope) map[string]any {
 		t.Helper()
@@ -154,6 +157,20 @@ func TestTheHoldOfAForwardWhoseWindowEndedBeforeItsPublishSaysSo(t *testing.T) {
 	item = published.deliver(t, "pin-window-unmarked", forwardLosingTheFirstAcknowledgement(published.harness.client, &publishedForwards, func() {}))
 	if line := held(t, published, item); line["window_ended_before_publish"] != nil {
 		t.Fatalf("the hold of a published forward whose acknowledgement was lost = %v, want no window mark", line)
+	}
+
+	lateWindow := newPinRig(t, "pin-window-text", "ses_pin_window_text")
+	var lateForwards atomic.Int32
+	item = lateWindow.deliver(t, "pin-window-text", func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
+		if lateForwards.Add(1) > 1 {
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
+		}
+		return func() (bus.StoredAck, error) {
+			return bus.StoredAck{}, errors.New(`bus: window elapsed before the publish to "agent.x" was flushed`)
+		}, nil
+	})
+	if line := held(t, lateWindow, item); line["window_ended_before_publish"] != nil {
+		t.Fatalf("the hold of a forward whose window ended after its publish = %v, want no window mark", line)
 	}
 }
 

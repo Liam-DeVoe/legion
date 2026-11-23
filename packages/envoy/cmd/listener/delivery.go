@@ -91,7 +91,11 @@ type listenerDeliveryHandlerConfig struct {
 	// claims is what the role lane reads a role's claim from (roleClaimStore): nil in the
 	// listener, which reads registry, and a test's own where it stands in for a claim read that
 	// does not answer.
-	claims            roles.ClaimStore
+	claims roles.ClaimStore
+	// streamCaptures is what the role lane reads the deployed stream's capture of a forward's
+	// subject with (readStreamCaptures): nil in the listener, which reads it through client, and a
+	// test's own where it watches how that read ends.
+	streamCaptures    streamCapturesRead
 	sessions          *session.SessionRegistry
 	machineID         string
 	dedupeCache       *dedupe.Cache
@@ -548,6 +552,16 @@ func (cfg listenerDeliveryHandlerConfig) roleClaimStore() roles.ClaimStore {
 		return cfg.claims
 	}
 	return cfg.registry
+}
+
+// readStreamCaptures reads whether the deployed stream captures subject, within window and ctx:
+// through cfg.streamCaptures where a test set one, and the client otherwise
+// (bus.Client.ReadDeployedStreamCaptures).
+func (cfg listenerDeliveryHandlerConfig) readStreamCaptures(ctx context.Context, subject string, window time.Duration) (captures, read bool) {
+	if cfg.streamCaptures != nil {
+		return cfg.streamCaptures(ctx, subject, window)
+	}
+	return cfg.client.ReadDeployedStreamCaptures(ctx, subject, window)
 }
 
 // roleResolution is how the role lane's resolution of a message's holder ended

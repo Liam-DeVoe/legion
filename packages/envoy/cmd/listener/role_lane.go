@@ -197,8 +197,9 @@ type roleForwarder struct {
 	// claim and session reads of a resolution, and the resolution's keep. So the stop cuts the step,
 	// which holds the message (a forward published before the cut pinned to its holder, since the
 	// stream may have stored it), and the message parks and ends under keepBy like every other.
+	// Its cause is errRoleLaneStopped, which a step the stop cut reads with context.Cause.
 	stopCtx    context.Context
-	cancelStop context.CancelFunc
+	cancelStop context.CancelCauseFunc
 	// keepNow is closed once the lane's own client has drained (keepHeldNow), and only then does
 	// each parked held message make its keep: the keeps of up to roleForwardWaitLimit held
 	// messages and the lane handler's own keeps of the messages its subscription still holds share
@@ -229,7 +230,7 @@ func newRoleForwarder(cfg listenerDeliveryHandlerConfig) *roleForwarder {
 // holds at once; a test that fills the bound passes a small one.
 func newRoleForwarderLimited(cfg listenerDeliveryHandlerConfig, limit int) *roleForwarder {
 	f := &roleForwarder{slots: make(chan struct{}, limit), keepNow: make(chan struct{}), queues: map[string][]roleForward{}}
-	f.stopCtx, f.cancelStop = context.WithCancel(context.Background())
+	f.stopCtx, f.cancelStop = context.WithCancelCause(context.Background())
 	cfg.roleForwards = f
 	f.cfg = cfg
 	return f
@@ -450,7 +451,7 @@ func (f *roleForwarder) finish(forward roleForward, err error) {
 	if f.stopped() {
 		readWindow = 0
 	}
-	if err != nil && !roleForwardEnded(f.stopCtx, f.cfg.client, contracts.LegacyAgentSubject(forward.sessionID), err, readWindow) {
+	if err != nil && !roleForwardEnded(f.stopCtx, f.cfg.readStreamCaptures, contracts.LegacyAgentSubject(forward.sessionID), err, readWindow) {
 		f.cfg.attemptCache.Clear(forward.item.DedupeKey, forward.sessionID)
 		held := forward.held
 		if forwardMayBeStored(err) {
@@ -522,9 +523,10 @@ func pinnedHolderStands(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 //     stream's maxima, a store that refuses it as too large, a sealed stream) and no send of it
 //     may have stored it (mayHaveStored).
 //   - Ended: no acknowledgement came, or the server answered no responders, for a publish the
-//     server took, and a read of the deployed stream made now, within readWindow and ctx, says it
-//     does not capture subject (bus.Client.ReadDeployedStreamCaptures), so no acknowledgement will
-//     come. A readWindow already spent makes no read, and settles nothing.
+//     server took, and a read of the deployed stream made now with read, within readWindow and
+//     ctx, says it does not capture subject (bus.Client.ReadDeployedStreamCaptures, through
+//     listenerDeliveryHandlerConfig.readStreamCaptures), so no acknowledgement will come. A
+//     readWindow already spent makes no read, and settles nothing.
 //
 // Every other error ends nothing, and the message is held for another attempt:
 //   - the window spent before the publish, a connection not back in time, a reply subscription or
@@ -538,7 +540,7 @@ func pinnedHolderStands(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 //     read could settle: a clustered stream changing its leader answers no responders for a subject
 //     it captures, and an acknowledgement may have been lost after the stream stored the forward,
 //     which the next attempt, under the same Nats-Msg-Id, finds as the duplicate it then is.
-func roleForwardEnded(ctx context.Context, client *bus.Client, subject string, err error, readWindow time.Duration) bool {
+func roleForwardEnded(ctx context.Context, read streamCapturesRead, subject string, err error, readWindow time.Duration) bool {
 	var answered *nats.APIError
 	switch {
 	case busRefusesForGood(err):
@@ -546,9 +548,13 @@ func roleForwardEnded(ctx context.Context, client *bus.Client, subject string, e
 	case !errors.Is(err, bus.ErrForwardNotStored), errors.As(err, &answered), errors.Is(err, bus.ErrPublishUnconfirmed), readWindow <= 0:
 		return false
 	}
-	captures, read := client.ReadDeployedStreamCaptures(ctx, subject, readWindow)
-	return read && !captures
+	captures, answeredRead := read(ctx, subject, readWindow)
+	return answeredRead && !captures
 }
+
+// streamCapturesRead reads now, within window and ctx, whether the deployed stream captures
+// subject, and whether the read answered (bus.Client.ReadDeployedStreamCaptures).
+type streamCapturesRead func(ctx context.Context, subject string, window time.Duration) (captures, read bool)
 
 // hold holds item for another delivery attempt after cause, a NATS step of its delivery that
 // failed without the listener knowing that the stream holds a copy: a forward (finish), a read of
@@ -744,7 +750,7 @@ func (f *roleForwarder) forwardPinnedOnceMore(ctx context.Context, item contract
 		forward := roleForward{item: item, sessionID: held.pinned, held: held}
 		subject := contracts.LegacyAgentSubject(held.pinned)
 		_, err = f.cfg.forwardAndWait(share, subject, forward.forwarded(), forward.msgID(subject), forwardWindow(share))
-		if err == nil || roleForwardEnded(share, f.cfg.client, subject, err, forwardWindow(share)) {
+		if err == nil || roleForwardEnded(share, f.cfg.readStreamCaptures, subject, err, forwardWindow(share)) {
 			finishRoleForward(f.cfg, forward, err)
 			return true
 		}
@@ -784,8 +790,12 @@ func reforwardShare(ctx context.Context) (context.Context, context.CancelFunc, b
 // running has the NATS step it is in cut (stopCtx), so it holds and parks too. It runs once however
 // often it is called.
 func (f *roleForwarder) stopHolding() {
-	f.cancelStop()
+	f.cancelStop(errRoleLaneStopped)
 }
+
+// errRoleLaneStopped is the cause of the role lane's stop context (roleForwarder.stopCtx): a step
+// the stop cut reads it with context.Cause, which tells that cut from the step's own window ending.
+var errRoleLaneStopped = errors.New("the role lane stopped")
 
 // keepHeldNow keeps every message parked by the stop, and every one parked after it
 // (keepWhenTheLaneHasDrained), and returns when the drain's wait for them ends: roleStopWait from

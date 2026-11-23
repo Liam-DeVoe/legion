@@ -2842,7 +2842,7 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.cancel()
 	defer f.replies.Unsubscribe()
 	for {
-		response, err := f.next()
+		response, err := f.next(f.replies.NextMsgWithContext)
 		if err != nil && f.stopped.Err() != nil && errors.Is(err, f.window.Err()) {
 			// The caller's context ended, and no reply is left to read: the forward ends now,
 			// whatever its window has left.
@@ -2886,15 +2886,18 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 	return StoredAck{}, ErrForwardNotStored
 }
 
-// next is the forward's next reply: one already delivered at once, else the first that arrives
-// before its window ends or its caller's context is cancelled. nats.go answers a context that has
-// ended before it reads a reply already delivered, and picks either when both are ready
+// next is the forward's next reply, read with read (the replies' NextMsgWithContext; a parameter so
+// a test can hand it what nats.go returns): one already delivered at once, else the first that
+// arrives before its window ends or its caller's context is cancelled. nats.go answers a context
+// that has ended before it reads a reply already delivered, and picks either when both are ready
 // (Subscription.NextMsgWithContext), so once the window has ended next reads the replies that came
-// before without waiting, and answers the window's error only when none is left.
-func (f *PendingForward) next() (*nats.Msg, error) {
+// before without waiting, and answers the window's error only when none is left. An error read that
+// is not the window's end - the server's no-responders answer, read in the instant the window ended
+// - is returned as it is, since it settles the forward as a reply does.
+func (f *PendingForward) next(read func(context.Context) (*nats.Msg, error)) (*nats.Msg, error) {
 	if f.window.Err() == nil {
-		response, err := f.replies.NextMsgWithContext(f.window)
-		if err == nil || f.window.Err() == nil {
+		response, err := read(f.window)
+		if err == nil || f.window.Err() == nil || !errors.Is(err, f.window.Err()) {
 			return response, err
 		}
 	}

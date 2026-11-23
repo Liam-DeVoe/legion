@@ -378,3 +378,41 @@ func TestAForwardsAcknowledgementDeliveredBeforeItsCancelSettlesIt(t *testing.T)
 		t.Fatalf("a forward no acknowledgement answered, after its caller's cancel = %+v (%v), want ErrForwardNotStored wrapping context.Canceled", got, err)
 	}
 }
+
+// A no-responders answer that nats.go returns in the instant the forward's window ends is the
+// server's answer, not the window's end: next returns it, so Wait reports the forward not stored
+// with no responders, which leaves the message free to go to another holder (cmd/listener's
+// forwardMayBeStored), and not the window's error, which pins it to a holder nobody answered for.
+// No run can force that instant, so the row hands next a read that ends the window and returns
+// nats.ErrNoResponders. The control is a read that returns the window's own error, which next
+// answers as the window's end once no delivered reply is left.
+func TestAForwardsNoRespondersAnswerAtItsWindowsEndIsKept(t *testing.T) {
+	conn := answeringServer(t, "", "")
+	pending := func(t *testing.T) (*PendingForward, context.CancelFunc) {
+		t.Helper()
+		replies, err := conn.SubscribeSync(conn.NewInbox())
+		if err != nil {
+			t.Fatalf("subscribe the forward's reply inbox: %v", err)
+		}
+		t.Cleanup(func() { _ = replies.Unsubscribe() })
+		window, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		t.Cleanup(cancel)
+		return &PendingForward{replies: replies, window: window, stopped: context.Background(), cancel: cancel}, cancel
+	}
+
+	answered, end := pending(t)
+	if _, err := answered.next(func(context.Context) (*nats.Msg, error) {
+		end()
+		return nil, nats.ErrNoResponders
+	}); !errors.Is(err, nats.ErrNoResponders) {
+		t.Fatalf("next with no responders read as the window ended = %v, want nats.ErrNoResponders", err)
+	}
+
+	ended, end := pending(t)
+	if _, err := ended.next(func(ctx context.Context) (*nats.Msg, error) {
+		end()
+		return nil, ctx.Err()
+	}); !errors.Is(err, context.Canceled) || errors.Is(err, nats.ErrNoResponders) {
+		t.Fatalf("next with the window's own end read = %v, want context.Canceled", err)
+	}
+}

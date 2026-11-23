@@ -114,9 +114,10 @@ func TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt(t *testing.T) 
 // forwarded once more to that holder before the drain's wait ends. The read goes through a proxy
 // whose server replies are frozen, so only a cancel ends it before its window; the row stops the
 // listener once the server has the read's request, which a subscriber of the stream's info
-// subject on the server's side sees under the reply prefix of the connection through the proxy. A
-// read deaf to the stop runs its whole window, as long as the stop's own wait, so its message
-// parks too late for a forward once more and is kept or not, but not forwarded.
+// subject on the server's side sees under the reply prefix of the connection through the proxy.
+// The read must end with the stop's own cause (errRoleLaneStopped, through context.Cause on the
+// context the read was given), which the row reads as the read returns: a read deaf to the stop
+// ends with its own window's cause, or none, however soon that window ends.
 func TestAStopDuringTheDeployedStreamReadEndsTheReadAtTheStop(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "stop-during-the-stream-read"
@@ -146,8 +147,14 @@ func TestAStopDuringTheDeployedStreamReadEndsTheReadAtTheStop(t *testing.T) {
 		t.Fatalf("flush the info subscription: %v", err)
 	}
 	var forwards atomic.Int32
+	readEnds := make(chan error, 4)
 	cfg := harness.config
 	cfg.client = slow
+	cfg.streamCaptures = func(ctx context.Context, subject string, window time.Duration) (bool, bool) {
+		captures, read := slow.ReadDeployedStreamCaptures(ctx, subject, window)
+		readEnds <- context.Cause(ctx)
+		return captures, read
+	}
 	cfg.keepPublish = keepThatNeverAnswers
 	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) > 1 {
@@ -166,10 +173,14 @@ func TestAStopDuringTheDeployedStreamReadEndsTheReadAtTheStop(t *testing.T) {
 	testwait.Receive(t, "finish's read of the deployed stream to reach the server", reading)
 	forwarder.stopHolding()
 	waitEnds := forwarder.keepHeldNow()
+	cause := testwait.Receive(t, "finish's read of the deployed stream to end", readEnds)
 	forwarder.settled(t)
 	ended := time.Now()
 
 	logs := harness.logs.String()
+	if !errors.Is(cause, errRoleLaneStopped) {
+		t.Fatalf("finish's read of the deployed stream ended with cause %v, want the stop's (%v): the read was deaf to the stop:\n%s", cause, errRoleLaneStopped, logs)
+	}
 	if got := countLogged(logs, "listener role forward failed", item.EventID); got != 0 {
 		t.Fatalf("the message was given up as a failed forward %d times, want it held:\n%s", got, logs)
 	}
