@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 
+	"github.com/sjawhar/legion/daemon/internal/httpstatus"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -417,14 +418,18 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
 // one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
 // the listener gives the same way however often it is asked — a body read whole that does not
-// decode, a 404 naming no holder under any reason but unclaimed, and any status but 200, 404 and
-// the transient ones — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
-// reach, an answer whose body could not be read to its end (unreadAnswer), and a 429, 502, 503
-// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear. The
-// listener answers from a direct get of its role-claim bucket, which a lagging copy of the bucket
-// can answer for the milliseconds after a claim write: the race any read of the bucket has, and
-// a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
-// #4220, #64).
+// decode, a 404 naming no holder under any reason but unclaimed, a 500, and any status but 200,
+// 404 and an outage — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
+// reach, an answer whose body could not be read to its end (unreadAnswer), and every other outage
+// (httpstatus.Outage: a 408, a 429, and every 5xx but 500, writeBusUnavailable's 503 among them)
+// are plain errors that asking again can clear. The listener's 500 is its own answer that the
+// claim record it read cannot be decoded (writeRoleClaimUnreadable in packages/envoy/cmd/listener),
+// which it gives with no Retry-After and gives again on each ask, since its bus failing is its
+// 503; a 408 comes only from a proxy in front of it that did not take the request in time, as the
+// listener, a Go server, answers none. The listener answers from a direct get of its role-claim
+// bucket, which a lagging copy of the bucket can answer for the milliseconds after a claim write:
+// the race any read of the bucket has, and a forget made on such an answer is no worse than one
+// made a moment earlier (review round 16 of #4220, #64).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -454,8 +459,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
 	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
-	switch response.StatusCode {
-	case http.StatusNotFound:
+	if response.StatusCode == http.StatusNotFound {
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
@@ -470,7 +474,8 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 			return "", "", nil
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	}
+	if httpstatus.Outage(response.StatusCode) && response.StatusCode != http.StatusInternalServerError {
 		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
 	}
 	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
@@ -478,10 +483,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
 // asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body read
-// whole that does not decode, or a 404 naming no holder under a reason it does not know. Status is
-// the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
-// an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
-// logs it as the fault it is rather than as a wait.
+// whole that does not decode, a 404 naming no holder under a reason it does not know, or any other
+// status that is neither an answer it reads nor an outage. Status is the answer's HTTP status and
+// Reason what was wrong with it. Asking again changes nothing until an operator fixes the listener
+// or the daemon's bearer, so a caller that retries on a backoff logs it as the fault it is rather
+// than as a wait.
 type RoleLookupRefused struct {
 	Status int
 	Reason string
