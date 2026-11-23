@@ -627,6 +627,11 @@ const visualProjects = [
     workers: 1,
     retries: 0,
   },
+  // Last of the three, and it must stay last: its rows write the states they compare - a run, a
+  // plan applied and undone, a filed issue - into the one seed every visual row shares, with no
+  // guard on their pages, so every page row must draw before the first of them. The visual run's
+  // one worker takes the projects in this order; e2e/__tests__/visual-run-order.test.ts fails
+  // when this project is not the last it takes, or when the run has more than one worker.
   {
     name: "visual-bar",
     testMatch: barVisualSpec,
@@ -730,7 +735,9 @@ export default defineConfig({
   // costs a whole stack - a Postgres, a Go server and three to six fake listeners
   // (e2e/harness-pool.ts) - so a 16-core workstation would otherwise start eight of them before
   // its first row. CI names its own `--workers`, which `globalSetup` reads as `config.workers`
-  // and starts that many stacks for.
+  // and starts that many stacks for. The visual run gives none, and its order rests on this one
+  // worker: the command bar's rows write, and run after the page rows only because one worker
+  // takes the visual projects one after another (`visualProjects` above).
   workers: 1,
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
@@ -831,9 +838,8 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          // All three are declared in every run, as their comment says. The bar's project stays
-          // last: its rows write the states they compare, and the run's one worker takes the
-          // projects in this order, so every page row draws before any of those writes.
+          // All three are declared in every run, as their comment says, and the bar's project
+          // last of them, for the reason its entry gives.
           ...visualProjects,
           ...(stub.declared ? stubProjects : []),
         ],

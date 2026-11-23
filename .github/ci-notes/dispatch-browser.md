@@ -1191,22 +1191,16 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
-The command bar's thirteen rows (the `visual-bar` project) were added later, and no run of this
-job had read them when its budgets were moved for them: their shots are taken in this job's
-container and nowhere else, so the issue pod that wrote them could not time them. The browser
-step's budget and the job's are therefore derived, as the embedder job's models step's were
-(.github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets),
-from two readings already in this file: the models lane's 37 rows in 9.9 min on one worker,
-16 s a row, for rows that script the same two fakes and wait on the same runs these do; and
-this job's own slowest browser step above, 183 s for the stack, the seed and the twenty page
-rows the shot set held then, each with a sign-in, a navigation and two shots: about 9 s a
-row, which bounds one shot, with its share of the rest, by about 4 s. The bar's rows then add
-13 x 16 + 25 x 4 = 308 s to the browser step: (183 + 308) x 1.15 = 565 s -> 10 min. The job
-budget is that step's 600 s plus the same 333 s and 120 s: 1,053 s, 17 min 33 s, rounded up to
-18 minutes. That is at most six more minutes of an ubuntu-24.04 runner on each full-lane run,
-and none on the pull-request lane, which runs no visual job. The first runs that hold the bar's
-rows give the step a reading of its own, and that reading replaces this derivation, as this
-file's head requires.
+The command bar's thirteen rows (the `visual-bar` project) run inside the same browser step.
+Five runs of this job at heads of #3924 (runs 45120752749, 45120693969, 45176245187,
+45214980814 and 45268550216), before the guard of the next section reached the page rows, read
+that step with the bar's rows in it at 134-188 s, the largest 188 s (run 45120693969, job
+137514366021), and the bar's rows inside it, from the last page row's end to the last bar
+row's, at 39.7-60.6 s, the largest 60.6 s (run 45268550216, job 138023190950). No bar baseline
+was committed then, so each bar row wrote its shots rather than compared them; where that job's
+reverse-order step compared them, the bar's rows took 45.9 s. So 188 x 1.15 = 216 s -> 4 min,
+the step's budget as before, and the job's stays 240 + 333 + 120 = 693 s -> 12 minutes: the
+bar's rows add no budget.
 
 ## Why the visual job restores go-envoy-test
 
