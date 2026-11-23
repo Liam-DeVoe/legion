@@ -109,7 +109,7 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // stepReasons is Supported's causes in the steps of t, in this order: each step that names the
 // key owner on a role but acceptance, or acceptance with a key but owner or with none, in step
 // order; the first step of each agent that starts with the role another agent of t started with
-// before it (FirstRoles), in step order; no implementer; each step of a role that reads a pull
+// before it, in step order; no implementer; each step of a role that reads a pull
 // request with no implementer step before it, in step order, named by its word as the plan writes
 // it; and each step after the implementer's whose role d gives the type implementation, in step
 // order. The owner does the accepting step in this release, so a key on it but owner would name an
@@ -118,7 +118,6 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // role has no name; the owner's claim is the tree's architect, and it takes no name.
 func stepReasons(t Task, d Deployment) []string {
 	var keys, unnamed []string
-	firstRoles := FirstRoles(t)
 	agentSeen := map[Agent]bool{}
 	startsAt := map[string]int{} // the first step of the first agent that starts with each role
 	implementerAt := 0           // the place of the first step of the implementer, 0 before it
@@ -134,7 +133,7 @@ func stepReasons(t Task, d Deployment) []string {
 		}
 		if agent := AgentOf(t.ID, at, step); !agentSeen[agent] && !agent.Owner() {
 			agentSeen[agent] = true
-			role := firstRoles[agent]
+			role := step.Role // the agent's first step, so the role it starts with
 			if first, taken := startsAt[role]; taken {
 				unnamed = append(unnamed, fmt.Sprintf("step %d of task %s needs an agent of its own beside the agent of step %d, and both agents start with the role %s, and this release runs one agent of each role for an issue.",
 					at, t.ID, first, role))

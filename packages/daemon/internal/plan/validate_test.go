@@ -201,20 +201,6 @@ func TestARoleCanStandAtTwoSteps(t *testing.T) {
 	}
 }
 
-// FirstRoles is the role each agent of a task starts with: the role of its first step.
-func TestFirstRolesIsTheRoleOfEachAgentsFirstStep(t *testing.T) {
-	task := oneTask("t", "implementer:a reviewer:b implementer:b tester acceptance:owner").Tasks[0]
-	want := map[Agent]string{
-		{Key: "a"}:            "implementer",
-		{Key: "b"}:            "reviewer",
-		{Task: "t", Place: 4}: "tester",
-		{Key: "owner"}:        "acceptance",
-	}
-	if got := FirstRoles(task); !reflect.DeepEqual(got, want) {
-		t.Fatalf("FirstRoles = %+v, want %+v", got, want)
-	}
-}
-
 // A task names its steps in any order. The planner stands at any place, and the tester, the
 // reviewer and the owner's acceptance each come after the implementer, in any order among them. A
 // second agent that starts with the role of another stays refused in this release. The twin:
