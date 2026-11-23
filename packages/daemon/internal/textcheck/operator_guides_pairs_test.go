@@ -193,3 +193,37 @@ func TestTheConfigReferenceSaysWhatAnAppAndARoleTake(t *testing.T) {
 		}
 	}
 }
+
+// Stage 4b's `done` checkpoint finds nothing of tree 1 in the workflow at the merge: the
+// children-first-acceptance checkpoint parks children 3 and 4 before the sign-off, which the
+// daemon refuses while an issue beneath the root is in the workflow (SIGNOFF_CHILD_IN_WORKFLOW).
+// So the merge's own close runs (workflow's closeMerged), and the only wait it can log is
+// "workflow: a merged issue's close waits for the issues beneath it". The README and the driver
+// say so, and neither names the earlier log lines, which no daemon code writes now.
+func TestTheStage4bDoneCheckpointHasTheMergeCloseTree1AtOnce(t *testing.T) {
+	const wait = "workflow: a merged issue's close waits for the issues beneath it"
+	gone := []string{"a merged root's close waits for the rest of its tree", "a merged root closes once its last child left the workflow"}
+	readme := proseOf(shippedText(t, "scripts/e2e/README.md"))
+	for _, phrase := range []string{
+		"**The merge closes tree 1 at once**, since nothing of its tree is in the workflow.",
+		"So no `" + wait + "` line names tree 1, and its architect gets no `pr-merged` notice, which is that wait's own:",
+	} {
+		if !strings.Contains(readme, phrase) {
+			t.Errorf("scripts/e2e/README.md omits %q", phrase)
+		}
+	}
+	driver := shippedText(t, "scripts/e2e/stage4b-sandbox-tree.sh")
+	if want := `waited=$(log_lines "` + wait + `"`; !strings.Contains(driver, want) {
+		t.Errorf("scripts/e2e/stage4b-sandbox-tree.sh omits %q", want)
+	}
+	for _, phrase := range append(gone, "**The merge does not close tree 1**") {
+		if strings.Contains(readme, phrase) {
+			t.Errorf("scripts/e2e/README.md still says %q", phrase)
+		}
+	}
+	for _, phrase := range gone {
+		if strings.Contains(driver, phrase) {
+			t.Errorf("scripts/e2e/stage4b-sandbox-tree.sh still waits for %q", phrase)
+		}
+	}
+}
