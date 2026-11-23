@@ -407,11 +407,18 @@ test("a declined ask names who declined it and carries their note", () => {
   const [withNote, noNote] = parts.yours;
   const [takenBack] = parts.others;
   expect(withNote).toMatchObject({
-    declined: { by: READER_ACTOR, note: "The release owner decides this one." },
+    declined: {
+      by: READER_ACTOR,
+      note: "The release owner decides this one.",
+      source: { id: "with-note", issue: KEY, kind: "ask" },
+    },
     kind: "ask",
   });
   expect(withNote?.node.answer).toBeUndefined();
-  expect(noNote?.kind === "ask" ? noNote.declined : undefined).toEqual({ by: READER_ACTOR });
+  expect(noNote?.kind === "ask" ? noNote.declined : undefined).toEqual({
+    by: READER_ACTOR,
+    source: { id: "no-note", issue: KEY, kind: "ask" },
+  });
   expect(takenBack?.kind === "ask" ? takenBack.declined : "none").toBeUndefined();
 });
 

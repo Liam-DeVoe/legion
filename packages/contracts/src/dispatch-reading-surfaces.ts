@@ -524,13 +524,33 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "reply-quote",
   },
   // The new issue page's outline: the words a node's row draws - its own text, and the answer an
-  // ask carries under its question - and a child issue's row, which is its title.
+  // ask carries under its question - and a child issue's row, which is its title. The Decisions
+  // view's rows draw two more texts by the same reader: the body of the Change a person asked of
+  // a decision, and the note a person wrote as they declined an ask, which the walk does not
+  // reach, so the tests that drive them are named.
   {
     cannotCarry: {
       forms: ["question-id"],
       why: "A row reads no question map: a `#id` is read against its document's questions, one read for each document, which a row of the outline does not make (`row-references.ts`), so it is drawn as written.",
     },
-    files: ["packages/dispatch/web/src/features/issue-page/RowText.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/issue-page/RowText.tsx",
+      "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsRow.tsx",
+    ],
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
+        test: "a Change's body is drawn through the renderer, its marks gone",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
+        test: "a declined ask's note is drawn through the renderer, a reference in it read as its target",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
+        test: "a declined ask's note is drawn from the reading the asks read sends",
+      },
+    ],
     reach: "/issues/<ISSUE> with the new issue page on, a comment's row in the outline",
     record: true,
     rendered: true,
@@ -568,10 +588,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/issue-page/node-line.tsx",
       "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsRow.tsx",
     ],
-    proof: {
-      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
-      test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
-    },
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+        test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
+        test: "an entry's parent line reads a reference in its parent's words by its target's name",
+      },
+    ],
     reach:
       "/issues/<ISSUE>/plan with the new issue page on, a plan task's line naming the statement it serves",
     reason: `A filter's row names a parent it draws no row for on one line, the parent's first line cut by R1's first-line rule, in the words of a link to it. ${PLAIN_WORDS_REASON}`,
@@ -826,7 +852,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A decision's heading, where it names a write, a form or a card, or words a link: on the
   // Decisions panel, on a margin card, and in the Keep and the Change of a decision's row on the
-  // new issue page. All three read it through one hook (`useDecisionHeadingWords`).
+  // new issue page. All three read it through one hook (`useDecisionHeadingWords`), and a test
+  // drives each of them.
   {
     files: [
       "packages/dispatch/web/src/features/issue/decision-heading.ts",
@@ -834,10 +861,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
       "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
     ],
-    proof: {
-      file: "packages/dispatch/web/src/features/margin/DecisionCard.test.tsx",
-      test: "a heading that holds markdown names the card and its link in plain words",
-    },
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/margin/DecisionCard.test.tsx",
+        test: "a heading that holds markdown names the card and its link in plain words",
+      },
+      DECISIONS_PANEL_PROOF,
+      {
+        file: "packages/dispatch/web/src/features/issue-page/DecisionActions.test.tsx",
+        test: "the Change form is named after the heading's plain words",
+      },
+    ],
     reach:
       "/issues/<ISSUE>/decisions, a waiting decision's Keep and Change; /issues/<ISSUE>/spec, a margin decision card's name and its heading's link",
     reason: `A decision's heading names a write, a form and a card, and words a link to the decision. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,

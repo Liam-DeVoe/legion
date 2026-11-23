@@ -44,7 +44,7 @@ import {
   NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
-import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -246,7 +246,7 @@ export function DecisionsRow({
             <AskAnswer answerer={agentText.author(node.answer.by)} node={node} own={ownAnswer} />
           )}
           {entry.kind !== "ask" || entry.declined === undefined ? null : (
-            <Declined by={person(entry.declined.by)} note={entry.declined.note} />
+            <Declined by={person(entry.declined.by)} declined={entry.declined} focused={focused} />
           )}
           {entry.kind !== "decision" || entry.change === undefined ? null : (
             <Changed by={person(entry.change.by)} change={entry.change} focused={focused} />
@@ -403,10 +403,23 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
 /**
  * That a person declined this question, under it (R2: "a declined ask reads as a question the
  * person declined and never as an answer"): who declined, by a name and a shape as every
- * author is drawn (R9), and the note they wrote where they wrote one, word for word. The
- * reader's own note carries the ink rule their own words carry (R34).
+ * author is drawn (R9), and the note they wrote where they wrote one. The note is drawn as a
+ * person's answer under an ask is, by the row's own reader (`RowText`): from the server's
+ * reading of it, and where the read sent none from the page's own parse of it, so its marks
+ * are drawn as what they are and a reference reads as its target (R6). The reader's own note
+ * carries the ink rule their own words carry (R34).
  */
-function Declined({ by, note }: { by: RowPerson; note: string | undefined }): ReactNode {
+function Declined({
+  by,
+  declined,
+  focused,
+}: {
+  by: RowPerson;
+  declined: AskDeclined;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused: boolean;
+}): ReactNode {
+  const { note } = declined;
   const own = by.reader && note !== undefined;
   return (
     <div
@@ -427,13 +440,18 @@ function Declined({ by, note }: { by: RowPerson; note: string | undefined }): Re
         <span {...pageChrome}>{DECISIONS_WORDS.declined}</span>
       </p>
       {note === undefined ? null : (
-        <p
-          className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${own ? pageInkText : pageWordsText}`}
+        <div
+          className={`text-[15px] leading-6 ${own ? pageInkText : pageWordsText}`}
           data-declined-note=""
           {...authorText}
         >
-          {note}
-        </p>
+          <RowText
+            focused={focused}
+            markdown={note}
+            source={declined.source}
+            tree={declined.tree}
+          />
+        </div>
       )}
     </div>
   );

@@ -343,10 +343,10 @@ export interface DocumentBlocks {
 }
 
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
- *  server's reading of the question, of each option's label and description and of the answer
- *  beside them, which `Ask` leaves out. */
-export type TreeAsk = Omit<Ask, "answer" | "options"> &
-  Pick<AskWithTrees, "answer" | "options" | "question_tree">;
+ *  server's reading of the question, of each option's label and description, of the answer and
+ *  of the reason it was closed with beside them, which `Ask` leaves out. */
+export type TreeAsk = Omit<Ask, "answer" | "options" | "resolution"> &
+  Pick<AskWithTrees, "answer" | "options" | "question_tree" | "resolution">;
 
 /** The page's reads, as one value. Every field but the issue is optional, because the tree draws
  *  from the reads that have answered rather than waiting for the last of them. */

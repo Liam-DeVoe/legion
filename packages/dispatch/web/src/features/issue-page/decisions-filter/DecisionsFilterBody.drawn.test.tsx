@@ -24,7 +24,7 @@ import {
   pageStateText,
 } from "../../../theme/classes";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
+import type { PublishedReferences } from "../../refs/reference-names";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
@@ -381,23 +381,21 @@ function renderBody(
     return (
       <MemoryRouter>
         <AppProviders client={client}>
-          <ReferenceNamesProvider>
-            <Publisher published={published} />
-            <IssueScope />
-            <Where />
-            {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-                page names one. */}
-            <NoTooltips>
-              {requests ? (
-                <OutlineRequestProvider>
-                  <button type="button">Elsewhere</button>
-                  {held}
-                </OutlineRequestProvider>
-              ) : (
-                held
-              )}
-            </NoTooltips>
-          </ReferenceNamesProvider>
+          <Publisher published={published} />
+          <IssueScope />
+          <Where />
+          {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+              page names one. */}
+          <NoTooltips>
+            {requests ? (
+              <OutlineRequestProvider>
+                <button type="button">Elsewhere</button>
+                {held}
+              </OutlineRequestProvider>
+            ) : (
+              held
+            )}
+          </NoTooltips>
         </AppProviders>
       </MemoryRouter>
     );
@@ -1525,6 +1523,62 @@ test("a declined ask says who declined it and draws no answer", () => {
   expect(row.querySelector("[data-answer-text]")).toBeNull();
 });
 
+// R6, R9: the note a person wrote as they declined is drawn by the renderer, as a person's answer
+// under an ask is (`RowText`), never as the characters they typed: its marks are drawn as what
+// they are, and a reference in it reads as its target's name from the page's one names read.
+test("a declined ask's note is drawn through the renderer, a reference in it read as its target", async () => {
+  await warmMarkdownRenderer();
+  const cited = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      ...wholeIssue(),
+      asks: [
+        closing("a-declined", {
+          at: "2026-11-13T09:00:00Z",
+          kind: "declined",
+          reason: `Ask about ${cited} **first**.`,
+        }),
+      ],
+    },
+    { published: publishedNames(new Map([[cited, name]])) }
+  );
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe(`Ask about ${name} first.`));
+    expect(note()?.querySelector("strong")?.textContent).toBe("first");
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// R6: where the asks read sends the server's reading of the note (`reason_tree`), the row draws
+// that tree rather than a parse of the stored text. The tree reads differently from the text
+// beside it, so a note drawn from a parse would read "the old words".
+test("a declined ask's note is drawn from the reading the asks read sends", async () => {
+  await warmMarkdownRenderer();
+  const view = renderBody({
+    ...wholeIssue(),
+    asks: [
+      closing("a-declined", {
+        at: "2026-11-13T09:00:00Z",
+        kind: "declined",
+        reason: "the **old** words",
+        reason_tree: displayTree("the **new** words, for now"),
+      }),
+    ],
+  });
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe("the new words, for now"));
+    expect(note()?.querySelector("strong")?.textContent).toBe("new");
+  } finally {
+    view.unmount();
+  }
+});
+
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three. Each entry links to the node that holds it."
 test("a decision reaches each statement it shaped, and every entry links to its node", async () => {
@@ -1579,6 +1633,37 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
   expect(parent?.getAttribute("data-parent-id")).toBe("q2");
   expect(words(parent)).toBe(NODE_TYPE_NAMES.ask);
+});
+
+// R2, R8: an entry's parent line is its parent's projected first line (`useNodeLine`), as the
+// outline's parent line is, so a reference in the parent's words reads as its target's name from
+// the page's one names read, and the line is cut at the first sentence; never the parent's words
+// as written.
+test("an entry's parent line reads a reference in its parent's words by its target's name", async () => {
+  await warmMarkdownRenderer();
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      children: [
+        statement("s1"),
+        openAsk("q2", true, {
+          children: [decisionNode("under")],
+          text: `Serve ${address} first. Then the rest.`,
+        }),
+      ],
+      made: [decision("under", { links: [shaped(specRef("s1"))] })],
+    },
+    { published: publishedNames(new Map([[address, "The rows hold"]])) }
+  );
+  const line = () =>
+    rowOf(view, D("under")).querySelector("[data-node-parent-line]")?.lastElementChild?.textContent;
+  try {
+    await waitFor(() => expect(line()).toBe("Serve The rows hold first."));
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
 });
 
 // R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says

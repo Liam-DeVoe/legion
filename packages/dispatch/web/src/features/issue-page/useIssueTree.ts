@@ -20,6 +20,7 @@ import {
   type DocumentBlocks,
   type IssueTreeReads,
   nodeWords,
+  type TreeAsk,
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
@@ -140,8 +141,12 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
  * without it a plain line the page feeds would name another issue's spec by the page's word for
  * a document, where a link and a line's own read name it by that title (`tree-drafts.ts`'s
  * `treeContext`).
+ *
+ * The note a person wrote as they declined an ask is drawn under the ask's row in the Decisions
+ * view (`DecisionsRow.tsx`'s `Declined`) from the asks read, not from a node, so what each note
+ * cites (`asks`) is asked for here too.
  */
-function treeReferences(root: TreeNode): string[] {
+function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[] {
   const refs = new Set<string>();
   const add = (reference: string): void => {
     refs.add(reference);
@@ -158,6 +163,10 @@ function treeReferences(root: TreeNode): string[] {
     for (const child of node.children) walk(child);
   };
   walk(root);
+  for (const ask of asks) {
+    if (ask.state !== "declined") continue;
+    for (const reference of citedReferences(ask.resolution?.reason ?? "")) add(reference);
+  }
   return [...refs];
 }
 
@@ -382,7 +391,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
-  const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
+  const refs = useMemo(() => treeReferences(unnamed, asks.data), [unnamed, asks.data]);
   // One request for every name, not one per read that landed. Each of these reads adds nodes to
   // the tree as it arrives, so asking while any is still out would ask for the addresses known
   // so far and ask again for the rest: measured on this pod, that cost the first load two reads

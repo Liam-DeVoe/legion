@@ -119,11 +119,22 @@ interface EntryBase {
   readonly shapes: readonly ShapedStatement[];
 }
 
+/** That a person declined an ask, with the note they wrote where they wrote one. */
+export interface AskDeclined {
+  readonly by: Actor;
+  /** What the person wrote as they declined, as stored; absent where they wrote nothing. */
+  readonly note?: string;
+  /** The record `note` is: the ask, on this issue. */
+  readonly source: TextSource;
+  /** The server's reading of `note`, where the asks read sent one. */
+  readonly tree?: DisplayTree;
+}
+
 /** One ask of the filter: an open question, or a closed one. */
 export interface AskEntry extends EntryBase {
   /** The person who declined the question, with the note they wrote where they wrote one;
    *  absent for every ask that was not declined. */
-  readonly declined?: { readonly by: Actor; readonly note?: string };
+  readonly declined?: AskDeclined;
   readonly kind: "ask";
 }
 
@@ -297,11 +308,21 @@ export function decisionsParts({
         continue;
       }
       const note = closing?.reason ?? "";
-      const declined = node.state === "declined" && closing !== undefined;
+      const declined: AskDeclined | undefined =
+        node.state === "declined" && closing !== undefined
+          ? {
+              by: closing.actor,
+              source: { id: askId, issue: issueKey, kind: "ask" },
+              ...(note === "" ? {} : { note }),
+              ...(note === "" || closing.reason_tree === undefined
+                ? {}
+                : { tree: closing.reason_tree }),
+            }
+          : undefined;
       decidedBy(node.answer?.by ?? closing?.actor).push({
         ...base,
         ...timeOf(node.answer?.at ?? closing?.at ?? node.at),
-        ...(declined ? { declined: { by: closing.actor, ...(note === "" ? {} : { note }) } } : {}),
+        ...(declined === undefined ? {} : { declined }),
         kind: "ask",
         shapes,
       });

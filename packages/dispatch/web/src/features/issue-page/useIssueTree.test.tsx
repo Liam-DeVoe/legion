@@ -14,6 +14,7 @@ import type {
   DispatchEvent,
   DisplayTree,
   EventType,
+  IssueAskRow,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -160,9 +161,11 @@ function stubTreeReads(
     targets: ReferenceTarget[];
   }>,
   {
+    asks = [],
     comments = [],
     held,
   }: {
+    readonly asks?: readonly IssueAskRow[];
     readonly comments?: readonly Comment[];
     readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
   } = {}
@@ -190,7 +193,7 @@ function stubTreeReads(
     }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
-      return [];
+      return [...asks];
     }),
     spyOn(api, "listComments").mockImplementation(async () => {
       await answered("comments");
@@ -1204,6 +1207,62 @@ test("another issue's spec a comment cites alone is read with its issue and publ
     expect(asked[0]).toContain(cited);
     expect(asked[0], "the names read was not asked for the spec's issue").toContain(other);
     expect(view.result.current).toEqual({ line: NODE_TYPE_NAMES.document, name: title });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A declined ask's note is drawn under its row in the Decisions view from the asks read, not from
+// a node of the tree, so the page asks the one names read for what the note cites, and no row
+// reads it itself.
+test("what a declined ask's note cites is asked for in the one names read", async () => {
+  const cited = "dispatch://CORE-9";
+  const asked: string[][] = [];
+  const declined = {
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_id: null,
+    created_at: "2026-11-10T09:00:00Z",
+    edited_at: null,
+    id: "a-declined",
+    issue_key: KEY,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    options: null,
+    question: "On a phone, where does the box sit?",
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-11-13T09:00:00Z",
+      kind: "declined",
+      reason: `Ask about ${cited} first.`,
+    },
+    state: "declined",
+    urgency: "normal",
+  } satisfies IssueAskRow;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return namedTargets(refs);
+    },
+    { asks: [declined] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0], "the names read was not asked for what the note cites").toContain(cited);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
