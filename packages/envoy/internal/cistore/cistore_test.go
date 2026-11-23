@@ -779,7 +779,9 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	// The store's waits, its stamps and the claim's among them, run on a fake no one moves: this
-	// row's one writer meets no CAS conflict, so no backoff waits on it.
+	// row's one writer meets no CAS conflict, so no backoff waits on it. A conflict's backoff would
+	// wait on that fake for good (casState's budget is armed on it too), so the claim and the
+	// reclaim run inside the shared wait, which then gives up naming the call.
 	fake := clocktest.New(time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC))
 	s := openStore(t, conn, WithClock(fake))
 	const (
@@ -811,7 +813,13 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	}
 
 	tickNow := fake.Now().Add(-3 * debounce).UnixMilli()
-	claimedState, claimed, err := s.ClaimSettlement(key, state.Hash(), state.Generation, tickNow, debounce)
+	var (
+		claimedState State
+		claimed      bool
+	)
+	testwait.Returns(t, "ClaimSettlement of the quiet state to return (a CAS conflict's backoff waits on the store's fake, which nothing moves)", func() {
+		claimedState, claimed, err = s.ClaimSettlement(key, state.Hash(), state.Generation, tickNow, debounce)
+	})
 	if err != nil {
 		t.Fatalf("claim settlement: %v", err)
 	}
@@ -824,7 +832,10 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 		t.Fatalf("claim = %+v, want one stamped at the CAS's moment on the store's clock, %d", claimedState.Claim, fake.Now().UnixMilli())
 	}
 	staleBefore := fake.Now().Add(-2 * debounce).UnixMilli()
-	reclaimed, err := s.ReclaimSettlement(key, claimedState.Generation, staleBefore)
+	var reclaimed bool
+	testwait.Returns(t, "ReclaimSettlement of the fresh claim to return (a CAS conflict's backoff waits on the store's fake, which nothing moves)", func() {
+		reclaimed, err = s.ReclaimSettlement(key, claimedState.Generation, staleBefore)
+	})
 	if err != nil {
 		t.Fatalf("reclaim fresh claim: %v", err)
 	}

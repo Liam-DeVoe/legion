@@ -282,7 +282,14 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	if first != 1 {
 		t.Fatalf("the first read made %d listener calls, want 1", first)
 	}
-	if roster := readRoster(t, served, context.Background()); roster.answered {
+	// The second read runs inside the shared wait: a read that asked the listener again would wait
+	// on a fetch the held listener never answers, bounded on the fake that stands still, so made on
+	// the test goroutine it would hang the test binary to Go's alarm rather than fail naming it.
+	var roster routeRoster
+	testwait.Returns(t, "a read inside the silence window to answer from the stored silence without asking the listener", func() {
+		roster = readRoster(t, served, context.Background())
+	})
+	if roster.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
 	if got := calls.Load(); got != first {
