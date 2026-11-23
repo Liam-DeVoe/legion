@@ -29,14 +29,19 @@
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
 -- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It writes each mark in flight
--- back as the roles of the claims it names, each once, in the order the stops recorded them, since
--- the release before reads the set as roles; drops pod_releases.claims; and deletes this
--- migration's version row, which is what makes the version the store reports that release's own
--- again, and is owed to the roll-forward, which then runs this file again. What the way back costs
--- is the claims each record named, which the roles it keeps stand for.
+-- back as the role each of its tokens names, the token's last part (claim.Token.Cut), each once, in
+-- the order the stops recorded them, since the release before reads the set as roles and finds the
+-- claim of a role by the token it builds from that role. The role a claim stores is not that role
+-- where this release moved the claim to the step its key works (supervise.Machine.Rerole writes
+-- claims.role): it is the step's role, the last part of another claim's token. This way back runs
+-- before 20261117213545's, which puts each claim back in its token's role. It then drops
+-- pod_releases.claims and deletes this migration's version row, which is what makes the version the
+-- store reports that release's own again, and is owed to the roll-forward, which then runs this file
+-- again. What the way back costs is the claims each record named, which the roles it keeps stand
+-- for.
 --
 -- begin;
--- update issue_releases m set suspended = coalesce((select array_agg(r.role order by r.first) from (select c.role, min(t.n) as first from unnest(m.suspended) with ordinality t(token, n) join claims c on c.token = t.token group by c.role) r), '{}');
+-- update issue_releases m set suspended = coalesce((select array_agg(r.role order by r.first) from (select substring(t.token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$') as role, min(t.n) as first from unnest(m.suspended) with ordinality t(token, n) group by 1) r where r.role is not null), '{}');
 -- alter table pod_releases drop column if exists claims;
 -- delete from schema_version where version = 20261122102933;
 -- commit;
