@@ -1421,8 +1421,9 @@ authority to trust that proxy by, a proxy password, and, for each name, a placeh
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>]` says whether a broker would
-serve a file, and what that file adds and removes against the one in force.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream
+<host>=<url>]` says whether a broker would serve a file, and what that file adds and removes
+against the one in force.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's

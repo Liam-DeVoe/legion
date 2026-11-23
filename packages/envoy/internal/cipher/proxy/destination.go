@@ -27,8 +27,8 @@ import (
 
 // PrivateUpstream is one bound host and the URL its requests are sent to in place of the host's own
 // address: in production Dispatch's public host and its address inside the cluster
-// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to the one host the rules entry
-// DISPATCH_RESULTS_TOKEN binds, exactly and alone, of kind dpop with an allow list
+// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to the one host the proxy block of
+// the profile DISPATCH_RESULTS_TOKEN binds, exactly and alone, of kind dpop with an allow list
 // (config.AirlockResultRules), and the URL to a scheme and a host with no user, path or query.
 type PrivateUpstream struct {
 	// Host is the bound host, in lower case with no port, as a CONNECT's host is compared.

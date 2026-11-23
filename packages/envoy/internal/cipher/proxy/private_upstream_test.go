@@ -56,7 +56,7 @@ func privateDestination() PrivateUpstream {
 	return PrivateUpstream{Host: privateHost, URL: &url.URL{Scheme: "http", Host: net.JoinHostPort(privateName, privatePort)}}
 }
 
-// privateRules is the rig's rules file with DISPATCH_RESULTS_TOKEN beside its WORKER_TOKEN: kind
+// privateRules is the rig's proxy rules with DISPATCH_RESULTS_TOKEN beside its WORKER_TOKEN: kind
 // dpop, bound to the destination's host, carried in Authorization alone, allowing POST under the
 // projects route.
 func privateRules() proxyrules.Rules {

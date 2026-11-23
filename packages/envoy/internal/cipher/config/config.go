@@ -865,16 +865,16 @@ type Config struct {
 	// session ci-results:<repository>/<workflow path>, and carries the run its GitHub token names:
 	// its commit, its event, its run and attempt, its runner, and the check run of its job, which
 	// every such grant must carry. The airlock proxy puts a results token the broker mints from the
-	// grant, and a DPoP proof of the broker's own key, into each write the rules entry
-	// DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a Dispatch credential.
+	// grant, and a DPoP proof of the broker's own key, into each write the proxy block of the
+	// profile DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a Dispatch credential.
 	// Dispatch serves that token on the routes its results list names, and every other service
 	// that reads the broker's tokens, the Envoy listener among them, refuses it. One workflow may
 	// be listed under several patterns, and a run whose ref two of them match is refused; a
 	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
 	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
-	// its runs present, and BROKER_AIRLOCK_RULES_FILE, whose DISPATCH_RESULTS_TOKEN entry the start
-	// checks (AirlockResultRules): it binds one exact host, BROKER_AIRLOCK_PRIVATE_UPSTREAM's. Unset,
-	// no run is granted a placeholder.
+	// its runs present, and BROKER_PROFILES_FILE, whose profile DISPATCH_RESULTS_TOKEN the start
+	// checks (AirlockResultRules): its proxy block binds one exact host,
+	// BROKER_AIRLOCK_PRIVATE_UPSTREAM's. Unset, no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
 	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
@@ -2078,7 +2078,7 @@ func ParsePrivateUpstream(value string) (PrivateUpstream, error) {
 		return PrivateUpstream{}, fmt.Errorf("%s must be one <host>=<url> entry: the text before its first = holds a URL's scheme, user or path (a / or an @), so it names no host; the refusal does not repeat it, since a URL's user can be a credential", setting)
 	}
 	if why := rulehost.Refusal(host); why != "" {
-		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock rules entry can bind before its =, got %q, which %s", setting, host, why)
+		return PrivateUpstream{}, fmt.Errorf("%s must name a host a profile's proxy block can bind before its =, got %q, which %s", setting, host, why)
 	}
 	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
 		return PrivateUpstream{}, fmt.Errorf("%s must name its host in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)

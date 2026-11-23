@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	// resultsHost is the host the rules entry DISPATCH_RESULTS_TOKEN binds: Dispatch's public
-	// host, the one a grant's writes go to through the proxy.
+	// resultsHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds:
+	// Dispatch's public host, the one a grant's writes go to through the proxy.
 	resultsHost = "dispatch.test"
 	// airlockProxyURL and airlockCA are what the broker hands a run to reach its proxy by.
 	airlockProxyURL = "https://airlock.test:13381"
