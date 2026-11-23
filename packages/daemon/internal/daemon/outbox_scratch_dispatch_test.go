@@ -662,25 +662,43 @@ func (d *scratchDispatch) writeDeliverySettings(repo string) {
 	if err != nil {
 		t.Fatalf("open JetStream on %s: %v", d.natsURL, err)
 	}
+	// The durable is a push consumer, which JetStream's Consumer refuses to answer for (it answers
+	// pull consumers alone), so it is read as one.
 	var last string
-	testwait.WithinPolling(t, testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll,
-		"Dispatch's delivery intake to take its durable "+scratchDeliveryDurable+" after the delivery settings", func() bool {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			consumer, err := js.Consumer(ctx, "ENVOY_NOTIFICATIONS", scratchDeliveryDurable)
-			if err != nil {
-				last = err.Error()
-				return false
-			}
-			info, err := consumer.Info(ctx)
-			if err != nil {
-				last = err.Error()
-				return false
-			}
-			last = fmt.Sprintf("push bound %t", info.PushBound)
-			return info.PushBound
-		})
+	const within = 30 * time.Second
+	if !testwait.Holds(testwait.Bounded(t, within, time.Second), 100*time.Millisecond, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		consumer, err := js.PushConsumer(ctx, "ENVOY_NOTIFICATIONS", scratchDeliveryDurable)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		info, err := consumer.Info(ctx)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		last = fmt.Sprintf("push bound %t", info.PushBound)
+		return info.PushBound
+	}) {
+		t.Fatalf("Dispatch's delivery intake did not take its durable %s within %s of the delivery settings of %s: its last read %q\nDispatch's log of its delivery intake:\n%s",
+			scratchDeliveryDurable, within, repo, last, d.deliveryLog())
+	}
 	t.Logf("Dispatch's delivery intake reads %s (%s) after the delivery settings of %s", scratchDeliveryDurable, last, repo)
+}
+
+// deliveryLog is the last 40 lines of the server's log that name its delivery intake, its duties
+// or a warning or an error.
+func (d *scratchDispatch) deliveryLog() string {
+	var lines []string
+	for line := range strings.SplitSeq(d.output.String(), "\n") {
+		if strings.Contains(line, "delivery") || strings.Contains(line, "duty") || strings.Contains(line, "level=WARN") ||
+			strings.Contains(line, "level=ERROR") {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines[max(0, len(lines)-40):], "\n")
 }
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
