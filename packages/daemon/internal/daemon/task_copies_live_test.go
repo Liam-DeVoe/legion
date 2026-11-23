@@ -14,11 +14,13 @@
 // GitHub is the rig's fake API over a real bare repository (tasksGitHub), so each task's branch, the
 // join of its needs and its pull request are ones git can read. Each adoption of a working copy
 // that the daemon asks of the fake runtime makes that working copy for real, as the shim of an
-// issue's pod makes it (copiesShim), in the directory each step's task names. Each agent works
-// where its task says: an implementer commits in its working copy and pushes its task's branch,
-// and the agent of a first step that is told to repair a join runs the jj commands its task tells,
-// in its working copy (taskCopy.follow). Each review is a person's on the run's broker, and the
-// merge is GitHub's envelope there.
+// issue's pod makes it (the rig's tasksCopies), in the directory each step's task names. Each agent
+// works where its task says: an implementer commits in its working copy and pushes its task's
+// branch, and the agent of a first step that is told to repair a join runs the jj commands its task
+// tells, in its working copy (the rig's repairAndWork). Each review is a person's on the run's
+// broker, and the merge is GitHub's envelope there. The walk takes each task the daemon gives,
+// whichever agent it goes to, and plays it as its text says (playStep), so it never asks the
+// daemon for a step in an order of its own.
 //
 // This release runs one agent of each role for an issue: the steps of one role share one key in
 // every task, and the two tasks that run at one time start at steps of two roles.
@@ -29,26 +31,20 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -56,7 +52,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // taskCopiesControlEnv names the control a run makes; unset or empty, it makes none.
@@ -68,58 +63,44 @@ var taskCopiesControls = map[string]string{
 	// the example issue's plan rows deleted once its plan is given: two-tasks-two-copies reads no
 	// task and ends UNKNOWN, never ok.
 	"rows-deleted": "two-tasks-two-copies",
-	// the shim reads every adoption as naming no branch and adopts the issue's own working copy, as
-	// a shim did before each task had a working copy of its own: b's step is told a directory that
-	// no adoption made.
+	// every adoption reaches the rig's shim naming no branch, so it makes the issue's own working
+	// copy alone, as a shim did before each task had a working copy of its own: b's step is told a
+	// directory that no adoption made.
 	"adoption-drops-branch": "two-tasks-two-copies",
 	// c's needs taken out, and e needs b and d: d starts without b's work. The plan's own control,
 	// c's needs taken out alone, leaves b needed by no task, a second task whose work would merge,
 	// which this release refuses.
 	"no-needs": "d-starts-from-the-join",
-	// the agent of d's first step leaves the join its task tells it to repair, and does its own
-	// work alone: the join branch never takes c's work.
+	// the commit d's working copy started at forgotten before the check reads it:
+	// d-starts-from-the-join reads no start and ends UNKNOWN, never ok.
+	"starts-unrecorded": "d-starts-from-the-join",
+	// the agent of d's first step acts on a task that tells it no repair, and does its own work
+	// alone: the join branch never takes c's work.
 	"no-repair": "join-conflict-repaired",
+	// the last commits of the conflict issue's a and c forgotten before the check reads them:
+	// join-conflict-repaired reads no need's commit and ends UNKNOWN, never ok.
+	"lasts-unrecorded": "join-conflict-repaired",
 	// the runtime reports the implementer of the second issue gone, and the daemon launches it
 	// again: a second launch of one agent of that issue.
 	"implementer-gone": "one-pod",
+	// the check reads no call of the runtime: one-pod reads no launch and ends UNKNOWN, never ok.
+	"calls-unread": "one-pod",
 }
 
 // taskCopiesTitles is the title of each issue of the run: the example plan's and the conflict's.
 var taskCopiesTitles = []string{"One change split in several tasks", "Overlapping edits mended on a join"}
 
-// conflictPlan is a plan whose tasks a and c, which need nothing, each write line 1 of x.txt their
-// own way (workOf), so the join of the two for d conflicts; d has a join branch, since e needs it.
-// Each need is written as examplePlan's (%[1]s).
-const conflictPlan = `:::plan_task{#a steps="implementer:i"}
-Write the first line of the widget's file one way.
-:::
-
-:::plan_task{#c steps="implementer:i"}
-Write the first line of the widget's file another way.
-:::
-
-:::plan_task{#d needs="%[1]sa %[1]sc" steps="implementer:i"}
-Build on both lines.
-:::
-
-:::plan_task{#e needs="%[1]sd" steps="implementer:i"}
-Check the whole change.
-:::
-`
-
-// taskCopiesLive is one run of the proof: the rig over the run's two issues, the shim that makes
-// each working copy at its adoption, the git and jj of the agents, the control the run makes, and
-// why the running check read nothing; and, by issue and task (copiesKey), the commit the task's
-// working copy started at, the last commit its implementer pushed, and its pull request.
+// taskCopiesLive is one run of the proof: the rig over the run's two issues, the control the run
+// makes, and why the running check read nothing; and, by issue and task (copiesKey), the commit the
+// task's working copy started at, the last commit its implementer pushed, and its pull request.
+// The rig's own maps of these are by task alone, and the run's two issues share task ids.
 type taskCopiesLive struct {
 	*tasksRig
-	shim    *copiesShim
-	git     fixturegit.Runner
-	control string
-	unknown string
-	starts  map[string]string
-	lasts   map[string]string
-	pulls   map[string]int
+	control    string
+	unknown    string
+	copyStarts map[string]string
+	copyLasts  map[string]string
+	copyPulls  map[string]int
 }
 
 // TestTaskCopiesLive drives the proof's checks against one booted daemon and one Dispatch, over two
@@ -151,8 +132,8 @@ func TestTaskCopiesLive(t *testing.T) {
 
 // newTaskCopiesLive is the run around the checks: the broker the script names (or a skip naming
 // the script), the control it names, the checkout its script runs from and bun on PATH
-// (liveCLICheckout), the rig over the run's issues on a Dispatch this checkout builds, and the shim
-// that makes each working copy the daemon's adoptions name.
+// (liveCLICheckout), and the rig over the run's issues on a Dispatch this checkout builds, whose
+// shim makes each working copy the daemon's adoptions name (tasksCopies).
 func newTaskCopiesLive(t *testing.T) *taskCopiesLive {
 	t.Helper()
 	fixtureenv.Live(t)
@@ -163,9 +144,14 @@ func newTaskCopiesLive(t *testing.T) *taskCopiesLive {
 	}
 	root := liveCLICheckout(t)
 	rig := newTasksRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, taskCopiesTitles...)
-	home := t.TempDir()
-	return &taskCopiesLive{tasksRig: rig, shim: newCopiesShim(rig, home, control == "adoption-drops-branch"), git: fixturegit.Isolated(t, home),
-		control: control, starts: map[string]string{}, lasts: map[string]string{}, pulls: map[string]int{}}
+	if control == "adoption-drops-branch" {
+		// The hook is set before any step starts, as tasksCopies sets its own; the read of the
+		// fake's calls after the write orders it before an adoption's read under the fake's lock.
+		shim := rig.rt.OnAdopt
+		rig.rt.OnAdopt = func(loc runtime.Locator, id runtime.GitIdentity, _ string) error { return shim(loc, id, "") }
+		_ = rig.rt.Calls()
+	}
+	return &taskCopiesLive{tasksRig: rig, control: control, copyStarts: map[string]string{}, copyLasts: map[string]string{}, copyPulls: map[string]int{}}
 }
 
 // check runs one of the proof's checks between its `== <name>` line and its one line of outcome:
@@ -267,10 +253,10 @@ type copiesStep struct {
 	place       int
 }
 
-// The lines of a task that copiesStep reads.
+// The lines of a task that copiesStep reads, beside the rig's workingCopyLine, and the markers jj
+// writes in a file whose conflict is not repaired.
 var (
 	copiesTaskLine  = regexp.MustCompile(` Task: (\S+?)\.(\s|$)`)
-	copiesCopyLine  = regexp.MustCompile(` Working copy: branch (\S+), directory (\S+)\.(\s|$)`)
 	copiesStepLine  = regexp.MustCompile(` Step (\d+) of \d+: `)
 	copiesBaseLine  = regexp.MustCompile(` Open the pull request of this task against (\S+): `)
 	copiesConflicts = []string{"<<<<<<<", ">>>>>>>", "%%%%%%%", "+++++++"}
@@ -284,7 +270,7 @@ func (l *taskCopiesLive) startedStep(c *stepClaimant, prompt shimwire.Prompt) co
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
 	s := copiesStep{c: c, text: prompt.Message, base: "main", role: c.role}
-	task, copyLine := copiesTaskLine.FindStringSubmatch(s.text), copiesCopyLine.FindStringSubmatch(s.text)
+	task, copyLine := copiesTaskLine.FindStringSubmatch(s.text), workingCopyLine.FindStringSubmatch(s.text)
 	if task == nil || copyLine == nil {
 		l.t.Fatalf("the %s of %s was given %q, want a task of the plan that names its working copy's branch and directory", c.role, l.key, s.text)
 	}
@@ -401,23 +387,22 @@ func (l *taskCopiesLive) playStep(s copiesStep) bool {
 }
 
 // workOf is the files the implementer of task writes: on the conflict's issue, a and c each line 1
-// of x.txt their own way (conflictPlan) beside a file of their own, and every other task a file of
-// its own alone.
+// of x.txt their own way, as the rig's changeX writes it, and every other task a file of its own.
 func (l *taskCopiesLive) workOf(task string) map[string]string {
 	if l.key == l.issues[1].key && (task == "a" || task == "c") {
-		return map[string]string{"x.txt": "from " + task + "\n", task + ".txt": task + "\n"}
+		return map[string]string{"x.txt": "from " + task + "\n"}
 	}
 	return map[string]string{task + ".txt": "the work of task " + task + "\n"}
 }
 
 // inCopy fails the check unless the directory s's task names is the one the adoption of its branch
-// made (copiesShim). A run in which the runtime recorded no adoption of the issue read nothing.
+// made (tasksCopies). A run in which the runtime recorded no adoption of the issue read nothing.
 func (l *taskCopiesLive) inCopy(s copiesStep) {
 	l.t.Helper()
 	if len(l.adoptionsOf(l.key)) == 0 {
 		l.nothingRead("the runtime recorded no adoption of a working copy of %s", l.key)
 	}
-	made, adopted := l.shim.made()[s.branch]
+	made, adopted := l.copies.made()[s.branch]
 	if !adopted {
 		l.t.Fatalf("task %s's %s is told the working copy %s of %s, and no adoption made a working copy of %s", s.task, s.role, s.dir, s.branch, s.branch)
 	}
@@ -427,44 +412,30 @@ func (l *taskCopiesLive) inCopy(s copiesStep) {
 }
 
 // implementIn is the implementer's step s: in the working copy its task names, which the adoption
-// of its branch made (inCopy), it writes files, commits them and pushes its task's branch, opens
-// the task's pull request against the base its task names, and completes at that commit; the task
-// then stands past the step. The commit the working copy started at and the one it pushed are the
-// task's start and last.
+// of its branch made (inCopy), it writes files, commits them and pushes its task's branch
+// (tasksCopies.commit), opens the task's pull request against the base its task names, and
+// completes at that commit; the task then stands past the step. The commit the working copy started
+// at and the one it pushed are the task's start and last.
 func (l *taskCopiesLive) implementIn(s copiesStep, files map[string]string) {
 	l.t.Helper()
 	l.inCopy(s)
-	at := l.rows()[s.task].position
-	key := l.copiesKey(s.task)
-	l.starts[key], l.lasts[key] = l.commitIn(s.dir, s.branch, s.task, files)
-	l.pulls[key] = l.gh.open(s.branch, s.base)
-	l.done(s.c, "implement", api.HandoffCompleteRequest{Summary: "implemented " + s.task, Commit: l.lasts[key]})
-	l.waitTask(s.task, fmt.Sprintf("past its step %d", at), func(row tasksRow) bool { return row.position != at || row.state != string(record.TaskRunning) })
-	l.note("%s's implementer worked in %s from %s, pushed %s at %s and opened #%d against %s", s.task, s.dir, copiesAbbrev(l.starts[key]), s.branch,
-		copiesAbbrev(l.lasts[key]), l.pulls[key], s.base)
+	l.finishImplement(s, func() (string, string) { return l.copies.commit(s.dir, s.branch, s.task, files) })
 }
 
-// commitIn is an implementer's work on task in its working copy dir: files written there,
-// committed on the commit the working copy stands at, and pushed as branch to the repository.
-// Nothing else is staged: the working copy is a checkout of its branch. It answers the commit the
-// working copy started at and the one it pushed.
-func (l *taskCopiesLive) commitIn(dir, branch, task string, files map[string]string) (start, last string) {
+// finishImplement is the implementer's step s once it is in its working copy: work, which answers
+// the commit its work started at and the one it pushed on its task's branch, then the task's pull
+// request against the base its task names, and the completion at that commit, after which the task
+// stands past the step.
+func (l *taskCopiesLive) finishImplement(s copiesStep, work func() (start, last string)) {
 	l.t.Helper()
-	start = l.git.Run(dir, "git", "rev-parse", "HEAD")
-	paths := slices.Sorted(maps.Keys(files))
-	for _, path := range paths {
-		if err := os.WriteFile(filepath.Join(dir, path), []byte(files[path]), 0o600); err != nil {
-			l.t.Fatal(err)
-		}
-	}
-	l.git.Run(dir, append([]string{"git", "add", "--"}, paths...)...)
-	if staged := strings.Fields(l.git.Run(dir, "git", "diff", "--cached", "--name-only")); !slices.Equal(staged, paths) {
-		l.t.Fatalf("the working copy %s of task %s stages %q, want its own files alone, %q", dir, task, staged, paths)
-	}
-	l.git.Run(dir, "git", "commit", "--quiet", "-m", l.key+": the work of task "+task)
-	last = l.git.Run(dir, "git", "rev-parse", "HEAD")
-	l.git.Run(dir, "git", "push", "--quiet", l.gh.repo.Dir(), "HEAD:refs/heads/"+branch)
-	return start, last
+	at := l.rows()[s.task].position
+	key := l.copiesKey(s.task)
+	l.copyStarts[key], l.copyLasts[key] = work()
+	l.copyPulls[key] = l.gh.open(s.branch, s.base)
+	l.done(s.c, "implement", api.HandoffCompleteRequest{Summary: "implemented " + s.task, Commit: l.copyLasts[key]})
+	l.waitTask(s.task, fmt.Sprintf("past its step %d", at), func(row tasksRow) bool { return row.position != at || row.state != string(record.TaskRunning) })
+	l.note("%s's implementer worked in %s from %s, pushed %s at %s and opened #%d against %s", s.task, s.dir, copiesAbbrev(l.copyStarts[key]), s.branch,
+		copiesAbbrev(l.copyLasts[key]), l.copyPulls[key], s.base)
 }
 
 // approveStep is the reviewer's step s: its turn ends, and a person approves the task's pull
@@ -472,7 +443,7 @@ func (l *taskCopiesLive) commitIn(dir, branch, task string, files map[string]str
 func (l *taskCopiesLive) approveStep(s copiesStep) {
 	l.t.Helper()
 	s.c.endTurn()
-	number := l.pulls[l.copiesKey(s.task)]
+	number := l.copyPulls[l.copiesKey(s.task)]
 	head := l.gh.repo.Head(l.t, s.branch)
 	l.reviews++
 	payload, err := json.Marshal(map[string]string{
@@ -498,7 +469,7 @@ func (l *taskCopiesLive) retroThenMerge(s copiesStep) {
 	l.done(s.c, "", req)
 	l.waitPhase(phase.Merging)
 	l.awaitLaunch(l.token(claim.RoleMerger))
-	number := l.pulls[l.copiesKey(s.task)]
+	number := l.copyPulls[l.copiesKey(s.task)]
 	l.gh.merged(number)
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
@@ -526,6 +497,9 @@ func (l *taskCopiesLive) twoTasksTwoCopies() {
 	if l.control == "rows-deleted" {
 		l.deletePlanRows()
 		l.note("control rows-deleted: deleted %s's rows from plan_steps, plan_tasks and issue_plans", l.key)
+	}
+	if l.control == "adoption-drops-branch" {
+		l.note("control adoption-drops-branch: every adoption reaches the shim naming no branch")
 	}
 	l.copiesNow("once its plan was given")
 	l.firstStep()
@@ -594,18 +568,22 @@ func (l *taskCopiesLive) dStartsFromTheJoin() {
 	e := l.walkTo("e")
 	l.copiesNow("when e's first step started")
 	l.implementIn(e, l.workOf("e"))
+	if l.control == "starts-unrecorded" {
+		delete(l.copyStarts, l.copiesKey("d"))
+		l.note("control starts-unrecorded: forgot the commit d's working copy started at")
+	}
 	for _, from := range []struct {
 		task  string
 		holds []string
 	}{{"d", []string{"a", "b", "c"}}, {"e", []string{"a", "b", "c", "d"}}} {
-		start := l.starts[l.copiesKey(from.task)]
+		start := l.copyStarts[l.copiesKey(from.task)]
 		var held []string
 		for _, need := range from.holds {
-			last := l.lasts[l.copiesKey(need)]
+			last := l.copyLasts[l.copiesKey(need)]
 			if start == "" || last == "" {
 				l.nothingRead("task %s's working copy started at %q and task %s's last commit is %q: the walk recorded no such commit", from.task, start, need, last)
 			}
-			if !l.ancestorOf(last, start) {
+			if !l.copies.ancestor(last, start) {
 				l.t.Fatalf("task %s's working copy started at %s, which does not hold %s's last commit %s", from.task, start, need, last)
 			}
 			held = append(held, need+"'s "+copiesAbbrev(last))
@@ -616,16 +594,17 @@ func (l *taskCopiesLive) dStartsFromTheJoin() {
 	l.copiesNow("once e's pull request merged")
 }
 
-// joinConflictRepaired is the check join-conflict-repaired, on the plan whose a and c each write
-// line 1 of x.txt their own way (conflictPlan): the walk plays a's and c's steps until d's first
-// step, which the plan records as joined with the conflict of c, and whose task tells it to repair
-// the join of c on d's join branch. The agent follows its task in d's working copy with the real
-// jj, writing both lines into x.txt (resolvedX), and does its own work, which it pushes on d's
-// branch, and d's step completes. The join branch then holds a's and c's last commits and x.txt
-// repaired, with no conflict marker; d's branch holds the join branch; and the pull request of d
-// against the join branch lists d.txt, d's own file, alone.
+// joinConflictRepaired is the check join-conflict-repaired, on the rig's plan whose a and c each
+// change line 1 of x.txt, which main holds (conflictPlan): the walk plays a's and c's steps until
+// d's first step, which the plan records as joined with the conflict of c, and whose task tells it
+// to repair the join of c on d's join branch. The agent does what its task says in d's working copy
+// with the real jj, writing both lines into x.txt (resolvedX), and then its own work, which it
+// pushes on d's branch (the rig's repairAndWork); d's step completes. The join branch then holds
+// a's and c's last commits and x.txt repaired, with no conflict marker; d's own work starts from it;
+// and the pull request of d against the join branch lists d.txt, d's own file, alone.
 func (l *taskCopiesLive) joinConflictRepaired() {
 	l.t.Helper()
+	l.gh.repo.Commit(l.t, "main", map[string]string{"x.txt": "line 1\n"}, "the file a and c change")
 	l.givePlanText(conflictPlan)
 	l.firstStep()
 	d := l.walkTo("d")
@@ -640,34 +619,32 @@ func (l *taskCopiesLive) joinConflictRepaired() {
 		l.t.Fatalf("d's first step is told to open its pull request against %s, want its join branch %s", d.base, join)
 	}
 	l.inCopy(d)
-	working := taskCopy{t: l.t, run: l.git, dir: d.dir}
+	followed := d.text
 	if l.control == "no-repair" {
-		l.note("control no-repair: d's agent leaves the join its task tells it to repair")
-	} else {
-		working.follow(d.text, map[string]string{"x.txt": resolvedX})
-		l.note("d's agent ran each jj command its task tells in %s, writing both lines into x.txt", d.dir)
+		followed = ""
+		l.note("control no-repair: d's agent acts on a task that tells it no repair")
 	}
-	working.work(d.branch, map[string]string{"d.txt": "d\n"}, l.key+": the work of task d")
-	head := l.gh.repo.Head(l.t, d.branch)
-	key := l.copiesKey("d")
-	l.lasts[key], l.pulls[key] = head, l.gh.open(d.branch, d.base)
-	l.done(d.c, "implement", api.HandoffCompleteRequest{Summary: "implemented d", Commit: head})
-	l.note("d's agent pushed %s at %s and opened #%d against %s", d.branch, copiesAbbrev(head), l.pulls[key], d.base)
+	l.finishImplement(d, func() (string, string) { return l.repairAndWork(followed, d.dir, d.branch) })
+	if l.control == "lasts-unrecorded" {
+		delete(l.copyLasts, l.copiesKey("a"))
+		delete(l.copyLasts, l.copiesKey("c"))
+		l.note("control lasts-unrecorded: forgot the last commits of %s's a and c", l.key)
+	}
 
 	joined := l.gh.repo.Head(l.t, join)
 	if joined == "" {
 		l.t.Fatalf("GitHub has no join branch %s of d", join)
 	}
 	for _, need := range []string{"a", "c"} {
-		last := l.lasts[l.copiesKey(need)]
+		last := l.copyLasts[l.copiesKey(need)]
 		if last == "" {
 			l.nothingRead("the walk recorded no last commit of %s's task %s", l.key, need)
 		}
-		if !l.ancestorOf(last, joined) {
+		if !l.copies.ancestor(last, joined) {
 			l.t.Fatalf("d's join branch %s stands at %s, which does not hold %s's last commit %s", join, joined, need, last)
 		}
 	}
-	x := l.git.Raw(l.gh.repo.Dir(), "git", "show", joined+":x.txt")
+	x := l.copies.show(joined, "x.txt")
 	for _, marker := range copiesConflicts {
 		if strings.Contains(x, marker) {
 			l.t.Fatalf("x.txt on d's join branch at %s holds the conflict marker %q: %q", joined, marker, x)
@@ -676,8 +653,9 @@ func (l *taskCopiesLive) joinConflictRepaired() {
 	if x != resolvedX {
 		l.t.Fatalf("x.txt on d's join branch at %s = %q, want the repair %q", joined, x, resolvedX)
 	}
-	if !l.ancestorOf(joined, head) {
-		l.t.Fatalf("d's branch stands at %s, which does not hold its join branch's head %s", head, joined)
+	key := l.copiesKey("d")
+	if !l.copies.ancestor(joined, l.copyStarts[key]) {
+		l.t.Fatalf("d's own work started from %s, which does not hold its join branch's head %s", l.copyStarts[key], joined)
 	}
 	files := l.pullFiles(join, d.branch)
 	if len(files) == 0 {
@@ -686,8 +664,8 @@ func (l *taskCopiesLive) joinConflictRepaired() {
 	if !slices.Equal(files, []string{"d.txt"}) {
 		l.t.Fatalf("the pull request of d against %s lists %v, want d's own file alone [d.txt]", join, files)
 	}
-	l.note("%s stands at %s, which holds a's and c's last commits, x.txt %q with no conflict marker; d's branch holds it, and #%d lists %v",
-		join, copiesAbbrev(joined), x, l.pulls[key], files)
+	l.note("%s stands at %s, which holds a's and c's last commits and x.txt %q with no conflict marker; d's own work started from it, and #%d lists %v",
+		join, copiesAbbrev(joined), x, l.copyPulls[key], files)
 }
 
 // joinConflictsOf is the need of task of the walk's issue whose join GitHub refused as a conflict,
@@ -700,21 +678,6 @@ func (l *taskCopiesLive) joinConflictsOf(task string) []string {
 		l.t.Fatalf("read the join conflicts of task %s of %s: %v", task, l.key, err)
 	}
 	return conflicts
-}
-
-// ancestorOf says whether commit is an ancestor of, or is, of in the repository.
-func (l *taskCopiesLive) ancestorOf(commit, of string) bool {
-	l.t.Helper()
-	out, err := l.git.Try(l.gh.repo.Dir(), "git", "merge-base", "--is-ancestor", commit, of)
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		return true
-	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return false
-	}
-	l.t.Fatalf("git merge-base --is-ancestor %s %s: %v\n%s", commit, of, err, out)
-	return false
 }
 
 // pullFiles is the files of a pull request of head against base, as GitHub lists them: the files
@@ -749,7 +712,8 @@ func (l *taskCopiesLive) pullFiles(base, head string) []string {
 // the issue is in the pod the Sandbox runtime gives the issue (sandbox.SandboxName of its claims,
 // one name for every agent of an issue); every adoption of a working copy of the issue, its own or
 // a task's, went to a claim in that pod; and each agent of a step of the issue was launched once,
-// so every step it ran, in every task, ran in the session of that one launch.
+// so every step it ran, in every task, ran in the session of that one launch. The conflict issue
+// is walked until d's first step, so its tester never starts.
 func (l *taskCopiesLive) onePodEach() {
 	l.t.Helper()
 	if l.control == "implementer-gone" {
@@ -758,26 +722,32 @@ func (l *taskCopiesLive) onePodEach() {
 	}
 	steps := map[string][]claim.Role{
 		l.issues[0].key: {claim.RolePlanner, claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester},
-		l.issues[1].key: {claim.RoleImplementer},
+		l.issues[1].key: {claim.RoleImplementer, claim.RoleReviewer},
 	}
 	calls := l.rt.Calls()
+	if l.control == "calls-unread" {
+		calls = nil
+		l.note("control calls-unread: the check reads no call of the runtime")
+	}
 	for _, issue := range l.issues {
 		l.on(issue.key)
 		pod := sandbox.SandboxName(l.token(claim.RoleArchitect))
 		launches, launched := map[claim.Token]int{}, 0
+		var adoptions []copiesAdoption
 		for _, call := range calls {
-			if (call.Method != "Spawn" && call.Method != "Resume") || call.Spec.Issue != l.key {
-				continue
+			switch {
+			case (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Issue == l.key:
+				if in := sandbox.SandboxName(call.Spec.Claim); in != pod {
+					l.t.Fatalf("the runtime was asked to launch %s for %s in the pod %s, want every launch of %s in its one pod %s", call.Spec.Claim, l.key, in, l.key, pod)
+				}
+				launches[call.Spec.Claim]++
+				launched++
+			case call.Method == "AdoptWorkingCopy" && l.adoptionOf(call.Locator.Claim, call.Branch) == l.key:
+				adoptions = append(adoptions, copiesAdoption{Locator: call.Locator, Branch: call.Branch})
 			}
-			if in := sandbox.SandboxName(call.Spec.Claim); in != pod {
-				l.t.Fatalf("the runtime was asked to launch %s for %s in the pod %s, want every launch of %s in its one pod %s", call.Spec.Claim, l.key, in, l.key, pod)
-			}
-			launches[call.Spec.Claim]++
-			launched++
 		}
-		adoptions := l.adoptionsOf(l.key)
-		if len(launches) == 0 || len(adoptions) == 0 {
-			l.nothingRead("the runtime recorded %d launches and %d adoptions of %s", len(launches), len(adoptions), l.key)
+		if launched == 0 || len(adoptions) == 0 {
+			l.nothingRead("the runtime recorded %d launches and %d adoptions of %s", launched, len(adoptions), l.key)
 		}
 		copies := map[string]int{}
 		for _, adoption := range adoptions {
@@ -817,20 +787,28 @@ func (l *taskCopiesLive) implementerGone() {
 	l.note("control implementer-gone: the runtime reported %s gone, and the daemon launched it again", token)
 }
 
-// adoptionsOf is each adoption of a working copy of issue the runtime was asked for, in order: of
-// a branch of issue, or of the issue's own working copy by a claim of issue.
-func (l *taskCopiesLive) adoptionsOf(issue string) []copiesAdoption {
-	pod, err := claim.NewToken(l.project, issue, claim.RoleArchitect)
-	if err != nil {
-		l.t.Fatal(err)
+// adoptionOf is the issue of the run whose working copy an adoption by token of branch adopts: the
+// branch's issue, or, for an adoption that names no branch, the issue whose pod token's claim is
+// in; "" for none of the run's.
+func (l *taskCopiesLive) adoptionOf(token claim.Token, branch string) string {
+	if issue, _, named := claim.BranchTask(branch); named {
+		return issue
 	}
+	for _, issue := range l.issues {
+		architect, err := claim.NewToken(l.project, issue.key, claim.RoleArchitect)
+		if err == nil && sandbox.SandboxName(architect) == sandbox.SandboxName(token) {
+			return issue.key
+		}
+	}
+	return ""
+}
+
+// adoptionsOf is each adoption of a working copy of issue the runtime was asked for, in order
+// (adoptionOf).
+func (l *taskCopiesLive) adoptionsOf(issue string) []copiesAdoption {
 	var of []copiesAdoption
 	for _, call := range l.rt.CallsOf("AdoptWorkingCopy") {
-		owner, _, named := claim.BranchTask(call.Branch)
-		if !named && sandbox.SandboxName(call.Locator.Claim) == sandbox.SandboxName(pod) {
-			owner = issue
-		}
-		if owner == issue {
+		if l.adoptionOf(call.Locator.Claim, call.Branch) == issue {
 			of = append(of, copiesAdoption{Locator: call.Locator, Branch: call.Branch})
 		}
 	}
@@ -850,149 +828,4 @@ func copiesAbbrev(commit string) string {
 		return commit[:12]
 	}
 	return commit
-}
-
-// copiesShim is the shim of an issue's pod as it makes a working copy, at every adoption the daemon
-// asks of the fake runtime (fake.Runtime.OnAdopt): the issue's own once (workspace.Provision), and
-// each other task's beside it (workspace.ProvisionTask), under the daemon's state directory, so
-// each is the directory the daemon's task names (engineWorkspaceDir). They are jj workspaces of one
-// shared clone of the fake GitHub's repository, which provisioning reaches by the repository's path
-// in place of GitHub's URL (copiesRunner). With dropsBranch, the control adoption-drops-branch, it
-// reads every adoption as naming no branch, as a shim did before each task had a working copy of
-// its own, and adopts the issue's own working copy for it.
-type copiesShim struct {
-	t           *testing.T
-	project     string
-	keys        []string
-	stateDir    string
-	run         workspace.Runner
-	dropsBranch bool
-	mu          sync.Mutex
-	// dirs is the working copy each adoption gave a branch, by the branch it names: the issue's own
-	// branch for an adoption that names none.
-	dirs map[string]string
-}
-
-// newCopiesShim makes the working copy of each of r's issues at each adoption from now on. The
-// hook is set on the booted runtime before any step starts; the fake's own lock, taken by the read
-// of its calls after the write, orders the write before an adoption's read under that lock.
-func newCopiesShim(r *tasksRig, home string, dropsBranch bool) *copiesShim {
-	t := r.t
-	t.Helper()
-	s := &copiesShim{t: t, project: r.project, stateDir: r.cfg.StateDir, dropsBranch: dropsBranch, dirs: map[string]string{},
-		run: copiesRunner{runner: workspace.NewRunner(workspace.CommandTimeout, copiesTools(t)), github: workspace.GitHubURL(ghrepo.MustParse(liveRepo)),
-			origin: r.gh.repo.Dir(), env: append(fixtureenv.Home(home), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid")}}
-	for _, issue := range r.issues {
-		s.keys = append(s.keys, issue.key)
-	}
-	r.rt.OnAdopt = func(loc runtime.Locator, _ runtime.GitIdentity, branch string) error {
-		return s.adopt(loc.Claim, branch)
-	}
-	_ = r.rt.Calls()
-	return s
-}
-
-// adopt makes the working copy of branch where none is made yet, for the claim token that adopts
-// it: its issue's own first, which the working copy of each task's branch is a workspace beside.
-// The issue is the branch's, or, for an adoption that names no branch, the one whose pod the claim
-// is in (sandbox.SandboxName).
-func (s *copiesShim) adopt(token claim.Token, named string) error {
-	branch := named
-	if s.dropsBranch {
-		branch = ""
-	}
-	key, _, ok := claim.BranchTask(branch)
-	for _, issue := range s.keys {
-		architect, err := claim.NewToken(s.project, issue, claim.RoleArchitect)
-		if !ok && err == nil && sandbox.SandboxName(architect) == sandbox.SandboxName(token) {
-			key = issue
-		}
-	}
-	if key == "" {
-		s.t.Errorf("the adoption of %q by %s names no issue of the run", named, token)
-		return fmt.Errorf("no issue of the run adopts %q", named)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx := context.Background()
-	log := func(line string) { s.t.Logf("provisioning logged: %s", line) }
-	own := claim.IssueBranch(key)
-	if s.dirs[own] == "" {
-		working, err := workspace.Provision(ctx, s.run, workspace.Request{StateDir: s.stateDir, Repo: ghrepo.MustParse(liveRepo), Issue: key,
-			DefaultBranch: "main", CredentialHelper: workspace.GitHubCredentialHelper, Log: log,
-			Source: workspace.FromGitHub(func() (string, error) { return "test-installation-token", nil }, s.stateDir)})
-		if err != nil {
-			s.t.Errorf("provision the working copy of %s at its adoption of %q: %v", key, named, err)
-			return err
-		}
-		s.dirs[own] = working.Dir
-	}
-	if branch == "" {
-		if named != "" {
-			s.dirs[named] = s.dirs[own]
-		}
-		return nil
-	}
-	if s.dirs[branch] != "" {
-		return nil
-	}
-	working, err := workspace.ProvisionTask(ctx, s.run, s.dirs[own], branch, log)
-	if err != nil {
-		s.t.Errorf("provision the working copy of %s at its adoption: %v", branch, err)
-		return err
-	}
-	s.dirs[branch] = working.Dir
-	return nil
-}
-
-// made is the working copy each adoption gave a branch, by branch.
-func (s *copiesShim) made() map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return maps.Clone(s.dirs)
-}
-
-// copiesRunner runs provisioning's commands through the production runner with the real git and
-// jj, under the shim's own home, with GitHub's URL of the repository replaced by the path of the
-// fake GitHub's repository, so the shared clone's origin is that repository and nothing reaches a
-// network.
-type copiesRunner struct {
-	runner         workspace.Runner
-	github, origin string
-	env            []string
-}
-
-func (r copiesRunner) Timeout() time.Duration { return r.runner.Timeout() }
-
-func (r copiesRunner) Run(ctx context.Context, command workspace.Command) (workspace.Result, error) {
-	command.Argv = slices.Clone(command.Argv)
-	for i, arg := range command.Argv {
-		if arg == r.github {
-			command.Argv[i] = r.origin
-		}
-	}
-	command.Env = append(slices.Clone(r.env), command.Env...)
-	return r.runner.Run(ctx, command)
-}
-
-// copiesTools are the git and jj provisioning starts, each a wrapper that adds git's file
-// transport to whatever allow-list the runner set, since provisioning reaches a remote over https
-// alone and the repository here is a path.
-func copiesTools(t *testing.T) map[string]string {
-	t.Helper()
-	tools := map[string]string{}
-	dir := t.TempDir()
-	for _, tool := range []string{"git", "jj"} {
-		path, err := exec.LookPath(tool)
-		if err != nil {
-			t.Fatalf("the working copies of the tasks are made with a real %s: %v", tool, err)
-		}
-		wrapper := filepath.Join(dir, tool)
-		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		tools[tool] = wrapper
-	}
-	return tools
 }

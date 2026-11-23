@@ -27,27 +27,34 @@
 #   - d-starts-from-the-join: the walk to e's merge; the last commit of a, of b and of c are each an
 #     ancestor of the commit d's working copy started at, and the last commit of each other task of
 #     the commit e's started at;
-#   - join-conflict-repaired: on a second issue whose a and c each write line 1 of x.txt their own
-#     way, d's first step is told GitHub could not join c into its join branch legion/<KEY>.d.join;
-#     the agent runs the jj commands its task tells in its working copy and pushes its own work;
-#     the join branch then holds a's and c's last commits and x.txt repaired with no conflict
-#     marker, d's branch holds it, and d's pull request against it lists d.txt alone;
+#   - join-conflict-repaired: on a second issue whose a and c each change line 1 of x.txt, which
+#     main holds, d's first step is told GitHub could not join c into its join branch
+#     legion/<KEY>.d.join; the agent runs the jj commands its task tells in its working copy and
+#     pushes its own work; the join branch then holds a's and c's last commits and x.txt repaired
+#     with no conflict marker, d's own work starts from it, and d's pull request against it lists
+#     d.txt alone;
 #   - one-pod: every launch and every adoption of each issue is in the pod the Sandbox runtime gives
 #     that issue, and the agent of each step was launched once.
 # TASK_COPIES_CONTROL names one control, a change of the driver's input its check must fail on; a
 # run with a control never passes:
 #   rows-deleted           the example issue's plan rows deleted once its plan is given:
 #                          two-tasks-two-copies reads no task and ends UNKNOWN;
-#   adoption-drops-branch  the shim adopts the issue's own working copy whatever branch the
-#                          adoption names: two-tasks-two-copies fails on b's step, told a directory
-#                          no adoption made;
+#   adoption-drops-branch  every adoption reaches the shim naming no branch, so it makes the
+#                          issue's own working copy alone: two-tasks-two-copies fails on b's step,
+#                          told a directory no adoption made;
 #   no-needs               c needs nothing, and e needs b and d: d-starts-from-the-join fails on
 #                          b's last commit, which d's start lacks;
-#   no-repair              the agent of d's first step leaves the join its task tells it to repair:
+#   starts-unrecorded      the commit d's working copy started at forgotten before the read:
+#                          d-starts-from-the-join reads no start and ends UNKNOWN;
+#   no-repair              the agent of d's first step acts on a task that tells it no repair:
 #                          join-conflict-repaired fails on c's last commit, which the join branch
 #                          lacks;
+#   lasts-unrecorded       the last commits of the second issue's a and c forgotten before the
+#                          read: join-conflict-repaired reads no need's commit and ends UNKNOWN;
 #   implementer-gone       the runtime reports the second issue's implementer gone and the daemon
-#                          launches it again: one-pod fails on its second launch.
+#                          launches it again: one-pod fails on its second launch;
+#   calls-unread           the check reads no call of the runtime: one-pod reads no launch and
+#                          ends UNKNOWN.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them, and each working copy is a jj workspace), bun (after `bun install` at the
