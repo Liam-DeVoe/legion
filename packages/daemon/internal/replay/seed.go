@@ -26,8 +26,8 @@ import (
 // none for its repository.
 const defaultBranch = "main"
 
-// seedSession is the session a claim the start state writes in a turn runs, which no worker of the
-// replay's own takes: the record's session is not the replay's.
+// seedSession is the session a claim the start state writes runs where the record shows no session
+// running that claim (IssueTrace.sessionAt), which no worker of the replay's own takes.
 const seedSession = "replay-seed"
 
 // Seed writes into a replay's database, in tx, the state t's record shows at at (assumption 6): what
@@ -43,10 +43,11 @@ const seedSession = "replay-seed"
 // trace's inferred slots among them (assumption 34), and the mark of an issue whose slot went back
 // for a wait on another issue; the tree lifecycle of each tree that runs or lingers; the claims of
 // the turns under way of the issues in the workflow, as the outbox's start writes a claim (its
-// given entry and a confirmed delivery); the owed start of each issue whose work came back while
-// it held no slot, marked to wait for one and created at the moment its work came back; and a
-// synthetic open pull request for each issue the trace has seen one of. records writes the
-// record's tables and claims the claims.
+// given entry and a confirmed delivery), and of the architect of each root that waits on a person
+// between its turns (waitingArchitects), each running the session the record shows running it;
+// the owed start of each issue whose work came back while it held no slot, marked to wait for one
+// and created at the moment its work came back; and a synthetic open pull request for each issue
+// the trace has seen one of. records writes the record's tables and claims the claims.
 //
 // It names each issue it cannot place, with the reason: one Dispatch shows no event or no
 // repository of, one in the workflow whose turn stands in a tree the record shows running no
@@ -108,8 +109,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests,
-		s.unclassified} {
+	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.turns, s.waitingArchitects,
+		s.owedStarts, s.pullRequests, s.unclassified} {
 		if err := fn(); err != nil {
 			return SeedReport{}, err
 		}
@@ -541,8 +542,9 @@ func (s *seeder) heldSlot(iss *IssueTrace) (SlotSpan, bool) {
 // asks writes the mirror row of each ask on a placed root of its own tree as its events before the
 // start leave it (workflow's mirrorAsk): its kind and document, open on the person's turn from its
 // opening, closed by a person or by someone else with the person's answer or other act on it, and
-// whether a session of the root's tree opened it. A root that waits on a person's answer waits on
-// such a row.
+// whether a session of the root's tree opened it: one the record shows running a claim of a placed
+// issue of that tree (actorClaimOf), as the daemon reads the claims of the tree for the session
+// (record.Store.SessionClaimsTree). A root that waits on a person's answer waits on such a row.
 func (s *seeder) asks() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
@@ -569,8 +571,8 @@ func (s *seeder) asks() error {
 			switch event.Type {
 			case "ask.opened":
 				row.Open, row.Seq, row.WaitingOn, row.WaitingOnSeq = true, event.Seq, "human", event.Seq
-				if ref, err := claimRefOf(claim.Token(event.Actor.ID)); event.Actor.Kind == "session" && err == nil {
-					if member, ok := s.placed[ref.Issue]; ok && member.Tree == key {
+				if ran, ok := actorClaimOf(event); ok {
+					if member, placed := s.placed[ran.Issue]; placed && member.Tree == key {
 						row.ByTree = true
 					}
 				}
@@ -693,7 +695,8 @@ func (s *seeder) lifecycles() error {
 // turns writes the claim of each turn under way at the start of a placed issue in the workflow, as
 // the outbox's start and the turn's confirmation write it: working in its turn since the turn
 // began, bound to its tree's lifecycle, the entry it was given and a delivery confirmed at that
-// moment. A turn whose tree runs no lifecycle the record shows open is one the start state cannot
+// moment, running the session the record shows running the claim then (seedSession where it shows
+// none). A turn whose tree runs no lifecycle the record shows open is one the start state cannot
 // place. A turn of an issue outside the workflow at the start is a production check's: it is
 // written no claim and counted under assumption 30 (SeedReport.LeftOut), not named.
 func (s *seeder) turns() error {
@@ -717,8 +720,9 @@ func (s *seeder) turns() error {
 			if record.StandsAt(issue) != phase.Admitted && phaseRole(record.StandsAt(issue)) == turn.Claim.Role {
 				worked = record.StandsAt(issue)
 			}
+			session := cmp.Or(iss.sessionAt(turn.Claim.Role, s.at), seedSession)
 			c := supervise.Claim{Token: turn.Claim.Token, Project: s.token, Tree: issue.Tree, Issue: key, Role: turn.Claim.Role,
-				Generation: max(turn.Generation, 1), TreeEpoch: epoch, Session: seedSession, State: supervise.StateWorking,
+				Generation: max(turn.Generation, 1), TreeEpoch: epoch, Session: session, State: supervise.StateWorking,
 				Handshake: supervise.EntryHandshake{Generation: issue.Generation, QueuedAt: turn.Start, ConfirmedAt: turn.Start},
 				LastReady: turn.Start, LastTurnStart: turn.Start}
 			d := supervise.Delivery{ID: "seed:" + string(turn.Claim.Token), Task: "the work the record shows under way at the window's start",
@@ -727,6 +731,63 @@ func (s *seeder) turns() error {
 			if _, err := s.claims.PutClaimAndDeliveryTx(s.ctx, s.tx, c, d); err != nil {
 				return fmt.Errorf("replay: seed the claim of %s: %w", turn.Claim.Token, err)
 			}
+		}
+	}
+	return nil
+}
+
+// waitingArchitects writes the claim of the own architect of each placed root that waits on a
+// person at the start, with no turn of it under way then, where the record shows the session that
+// ran it before the start: idle between its turns, running the latest such session, bound to its
+// tree's lifecycle, at the generation and the moments of its last turn. The daemon holds that claim
+// through the wait, and its admission pass keeps a waiting root only while the session that holds
+// the root's Dispatch claim claims within the tree (workflow.Unresumable), at every pass from the
+// first; an ask, a reply or a status write of that session is read by the same comparison. A claim
+// the record shows no session of runs no session the daemon could compare, and is left, as the
+// claim of every other worker between turns is, to the next start of its role, which the stub
+// writes as the daemon's outbox writes it. A root standing at admitted is not one of these: its
+// architect's claim beside a phases row that names no entry, as no start state writes one, is
+// one admission's sweep raises an entry for (admit's owedOf), work the record's daemon never sent.
+func (s *seeder) waitingArchitects() error {
+	for _, key := range s.placedKeys() {
+		issue, iss := s.placed[key], s.t.Issues[key]
+		if !claim.IsTreeRoot(key, issue.Tree) || !issue.AwaitingPerson() {
+			continue
+		}
+		epoch, open := s.epochs[issue.Tree]
+		if !open {
+			continue
+		}
+		var last *Turn
+		for i := range iss.Turns {
+			if turn := &iss.Turns[i]; turn.Claim.Role == claim.RoleArchitect && turn.Start.Before(s.at) {
+				last = turn
+			}
+		}
+		if last != nil && standsAt(last.Start, last.End, s.at) {
+			continue
+		}
+		session := ""
+		for _, ran := range iss.Sessions {
+			if ran.Role == claim.RoleArchitect && ran.First.Before(s.at) {
+				session = ran.ID
+			}
+		}
+		if session == "" {
+			continue
+		}
+		token, err := claim.NewToken(s.token, key, claim.RoleArchitect)
+		if err != nil {
+			return fmt.Errorf("replay: seed the claim of %s's architect: %w", key, err)
+		}
+		c := supervise.Claim{Token: token, Project: s.token, Tree: issue.Tree, Issue: key, Role: claim.RoleArchitect, Generation: 1,
+			TreeEpoch: epoch, Session: session, State: supervise.StateIdle}
+		if last != nil {
+			c.Generation = max(last.Generation, 1)
+			c.LastReady, c.LastTurnStart, c.LastTurnEnd = last.Start, last.Start, last.End
+		}
+		if _, err := s.claims.PutClaimTx(s.ctx, s.tx, c); err != nil {
+			return fmt.Errorf("replay: seed the claim of %s: %w", token, err)
 		}
 	}
 	return nil

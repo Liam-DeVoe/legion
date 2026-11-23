@@ -352,9 +352,8 @@ var (
 	anyKey   = regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9]*)-([0-9]+)\b`)
 	// wholeUUID is a string that is one uuid.
 	wholeUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	// legionTitle is the title of a Legion role's session, `Legion <role> · <issue or project>`,
-	// and daemonMachine the machine name of a deployment's daemon, legion-<project token>-daemon.
-	legionTitle   = regexp.MustCompile(`^(Legion [a-z]+ · )(.+)$`)
+	// daemonMachine is the machine name of a deployment's daemon, legion-<project token>-daemon. A
+	// Legion role's session title is legionTitle (trace.go), which the trace reads its claim from.
 	daemonMachine = regexp.MustCompile(`^legion-([a-z0-9]+)-daemon$`)
 	// githubRepoURL is a link to a repository on GitHub, its owner/name and the rest of its path.
 	githubRepoURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
@@ -635,10 +634,11 @@ func (n *neutralizer) byMember(s string, f field) string {
 		return s
 	case f.key == "session_title":
 		if match := legionTitle.FindStringSubmatch(s); match != nil {
+			prefix := "Legion " + match[1] + " · "
 			if neutral, known := n.m.Projects[match[2]]; known {
-				return match[1] + neutral
+				return prefix + neutral
 			}
-			return match[1] + n.rename(match[2])
+			return prefix + n.rename(match[2])
 		}
 		return n.named(n.m.Titles, "title", s, func(i int) string { return fmt.Sprintf("session %d", i) })
 	case f.key == "machine":

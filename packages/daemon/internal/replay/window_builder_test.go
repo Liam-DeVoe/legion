@@ -102,11 +102,20 @@ type builtIssue struct {
 	Labels    []string
 	BlockedBy []string
 	Created   time.Time
+	// Claim is who holds the issue's Dispatch claim, since when; nil for nobody.
+	Claim *builtClaim
 
 	tree       string
 	generation int
 	seq        int64
 	last       time.Time
+}
+
+// builtClaim is an issue's Dispatch claim as an issue event's payload carries it: its holder, and
+// the moment the holder took it.
+type builtClaim struct {
+	Actor eventActor `json:"actor"`
+	At    time.Time  `json:"at"`
 }
 
 // filing is an issue a person files: its fields as the issue.created event carries them, and Tree,
@@ -122,10 +131,27 @@ type filing struct {
 	BlockedBy []string
 }
 
-// eventActor is a Dispatch event's actor.
+// eventActor is a Dispatch event's actor, and the origin Dispatch records a session with: nil for a
+// person, the daemon's own session and a session named by its claim token, as the fixtures name a
+// worker's session.
 type eventActor struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind   string       `json:"kind"`
+	ID     string       `json:"id"`
+	Origin *eventOrigin `json:"origin,omitempty"`
+}
+
+// eventOrigin is where a session runs as Dispatch records it: the harness, and the title the
+// session runs under.
+type eventOrigin struct {
+	Host         string `json:"host"`
+	SessionTitle string `json:"session_title"`
+}
+
+// recordedSession is the session id running key's role's claim, as Dispatch records a worker's
+// session: by an id of its own, under the title Legion gives the role's session,
+// `Legion <role> · <KEY>`.
+func recordedSession(key string, role claim.Role, id string) eventActor {
+	return eventActor{Kind: "session", ID: id, Origin: &eventOrigin{Host: "omp", SessionTitle: fmt.Sprintf("Legion %s · %s", role, key)}}
 }
 
 // newWindowBuilder starts the window of project ACME over [from, to): its inputs reach an hour
@@ -347,7 +373,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 	payload := struct {
 		Assignee      *string    `json:"assignee"`
 		BlockedBy     []string   `json:"blocked_by"`
-		Claim         *string    `json:"claim"`
+		Claim         any        `json:"claim"`
 		ClosedAt      *time.Time `json:"closed_at"`
 		Components    any        `json:"components"`
 		CreatedAt     time.Time  `json:"created_at"`
@@ -370,6 +396,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		UpdatedAt     time.Time  `json:"updated_at"`
 	}{
 		BlockedBy: append([]string{}, issue.BlockedBy...),
+		Claim:     payloadClaim(issue),
 		ClosedAt:  closed,
 		Components: map[string]any{"ids": []string{}, "inherited_from": nil, "mode": "inherit", "reason": nil,
 			"unknown": []string{}},
@@ -390,6 +417,24 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		UpdatedAt:     at,
 	}
 	b.event(at, key, kind, actor, payload)
+}
+
+// payloadClaim is issue's Dispatch claim as an issue event's payload carries it, nil for none.
+func payloadClaim(issue *builtIssue) any {
+	if issue.Claim == nil {
+		return nil
+	}
+	return *issue.Claim
+}
+
+// claimedBy is actor taking key's Dispatch claim at at (issue.claimed), which each later issue
+// event of key carries.
+func (b *windowBuilder) claimedBy(at time.Time, key string, actor eventActor) {
+	b.t.Helper()
+	issue := b.issue(key)
+	issue.Claim = &builtClaim{Actor: actor, At: at}
+	b.event(at, key, "issue.claimed", actor, map[string]any{"claim": *issue.Claim, "key": key, "reason": nil, "repo": nil,
+		"resolved_repo": builtRepository, "status": issue.Status})
 }
 
 // file is a person filing key at at (issue.created). The record holds it under the tree filing
@@ -594,10 +639,15 @@ func (b *windowBuilder) registered(at time.Time, key string, open bool) {
 }
 
 // specWritten is key's architect writing version 1 of its spec at at (artifact.version, by the
-// architect's session).
+// architect's session, named by its claim token).
 func (b *windowBuilder) specWritten(at time.Time, key string) {
 	b.t.Helper()
-	architect := eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))}
+	b.specWrittenBy(at, key, eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))})
+}
+
+// specWrittenBy is specWritten by the architect's session architect.
+func (b *windowBuilder) specWrittenBy(at time.Time, key string, architect eventActor) {
+	b.t.Helper()
 	b.event(at, key, "artifact.version", architect, map[string]any{
 		"artifact_id": b.artifact(key), "diff": "", "name": "spec.md",
 		"version": map[string]any{"authors": []map[string]string{{"id": architect.ID, "kind": architect.Kind}}, "created_at": at,
@@ -620,10 +670,15 @@ func (b *windowBuilder) approves(at time.Time, key, ask string) {
 }
 
 // asksApproval is key's architect asking a person at at to approve version 1 of its spec
-// (ask.opened of an approval request), with the ask's id.
+// (ask.opened of an approval request), with the ask's id, by its session named by its claim token.
 func (b *windowBuilder) asksApproval(at time.Time, key, ask string) {
 	b.t.Helper()
-	architect := eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))}
+	b.asksApprovalBy(at, key, ask, eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))})
+}
+
+// asksApprovalBy is asksApproval by the architect's session architect.
+func (b *windowBuilder) asksApprovalBy(at time.Time, key, ask string, architect eventActor) {
+	b.t.Helper()
 	b.event(at, key, "ask.opened", architect, map[string]any{
 		"id": ask, "issue_key": key, "author": architect, "kind": record.AskApproval, "state": "open",
 		"approval": map[string]any{"artifact_id": b.artifact(key), "version": 1, "requested_version": 1},

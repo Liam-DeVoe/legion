@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -550,9 +549,11 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 }
 
 // placeEvents reads every recorded event of the window at or after its start, and says how a
-// replay places it: a worker's event at its offset in the piece of its issue's work it falls in;
-// a person's answer from its question (Branch.Answer); an event that ended a wait in the record
-// from the replay's start of that wait (Branch.Timing); every other at its recorded time.
+// replay places it: a worker's event — one whose actor is a session the record shows running a
+// claim of an issue, by the session's title or by the claim token its id is (actorClaimOf) — at its
+// offset in the piece of that issue's work it falls in; a person's answer from its question
+// (Branch.Answer); an event that ended a wait in the record from the replay's start of that wait
+// (Branch.Timing); every other at its recorded time.
 func (s *script) placeEvents(t Trace, w Window) error {
 	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
 		for _, raw := range w.Events[key] {
@@ -575,8 +576,8 @@ func (s *script) placeEvents(t Trace, w Window) error {
 		if event.at.Before(t.From) {
 			continue
 		}
-		if ref, err := claimRefOf(claimTokenOf(event.env.actor)); err == nil && ref.Issue != "" {
-			if p := s.pieceAt(ref.Issue, event.at, false); p != nil {
+		if ran, ok := actorClaimOf(event.parsed); ok {
+			if p := s.pieceAt(ran.Issue, event.at, false); p != nil {
 				event.anchor = anchorPiece
 				p.acts = append(p.acts, act{kind: actEvent, offset: event.at.Sub(p.start), rec: event.at, event: i})
 				continue
@@ -619,14 +620,6 @@ func (s *script) markHeldRootTodos(lines recordLines) {
 			break
 		}
 	}
-}
-
-// claimTokenOf is the claim token a session actor names, "" for an actor of another kind.
-func claimTokenOf(actor dispatch.Actor) claim.Token {
-	if actor.Kind != "session" {
-		return ""
-	}
-	return claim.Token(actor.ID)
 }
 
 // questions is, by the index of each person's answer among the events, the event it answers: the

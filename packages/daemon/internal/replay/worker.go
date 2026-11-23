@@ -123,9 +123,23 @@ var OutboxHandling = map[RowKind]RowHandling{
 // so no lease it takes is ever live when another row of the issue is listed.
 const outboxLease = 30 * time.Second
 
-// replaySession is the session a claim the stub launches runs, which names no worker: the
-// replay's workers are the record's segments.
+// replaySession is the session a claim the stub launches runs where the record shows no session
+// running that claim (sessionOf): the replay's workers are the record's segments.
 const replaySession = "replay"
+
+// sessionOf is the session c runs once the stub launches it now: the one the record shows running
+// that claim at the clock's instant (IssueTrace.sessionAt), so the daemon's reads that compare a
+// session with a claim's — the holder of a Dispatch claim, the author of an ask, the writer of a
+// status — answer as they did in the record; replaySession where the record shows none. It reads
+// the instant rather than the clock's next moment, which moves the clock (simClock.Now).
+func (d *driver) sessionOf(c supervise.Claim) string {
+	if iss, ok := d.trace.Issues[c.Issue]; ok {
+		if session := iss.sessionAt(c.Role, d.clock.Instant()); session != "" {
+			return session
+		}
+	}
+	return replaySession
+}
 
 // dueSlack is how far past the clock's moment the stub reads a row as due. The simulated clock
 // moves a microsecond at each read within one instant (simClock), so a moment a pass wrote from
@@ -807,11 +821,12 @@ func queuedAlready(c supervise.Claim, row int64, payload record.SuperviseRequest
 }
 
 // launch brings c's worker up as the supervisor's launch does: the next launch of the claim, its
-// failure and suspension cleared, ready to be prompted, and the line the launch writes (`supervise:
-// launched`). resumed says whether the launch resumes a suspended claim's session.
+// failure and suspension cleared, ready to be prompted, running the session the record shows
+// running the claim now (sessionOf), and the line the launch writes (`supervise: launched`).
+// resumed says whether the launch resumes a suspended claim's session.
 func (d *driver) launch(c *supervise.Claim, resumed bool) {
 	c.Generation++
-	c.State, c.SuspendedBy, c.Session = supervise.StateIdle, "", replaySession
+	c.State, c.SuspendedBy, c.Session = supervise.StateIdle, "", d.sessionOf(*c)
 	c.Failure, c.FailureCause, c.FailedAt = "", "", time.Time{}
 	c.LastReady = d.now()
 	resumedBy := "none"

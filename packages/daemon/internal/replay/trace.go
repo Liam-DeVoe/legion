@@ -1034,6 +1034,44 @@ func claimRefOf(token claim.Token) (ClaimRef, error) {
 	return ClaimRef{}, errors.New("it names no issue key between its project and its role")
 }
 
+// SessionClaim is the claim a session of Legion's runs, as the title Legion gives the session names
+// it (`Legion <role> · <KEY>`, an actor's origin.session_title): the claim's issue and role.
+type SessionClaim struct {
+	Issue string
+	Role  claim.Role
+}
+
+// legionTitle is the title of a Legion role's session, `Legion <role> · <issue or project>`: the
+// role, and the issue of the claim the session runs or, for the controller, the project.
+var legionTitle = regexp.MustCompile(`^Legion ([a-z]+) · (.+)$`)
+
+// sessionClaimOf is the claim a session's title names, nil for a title that names none: the
+// controller's, which names its project, and the title of a session outside Legion.
+func sessionClaimOf(title string) *SessionClaim {
+	match := legionTitle.FindStringSubmatch(title)
+	if match == nil || !claim.IsRole(claim.Role(match[1])) || !claim.IsIssueKey(match[2]) {
+		return nil
+	}
+	return &SessionClaim{Issue: match[2], Role: claim.Role(match[1])}
+}
+
+// actorClaimOf is the claim whose work event is an act of, and whether it is one: the claim its
+// actor's session title names (DispatchEvent.ActorClaim), or the claim whose token a session
+// actor's id is.
+func actorClaimOf(event DispatchEvent) (SessionClaim, bool) {
+	if event.ActorClaim != nil {
+		return *event.ActorClaim, true
+	}
+	if event.Actor.Kind != "session" {
+		return SessionClaim{}, false
+	}
+	ref, err := claimRefOf(claim.Token(event.Actor.ID))
+	if err != nil || ref.Issue == "" {
+		return SessionClaim{}, false
+	}
+	return SessionClaim{Issue: ref.Issue, Role: ref.Role}, true
+}
+
 // DispatchEvent is one event of an issue's Dispatch event log as the trace reads it
 // (ParseDispatchEvent): the envelope every event carries, and the part of its payload the trace
 // reads, in the one field its type fills. An event of a type the trace does not read carries its
@@ -1051,6 +1089,10 @@ type DispatchEvent struct {
 	// Actor is who Dispatch names as having made the change: a person (user), a session, the
 	// daemon's own session (dispatch.DaemonSession) or Dispatch itself (system).
 	Actor dispatch.Actor
+	// ActorClaim is the claim the actor's session runs, as its title names it (sessionClaimOf):
+	// nil for an actor that is no session or carries no title, and for a session whose title
+	// names no claim of an issue.
+	ActorClaim *SessionClaim
 	// At is the event's created_at.
 	At time.Time
 	// Issue is the issue as an issue.created, issue.updated or issue.closed event shows it; nil for
@@ -1117,8 +1159,9 @@ type DispatchHandoff struct {
 // verdict's artifact_id and version, an ask's id, a handoff's handoff_id, phase and version. An
 // issue event's changed, blocked_by, parent, rank and labels are read where it carries them, as
 // intake reads them, since an event retained from an older Dispatch lacks some; a field present
-// with another JSON type is refused all the same. An event without its project is of the project
-// its key begins with.
+// with another JSON type is refused all the same. A session actor's title (origin.session_title)
+// is read where the actor carries one (ActorClaim), and refused where it is of another JSON type.
+// An event without its project is of the project its key begins with.
 func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 	var envelope struct {
 		ID        *int64     `json:"id"`
@@ -1128,8 +1171,11 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 		Type      *string    `json:"type"`
 		CreatedAt *time.Time `json:"created_at"`
 		Actor     *struct {
-			Kind *string `json:"kind"`
-			ID   *string `json:"id"`
+			Kind   *string `json:"kind"`
+			ID     *string `json:"id"`
+			Origin *struct {
+				SessionTitle *string `json:"session_title"`
+			} `json:"origin"`
 		} `json:"actor"`
 		Payload json.RawMessage `json:"payload"`
 	}
@@ -1147,6 +1193,9 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 		parsed.Project = *envelope.Project
 	} else {
 		parsed.Project, _, _ = strings.Cut(parsed.Key, "-")
+	}
+	if origin := envelope.Actor.Origin; parsed.Actor.Kind == "session" && origin != nil && origin.SessionTitle != nil {
+		parsed.ActorClaim = sessionClaimOf(*origin.SessionTitle)
 	}
 	refuse := func(err error) (DispatchEvent, error) {
 		return DispatchEvent{}, fmt.Errorf("replay: the %s event of %s at seq %d: %w", parsed.Type, parsed.Key, parsed.Seq, err)

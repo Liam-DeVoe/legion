@@ -338,7 +338,10 @@ func TestNeutralizeLeavesNoPrivateNameAndKeepsTheShapes(t *testing.T) {
 // keys, numbers, parents, blockers, children and references, a session's workspace and title;
 // the document's uuid is one in the gate's line and the change request; the person is one in the
 // assignee and the request's actor; the repository is one in the issue, the link to its pull
-// request and the merges; and each daemon's Dispatch session names its project's neutral key.
+// request and the merges; and each daemon's Dispatch session names its project's neutral key. So
+// the trace of the neutral window reads the architect's session, by its neutral id, as running the
+// claim of the issue its neutral title names, the child's architect claim, and the laptop's
+// session, the same id under a title outside Legion, as running none.
 func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
 	_, out, names := neutralizePrivate(t)
 	root, child, other := names.Keys["NIMBUS-400"], names.Keys["NIMBUS-412"], names.Keys["ORION-77"]
@@ -414,6 +417,15 @@ func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
 	}
 	if address, _ := email.(string); !strings.HasSuffix(address, "@example.invalid") {
 		t.Errorf("the person's email became %v", email)
+	}
+	trace, err := BuildTrace(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions := trace.Issues[child].Sessions; len(sessions) != 1 || sessions[0].ID != names.IDs[privateSession] ||
+		sessions[0].Role != "architect" {
+		t.Errorf("the trace of the neutral window reads the sessions %+v running %s's claims, want its architect's, %s", sessions, child,
+			names.IDs[privateSession])
 	}
 }
 

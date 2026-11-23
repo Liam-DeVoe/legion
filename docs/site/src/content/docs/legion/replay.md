@@ -222,6 +222,7 @@ This repository is public, so a window that it keeps as test data holds no priva
 `legion replay neutralize` writes a copy of a window with each private name renamed, the same name to the same neutral name in every file.
 It renames each issue key, and each claim token that spells one.
 It renames each repository but cybermonklabs/legion, each actor's id, each session's id and title, and each person's login and email.
+The title of a Legion role's session keeps its role and takes the neutral key of its issue, so the trace reads the same claim from the neutral window.
 It renames each host name and machine name, each IP address but a loopback, unspecified or documentation address, and each uuid, link, label and digest.
 It also renames the free text of Dispatch's events.
 It keeps every member, JSON type and list length, and the daemon's msgs, ranks, statuses and times.
@@ -301,7 +302,17 @@ Most Dispatch events that the daemon's own session wrote are its outbox's status
 The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
+An event that a worker's session wrote enters at its offset in the work of that worker's issue, so it moves with that work.
+The record names that session by an id under the title `Legion <role> · <KEY>`, which names the role and the issue of the claim that the session runs.
+Where a window's events name a worker's session by its claim token instead, the replay reads the claim from that token.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
+Each claim that the replay writes runs the session that the record shows that claim running at that moment.
+A claim runs a fresh session after a fresh start of its agent, so at each launch the claim takes the latest session whose first event comes at or before that moment, or else the first session after it.
+A claim that the record shows no session for runs a session of the replay's own.
+So the daemon's reads that compare a session with the sessions of the claims answer as they did in the record: who holds a waiting root's Dispatch claim, who opened an ask, and who wrote a status.
+The start state writes the claim of each turn under way at the window's start.
+It also writes the claim of the architect of each root that waits on a person at the start, between that architect's turns, where the record shows the architect's session.
+The daemon keeps that claim through the wait, and at each pass it keeps the root only while the session that holds the root's Dispatch claim has a claim in the root's tree.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.

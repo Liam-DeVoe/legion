@@ -46,12 +46,13 @@ type capturedEntry struct {
 // commit page — and the reading is held to the one written out by hand from the file: a line's
 // type, msg and time, its issue, tree, phases and trigger, the slots in use and the cap, the issue
 // and role a supervise: line's claim token names, the issues an issue waits on, and the pull
-// request and the issues a merged issue's close waits for; an event's type, actor and time, and
-// the status, blocked_by, parent and rank it shows; each merge's commit and time. It fails for a
-// file a reader refuses, drops (a line read as no kind the trace reads, an event read without its
-// type's part) or misreads, for a captured file this test holds no reading of, and for a reading of
-// a file that is not there. Window two's ready line moves an issue into awaiting_merge, a phase
-// today's workflow lacks, and is read as written, for the trace to fold.
+// request and the issues a merged issue's close waits for; an event's type, actor, the claim its
+// actor's session title names, and time, and the status, blocked_by, parent and rank it shows;
+// each merge's commit and time. It fails for a file a reader refuses, drops (a line read as no kind
+// the trace reads, an event read without its type's part) or misreads, for a captured file this
+// test holds no reading of, and for a reading of a file that is not there. Window two's ready line
+// moves an issue into awaiting_merge, a phase today's workflow lacks, and is read as written, for
+// the trace to fold.
 // A line of an older shape holds, for each member it lacks, the value ParseLogLine gives it: the
 // spec as the step, no changes request and no gated steps for the older gate registrations, and
 // the unrecorded cause for the failed claim with no cause.
@@ -118,6 +119,59 @@ func TestTheTraceReadsEveryCapturedShape(t *testing.T) {
 				t.Errorf("ParseMerges reads the page as\n  %s\nwant\n  %s", describeReading(got), describeReading(want))
 			}
 		})
+	}
+}
+
+// The trace reads, for each claim, the sessions the record shows running it: each session actor
+// whose title names a role's claim of an issue, from its first event in the window, whichever
+// issue that event is of, in the order of their first events, a fresh session of the same claim
+// after the one it replaced. It reads none from a person, from the daemon's own session, from the
+// controller's session, whose title names its project, or from a session outside Legion. At a
+// moment, a claim runs the latest of its sessions whose first event is at or before it, and before
+// the first, the first; a claim the record shows no session of runs none.
+func TestTheTraceReadsTheSessionsThatRanEachClaim(t *testing.T) {
+	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
+	b.boot(clock(9, 0))
+	first := recordedSession("ACME-1", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c1")
+	fresh := recordedSession("ACME-1", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c2")
+	controller := eventActor{Kind: "session", ID: "00000000-0000-4000-8000-0000000000c3",
+		Origin: &eventOrigin{Host: "omp", SessionTitle: "Legion controller · ACME"}}
+	outside := eventActor{Kind: "session", ID: "00000000-0000-4000-8000-0000000000c4", Origin: &eventOrigin{Host: "omp", SessionTitle: "session 1"}}
+	b.filedBy(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion}, controller)
+	b.rootPromoted(clock(9, 10), "ACME-1")
+	b.claimedBy(clock(9, 12), "ACME-1", first)
+	b.filedBy(clock(9, 30), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo",
+		Rank: "a1"}, first)
+	b.changed(clock(10, 0), "ACME-2", outside, func(issue *builtIssue) { issue.Title = "Write the header row" })
+	b.edit(clock(10, 30), "ACME-2", func(issue *builtIssue) { issue.Rank = "a2" })
+	b.claimedBy(clock(11, 0), "ACME-1", fresh)
+	trace, err := BuildTrace(b.build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RecordedSession{{ID: first.ID, Role: claim.RoleArchitect, First: clock(9, 12)}, {ID: fresh.ID, Role: claim.RoleArchitect, First: clock(11, 0)}}
+	if got := trace.Issues["ACME-1"].Sessions; !sameReading(got, want) {
+		t.Errorf("the trace reads the sessions of ACME-1's claims as %s, want %s", describeReading(got), describeReading(want))
+	}
+	if got := trace.Issues["ACME-2"].Sessions; len(got) != 0 {
+		t.Errorf("the trace reads the sessions of ACME-2's claims as %s, want none: the architect's filing of it is of ACME-1's claim",
+			describeReading(got))
+	}
+	for _, c := range []struct {
+		role claim.Role
+		at   time.Time
+		want string
+	}{
+		{claim.RoleArchitect, clock(9, 0), first.ID},
+		{claim.RoleArchitect, clock(9, 12), first.ID},
+		{claim.RoleArchitect, clock(10, 59), first.ID},
+		{claim.RoleArchitect, clock(11, 0), fresh.ID},
+		{claim.RoleArchitect, clock(14, 0), fresh.ID},
+		{claim.RolePlanner, clock(10, 0), ""},
+	} {
+		if got := trace.Issues["ACME-1"].sessionAt(c.role, c.at); got != c.want {
+			t.Errorf("ACME-1's %s claim runs the session %q at %s, want %q", c.role, got, c.at.Format("15:04"), c.want)
+		}
 	}
 }
 
@@ -245,13 +299,15 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 }
 
 // capturedEventReadings is what the trace reads from each captured Dispatch event, by its file
-// under events/, written out by hand from the event: its envelope, and the part of its payload its
-// type fills.
+// under events/, written out by hand from the event: its envelope, the claim its actor's session
+// title names (`Legion <role> · <KEY>`; the controller's title, `Legion controller · ACME`, and a
+// session outside Legion's, `session 1`, name none), and the part of its payload its type fills.
 func capturedEventReadings(t *testing.T) map[string]DispatchEvent {
 	t.Helper()
 	person := dispatch.Actor{Kind: "user", ID: "person-1@example.invalid"}
 	daemon := dispatch.Actor{Kind: "session", ID: "legion-daemon:ACME"}
 	session := func(id string) dispatch.Actor { return dispatch.Actor{Kind: "session", ID: id} }
+	runs := func(key string, role claim.Role) *SessionClaim { return &SessionClaim{Issue: key, Role: role} }
 	// Each captured rank is a run of z's and a short tail, Dispatch's fractional keys at the end of
 	// a long project's order.
 	rank := func(zs int, tail string) string { return strings.Repeat("z", zs) + tail }
@@ -265,7 +321,8 @@ func capturedEventReadings(t *testing.T) map[string]DispatchEvent {
 			Actor: daemon, At: capturedTime(t, "2026-11-12T02:48:18.305772Z"),
 			Issue: &DispatchIssueState{Changed: []string{"status"}, Status: "todo", Rank: rank(95, "k"), Labels: []string{"legion"}}},
 		"issue-updated-blocked-by.json": {ID: 891022, Seq: 3, Key: "ACME-58", Project: "ACME", Type: "issue.updated",
-			Actor: session("00000000-0000-4000-8000-000000000015"), At: capturedTime(t, "2026-11-21T01:54:00.399322Z"),
+			Actor: session("00000000-0000-4000-8000-000000000015"), ActorClaim: runs("ACME-15", claim.RoleArchitect),
+			At: capturedTime(t, "2026-11-21T01:54:00.399322Z"),
 			Issue: &DispatchIssueState{Changed: []string{"components", "blocked_by"}, Status: "triage",
 				BlockedBy: []string{"ACME-42", "ACME-52", "ACME-53"}, Parent: "ACME-15", Rank: rank(145, "Z")}},
 		"issue-updated-parent.json": {ID: 868069, Seq: 3, Key: "ACME-55", Project: "ACME", Type: "issue.updated",
@@ -285,13 +342,15 @@ func capturedEventReadings(t *testing.T) map[string]DispatchEvent {
 			Actor: person, At: capturedTime(t, "2026-11-20T22:07:57.233851Z"),
 			Verdict: &DispatchVerdict{Artifact: spec, Name: "spec.md", Version: 4, Reason: "text 3"}},
 		"ask-opened.json": {ID: 877110, Seq: 23, Key: "ACME-29", Project: "ACME", Type: "ask.opened",
-			Actor: session("00000000-0000-4000-8000-00000000000c"), At: capturedTime(t, "2026-11-20T20:47:49.424239Z"),
+			Actor: session("00000000-0000-4000-8000-00000000000c"), ActorClaim: runs("ACME-29", claim.RoleArchitect),
+			At:  capturedTime(t, "2026-11-20T20:47:49.424239Z"),
 			Ask: &DispatchAsk{ID: "00000000-0000-4000-8000-00000000000e", Kind: "question", State: "open"}},
 		"ask-answered.json": {ID: 880495, Seq: 40, Key: "ACME-29", Project: "ACME", Type: "ask.answered",
 			Actor: person, At: capturedTime(t, "2026-11-20T22:07:57.233851Z"),
 			Ask: &DispatchAsk{ID: "00000000-0000-4000-8000-00000000000a", Kind: "approval", State: "answered", Artifact: spec}},
 		"handoff-recorded.json": {ID: 890146, Seq: 70, Key: "ACME-29", Project: "ACME", Type: "handoff.recorded",
-			Actor: session("00000000-0000-4000-8000-00000000000f"), At: capturedTime(t, "2026-11-21T01:35:18.01727Z"),
+			Actor: session("00000000-0000-4000-8000-00000000000f"), ActorClaim: runs("ACME-29", claim.RolePlanner),
+			At:      capturedTime(t, "2026-11-21T01:35:18.01727Z"),
 			Handoff: &DispatchHandoff{ID: "00000000-0000-4000-8000-000000000010", Phase: "plan", Version: 1}},
 	}
 }

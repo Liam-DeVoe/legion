@@ -168,6 +168,36 @@ type IssueTrace struct {
 	// PullRequestNumber is the number a line names, 0 where none does.
 	PullRequest       time.Time
 	PullRequestNumber int
+	// Sessions is each session the record shows running a claim of the issue, in the order of
+	// their first events: a session that wrote an event of any issue under a title naming a role's
+	// claim of this one (DispatchEvent.ActorClaim). A claim runs a fresh session where its agent
+	// was started anew, so one role may have several.
+	Sessions []RecordedSession
+}
+
+// RecordedSession is one session the record shows running a claim: the session's id, which
+// Dispatch names an event's actor by and the daemon's claims table holds, the role of the claim,
+// and the moment of the session's first event in the window under that claim.
+type RecordedSession struct {
+	ID    string
+	Role  claim.Role
+	First time.Time
+}
+
+// sessionAt is the session the record shows running iss's role claim at at: the latest whose first
+// event is at or before at, else the first one after it; "" where the record shows none.
+func (iss *IssueTrace) sessionAt(role claim.Role, at time.Time) string {
+	found := ""
+	for _, session := range iss.Sessions {
+		if session.Role != role {
+			continue
+		}
+		if found != "" && session.First.After(at) {
+			break
+		}
+		found = session.ID
+	}
+	return found
 }
 
 // MergeForwardRound is one merge forward of an issue's conflicting head under a rule whose
@@ -646,6 +676,7 @@ func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 		backKind:    map[string]string{},
 		treeEntered: map[string]bool{},
 		named:       map[entryRef]bool{},
+		sessions:    map[string][]RecordedSession{},
 	}
 	for _, msg := range w.Lines {
 		b.held[msg] = true
@@ -741,6 +772,9 @@ type traceBuilder struct {
 	// root's generation as the lines leave it (childGenerations).
 	treeEntered map[string]bool
 	named       map[entryRef]bool
+	// sessions is each session the events show running a claim, by the claim's issue, in the order
+	// of their first events (sessionSeen); finish gives each issue of the trace its own.
+	sessions map[string][]RecordedSession
 }
 
 // entryRef is one entry of an issue's trace: its issue and its index in the issue's Entries.
@@ -815,12 +849,14 @@ func (iss *IssueTrace) Generation() uint64 {
 }
 
 // onEvent reads one Dispatch event: it is a fact of its issue, the filing of a child, a verdict on
-// a document, and, where it makes the issue a queued root or a child of a live tree, its entry.
+// a document, the first event of a session running a claim, and, where it makes the issue a queued
+// root or a child of a live tree, its entry.
 func (b *traceBuilder) onEvent(read readEvent) {
 	event := read.event
 	iss := b.issue(event.Key)
 	iss.Project = event.Project
 	iss.Dispatch = append(iss.Dispatch, event)
+	b.sessionSeen(event)
 	switch {
 	case event.Issue != nil:
 		title, repo := issueSubject(read.raw)
@@ -846,6 +882,20 @@ func (b *traceBuilder) onEvent(read readEvent) {
 		iss.Gates = append(iss.Gates, GateFact{At: event.At, Kind: kind, Artifact: event.Verdict.Artifact,
 			Version: event.Verdict.Version, Seq: event.Seq})
 	}
+}
+
+// sessionSeen records the session event's actor is where its title names a claim it runs
+// (DispatchEvent.ActorClaim), at the event, the first of that session under that claim: events are
+// read in time order.
+func (b *traceBuilder) sessionSeen(event DispatchEvent) {
+	ran := event.ActorClaim
+	if ran == nil {
+		return
+	}
+	if slices.ContainsFunc(b.sessions[ran.Issue], func(s RecordedSession) bool { return s.ID == event.Actor.ID && s.Role == ran.Role }) {
+		return
+	}
+	b.sessions[ran.Issue] = append(b.sessions[ran.Issue], RecordedSession{ID: event.Actor.ID, Role: ran.Role, First: event.At})
 }
 
 // issueSubject reads an issue event's title and repository, which ParseDispatchEvent leaves out:
@@ -1516,9 +1566,10 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 // finish builds what the reading left to build once every line and event is read: the generations
 // of the children that entered a live tree, the per-slot moves no record line took, each issue's
 // slot spans, the slots it infers held from before the reach, each issue's link, children and
-// person waits' ends, the slots it infers held at the window's start, its check of the slots
-// against the record's count there, each issue's worker starts and segments, and the ticks; and it
-// ends what stands at the window's end.
+// person waits' ends and the sessions of its claims, the slots it infers held at the window's
+// start, its check of the slots against the record's count there, each issue's worker starts and
+// segments, and the ticks; and it ends what stands at the window's end. A session whose title
+// names an issue the trace holds nothing else of runs no claim a replay writes, and is left out.
 func (b *traceBuilder) finish() {
 	b.childGenerations()
 	b.t.Slots = append(b.t.Slots, b.buffered...)
@@ -1535,6 +1586,7 @@ func (b *traceBuilder) finish() {
 		b.linkWaits(iss)
 		b.childrenWaitEnds(iss)
 		b.personWaitEnds(iss)
+		iss.Sessions = b.sessions[key]
 	}
 	b.inferStartSlots()
 	b.countSlots()
