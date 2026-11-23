@@ -94,10 +94,7 @@ func (s *supervision) stallBackstopOf(ctx context.Context, c supervise.Claim) (t
 	if !named {
 		return s.cfg.StallBackstopFor(c.Role), nil
 	}
-	if stepplan.IsLegionName(string(c.Role)) || c.Issue == "" || s.planRole == nil {
-		return bound, nil
-	}
-	_, planned, err := s.planRole(ctx, c.Issue, c.Role)
+	_, planned, err := s.planRole.of(ctx, c.Issue, c.Role)
 	if err != nil {
 		return 0, err
 	}

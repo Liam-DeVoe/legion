@@ -23,6 +23,17 @@ import (
 // taken, so a launch never waits on Dispatch.
 type planRoleReader func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
 
+// of is read's answer for role on issue where a plan can define the role, and no role where none
+// can: a role of Legion's, which no plan takes, a claim of no issue, and a nil read, which reads
+// nothing. It is the one guard of every read of a role of a plan (resolveClaimRole, roleBackends,
+// stallBackstopOf).
+func (read planRoleReader) of(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+	if read == nil || issue == "" || stepplan.IsLegionName(string(role)) {
+		return record.PlanRole{}, false, nil
+	}
+	return read(ctx, issue, role)
+}
+
 // planRoleIn is the reader for a caller that already holds tx, a transaction of the daemon's
 // store: the role is read through tx, since the pool refuses a caller that holds a connection a
 // second one of its own (store.ErrNestedAcquire). The state's snapshot is such a caller
@@ -74,15 +85,13 @@ type claimRole struct {
 func resolveClaimRole(ctx context.Context, read planRoleReader, roles []config.Role, backendFor func(claim.Role) runtime.Backend,
 	issue string, role claim.Role) (claimRole, error) {
 	var planned *stepplan.PlanRole
-	if read != nil && issue != "" && !stepplan.IsLegionName(string(role)) {
-		row, found, err := read(ctx, issue, role)
-		if err != nil {
-			return claimRole{}, err
-		}
-		if found {
-			defined := row.PlanRole()
-			planned = &defined
-		}
+	row, found, err := read.of(ctx, issue, role)
+	if err != nil {
+		return claimRole{}, err
+	}
+	if found {
+		defined := row.PlanRole()
+		planned = &defined
 	}
 	var d stepplan.Deployment
 	var deployed config.Role
@@ -160,10 +169,10 @@ type roleBackend func(ctx context.Context, issue string, role claim.Role) (runti
 func roleBackends(backendFor func(claim.Role) runtime.Backend, read planRoleReader) roleBackend {
 	return func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error) {
 		backend := backendFor(role)
-		if runtime.Of(backend) == runtime.BackendOmp || read == nil || issue == "" || stepplan.IsLegionName(string(role)) {
+		if runtime.Of(backend) == runtime.BackendOmp {
 			return backend, nil
 		}
-		_, found, err := read(ctx, issue, role)
+		_, found, err := read.of(ctx, issue, role)
 		if err != nil {
 			return "", fmt.Errorf("the harness of %s on %s: %w", role, issue, err)
 		}
