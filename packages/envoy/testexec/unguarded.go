@@ -27,16 +27,21 @@ import (
 // Such a place is a call of os.WriteFile or os.OpenFile whose mode has an execute bit. It is also
 // a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
 // function gives an execute bit with a Chmod: os.Chmod of the path the call names, spelled the
-// same way, or of a path an os.Rename of the function moved it to, or the Chmod method of the
-// variable or field the open assigned its file to, or os.Chmod of that one's Name(). The open may
-// be the value assigned or an argument of a call that wraps it, as must(os.CreateTemp(dir, ""))
-// does. A mode the check cannot evaluate as a constant, in the open or in the Chmod, is named too,
-// since it cannot tell that the mode holds no execute bit. So is a use of os.WriteFile,
-// os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file and mode it
-// cannot follow, and a dot import of os, whose calls it cannot tell from the file's own functions.
-// This package's own WriteFile is the one place left out. A directory below root that holds a
-// go.mod of its own is another module, which that module's check reads, and node_modules, vendor,
-// testdata and dot directories are not Go source of the module.
+// same way, or of a path an os.Rename of the function moved it to after the open, or the Chmod
+// method of an expression that holds the file, or os.Chmod of that one's Name(). The open holds
+// its file, and so does a call that wraps it, at any depth, as must(wrap(os.CreateTemp(dir, "")))
+// does. So does a variable or field an assignment of the function gave one of those, or a
+// variable or field that held the file at that point, as g := f does. When the value assigned is
+// a keyed composite literal or its address, so does each field the literal sets to one of those,
+// in a nested literal too: h := &holder{f: f} gives h.f the file. The check reads a variable or
+// field with its parentheses and stars dropped, so (*h).f is h.f. A mode the check cannot evaluate
+// as a constant, in the open or in the Chmod, is named too, since it cannot tell that the mode
+// holds no execute bit. So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
+// os.Chmod as a function value, whose file and mode it cannot follow, and a dot import of os,
+// whose calls it cannot tell from the file's own functions. This package's own WriteFile is the
+// one place left out. A directory below root that holds a go.mod of its own is another module,
+// which that module's check reads, and node_modules, vendor, testdata and dot directories are not
+// Go source of the module.
 //
 // Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
 // or one of its subdirectories does, and when it read no test file under root: a root that holds
@@ -48,6 +53,11 @@ import (
 //   - a Chmod in another function than the open, or of the same path spelled another way, as a
 //     variable that holds the filepath.Join the open spelled out, or the file's Name() kept in a
 //     variable;
+//   - a file handed to a name other than one an assignment of the open's own function gives it
+//     from the open, from a call that wraps it or from a variable or field that holds it, directly
+//     or through a keyed composite literal: a parameter of another top-level function, a channel,
+//     a positional composite literal, a slice that append adds it to, the address of a variable
+//     that holds it, or a copy of a struct value that holds it in a field;
 //   - a file opened inside a function that returns it, such as a helper that calls os.CreateTemp
 //     and returns the file, which its caller then gives an execute bit;
 //   - a file written by another function of package os (os.CopyFS) or by a function of another
@@ -212,26 +222,64 @@ func executableWrites(files *token.FileSet, file *ast.File) []int {
 // calls, rather than uses as a value, joins called.
 func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called map[*ast.SelectorExpr]bool) []*ast.CallExpr {
 	var opens, chmods []*ast.CallExpr
-	// byPath keys the opens of each file by how the declaration names its path: as an open or an
-	// os.Rename spells it, or <file>.Name() for the file an open assigned to <file>. byHandle keys
-	// the opens by the variable or field each assigned its *os.File to.
+	// byPath keys the opens of each file by how the declaration names its path (pathOf): as an
+	// open or an os.Rename spells it, or <file>.Name() for each variable or field <file> that holds
+	// the file. byHandle keys the opens by each variable or field that holds the file (handleOf).
 	byPath, byHandle := map[string][]*ast.CallExpr{}, map[string][]*ast.CallExpr{}
-	assigned := func(target, value ast.Expr) {
-		open := fileOpen(value, osFunc)
-		if handle := types.ExprString(target); open != nil && handle != "_" {
-			byHandle[handle] = append(byHandle[handle], open)
-			byPath[handle+".Name()"] = append(byPath[handle+".Name()"], open)
+	// held are the opens whose file expression holds: an open, or a call that wraps one, or a
+	// variable or field the declaration has given the file so far.
+	held := func(expression ast.Expr) []*ast.CallExpr {
+		if open := fileOpen(expression, osFunc); open != nil {
+			return []*ast.CallExpr{open}
+		}
+		return byHandle[handleOf(expression)]
+	}
+	// named are the opens whose file path names: the open a call holds when path is that call's
+	// Name(), or else the opens byPath keys under path.
+	named := func(path ast.Expr) []*ast.CallExpr {
+		if file := nameOf(path); file != nil {
+			if open := fileOpen(file, osFunc); open != nil {
+				return []*ast.CallExpr{open}
+			}
+		}
+		return byPath[pathOf(path)]
+	}
+	// assigned gives handle the opens value holds. A keyed composite literal, or its address,
+	// gives instead each field it sets, as <handle>.<field>, the opens the field's value holds.
+	var assigned func(handle string, value ast.Expr)
+	assigned = func(handle string, value ast.Expr) {
+		if handle == "_" {
+			return
+		}
+		literal, _ := ast.Unparen(value).(*ast.CompositeLit)
+		if address, ok := ast.Unparen(value).(*ast.UnaryExpr); ok && address.Op == token.AND {
+			literal, _ = ast.Unparen(address.X).(*ast.CompositeLit)
+		}
+		if literal == nil {
+			files := held(value)
+			byHandle[handle] = append(byHandle[handle], files...)
+			byPath[handle+".Name()"] = append(byPath[handle+".Name()"], files...)
+			return
+		}
+		for _, element := range literal.Elts {
+			if field, ok := element.(*ast.KeyValueExpr); ok {
+				if key, ok := field.Key.(*ast.Ident); ok {
+					assigned(handle+"."+key.Name, field.Value)
+				}
+			}
 		}
 	}
 	ast.Inspect(declaration, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.AssignStmt:
-			if len(node.Lhs) > 0 && len(node.Rhs) == 1 {
-				assigned(node.Lhs[0], node.Rhs[0])
+			// Each value goes to the target beside it; the values of one call go to the targets
+			// in order, so an open's file goes to the first.
+			for i := range min(len(node.Lhs), len(node.Rhs)) {
+				assigned(handleOf(node.Lhs[i]), node.Rhs[i])
 			}
 		case *ast.ValueSpec:
-			if len(node.Names) > 0 && len(node.Values) == 1 {
-				assigned(node.Names[0], node.Values[0])
+			for i := range min(len(node.Names), len(node.Values)) {
+				assigned(node.Names[i].Name, node.Values[i])
 			}
 		case *ast.CallExpr:
 			function := osFunc(node.Fun)
@@ -243,16 +291,16 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 				if !withoutExecuteBit(node.Args[2]) {
 					opens = append(opens, node)
 				}
-				path := types.ExprString(node.Args[0])
+				path := pathOf(node.Args[0])
 				byPath[path] = append(byPath[path], node)
 			case function == "Create" && len(node.Args) == 1:
-				path := types.ExprString(node.Args[0])
+				path := pathOf(node.Args[0])
 				byPath[path] = append(byPath[path], node)
 			case function == "Rename" && len(node.Args) == 2:
 				// The opens of the old path, as far as the declaration has made them, are now
 				// opens of the new one.
-				from, to := types.ExprString(node.Args[0]), types.ExprString(node.Args[1])
-				byPath[to] = append(byPath[to], byPath[from]...)
+				to := pathOf(node.Args[1])
+				byPath[to] = append(byPath[to], named(node.Args[0])...)
 			case function == "Chmod" && len(node.Args) == 2 && !withoutExecuteBit(node.Args[1]):
 				chmods = append(chmods, node)
 			case function == "" && len(node.Args) == 1:
@@ -265,28 +313,63 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 	})
 	for _, chmod := range chmods {
 		if osFunc(chmod.Fun) == "Chmod" {
-			opens = append(opens, byPath[types.ExprString(chmod.Args[0])]...)
+			opens = append(opens, named(chmod.Args[0])...)
 		} else {
-			opens = append(opens, byHandle[types.ExprString(chmod.Fun.(*ast.SelectorExpr).X)]...)
+			opens = append(opens, held(chmod.Fun.(*ast.SelectorExpr).X)...)
 		}
 	}
 	return opens
 }
 
 // fileOpen is the call of os.Create, os.CreateTemp or os.OpenFile whose *os.File value holds: the
-// value itself, or one argument of a call that wraps it, as must(os.CreateTemp(dir, "")) does. It
-// is nil for any other value.
+// value itself, or an argument, at any depth, of calls that wrap it, as
+// must(wrap(os.CreateTemp(dir, ""))) does. It is nil for any other value.
 func fileOpen(value ast.Expr, osFunc func(ast.Expr) string) *ast.CallExpr {
-	call, ok := value.(*ast.CallExpr)
+	call, ok := ast.Unparen(value).(*ast.CallExpr)
 	if !ok {
 		return nil
 	}
-	candidates := append([]ast.Expr{call}, call.Args...)
-	for _, candidate := range candidates {
-		if open, ok := candidate.(*ast.CallExpr); ok {
-			if function := osFunc(open.Fun); function == "Create" || function == "CreateTemp" || function == "OpenFile" {
-				return open
-			}
+	if function := osFunc(call.Fun); function == "Create" || function == "CreateTemp" || function == "OpenFile" {
+		return call
+	}
+	for _, argument := range call.Args {
+		if open := fileOpen(argument, osFunc); open != nil {
+			return open
+		}
+	}
+	return nil
+}
+
+// handleOf names the variable or field expression is, as the assignments and Chmods of a
+// declaration key it: its spelling with each parenthesis and star dropped, so (*h).f is h.f and
+// *p is p. Any other expression is its spelling.
+func handleOf(expression ast.Expr) string {
+	switch node := expression.(type) {
+	case *ast.ParenExpr:
+		return handleOf(node.X)
+	case *ast.StarExpr:
+		return handleOf(node.X)
+	case *ast.SelectorExpr:
+		return handleOf(node.X) + "." + node.Sel.Name
+	}
+	return types.ExprString(expression)
+}
+
+// pathOf names path as byPath keys it: its spelling, with the expression whose Name() it is named
+// by handleOf, so (*h).f.Name() is h.f.Name().
+func pathOf(path ast.Expr) string {
+	if file := nameOf(path); file != nil {
+		return handleOf(file) + ".Name()"
+	}
+	return types.ExprString(path)
+}
+
+// nameOf is the expression whose Name() path is, or nil when path is no call of a method Name
+// with no arguments.
+func nameOf(path ast.Expr) ast.Expr {
+	if call, ok := ast.Unparen(path).(*ast.CallExpr); ok && len(call.Args) == 0 {
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Name" {
+			return selector.X
 		}
 	}
 	return nil
