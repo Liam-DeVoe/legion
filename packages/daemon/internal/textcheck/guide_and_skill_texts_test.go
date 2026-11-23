@@ -90,14 +90,22 @@ func TestTheArchitectSkillReleasesAChildAfterItsReviewAndItsPlan(t *testing.T) {
 		{
 			path: "skills/legion-architect/references/decomposition.md",
 			want: []string{
-				"Release a child a person created as it is, once you have reviewed its spec, as no person did, and given it its plan:",
+				"Release a child a person created as it is, once you have reviewed its spec (no person did) and given it its plan:",
 				"then tell the child's architect with `envoy_publish` once it runs:",
-				"Release it before an issue above it is accepted: the daemon then refuses it until that issue closes. If that pull request cannot merge in time, ask a person (\"Every turn\") rather than release late.",
+				"Release it before an issue above it is accepted (`CHILD_UNDER_ACCEPTED_PARENT`). If it cannot merge in time, ask a person (\"Every turn\") rather than release late.",
 			},
 			gone: []string{
 				"Release a child a person created at once and as it is",
 				"then tell the child's architect with `envoy_publish`:",
 			},
+		},
+		{
+			path: "skills/legion-architect/references/wake-routing.md",
+			want: []string{
+				"File any new child it calls for after the red-team check, and release it as section 2 says.",
+				"files it after the red-team check with `--blocked-by <this issue>` and releases it as section 2 says.",
+			},
+			gone: []string{"release it at once", "releases it at once"},
 		},
 	} {
 		prose := proseOf(shippedText(t, text.path))
