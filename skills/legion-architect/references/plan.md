@@ -44,7 +44,8 @@ The table lists Legion's steps in the order of the default steps:
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name (`absent`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 
