@@ -592,8 +592,8 @@ a leg in pull request #3513's runs of 2026-11-15 (job 132690968751). The poll is
 by the move - it is the same bucket PUT, the same object write, read and delete, and the same
 60-attempt ceiling.
 
-The three flags after `-dir` are the image's, not weed's own defaults, and they come
-with the binary because its entrypoint does not: that image's /entrypoint.sh adds
+Two flags after `-dir` are the image's, not weed's own defaults, and they come with the
+binary because its entrypoint does not: that image's /entrypoint.sh adds
 `-volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024` to every
 `server` it runs, and copying the binary out left them behind. `-volume.max=0` is the
 one that bites. Without it a volume server takes 8 volumes and no more, the master
@@ -603,6 +603,18 @@ with `topo failed to pick 1 from 0 node candidates` and
 per stack, so the readiness wait's own bucket worked and ten upload rows of run
 42409479235 failed on 502s from the Dispatch server's PutObject, every one of them for
 a stack's own bucket.
+
+The third, `-master.volumePreallocate`, is left out. With it, each volume a bucket grows
+reserves its whole 1,024 MB on disk as it is made, one volume at a time on the one volume
+server, seven for each bucket's first write. On a runner whose disk is slow that reservation
+holds every other bucket's first write behind it: in attempt 2 of run 45261148766 (shard 1,
+job 138020620825, its record artifact's weed.log) each 1 GB volume took 2.5 to 3.5 s, one
+bucket's grow took 16.8 s, the next bucket's assign was cancelled at 10 s ("failing to
+assign a file id: rpc error: code = Canceled"), and `artifacts.e2e.ts` "the artifacts tab
+filter narrows rows by name and kind" failed on its upload's 502 twice. In main's merge run
+45242914629 and in attempt 1 of that run, every leg grew its 42 volumes with no grow longer
+than 1.0 s. Without the reservation a volume is an empty file that fills as it is written, as
+much as the suite's uploads need, and its 1,024 MB limit is unchanged.
 
 The two flags after those, `-master.raftHashicorp -master.raftBootstrap`, are this job's own.
 A one-node master on weed's default raft elects itself only after about 19 s: the log of
