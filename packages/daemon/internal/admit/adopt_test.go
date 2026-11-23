@@ -72,12 +72,12 @@ const childStartedOwnership = ". Its own architect starts with it and owns it wh
 // first phase where that phase keeps one (planning, on the default steps this test runs, does;
 // a first step that is an acceptance takes none) and stands in the waiting line until one is
 // free. Its tree's root frees none for it by opening its gate alone: a root keeps the row it was
-// started with until its work is past its review, until it is done, or until Dispatch takes it
-// out of the workflow, and gives it back
-// sooner only while it waits on another issue, such as an open child its first phase waits for
-// (releaseSlotsForWaits). That is why the pass below runs under a cap of 3, with a slot to spare
-// whatever else the tree holds. The assertion is about where the child ends up, which is the tree
-// it joined and never a tree of its own.
+// started with until it stands in accepting, retro or merging, which keep none, until it is done,
+// or until Dispatch takes it out of the workflow, and gives it back sooner only while it waits on
+// another issue, such as an open child its first phase waits for (releaseSlotsForWaits). That is
+// why the pass below runs under a cap of 3, with a slot to spare whatever else the tree holds.
+// The assertion is about where the child ends up, which is the tree it joined and never a tree of
+// its own.
 func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree string, generation uint64) {
 	t.Helper()
 	if got := issue(t, pool, child); got.Tree != tree || got.Generation != generation {
