@@ -1754,9 +1754,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
 // run has ended (ownerStepRuns). It waits besides until its architect's slot's gh files hold the
-// App of its step, the owner's own App among them; the runtime writes the slot first only for the
-// App of another role, and a pod whose launcher cannot say what its gh files hold holds back no
-// step of the owner's own App (ownerSlotHolds). The end of a step the owner did queues the write of
+// App of its step, the owner's own App among them, under either runtime. The slot is written first
+// only for a step of another role's App, and the runtime judges the App it writes as it writes it
+// (WriteSlotCredential); a pod whose launcher cannot say what its gh files hold holds back no step
+// of the owner's own App (ownerSlotHolds). The end of a step the owner did queues the write of
 // its slot back to its own App, and every notice to the architect queued after that write waits
 // until it ran (slotWritePending). A role topic with no live holder refuses the publish
 // (notify.ErrNoHolder): while the architect's claim can hold its role again — relaunching, a root
@@ -3150,10 +3151,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 // the owner does no step now, or one of its own App) the slot is written, once, for the App the
 // runtime judges in the serialization of the slot's writes (runtime.SlotCredentials), the owner's
 // own unless a step began since. Where another step of the owner's that needs another App runs
-// already, the row writes nothing: that step's owner-step writes the slot for its App
-// (ownerSlotHolds), and waits for this row, so the slot is written once at that end too. Notices to
-// the owner queued after the row wait for it (deliverNotice). A runtime that holds no slots has
-// nothing to write.
+// already, the row writes nothing: that step's owner-step has the runtime write the slot, which
+// judges that step's App while it runs (ownerSlotHolds), and waits for this row, so the slot is
+// written once at that end too. Notices to the owner queued after the row wait for it
+// (deliverNotice). A runtime that holds no slots has nothing to write.
 func (r *outbox) slotCredential(ctx context.Context, issue string, payload record.SuperviseRequest) error {
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
 	if !ok {
