@@ -1231,19 +1231,20 @@ const (
 // request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
 // whether a fact of kind fact asks for it. Each of two reasons asks, and one is enough:
 //
-//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in,
-//     implementing through merging (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
+//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in
+//     (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
 //     runs no checks on a head that conflicts with its base, so without a read a conflicting push
 //     stands with no CI and nobody is told; the read that finds the head CONFLICTING is the first
 //     of the two reads that confirm a conflict (R2).
-//   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
-//     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. In accepting, retro and merging
-//     (record.ConflictMergeNext) a conflict is acted on at once (R0). In testing and
-//     reviewing the record otherwise keeps the state the read before the push left: a record read
-//     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
-//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
-//     before it: there the head the implementer pushes next is read, by the reason above.
+//   - The fact is a push to the base, and the issue stands in a phase a merge forward is asked in
+//     but implementing: testing, reviewing, step, accepting, retro or merging. GitHub sends no
+//     event of the pull request while it computes whether the head still merges into the moved
+//     base. In accepting, retro and merging (record.ConflictMergeNext) a conflict is acted on at
+//     once (R0). In testing, reviewing and step the record otherwise keeps the state the read
+//     before the push left: a record read `blocked` while GitHub answered DIRTY, because no read
+//     followed the base push (INFRA-4315, dispatch://INFRA-4374/spec#b-r4). A base push reads
+//     nothing for an issue in implementing or before it: there the head the implementer pushes
+//     next is read, by the reason above.
 //
 // Every other fact asks nothing here, and so does a head move or a base push of an issue outside
 // those phases. The third reason a read is owed is not the gate's: the issue's review round
@@ -1257,7 +1258,7 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 	case MergeStateFactHeadMove:
 		return record.StandsIn(issue, record.MergeForwardPhases...)
 	case MergeStateFactBasePush:
-		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+		return record.StandsIn(issue, record.MergeForwardPhases...) && record.StandsAt(issue) != phase.Implementing
 	}
 	return false
 }

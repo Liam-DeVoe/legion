@@ -1140,8 +1140,9 @@ const (
 // issue that stands in none of them - admitted, awaiting_person or planning, where in the default
 // steps nothing is implemented yet, or out of the workflow - is asked for no merge forward,
 // wherever its task places the planner. They are also the phases a head move is read for a
-// conflict in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both
-// read it through StandsIn, so a hold from one of them counts as standing there.
+// conflict in, and, but implementing, where the next push of the head is read, the phases a push
+// to the base is read for (classify.MergeStateReadOwed), since that read is what can lead to the
+// ask. Both read it through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its

@@ -1322,8 +1322,8 @@ func told(row record.PhaseRow, r round) bool {
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
 // when the fact owes that read (askMergeStateFor, Config.ReadMergeState): the round the fact has
 // just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
-// or the fact moves the head of an issue in implementing through merging, which a conflict with
-// the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
+// or the fact moves the head of an issue in a phase a merge forward is asked in, which a conflict
+// with the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
 // It is the engine's own account of what the round is owed rather than a second reading of
 // the record beside it, and it runs on the commit, so the fact's transaction waits for no GitHub
 // call.
@@ -1382,8 +1382,8 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 }
 
 // askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
-// one of the gate's two reasons (classify.MergeStateReadOwed: a head move of an issue in
-// implementing through merging, a base push of an issue in testing through merging) or by the
+// one of the gate's two reasons (classify.MergeStateReadOwed: a head move of an issue in a phase a
+// merge forward is asked in, a base push of an issue in one of them but implementing) or by the
 // third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
 // head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
 // for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
