@@ -659,7 +659,7 @@ not match.
 `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
 when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
 not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
-in-process NATS (its line 47).
+in-process NATS (its line 53).
 
 ## dispatch_two_builds_go: The two-build job's Go step alone, behind a gate of
 
@@ -919,7 +919,7 @@ The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
 the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
 packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
-search_text_test.go:104-120 walks (the RULES row for
+search_text_test.go:107-123 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
@@ -1871,8 +1871,8 @@ own.
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
 Dispatch store's tests
-(store_test.go:28) and delivery's take their databases from storetest.Open
-(storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
+(store_test.go:36) and delivery's take their databases from storetest.Open
+(storetest.go:44-46), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.
@@ -1894,7 +1894,7 @@ Its own filter is the closure of this one package, not packages/envoy/**, so a c
 elsewhere in the module does not start this job. No Bun: no test file here runs it, and no
 job of this lane installs it. It runs under -race because a read that walks a live document
 without its lock races the room's peers, which no ordinary run shows
-(TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:39,
+(TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:40,
 LEGION-499).
 
 ## The cleanup detector run of the document service

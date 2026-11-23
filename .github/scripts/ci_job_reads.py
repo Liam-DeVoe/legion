@@ -790,9 +790,9 @@ RULES = {
         for d in REFGEN_API for path in files_but_tests(d)],
     f"{ENVOY}/cmd/cipherd/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/cipherd/main_test.go:347 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/cipherd/outage_test.go": [
-        run(ENVOY, ["./cmd/cipher"], "cmd/cipherd/outage_test.go:323-325 cmdtest.BuildCommand . in ../cipher", mode="build")],
+        run(ENVOY, ["./cmd/cipher"], "cmd/cipherd/outage_test.go:338-342 cmdtest.BuildCommand . in ../cipher", mode="build")],
     f"{ENVOY}/cmd/cipherd/multiprocess_test.go": reads((f"{ENVOY}/internal/cipher/store/migrations/*", "cmd/cipherd/multiprocess_test.go:501-502 countMigrations globs ../../internal/cipher/store/migrations/*.up.sql")),
-    f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
+    f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:1075")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
     # cipher-client's with them, which are reads here, and some of contracts' modules, which are
@@ -806,20 +806,20 @@ RULES = {
     ) + envoy_client_dep("packages/envoy-client/bin/dispatch.ts, which cmd/dispatch/twobuild_cli_test.go:42-46 runs, "
                          "imports src/dispatch-cli.ts"),
     # The two-build suite's stored-document half reads this tree's side of what each build holds
-    # (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+    # (documentSides, tree ../../internal/dispatch at :57); the previous build's side is the copy
     # packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
     f"{ENVOY}/cmd/dispatch/twobuild_documents_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json",
-         "cmd/dispatch/twobuild_documents_test.go:57 readManifest (os.ReadFile :112) of the current build's block manifest"),
+         "cmd/dispatch/twobuild_documents_test.go:59 readManifest (os.ReadFile :114) of the current build's block manifest"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/corpus/*.md",
-         "cmd/dispatch/twobuild_documents_test.go:70 the current build's corpus: corpusFiles :407 os.ReadDir, and "
-         ":485 os.ReadFile of each .md file it lists"),
+         "cmd/dispatch/twobuild_documents_test.go:72 the current build's corpus: corpusFiles :417 os.ReadDir, and "
+         ":504 os.ReadFile of each .md file it lists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile"),
+         "cmd/dispatch/twobuild_documents_test.go:73 the current build's reference fixtures, read by "
+         "referencesMarkdown :689 os.ReadFile"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile")),
+         "cmd/dispatch/twobuild_documents_test.go:73 the current build's reference fixtures, read by "
+         "referencesMarkdown :689 os.ReadFile")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
@@ -856,7 +856,7 @@ RULES = {
     f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
         (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
-        run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
+        run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:276 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
     f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1016")),
     f"{ENVOY}/internal/dispatch/api/delivery_measures_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
@@ -884,7 +884,7 @@ RULES = {
     # and this row is the declaration that holds that job's filter to what it reads.
     f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/architecture/push_test.go": reads(
-        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/architecture/push_test.go:490 os.ReadFile(pushFixture)")),
+        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/architecture/push_test.go:472 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/delivery/counts_in_documents_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/README.md",
          "internal/dispatch/delivery/counts_in_documents_test.go:22 docnumbers.Check under ../../../../.. "
@@ -892,12 +892,12 @@ RULES = {
          "it states must equal the constants that decide them")),
     f"{ENVOY}/internal/dispatch/delivery/intake_push_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/delivery/intake_push_test.go:55 os.ReadFile(pushFixture)")),
-    f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
+    f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:29")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
     f"{ENVOY}/internal/dispatch/graphcensus/store_drives_test.go": [
         run(ENVOY, ["./cmd/dispatch-seed"],
-            "internal/dispatch/graphcensus/store_drives_test.go:293 cmdtest.BuildCommand . in ../../../cmd/dispatch-seed, "
+            "internal/dispatch/graphcensus/store_drives_test.go:299 cmdtest.BuildCommand . in ../../../cmd/dispatch-seed, "
             "whose binary TestTheSizingCountsEveryTupleTheWritersAppend runs as the seed's three store writers",
             mode="build")],
     f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
@@ -926,7 +926,7 @@ RULES = {
     # matched no file under packages/daemon and a change to that fixture alone therefore ran the
     # daemon's jobs and not this one (dispatch://INFRA-1413).
     f"{ENVOY}/internal/dispatch/startup/started_test.go": reads(
-        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "internal/dispatch/startup/started_test.go:379")),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "internal/dispatch/startup/started_test.go:465")),
     # The deployer's own copy of the migration advisory key, in the shell script beside the Go
     # constant: the test reads both scripts out of packages/envoy/deploy/scripts.
     f"{ENVOY}/internal/dispatch/store/deployer_key_test.go": reads(
@@ -936,8 +936,8 @@ RULES = {
         (f"{ENVOY}/deploy/scripts/autodeploy_test.sh",
          "internal/dispatch/store/deployer_key_test.go:44 reads it the same way (:31)")),
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
-        (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:104-120 walks packages/envoy (infra included, "
-                             "node_modules and out passed over) and :114 opens each .md file, and no other")),
+        (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:107-123 walks packages/envoy (infra included, "
+                             "node_modules and out passed over) and :117 opens each .md file, and no other")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
@@ -976,10 +976,10 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:871-872 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:904-917 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
+        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:857-858 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/testnats/nats_test.go:890-903 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :903 reads every .go file it finds, test files included (dockerDriverFiles, called at :818 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :811)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),

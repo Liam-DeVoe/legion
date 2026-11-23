@@ -42,7 +42,7 @@ type fakeSession struct {
 // sendHold is a send the listener has taken and not yet answered: arrived closes when the first
 // send to the session reaches the listener, and the listener answers it, and every later one,
 // once the test frees the hold. The listener client gives up on an answer after its own window
-// (envoy's defaultTimeout, 5 s), so a test reads what it needs and frees the hold well inside it.
+// (envoy's CallWindow, 5 s), so a test reads what it needs and frees the hold well inside it.
 type sendHold struct {
 	arrived, release chan struct{}
 	once, freed      sync.Once

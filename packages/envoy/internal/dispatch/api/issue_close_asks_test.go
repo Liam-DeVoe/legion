@@ -558,7 +558,7 @@ func pastedBlockAsk(t *testing.T, handler http.Handler, issue, document string) 
 }
 
 // otherProcessHandler mounts the API stack of a second envoy-dispatch process on database, as
-// secondProcessHandler does, with a document service whose settle delay is an hour: nothing the
+// secondProcess does, with a document service whose settle delay is an hour: nothing the
 // second process writes is settled there while a test runs.
 func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()

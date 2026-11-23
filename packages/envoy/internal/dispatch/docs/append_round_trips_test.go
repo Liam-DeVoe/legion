@@ -401,8 +401,8 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	}
 
 	// The keystroke's batch lingers for the room's next keystrokes before it goes
-	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
-	// covers that, as it covers the rest of the room's own work.
+	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; testwait's
+	// one bound, which the wait below runs on, covers that, as it covers the room's other work.
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
 	storetest.WaitForLockWaiters(t, holder, 1)
 	written := make(chan error, 1)
