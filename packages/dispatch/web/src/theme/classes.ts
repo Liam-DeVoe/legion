@@ -1192,8 +1192,9 @@ export const switchThumbBg = "bg-white";
 export const brushBand = "border-sky-400/70 bg-sky-400/15";
 
 /** The delivery charts' bar fills: neutral where no target exists, met/missed against one, the
- *  faint p90 behind a median, the stub drawn on a day with nothing to measure, and the dashed
- *  target line. One token per role so the panel and the Pipeline page share one scale. */
+ *  faint p90 behind a median, the stub drawn on a day with nothing to measure, the dashed
+ *  target line, and the compare range's muted bar behind a day's (the Evals tab's charts). One
+ *  token per role so the panel and the Pipeline page share one scale. */
 export const chartBar = {
   neutral: "fill-sky-500 dark:fill-sky-400",
   met: "fill-emerald-500 dark:fill-emerald-400",
@@ -1203,6 +1204,16 @@ export const chartBar = {
   missedFaint: "fill-rose-200 dark:fill-rose-900",
   empty: "fill-slate-300 dark:fill-slate-600",
   targetLine: "stroke-slate-500 dark:stroke-slate-300",
+  compare: "fill-slate-200 dark:fill-slate-700",
+} as const;
+
+/** The Evals tab's per-day line: the window's line and points, and the compare range's muted
+ *  line and points drawn under them. */
+export const chartLine = {
+  stroke: "stroke-sky-500 dark:stroke-sky-400",
+  point: "fill-sky-500 dark:fill-sky-400",
+  compareStroke: "stroke-slate-300 dark:stroke-slate-600",
+  comparePoint: "fill-slate-300 dark:fill-slate-600",
 } as const;
 
 // ---------------------------------------------------------------------------------------------
