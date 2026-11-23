@@ -235,9 +235,10 @@ type Block =
 
 /**
  * The blocks of an eval's charts in the order they draw (spec R20, as the platform's page draws
- * them): each chart in the order its declaration lists it, and each section of a number after the
- * chart its `after` names, those after one chart in the order their numbers and sections are
- * declared; a section whose `after` names no chart of the eval stands after its own number.
+ * them): each chart in the order its declaration lists it, but every `prose` chart after all the
+ * others, in its own order, and each section of a number after the chart its `after` names, those
+ * after one chart in the order their numbers and sections are declared; a section whose `after`
+ * names no chart of the eval stands after its own number.
  */
 function blocksOf(
   specs: readonly DeclaredSpec[],
@@ -251,6 +252,7 @@ function blocksOf(
     return {
       key: specText(spec.id) ?? String(index),
       model: parts?.top ?? model,
+      prose: specText(spec.kind) === "prose",
       sections: (parts?.sections ?? []).flatMap((part) =>
         renderer === undefined
           ? []
@@ -267,7 +269,10 @@ function blocksOf(
       after.set(place, [...(after.get(place) ?? []), section]);
     }
   }
-  return charts.flatMap((chart): Block[] => [
+  return [
+    ...charts.filter((chart) => !chart.prose),
+    ...charts.filter((chart) => chart.prose),
+  ].flatMap((chart): Block[] => [
     { key: chart.key, kind: "chart", model: chart.model, spec: chart.spec },
     ...(after.get(chart.key) ?? []),
   ]);

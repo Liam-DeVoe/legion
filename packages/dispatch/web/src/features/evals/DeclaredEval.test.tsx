@@ -73,6 +73,20 @@ const NUMBER: DeclaredSpec = {
   title: "Where the proofs stand",
 };
 
+/** Two prose charts, which read no readings. */
+const METHOD: DeclaredSpec = {
+  id: "method",
+  kind: "prose",
+  paragraphs: ["Each arm runs the same forty tasks."],
+  title: "How it was measured",
+};
+const CAVEATS: DeclaredSpec = {
+  id: "caveats",
+  kind: "prose",
+  paragraphs: ["Arm B ran on a busier day."],
+  title: "What to keep in mind",
+};
+
 /** The logged eval `convergence` at `version`, whose list read answers `answer`. */
 function convergence(version: number, answer: string): EvalListItem {
   const item = evalItem("convergence", "experiment", [], version);
@@ -374,4 +388,19 @@ test("a number's section draws after the chart its `after` names, not inside the
   expect(section.querySelector('[data-number-place="incidents-open"]')).not.toBeNull();
   // Its caption is the section's title, so it draws no heading of its own.
   expect(section.querySelector("h5")).toBeNull();
+});
+
+// Spec R20: the platform draws every prose chart after all the eval's other charts.
+test("prose charts draw after all the other charts, in the order they are declared", async () => {
+  await drawDeclared([METHOD, TOKENS, CAVEATS, LATENCY], {
+    latency: bandFixture,
+    tokens: xyFixture,
+  });
+  await waitFor(() => within(declared()).getByRole("figure", { name: "Latency" }));
+  expect(chartsDrawn()).toEqual([
+    "convergence/tokens-over-time",
+    "convergence/latency-band",
+    "convergence/method",
+    "convergence/caveats",
+  ]);
 });
