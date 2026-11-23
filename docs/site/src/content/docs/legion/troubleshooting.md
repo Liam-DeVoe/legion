@@ -697,7 +697,7 @@ stands:
   restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
   it kept, or on a new one once supervise's `forgetSession` has dropped that, with fresh budgets,
   and the tree carries on at the generation and phase it stands at.
-- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
+- **Its root is parked or lingers, or an operator restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
   catch-up. To restart the tree by hand, write the same pair:
