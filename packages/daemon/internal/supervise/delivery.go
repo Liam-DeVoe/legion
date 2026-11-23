@@ -277,13 +277,13 @@ type sentences struct{ abandoned, ended, role bool }
 func (d Delivery) message(c Claim) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
-	if relaunch {
-		// The daemon's own delivery says what the claim's untold records say as they stand now:
-		// the record of the last let-go where it tells, and the role change in front of it.
+	switch {
+	case relaunch && c.EndedWork.Tells():
+		text, carried.ended = RelaunchSentence(c.EndedWork), true
+	case relaunch && c.RoleChange.Tells():
+		// The daemon's own delivery of a claim whose let-go's record no longer tells says the role
+		// change alone: its sentence, put in front below, is the whole of the prompt.
 		text = ""
-		if c.EndedWork.Tells() {
-			text, carried.ended = RelaunchSentence(c.EndedWork), true
-		}
 	}
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
