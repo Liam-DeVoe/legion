@@ -9,4 +9,4 @@ body: |-
     drives a Legion role's gh and git through its forwarder and the broker's proxy on the local stack.
 time: 2026-11-23T13:04:50Z
 custom:
-    Issue: role-forwarder
+    Issue: pr5233

@@ -13,4 +13,4 @@ body: |-
     App token is minted as before.
 time: 2026-11-23T13:04:50Z
 custom:
-    Issue: role-forwarder
+    Issue: pr5233
