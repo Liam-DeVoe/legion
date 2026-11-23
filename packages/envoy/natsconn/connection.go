@@ -1,4 +1,12 @@
-package natsurl
+// Package natsconn holds how a NATS client prints a connection's failure and the server it
+// reached (ConnectionClass, ConnectionError, ServerPosition): by a class of fixed words and a
+// position, never by the error's text or any part of a server's URL, for the bus, natsprobe, the
+// load generator and the daemon's connection alike. It reads the NATS client's own errors, so it
+// links nats.go; the URL rules every other caller needs stay in natsurl, which links no NATS
+// client, so a binary that checks a URL and dials no NATS server (agent-secrets, through the
+// broker's issuer rule) links none. Like natsurl and natsversion, it is a door for the daemon's
+// module, which Go's internal rule keeps out of the envoy module's internal packages.
+package natsconn
 
 import (
 	"context"
@@ -36,8 +44,8 @@ const (
 // TLS certificate's name check (x509.HostnameError), a port net cannot read (net.AddrError,
 // `dial tcp: address <port>: invalid port`) - and where a caller split its list on commas, a
 // credential holding a comma leaves its head a URL of its own, so that host can be a piece of a
-// credential: the tail rule (Check) lets such a list through when the part after the comma names a
-// NATS scheme, since a later URL that names one is one a person writes.
+// credential: the tail rule (natsurl.Check) lets such a list through when the part after the comma
+// names a NATS scheme, since a later URL that names one is one a person writes.
 //
 // The classes are the system's own words for a failed call (a syscall.Errno: "connection refused",
 // "connection reset by peer"), EOF, a TLS alert's own words ("remote error: tls: certificate

@@ -20,11 +20,10 @@
 // query in its handshake (nats.go v1.55.0 ws.go wsInitHandshake), and the daemon's configuration
 // takes a path.
 //
-// It also holds how a NATS client prints a connection's failure and the server it reached
-// (ConnectionClass, ConnectionError, ServerPosition): by a class of fixed words and a position,
-// never by the error's text or any part of a server's URL, for the bus, natsprobe, the load
-// generator and the daemon's connection alike. Like natsversion, it is a door for the daemon's
-// module, which Go's internal rule keeps out of the envoy module's internal packages.
+// It links no NATS client, so a binary that only checks a URL (agent-secrets, through the broker's
+// issuer rule) links none; how a NATS client prints a connection's failure, which reads the
+// client's own errors, is natsconn's. Like natsversion, it is a door for the daemon's module, which
+// Go's internal rule keeps out of the envoy module's internal packages.
 package natsurl
 
 import (

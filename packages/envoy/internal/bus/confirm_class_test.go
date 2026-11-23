@@ -9,7 +9,7 @@ import (
 
 // A core publish whose flush saw the connection's last error change to anything but this
 // publish's denial is unconfirmed, and its error names that last error by its class
-// (natsurl.ConnectionClass), never by its text: a last error naming a server by a made-up host
+// (natsconn.ConnectionClass), never by its text: a last error naming a server by a made-up host
 // prints none of the host, and errors.Is still reads it beneath. The control is a server's named
 // refusal, which prints as the server wrote it.
 func TestAnUnconfirmedPublishNamesTheLastErrorByItsClass(t *testing.T) {

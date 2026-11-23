@@ -14,7 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // reconnectErrEvery is how often one connection reports a failed reconnect attempt. nats.go
@@ -151,7 +151,7 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 				<-*gate
 			}
 			refusals.reset()
-			slog.Info("envoy nats connected", slog.String("name", name), slog.String("server", natsurl.ServerPosition(urls, nc.ConnectedUrl())))
+			slog.Info("envoy nats connected", slog.String("name", name), slog.String("server", natsconn.ServerPosition(urls, nc.ConnectedUrl())))
 			if connectedCB != nil {
 				connectedCB(nc)
 			}
@@ -238,12 +238,12 @@ func authorizationRefusal(err error) bool {
 }
 
 // logRefusal writes the line a refused credential is reported with, naming the servers by their
-// count and the refusal by its class (natsurl.ConnectionClass), as the reconnect failure's line does.
+// count and the refusal by its class (natsconn.ConnectionClass), as the reconnect failure's line does.
 func logRefusal(name string, urls []string, err error) {
 	slog.Error("envoy nats authorization refused",
 		slog.String("name", name),
 		slog.Int("servers", len(urls)),
-		slog.String("error", natsurl.ConnectionClass(err)))
+		slog.String("error", natsconn.ConnectionClass(err)))
 }
 
 // handshaking says whether nc is in a reconnect's handshake (CONNECTING) or between its attempts
@@ -290,9 +290,9 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	opts.ReconnectBufSize = -1
 	opts.DisconnectedErrCB = func(_ *nats.Conn, err error) {
 		if err != nil {
-			// The cause by its class (natsurl.ConnectionClass): a dial or a read through the
+			// The cause by its class (natsconn.ConnectionClass): a dial or a read through the
 			// SOCKS5 proxy names the server by the host its URL spells.
-			slog.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", natsurl.ConnectionClass(err)))
+			slog.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", natsconn.ConnectionClass(err)))
 		} else {
 			slog.Info("envoy nats disconnected", slog.String("name", name))
 		}
@@ -302,7 +302,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	}
 	// A reconnect attempt that fails is otherwise silent: nats.go retries in place forever, so a
 	// broker that is down leaves no line at all in the process's log. The line names how many
-	// servers this client was configured with (urls) and the failure's class (natsurl.ConnectionClass),
+	// servers this client was configured with (urls) and the failure's class (natsconn.ConnectionClass),
 	// never a server's URL or the error's text, which names the server it failed at by its host
 	// (refuseRemoteNATS says why that host can be a piece of a credential). The line goes through
 	// the package-level slog, like every other bus line, because a listener process test fails if a
@@ -317,7 +317,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		slog.Warn("envoy nats reconnect attempt failed",
 			slog.String("name", name),
 			slog.Int("servers", len(urls)),
-			slog.String("error", natsurl.ConnectionClass(err)))
+			slog.String("error", natsconn.ConnectionClass(err)))
 	}
 	opts.ReconnectErrCB = func(_ *nats.Conn, err error) { reconnectAttemptFailed(err) }
 	opts.ReconnectedCB = func(nc *nats.Conn) {
@@ -326,8 +326,8 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		throttle.reset()
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
 		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl), so the line names
-		// the server by its position alone (natsurl.ServerPosition).
-		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("server", natsurl.ServerPosition(urls, nc.ConnectedUrl())))
+		// the server by its position alone (natsconn.ServerPosition).
+		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("server", natsconn.ServerPosition(urls, nc.ConnectedUrl())))
 		if reconnectCB != nil {
 			reconnectCB(nc)
 		}
@@ -368,13 +368,13 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 			// does; a replaced connection binds the same durable again without that check.
 			level = slog.LevelWarn
 		}
-		// The error by its class (natsurl.ConnectionClass), as every bus line names one: nats.go's
+		// The error by its class (natsconn.ConnectionClass), as every bus line names one: nats.go's
 		// own fixed words and a server's refusal print as they are, and an error nats.go formatted
 		// from what the server sent, or any other, by a fixed class.
 		if sub != nil {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", natsurl.ConnectionClass(err)))
+			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", natsconn.ConnectionClass(err)))
 		} else {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", natsurl.ConnectionClass(err)))
+			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", natsconn.ConnectionClass(err)))
 		}
 		if asyncErrCB != nil {
 			asyncErrCB(nc, err)
@@ -404,7 +404,7 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // dial error comes back with the proxy's address but not the setting, and a refused dial as
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
-// or a DNS name. A failed connect prints as its class alone (natsurl.ConnectionError): a
+// or a DNS name. A failed connect prints as its class alone (natsconn.ConnectionError): a
 // dial's error names the server by the host its URL spells, the proxy's among them, and that host
 // can be a piece of a credential (refuseRemoteNATS).
 func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
@@ -488,5 +488,5 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {
 		lastErr = cmp.Or(dialer.LastError(), lastErr)
 	}
-	return nil, natsurl.ConnectionError(lastErr)
+	return nil, natsconn.ConnectionError(lastErr)
 }

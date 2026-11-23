@@ -152,6 +152,7 @@ on:
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/natsurl/*'
+      - 'packages/envoy/natsconn/*'
       - 'packages/envoy/fileerr/*'
       - 'packages/envoy/pgdsn/*'
       - 'packages/envoy/steprecord/*'

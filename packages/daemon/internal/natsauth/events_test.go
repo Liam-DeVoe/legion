@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/natsconn"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -326,7 +326,7 @@ func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
 	}
 }
 
-// The asynchronous error lines name their error by its class (natsurl.ConnectionClass), as every
+// The asynchronous error lines name their error by its class (natsconn.ConnectionClass), as every
 // NATS line does: an error nats.go formatted from what the server sent (its parser's, quoting the
 // bytes), or any other it has no class for, prints none of its text; nats.go's own fixed words print
 // as they are. The control is the slow consumer's error, which prints whole.
@@ -338,7 +338,7 @@ func TestAnAsynchronousErrorPrintsItsClass(t *testing.T) {
 		want string
 	}{
 		{"the parser's error, quoting the bytes the server sent", errors.New("nats: Parse Error [0]: 'XYZ " + marker + "'"), "a protocol error from the server"},
-		{"an error with no class", errors.New("websocket read of " + marker + " failed"), natsurl.ConnectionUnprinted},
+		{"an error with no class", errors.New("websocket read of " + marker + " failed"), natsconn.ConnectionUnprinted},
 		{"control: the slow consumer's error", nats.ErrSlowConsumer, nats.ErrSlowConsumer.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

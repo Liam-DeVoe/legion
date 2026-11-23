@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsurl"
 )
@@ -130,7 +131,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// a dial's error names the server by the host and port its URL spells, and where a comma
 		// in a credential split --servers, that host or port is a piece of the credential, which
 		// natsurl.Check lets through when the part after the comma names a NATS scheme.
-		fmt.Fprintf(stderr, "natsprobe: connect: %s (tried the %d servers --servers names)\n", natsurl.ConnectionClass(err), len(urls))
+		fmt.Fprintf(stderr, "natsprobe: connect: %s (tried the %d servers --servers names)\n", natsconn.ConnectionClass(err), len(urls))
 		return exitFailed
 	}
 	defer nc.Close()
@@ -147,7 +148,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		err = nc.Flush()
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "natsprobe: %s\n", natsurl.ConnectionClass(err))
+		fmt.Fprintf(stderr, "natsprobe: %s\n", natsconn.ConnectionClass(err))
 		return exitFailed
 	}
 	select {

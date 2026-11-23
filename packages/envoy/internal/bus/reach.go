@@ -38,7 +38,7 @@ var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this mac
 // names this machine's.
 //
 // The refusal names the URL by its position in urls alone (`NATS server URL 2 of 3`), never by any
-// of its text, and so does every line the bus logs about a server (serverOf, natsurl.ConnectionClass). A
+// of its text, and so does every line the bus logs about a server (serverOf, natsconn.ConnectionClass). A
 // caller splits its list on commas, so a token or password holding ",nats://" (or tls, ws or wss)
 // leaves its head a URL of its own, whose host is a piece of the credential: natsurl's tail rule
 // lets such a list through, since a later URL that carries a user name and names a NATS scheme is

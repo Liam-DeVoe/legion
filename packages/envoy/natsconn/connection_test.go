@@ -1,4 +1,4 @@
-package natsurl
+package natsconn
 
 import (
 	"context"

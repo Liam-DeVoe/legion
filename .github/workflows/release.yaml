@@ -114,7 +114,7 @@ env:
     packages/envoy/internal/oauthrefusal/ packages/envoy/internal/oidc/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
+    packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
     packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum

@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/natsurl"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -164,7 +165,7 @@ func (s source) seed() (string, error) {
 // beside detectSilentCuts, so a caller's own nats.Name does not win here. A server URL whose
 // userinfo cannot be read as userinfo is refused naming it by its position in urls alone
 // (unreadableURL), before any dial. A connect that fails prints as its class alone
-// (natsurl.ConnectionError), never nats.go's text, which names the server it failed at by its host
+// (natsconn.ConnectionError), never nats.go's text, which names the server it failed at by its host
 // and port; errors.Is and errors.As still read the error beneath it.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if err := unreadableURL(urls); err != nil {
@@ -186,7 +187,7 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	options = append(options, detectSilentCuts, nats.Name(name))
 	conn, err := nats.Connect(servers, options...)
 	if err != nil {
-		return nil, natsurl.ConnectionError(err)
+		return nil, natsconn.ConnectionError(err)
 	}
 	return conn, nil
 }
@@ -272,10 +273,10 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 // or — for a caller that has not also set ReconnectForever — reconnects exhausted), once, with
 // its cause; at warn, every other asynchronous error, with the subject of the subscription it
 // names, and every disconnect, with its cause; at info, every reconnect, with the server, named by
-// its position in the servers the connection was configured with (natsurl.ServerPosition), never by
+// its position in the servers the connection was configured with (natsconn.ServerPosition), never by
 // its URL: nats.go presents a URL's user name as the connection's token, ConnectedUrlRedacted masks
 // only a password, and the rest of a URL is a person's to write. Every error and cause prints as
-// its class (natsurl.ConnectionClass): a dial's error names the server by its host and port, and an
+// its class (natsconn.ConnectionClass): a dial's error names the server by its host and port, and an
 // error nats.go formats from what the server sent quotes those bytes; nats.go's own fixed words and
 // a server's refusal, a permission's subject among them, print as they are. nats.go's
 // default handler writes a refusal to stderr unlabelled and nothing for the rest. It owns the
@@ -292,23 +293,23 @@ func LogEvents(log *slog.Logger) nats.Option {
 				if sub != nil {
 					subject = sub.Subject
 				}
-				log.Warn("NATS reported an asynchronous error", "subject", subject, "error", natsurl.ConnectionClass(err))
+				log.Warn("NATS reported an asynchronous error", "subject", subject, "error", natsconn.ConnectionClass(err))
 				return
 			}
 			operation, subject := "", ""
 			if m := permissionRefusal.FindStringSubmatch(err.Error()); m != nil {
 				operation, subject = strings.ToLower(m[1]), m[2]
 			}
-			log.Error("NATS refused the daemon a permission: its NATS user lacks that grant", "operation", operation, "subject", subject, "error", natsurl.ConnectionClass(err))
+			log.Error("NATS refused the daemon a permission: its NATS user lacks that grant", "operation", operation, "subject", subject, "error", natsconn.ConnectionClass(err))
 		}
 		// A nil cause is a terminal close, which ClosedCB logs with its cause.
 		o.DisconnectedErrCB = func(_ *nats.Conn, err error) {
 			if err != nil {
-				log.Warn("NATS connection lost", "error", natsurl.ConnectionClass(err))
+				log.Warn("NATS connection lost", "error", natsconn.ConnectionClass(err))
 			}
 		}
 		o.ReconnectedCB = func(c *nats.Conn) {
-			log.Info("NATS connection restored", "server", natsurl.ServerPosition(servers, c.ConnectedUrl()))
+			log.Info("NATS connection restored", "server", natsconn.ServerPosition(servers, c.ConnectedUrl()))
 		}
 		// The daemon's own Close runs no callback (NoCallbacksAfterClientClose), so a close here is
 		// terminal and its cause is the connection's LastError. A permission refusal or a slow
@@ -316,7 +317,7 @@ func LogEvents(log *slog.Logger) nats.Option {
 		o.NoCallbacksAfterClientClose = true
 		o.ClosedCB = func(c *nats.Conn) {
 			if err := c.LastError(); err != nil {
-				log.Error("NATS connection closed", "error", natsurl.ConnectionClass(err))
+				log.Error("NATS connection closed", "error", natsconn.ConnectionClass(err))
 			}
 		}
 		return nil
@@ -330,14 +331,14 @@ func LogEvents(log *slog.Logger) nats.Option {
 // caused nothing, and when a closed conn has none. The join is %w, not %v: a caller that closes
 // conn right after a failed call and then wraps with WithLastError can still match the refusal
 // with errors.Is (nats.ErrPermissionViolation, say), since Close does not clear LastError. The last
-// error prints as its class (natsurl.ConnectionError): when reconnects ran out it is a dial's,
+// error prints as its class (natsconn.ConnectionError): when reconnects ran out it is a dial's,
 // which names the server by its host and port.
 func WithLastError(err error, conn *nats.Conn) error {
 	if !conn.IsClosed() {
 		return err
 	}
 	if last := conn.LastError(); last != nil {
-		return fmt.Errorf("%w (the NATS connection's last error: %w)", err, natsurl.ConnectionError(last))
+		return fmt.Errorf("%w (the NATS connection's last error: %w)", err, natsconn.ConnectionError(last))
 	}
 	return err
 }

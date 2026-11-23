@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // ErrPublishDenied is returned, wrapping nats.ErrPermissionViolation and the server's own text,
@@ -163,7 +163,7 @@ func confirmPublished(conn *nats.Conn, subject string, before connState) error {
 
 // confirmedAcross is confirmPublished's judgment of a core publish to subject from the connection's
 // state observed before the publish and after its flush. The connection's last error, when it
-// changed and is no denial of this publish, prints by its class (natsurl.ConnectionClass), as every
+// changed and is no denial of this publish, prints by its class (natsconn.ConnectionClass), as every
 // NATS line of the bus does, and stays beneath for errors.Is: a server's -ERR that nats.go names no
 // refusal for sets the last error to the server's text just before nats.go closes the connection,
 // so an observation between the two holds that text, and nats.go's own fixed words and a server's
@@ -179,7 +179,7 @@ func confirmedAcross(subject string, before, after connState) error {
 		return denied
 	}
 	return fmt.Errorf("bus: %w: NATS reported an error during the publish to %q: %w",
-		ErrPublishUnconfirmed, subject, natsurl.ConnectionError(after.lastError))
+		ErrPublishUnconfirmed, subject, natsconn.ConnectionError(after.lastError))
 }
 
 // publishDenial names err as ErrPublishDenied when it is the server's refusal of a publish to

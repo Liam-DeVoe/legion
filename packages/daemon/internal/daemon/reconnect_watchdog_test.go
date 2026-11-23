@@ -86,7 +86,7 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 // here outlasts warnEvery itself, so a broken reset's leftover clocks would already be overdue the
 // moment the second disconnect begins, and would warn within one poll tick of it — which the
 // no-warn check below would catch. The two outages' errors print as two classes
-// (natsurl.ConnectionClass), which tell their warns apart.
+// (natsconn.ConnectionClass), which tell their warns apart.
 func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	const firstOutage, secondOutage = "nats: no servers available for connection", "connection refused"
 	logBuf := &syncBuffer{}

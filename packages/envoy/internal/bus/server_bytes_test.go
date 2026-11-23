@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // fakeNATS is the address of a server that admits one client, answers its first PING, and then
@@ -91,7 +91,7 @@ func TestAServersUnreadableBytesReachNoBusLine(t *testing.T) {
 				for i := 0; i+10 <= len(marker); i++ {
 					require.NotContains(t, strings.Join(mine, "\n"), marker[i:i+10], "a bus line prints a run of the made-up marker")
 				}
-				require.Equal(t, natsurl.ConnectionProtocolError, disconnect()["error"], "the disconnect's cause is not the protocol class")
+				require.Equal(t, natsconn.ConnectionProtocolError, disconnect()["error"], "the disconnect's cause is not the protocol class")
 				return
 			}
 			// The fake answers only the handshake's PING, so the control flushes nothing: the client
@@ -114,8 +114,8 @@ func TestTheAsyncErrorLinePrintsItsClass(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"the parser's error, quoting the bytes the server sent", fmt.Errorf("nats: Parse Error [%d]: '%s'", 0, "XYZ "+marker), natsurl.ConnectionProtocolError},
-		{"an error with no class", errors.New("websocket read of " + marker + " failed"), natsurl.ConnectionUnprinted},
+		{"the parser's error, quoting the bytes the server sent", fmt.Errorf("nats: Parse Error [%d]: '%s'", 0, "XYZ "+marker), natsconn.ConnectionProtocolError},
+		{"an error with no class", errors.New("websocket read of " + marker + " failed"), natsconn.ConnectionUnprinted},
 		{"control: the slow consumer's error", nats.ErrSlowConsumer, nats.ErrSlowConsumer.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
