@@ -178,6 +178,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
+  instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each
+  gated row skips as with `skipWithout`, naming the program, and under `GITHUB_ACTIONS` each fails
+  by its own name, naming the program, since the job that runs those tests carries every program
+  they need, and a skip there would be a green job with the proof gone (`skipOutsideCI` in
+  `packages/daemon/internal/launcher/rolenamespace_test.go` is the same rule). Its `reason` takes a
+  sentence of the caller's own (a library such as libpq), and its `never` names programs whose
+  absence fails the rows on any host. A single row that never skips for a program calls
+  `requireHostTools` in its body instead: the rows that run python3 do one or the other.
+
 - A test that requires a command to have left in place a signal it was started ignoring, as
   `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
   `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
