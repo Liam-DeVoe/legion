@@ -724,14 +724,17 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const p2Issue = await createIssue({ project: core, title: "Earlier P2 issue" });
+  // The reader is a person of the row's own (`rowPerson`): the Waiting on agents band is counted
+  // whole, and it holds exactly this row's two asks only in a list no other row's questions reach.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const p2Issue = await createIssue({ project: core, title: "Earlier P2 issue" }, { login: me });
   await patchIssue(p2Issue.key, { priority: 2 });
   const p2Ask = await createAsk(p2Issue.key, { question: "Earlier P2 ask" }, session);
-  const p0Issue = await createIssue({ project: core, title: "Later P0 issue" });
+  const p0Issue = await createIssue({ project: core, title: "Later P0 issue" }, { login: me });
   const p0Ask = await createAsk(p0Issue.key, { question: "Later P0 ask" }, session);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${p0Issue.key}`);
@@ -743,8 +746,16 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
     await expect.poll(() => getIssue(p0Issue.key)).toMatchObject({ priority: 0 });
     // Clarified P0 first, so recency alone would put the P2 ask on top: the order under test is
     // the priority one, not the one the writes happened to land in.
-    await createComment(p0Issue.key, { ask_id: p0Ask.id, body: `Clarify ${p0Ask.id}` });
-    await createComment(p2Issue.key, { ask_id: p2Ask.id, body: `Clarify ${p2Ask.id}` });
+    await createComment(
+      p0Issue.key,
+      { ask_id: p0Ask.id, body: `Clarify ${p0Ask.id}` },
+      { login: me }
+    );
+    await createComment(
+      p2Issue.key,
+      { ask_id: p2Ask.id, body: `Clarify ${p2Ask.id}` },
+      { login: me }
+    );
 
     // The turn bands are a **Group by** choice and the order is a **Sort by** one; both live in
     // the address.
@@ -1901,8 +1912,11 @@ test("an ask card's time stays with its author, never opening a line of its own 
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Provenance line" });
+  // The reader is a person of the row's own (`rowPerson`): the row reads the first ask card of
+  // the reader's Inbox, which is this row's question only in a list that holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Provenance line" }, { login: me });
   // A live session names itself in a sentence, so the author fills the line and the time is what
   // the wrap lands on.
   const author = {
@@ -1918,7 +1932,7 @@ test("an ask card's time stays with its author, never opening a line of its own 
   };
   await createAsk(issue.key, { question: "Where does the time sit?" }, author);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");

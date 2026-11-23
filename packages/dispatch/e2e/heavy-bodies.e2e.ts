@@ -42,7 +42,7 @@ import {
 } from "./heavy-bodies";
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -348,7 +348,13 @@ test("Conversation draws a message of 8,000 list items without holding the main 
 test("the Inbox's ask card draws a reply of 8,000 list items without holding the main thread for a second", async ({
   browser,
 }) => {
-  const issue = await seedIssue("A heavy ask thread");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): from 1280 px the Inbox
+  // draws a card for its first row alone, in its reading column, and that row is this row's
+  // question only in a list that holds no other row's.
+  const me = rowPerson("alice");
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "A heavy ask thread" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which shape should the list take?", urgency: "med" },
@@ -356,7 +362,7 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
   );
   await createComment(issue.key, { ask_id: ask.id, body: plainList }, agent);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const card = page.getByTestId(`ask-${ask.id}`);

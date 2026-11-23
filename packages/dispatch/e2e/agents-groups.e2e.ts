@@ -21,7 +21,7 @@ import {
 } from "./api";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
-import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -108,13 +108,14 @@ async function seedActivity(sessionID: string, issue: string, agoMs: number): Pr
   await setEventCreatedAt(written.id, new Date(Date.now() - agoMs).toISOString());
 }
 
-/** One unread reply of this session's to the reader, which is what keeps a row for a session
- *  that has since left the registry. */
-async function seedUnreadReply(sessionID: string): Promise<void> {
-  const asked = await createAgentMessage(sessionID, {
-    body: "How far along?",
-    delivery: "aside",
-  });
+/** One unread reply of this session's to `reader`, the person who asked it, which is what keeps
+ *  a row for a session that has since left the registry. */
+async function seedUnreadReply(sessionID: string, reader: string): Promise<void> {
+  const asked = await createAgentMessage(
+    sessionID,
+    { body: "How far along?", delivery: "aside" },
+    { login: reader }
+  );
   await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: "Done and gone." },
@@ -266,12 +267,16 @@ test("a session with an open ask is in Needs you however long the registry has b
 test("an ended session that replied is under Replied, no longer connected and in no group", async ({
   browser,
 }) => {
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a reply is unread for
+  // the person who asked, and the worker's review corpus leaves alice an unread reply of its
+  // planner's (`reviewCorpus`), which no longer connected sessions list beside this row's.
+  const me = rowPerson("alice");
   await setLiveSessions([session(ENDED, "Ended"), session(SILENT, "Silent")]);
-  await seedUnreadReply(ENDED);
+  await seedUnreadReply(ENDED, me);
   // The listener no longer lists it: the session exited after answering.
   await setSessionLive(ENDED, false);
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
@@ -441,7 +446,9 @@ test("an agent row carries its state, its name, its age, its directory and its p
   const issue = await createIssue({ project: core, title: "Row shape" });
   await seedActivity(TALKER, issue.key, 60_000);
 
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a pin is the person's,
+  // and the rail lists every agent its reader pinned, so alice's holds what other rows pinned.
+  const context = await asUser(browser, rowPerson("alice"));
   const page = await context.newPage();
   try {
     await page.goto("/agents");

@@ -40,6 +40,7 @@ import {
   type Page,
   type Request,
   rowKey,
+  rowPerson,
   rowSessionId,
   test,
 } from "./test";
@@ -221,16 +222,20 @@ interface Seeded {
   readonly issue: string;
   readonly issueArtifact: string;
   readonly priority: string;
+  /** The person the walk signs in as and writes the issue's comment as: a person of the row's
+   *  own (`rowPerson`, e2e/test.ts), whose page lists that one comment. */
+  readonly reader: string;
   /** The id of the session the walk seeded (`rowSession`). */
   readonly session: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
- *  project with an architecture source, an issue with a spec, a child, a comment, a message
- *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
- *  in flight that advances it, and the delivery timeline's runs, in the row's own place. */
-async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
+ *  project with an architecture source, an issue with a spec, a child, a comment `reader` wrote,
+ *  a message holding a Mermaid diagram and a document artifact, a project document, a live
+ *  session with a broadcast, a replayed conversation and a picture, a priority with a description
+ *  and an issue in flight that advances it, and the delivery timeline's runs, in the row's own
+ *  place. */
+async function seedEveryRoute(delivery: DeliveryPlace, reader: string): Promise<Seeded> {
   const core = rowKey("CORE");
   const session = rowSession();
   await setLiveSessions([session]);
@@ -250,7 +255,7 @@ async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
     title: shown.issue,
   });
   await createIssue({ parent: issue.key, project: core, title: shown.child });
-  await createComment(issue.key, { body: shown.comment });
+  await createComment(issue.key, { body: shown.comment }, { login: reader });
   await createMessage(
     issue.key,
     { body: `\`\`\`mermaid\ngraph TD\n  ${diagram.from} --> ${diagram.to}\n\`\`\`\n\n${longList}` },
@@ -325,6 +330,7 @@ async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
+    reader,
     session: session.session_id,
   };
 }
@@ -571,23 +577,24 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     {
-      // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
-      // writes the issue's comment as (e2e/api.ts's default author), so her page lists that
-      // comment. Its words are what says the page drew the store's answer rather than its
-      // loading skeleton or its empty state.
+      // The walk is signed in as its reader (`signIn` below), a person of the row's own
+      // (`rowPerson`, e2e/test.ts), and the reader is who `seedEveryRoute` writes the issue's
+      // comment as, so the reader's page lists that comment and no other row's: both walks write
+      // the same words, and a page both wrote to as alice lists them twice. Its words are what
+      // says the page drew the store's answer rather than its loading skeleton or its empty state.
       route: "/people/:login",
       shows: (page) => [
-        heading(page, "alice"),
+        heading(page, seed.reader),
         page.getByRole("list", { name: "Person nodes" }).getByText(shown.comment),
       ],
-      url: "/people/alice",
+      url: `/people/${seed.reader}`,
     },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
       // no visit above loads it. This visit is last because the init script stays on the walk's
       // one context: an issue visit after it would draw the new page rather than today's.
-      prepare: (page) => withIssuePage(page.context(), "alice"),
+      prepare: (page) => withIssuePage(page.context(), seed.reader),
       route: "/issues/:key/*",
       shows: (page) => [
         page
@@ -614,7 +621,7 @@ async function walk(
   pageProcess: DispatchProcess,
   assetProcess: DispatchProcess
 ): Promise<void> {
-  const seed = await seedEveryRoute(delivery);
+  const seed = await seedEveryRoute(delivery, rowPerson("alice"));
   const planned = visits(seed);
   expect(
     walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),
@@ -630,7 +637,7 @@ async function walk(
   const assetsFrom = `Dispatch ${assetProcess.toUpperCase()}`;
   const context = await browser.newContext();
   await context.addCookies([{ name: processPinCookie, url: baseUrl, value: pageProcess }]);
-  await signIn(context, "alice");
+  await signIn(context, seed.reader);
   await context.route(isAsset, (route) =>
     route.continue({ headers: { ...route.request().headers(), [processPinHeader]: assetProcess } })
   );

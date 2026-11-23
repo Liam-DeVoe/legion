@@ -17,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { type APIResponse, expect, type Page, type Route, rowKey, test } from "./test";
+import { type APIResponse, expect, type Page, type Route, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: what an open page shows must still follow the writes it shows, once an event
@@ -226,15 +226,20 @@ test("inbox: a snooze from alice's other tab moves the row to Later in this tab 
   const issue = await createIssue({ project: core, title: "Snoozed elsewhere" });
   const ask = await createAsk(issue.key, { question: "Snooze me from the other tab" }, bob);
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a snooze is the
+  // person's, and the worker's review corpus snoozes one of alice's asks (`reviewCorpus`), so
+  // her Later starts at one. `?assignee=everyone` lists every open ask whoever it waits on, so
+  // this one reaches the reader's list on the row's project as it stands.
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await openLive(page, "/?assignee=everyone");
     await expect(page.locator(`[data-inbox-row="${ask.id}"]`)).toBeVisible();
     await expect(page.getByRole("button", { name: /^Later \(/ })).toHaveCount(0);
 
-    // The other tab: alice's own write through the API, which this page did not make.
-    await snoozeAsk(ask.id, new Date(Date.now() + 3_600_000).toISOString(), { login: "alice" });
+    // The other tab: the reader's own write through the API, which this page did not make.
+    await snoozeAsk(ask.id, new Date(Date.now() + 3_600_000).toISOString(), { login: me });
     await expect(page.getByRole("button", { name: "Later (1)" })).toBeVisible(live);
     await expect(page.locator(`[data-inbox-row="${ask.id}"]`)).toBeHidden(live);
   } finally {
