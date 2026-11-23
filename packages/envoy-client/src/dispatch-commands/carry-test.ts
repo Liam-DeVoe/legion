@@ -255,12 +255,12 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
       });
       if (run.error !== undefined)
         throw new Unknown(`git merge-tree could not run: ${run.error.message}`);
-      if (run.status === 129 && /unknown option/.test(run.stderr.toString("utf8"))) {
-        throw new Unknown("git merge-tree --write-tree needs git 2.38 or newer");
-      }
       if (run.status !== 0 && run.status !== 1) {
+        // A git older than 2.38 refuses --write-tree as an unknown option (exit 129): the line keeps
+        // the exit and git's own first line, and says why.
+        const old = run.status === 129 && /unknown option/.test(run.stderr.toString("utf8"));
         throw new Unknown(
-          `git merge-tree exited ${run.status ?? run.signal}: ${firstStderrLine(run)}`
+          `git merge-tree exited ${run.status ?? run.signal}: ${firstStderrLine(run)}${old ? "; git merge-tree --write-tree needs git 2.38 or newer" : ""}`
         );
       }
       io.print(`merge ${sha}: ${run.status === 0 ? "clean" : "conflict"}`);

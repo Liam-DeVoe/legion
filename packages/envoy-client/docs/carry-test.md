@@ -81,7 +81,9 @@ These cases also read UNKNOWN:
 
 - `--from` is not on the first-parent path of `--to`, as after a force-push or a rebase.
 - A merge on the path has more than two parents (an octopus merge).
-- git is older than 2.38, which has no `git merge-tree --write-tree`.
+- git is older than 2.38, which has no `git merge-tree --write-tree`. The line keeps the exit and
+  git's first stderr line, and adds why: `UNKNOWN: git merge-tree exited 129: error: unknown option
+  'write-tree'; git merge-tree --write-tree needs git 2.38 or newer`.
 
 ## What it does not do
 
