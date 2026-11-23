@@ -128,8 +128,9 @@ type pluginGate struct {
 	timeout time.Duration
 	// expire, when set, ends each probe attempt in the clock's place: the attempt runs under the
 	// context expire derives from its parent, and run judges that context's end as it judges the
-	// budget's, a cut-off attempt. Only a test sets it, to cut a probe off at a point of the probe's
-	// own run, which no load can move past a deadline (endWhenHung); nil is timeout's clock.
+	// budget's, a cut-off attempt. Only a test sets it, to end an attempt's budget at a fact of the
+	// probe's run, which no load can move (bootgate_test.go's budgetPassedOnceTheProbeIsGone); nil
+	// is timeout's clock.
 	expire func(ctx context.Context) (context.Context, context.CancelFunc)
 	retry  bootprobe.Retry
 	// contract is the daemon API contract the plugin must declare: the daemon's own
@@ -986,7 +987,8 @@ func (g pluginGate) budget(ctx context.Context) (context.Context, context.Cancel
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
 // by the daemon's probe Sandbox (internal/runtime/sandbox/probe.go).
 type ImageProbe struct {
-	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp.
+	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp, a path
+	// quoted as one shell word (shellprefix.Word).
 	Omp string
 	// Contract is the daemon API contract the image's plugin must declare.
 	Contract int
