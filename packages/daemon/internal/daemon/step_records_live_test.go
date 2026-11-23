@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -325,13 +327,22 @@ type stepsPrinted struct {
 }
 
 // stepLine is one run as `dispatch steps` prints it: `<task> <step> <kind> <role> <type|->
-// attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>`.
+// attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>`, then, where
+// the record holds a commit, ` at <start|->..<end|->`, and for a fix ` fix of <check>`. startCommit
+// and endCommit are the commits as printed, ten characters or `-` each, and "" on a line with no
+// ` at`; fixOf is the check, the rest of the line, and "" for a run that fixes none.
 type stepLine struct {
 	text                                 string
 	task, kind, role, typ                string
 	step, attempt                        int
 	agent, model, started, ended, result string
+	startCommit, endCommit, fixOf        string
 }
+
+// stepTailPattern reads what a run's line prints after its twelve columns: nothing, or ` at
+// <start>..<end>`, each commit its first ten characters or `-`, then, for a fix, ` fix of <check>`,
+// the check the rest of the line.
+var stepTailPattern = regexp.MustCompile(`^(?: at ([0-9a-f]{10}|-)\.\.([0-9a-f]{10}|-))?(?: fix of (.+))?$`)
 
 // parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
 // tasks`, then exactly n lines of runs.
@@ -346,8 +357,15 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
 	for _, text := range lines[1:] {
-		fields := strings.Fields(text)
-		if len(fields) != 12 || fields[5] != "attempt" {
+		// steps.ts joins the columns with one space each, and a check may hold a space, so the
+		// twelfth space ends the columns and the rest of the line is what follows the result.
+		fields := strings.SplitN(text, " ", 13)
+		var tail string
+		if len(fields) == 13 {
+			tail = " " + fields[12]
+		}
+		after := stepTailPattern.FindStringSubmatch(tail)
+		if len(fields) < 12 || slices.Contains(fields[:12], "") || fields[5] != "attempt" || after == nil {
 			return printed, fmt.Errorf("the line %q is no run", text)
 		}
 		step, err := strconv.Atoi(fields[1])
@@ -361,6 +379,7 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		printed.lines = append(printed.lines, stepLine{
 			text: text, task: fields[0], step: step, kind: fields[2], role: fields[3], typ: fields[4], attempt: attempt,
 			agent: fields[7], model: fields[8], started: fields[9], ended: fields[10], result: fields[11],
+			startCommit: after[1], endCommit: after[2], fixOf: after[3],
 		})
 	}
 	if len(printed.lines) != printed.steps {
@@ -474,6 +493,48 @@ func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
 		err := read(printed(no.end, no.result))
 		if err == nil || !strings.Contains(err.Error(), "2 step implementer implementation attempt 2") || !strings.Contains(err.Error(), "an end") {
 			t.Errorf("the ten lines with implementing's second run ending %q %q read as %v, want an error naming that run and its end", no.end, no.result, err)
+		}
+	}
+}
+
+// The driver reads the words steps.ts prints after a run's result: ` at <start>..<end>`, the
+// commits the run's task's head was at when it started and when it ended, each cut to ten
+// characters or `-` where the record holds none yet, and then, for a fix, ` fix of <check>`, the CI
+// check it fixes, which is the rest of the line. A run with neither prints its twelve columns
+// alone. The control is a line with another word after its result, a range with one commit, and a
+// `fix of` with no check: each is no run.
+func TestTheDriverReadsARunsCommitsAndTheCheckItFixes(t *testing.T) {
+	t.Parallel()
+	const key = "SR-1"
+	run := func(attempt int, tail string) string {
+		return fmt.Sprintf("default 2 step implementer implementation attempt %d agent-implementer %s 2026-11-20T09:00:00Z 2026-11-20T09:40:00Z passed%s", attempt, stepRecordsModel, tail)
+	}
+	printed := func(tails ...string) string {
+		lines := []string{fmt.Sprintf("%s: %d steps in 1 tasks", key, len(tails))}
+		for at, tail := range tails {
+			lines = append(lines, run(at+1, tail))
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	out := printed("", " at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci", " at b2c3d4e5f6..-", " fix of k ci: two")
+	parsed, err := parseSteps(key, out)
+	if err != nil {
+		t.Fatalf("parse %q: %v", out, err)
+	}
+	var got [][3]string
+	for _, line := range parsed.lines {
+		got = append(got, [3]string{line.startCommit, line.endCommit, line.fixOf})
+	}
+	want := [][3]string{{"", "", ""}, {"a1b2c3d4e5", "b2c3d4e5f6", "k-ci"}, {"b2c3d4e5f6", "-", ""}, {"", "", "k ci: two"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("the commits and checks of %q read as %q, want %q", out, got, want)
+	}
+	if parsed.lines[1].result != "passed" || !printedMoment(parsed.lines[1].ended) {
+		t.Errorf("the fix's line read its end %q and result %q, want a moment and passed", parsed.lines[1].ended, parsed.lines[1].result)
+	}
+	for _, tail := range []string{" again", " at a1b2c3d4e5", " at a1b2c3d4e5..b2c3d4e5f6 again", " fix of"} {
+		if _, err := parseSteps(key, printed(tail)); err == nil || !strings.Contains(err.Error(), "is no run") {
+			t.Errorf("a run ending %q read as %v, want an error saying the line is no run", tail, err)
 		}
 	}
 }
