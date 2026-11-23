@@ -903,9 +903,10 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
-// The wake table sends the three notices an owner's plan adds to the reference that holds their
-// handling, and a conflict merged forward in `accepting` to the reference that waits for a review
-// only where the task has a reviewer step.
+// The wake table sends each notice an owner's plan adds (`retro-held`, `task-stopped`,
+// `plan-not-taken` and `owner-step`) to the reference that holds its handling. It sends a conflict
+// merged forward in `accepting` to the reference that waits for a review only where the task has
+// a reviewer step.
 test("the architect's wake table sends each owner-plan notice to where its handling is", () => {
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
