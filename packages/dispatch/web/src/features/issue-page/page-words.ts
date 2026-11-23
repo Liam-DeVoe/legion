@@ -503,6 +503,9 @@ export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
   conversation: "This issue holds nothing yet.",
   decisions: "This issue has no decisions yet.",
+  /** What a document's own address says where the issue holds no document or file at that
+   *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
+  document_missing: "This issue holds no document at this address.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
   /** What the list of who worked the issue, in Details' People section, says where nobody has

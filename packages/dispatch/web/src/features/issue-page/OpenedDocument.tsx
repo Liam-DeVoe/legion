@@ -8,14 +8,16 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
+import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import type { IssueRoute } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
+import { DocumentStage, useDocumentStage } from "./document-stage";
 import { pageChrome } from "./page-structure";
 import { blockAttributeLabel, CONTROL_LABELS, nodeTypeName } from "./page-words";
-import { StagedDocument } from "./StagedDocument";
+import { EditorBox } from "./StagedDocument";
 
 /** The page's words for a typed block's type and its attributes (`page-words.ts`), which the
  *  opened document draws in place of the schema's tokens (part N's R9, R12). */
@@ -131,7 +133,7 @@ export function OpenedDocument({
       <ArtifactRoutePanel artifact={artifact} artifactRoute={artifactRoute} isClosed={isClosed}>
         {artifact === undefined || artifact.kind !== "doc" ? null : (
           <DocumentRuntime.Provider value={namedRuntime}>
-            <StagedDocument
+            <OpenedEditor
               artifact={artifact}
               askId={item?.kind === "ask" ? item.id : undefined}
               commentId={item?.kind === "comment" ? item.id : undefined}
@@ -150,5 +152,59 @@ export function OpenedDocument({
         )}
       </ArtifactRoutePanel>
     </div>
+  );
+}
+
+/**
+ * The opened document's one editor, on its document's stage (`document-stage.tsx`), which rests
+ * in this box. `StagedDocument` is a row's editor, with no landing, version or search term of
+ * its own, so the document an address opens is drawn as `ArtifactDocument` draws one: on the
+ * item the address names, marked, at the version it pins, with the words it searches for
+ * marked, in the box a row's editor scrolls in (`EditorBox`).
+ */
+function OpenedEditor({
+  artifact,
+  askId,
+  commentId,
+  highlightTerm,
+  isClosed,
+  issueKey,
+  onToolbarChange,
+  onVersionChange,
+  showDiff,
+  version,
+}: {
+  artifact: Artifact;
+  askId: string | undefined;
+  commentId: string | undefined;
+  highlightTerm: string | undefined;
+  isClosed: boolean;
+  issueKey: string;
+  onToolbarChange: (next: DocumentToolbar | undefined) => void;
+  onVersionChange: (version: number | null) => void;
+  showDiff: boolean;
+  version: number | undefined;
+}): ReactNode {
+  const stage = useDocumentStage(artifact.id);
+  return (
+    <>
+      <div className="flex min-w-0 flex-col" ref={stage} />
+      <DocumentStage artifactId={artifact.id}>
+        <EditorBox>
+          <ArtifactDocument
+            artifact={artifact}
+            askId={askId}
+            commentId={commentId}
+            highlightTerm={highlightTerm}
+            isClosed={isClosed}
+            onToolbarChange={onToolbarChange}
+            onVersionChange={onVersionChange}
+            owner={{ key: issueKey, kind: "issue" }}
+            showDiff={showDiff}
+            version={version}
+          />
+        </EditorBox>
+      </DocumentStage>
+    </>
   );
 }

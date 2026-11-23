@@ -40,6 +40,8 @@ function renderClosure(references: IssueReferences) {
 
 test("the closure lists its members with their owner, via and depth, names truncation, and starts collapsed", async () => {
   const { getIssueReferences, view } = renderClosure({
+    linked_from: [],
+    links: [],
     members: [
       {
         artifact: notes,
@@ -98,6 +100,8 @@ test("the closure names the agent that owns a conversation's artifact", async ()
     slug: "shot-png",
   } satisfies Artifact;
   const { getIssueReferences, view } = renderClosure({
+    linked_from: [],
+    links: [],
     members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
     truncated: false,
   });
@@ -114,7 +118,12 @@ test("the closure names the agent that owns a conversation's artifact", async ()
 });
 
 test("an issue whose artifacts reference nothing draws no closure", async () => {
-  const { getIssueReferences, view } = renderClosure({ members: [], truncated: false });
+  const { getIssueReferences, view } = renderClosure({
+    linked_from: [],
+    links: [],
+    members: [],
+    truncated: false,
+  });
   try {
     await expect(screen.findByText(/^References/, {}, { timeout: 200 })).rejects.toThrow();
   } finally {

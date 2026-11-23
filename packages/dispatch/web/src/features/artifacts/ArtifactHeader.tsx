@@ -312,19 +312,28 @@ export function ArtifactHeader({
         {documentActions && toolbar === undefined ? (
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             {!correctionIsOffered(artifact) ? null : (
+              // Keyed as the toolbar's own Correct title is, and for the same reasons.
               <CorrectTitle
                 artifact={artifact}
+                key={`correction:${artifact.id}`}
                 refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
               />
             )}
             {issueKey === null || !removalIsOffered(artifact) ? null : (
+              // Keyed by the document, and its way back taken only while the route is still the
+              // removed document's (`drawn`), as the toolbar's own Remove does.
               <RemoveDocument
                 artifact={artifact}
-                onRemoved={() =>
-                  // As the toolbar's own Remove does: the address stays on the document the issue
-                  // no longer holds, so the page says it is gone.
-                  navigate(buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug }))
-                }
+                key={artifact.id}
+                onRemoved={(removed) => {
+                  // The address stays on the document the issue no longer holds, so the page
+                  // says it is gone.
+                  if (drawn.current === removed.id) {
+                    navigate(
+                      buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
+                    );
+                  }
+                }}
                 refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
               />
             )}

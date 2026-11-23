@@ -299,10 +299,10 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
  * block's stored words, known at once, and `headline`, what a link draws from them, which
  * arrives a commit later. Both are undefined for a route that names no block, and on a page that
  * read no name for it, which is every page but the new issue page. A link with a name makes no
- * read of its own (`RefLink.tsx`). The batched read answers a block's words with no reading of
- * them, so they are the headline's markdown fallback.
+ * read of its own (`useReferenceTarget`). The batched read answers a block's words with no
+ * reading of them, so they are the headline's markdown fallback.
  */
-export function useKnownBlockName(route: DispatchReferenceRoute | undefined) {
+function useKnownBlockName(route: DispatchReferenceRoute | undefined) {
   const name = useKnownReferenceName(blockReferenceOf(route));
   const headline = useMarkdownHeadline(undefined, TITLE_HEADLINE_MAX, name);
   return { headline, name };
@@ -640,6 +640,13 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
+  // A link to a block the new issue page has already named, in its one batched read of names,
+  // draws that name and reads nothing of its own: the reads below are handed no route
+  // (`useKnownBlockName`, dispatch://INFRA-1196 part N's R8 and decision 362). A caller that
+  // reads the target's text (`options.text`, a card) reads its own, as every reference does on
+  // every other page, which names no block.
+  const known = useKnownBlockName(options.text ? undefined : route);
+  if (known.name !== undefined) route = undefined;
   const { artifact, ask, block, comment, issue, markdown, markdownTree, message } =
     useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
@@ -670,6 +677,16 @@ export function useReferenceTarget(
   // only where `tree` is undefined, so a stored text that came with its tree is still parsed
   // nowhere (`e2e/parse-count.e2e.ts`).
   const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
+  if (known.name !== undefined) {
+    // Until the name's headline is drawn, a link reads as the words its author wrote, as it does
+    // while a read of its own is out.
+    return {
+      title: known.headline?.text,
+      description: known.headline?.cut === true ? known.name : undefined,
+      descriptionTree: undefined,
+      picture: undefined,
+    };
+  }
 
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the

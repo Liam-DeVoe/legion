@@ -216,6 +216,7 @@ export function useCreateDocument({
   const create = useKeyedWrite({
     inline: true,
     label: (name: string) => `New document ${name}`,
+    method: "POST",
     write: (name: string, bounds) => api.uploadArtifact(owner, { name }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (made) => {
@@ -240,11 +241,15 @@ export function useCreateDocument({
     setTakenBy(undefined);
     submitGuard.guard(() => create.mutate(name));
   };
+  // A create the reader stopped is said as `CreateDocument` says it, and for its reasons: no
+  // verdict of Dispatch's, and no Retry here, but what a press of Create again does.
   const problem =
     takenBy !== undefined
       ? `${takenBy.kind === "doc" ? "A document" : "A file"} on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy.name}.`
       : create.isError
-        ? apiErrorMessage(create.error, "Could not create the document.")
+        ? create.error instanceof SendStoppedError
+          ? stoppedCreate(create.variables ?? "")
+          : apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
   return {
     open: creating,

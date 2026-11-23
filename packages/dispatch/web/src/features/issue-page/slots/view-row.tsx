@@ -15,7 +15,6 @@ import { useOutlineReads } from "../outline-reads";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
-import { useIssueTree } from "../useIssueTree";
 import { useViewRowTools } from "../view-row-tools";
 
 /**

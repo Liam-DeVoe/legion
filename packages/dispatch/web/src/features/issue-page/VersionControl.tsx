@@ -159,6 +159,7 @@ function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boo
   const name = useKeyedWrite({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
+    method: "POST",
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: () => {
@@ -180,7 +181,7 @@ function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boo
         {CONTROL_LABELS.name_version}
       </button>
       <NameVersionDialog
-        error={name.isError}
+        error={name.error}
         onClose={() => {
           name.reset();
           setOpen(false);
