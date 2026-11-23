@@ -48,7 +48,7 @@ then the implementer, which opens the pull request, then the tester and the revi
 status follows: `in_progress`, `testing`, `needs_review`, then `retro` once the reviewer has
 approved and the architect has accepted.
 
-![The issue after the phases ran: Retro in its header, the pull request link #42 in its open Details, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
+![The issue after the phases ran: Retro in its header, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
 
 ## 5. The pull request
 

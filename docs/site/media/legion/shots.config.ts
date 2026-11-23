@@ -220,7 +220,9 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "status-events",
-      alt: "The issue after the phases ran: Retro in its header, the pull request link #42 in its open Details, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
+      // The pull request's link is a row of the header's Details, which the next shot opens:
+      // opened here, Details would push the Activity rows this shot is of below the screen.
+      alt: "The issue after the phases ran: Retro in its header, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
       route: activity,
       viewport: "desktop",
       theme: "light",
@@ -237,10 +239,7 @@ const legion: ShotSet<LegionJourney> = {
           "updated the issue"
         );
       },
-      steps: async (page) => {
-        await headerOnTop(page);
-        await pullRequestInDetails(page);
-      },
+      steps: headerOnTop,
     },
     {
       id: "pull-request",

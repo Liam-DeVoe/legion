@@ -843,7 +843,7 @@ test("issue header flips between Waiting on you and Waiting on agents as the new
 // The header's title slot takes a row of its own below 1536 px and shares its row with the State
 // and Attention groups only from there, and then only where they fit beside the whole title: so
 // however busy those groups are, and whether Details is open or shut, the title keeps at least
-// half the card.
+// half the card, or its whole width on one line where that is less.
 test("issue header keeps the title at least half the card beside busy State and Attention groups", async ({
   browser,
 }, testInfo) => {
@@ -861,11 +861,19 @@ test("issue header keeps the title at least half the card beside busy State and 
       const heading = document.querySelector("[data-testid=issue-header] h1") as HTMLElement;
       const header = document.querySelector("[data-testid=issue-header]") as HTMLElement;
       const style = getComputedStyle(header);
+      // The title's width on one line, in its own font, laid out apart from the header.
+      const probe = heading.cloneNode(true) as HTMLElement;
+      probe.style.cssText =
+        "position:absolute;visibility:hidden;width:max-content;white-space:nowrap";
+      document.body.append(probe);
+      const oneLine = probe.getBoundingClientRect().width;
+      probe.remove();
       return {
         contentWidth:
           header.clientWidth -
           Number.parseFloat(style.paddingLeft) -
           Number.parseFloat(style.paddingRight),
+        oneLine,
         width: heading.getBoundingClientRect().width,
       };
     });
@@ -877,8 +885,8 @@ test("issue header keeps the title at least half the card beside busy State and 
       const measured = await measureTitle();
       expect(
         measured.width,
-        `title ${measured.width}px of a ${measured.contentWidth}px card at ${width}px ${label}`
-      ).toBeGreaterThanOrEqual(measured.contentWidth / 2);
+        `title ${measured.width}px (${measured.oneLine}px on one line) of a ${measured.contentWidth}px card at ${width}px ${label}`
+      ).toBeGreaterThanOrEqual(Math.min(measured.contentWidth / 2, measured.oneLine - 1));
     }
   };
   try {
