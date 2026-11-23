@@ -22,7 +22,7 @@ var (
 // starts, stops and stored roles) and the mode change with physical starts: a later re-admission
 // starts only after this patch, and makes a Sandbox of its own rather than resuming this one. No
 // database transaction spans a Kubernetes call. Once the pod is gone the Sandbox is deleted
-// (deleteStoredSandbox), with the six role Secrets it owns — each holding a launcher token and a
+// (deleteStoredSandbox), with the role Secrets it owns, one for each slot of the pod — each holding a launcher token and a
 // rendered `gh` credential bundle — so a close leaves the issue nothing. An ephemeral disk was the
 // pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim, and the
 // foreground delete takes it with the Sandbox: a close deletes a kept volume too. The issue's next
@@ -37,8 +37,10 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // the pod as SuspendIssue does, under the same launch turn and after the same authorize. Then a
 // Sandbox that owns the issue's kept volume (ownsKeptVolume) is kept, Suspended, with its uid and
 // the claim of its volume, for the issue's next pod, which mounts that claim (issuePod.disk). The
-// seven Secrets the Sandbox owns are deleted: the provisioning Secret and the six role Secrets,
-// each of which holds a token that no pod reads any more. The next launch writes each of them
+// provisioning Secret and the role Secrets of Legion's six claim roles (claim.Roles) the Sandbox
+// owns are deleted, each of which holds a token that no pod reads any more; the role Secret of
+// another slot of the pod (the fresh agent of acceptance's, a role the deployment or the plan
+// defines) is left. The next launch writes each of them
 // again before its pod starts (provision, writeLauncherSecrets). Once every delete has succeeded,
 // the release records on the Sandbox that it deleted them (secretsReleasedAnnotation), in a patch
 // of its own. A release that stops before that patch leaves no record, and the next release
@@ -137,8 +139,8 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	return nil
 }
 
-// deleteIssueSecrets deletes the seven Secrets that the issue Sandbox name owns, the provisioning
-// Secret (secretName) and the role Secret of each of the issue's six roles (roleSecretName), each
+// deleteIssueSecrets deletes seven of the Secrets that the issue Sandbox name owns, the provisioning
+// Secret (secretName) and the role Secret of each of Legion's six claim roles (claim.Roles, roleSecretName), each
 // one already gone counted as deleted, and then forgets what is held of the role Secrets
 // (forgetLauncherCredentials). Its caller holds the pod's launch turn, so no launch writes one of
 // them in between. It is the delete a writeSecret already sends, so it needs no new permission.

@@ -130,8 +130,9 @@ const RoleTopicPrefix = "notifications.role."
 
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
-// daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
+// daemon's notice executor), and an `owner-step` to the issue's own architect, its owner, whether
+// its claim runs or not (the daemon's noticeArchitect), since every issue's topic is a subject its
+// phase workers subscribe to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
 // every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
 // triage handed to Legion (admission), a root that keeps its admission slot while its architect
 // waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
