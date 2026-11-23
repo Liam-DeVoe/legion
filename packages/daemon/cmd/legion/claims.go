@@ -25,7 +25,8 @@ import (
 // (internal/api/operator.go). retry relaunches a failed claim: an architect on its session with
 // fresh budgets, and where it is the owner of its issue's task at a place of its own (a step of
 // the key owner or the owner's retro), the daemon then tells it that step again with one more
-// owner-step; a phase worker through its issue's held phase; with --failed, every failed claim.
+// owner-step, unless one is still on its way to it; a phase worker through its issue's held
+// phase; with --failed, every failed claim.
 // compact shortens a running claim's session and sends it whatever task it owes again, which is
 // what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
 // the tree's close, through its root claim, for a tree no workflow issue backs: the root, then
@@ -447,7 +448,8 @@ func printCompaction(w io.Writer, answer []byte) error {
 // claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
 // order the daemon lists them: an architect is relaunched on its session with fresh budgets, and
 // where it is the owner of its issue's task at a place of its own (a step of the key owner or the
-// owner's retro) the daemon then tells it that step again with one more owner-step, a
+// owner's retro) the daemon then tells it that step again with one more owner-step, unless one is
+// still on its way to it, a
 // phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
 // one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
 // naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim

@@ -2244,8 +2244,9 @@ func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.I
 // may be waiting for its architect to decide. The phase the worker works is started again, which
 // is what gives it the task of that phase; at a step or a retro the owner does, the retry of the
 // owner's claim, which the route has relaunched through its machine (api's retryStart), tells the
-// owner its step again with one more owner-step notice, starting no run, and gives it every
-// restart of the step's run again (restart). An issue held for this role is restored from its hold first,
+// owner its step again with one more owner-step notice, unless one is still queued, starting no
+// run, and gives it every restart of the step's run again (restart). An issue held for this role
+// is restored from its hold first,
 // as the architect's retry does. One whose phase another role works, or that has left the
 // workflow, is refused, since starting that phase under this claim's name would run the wrong
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it

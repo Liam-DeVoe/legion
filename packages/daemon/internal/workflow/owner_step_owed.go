@@ -34,9 +34,10 @@ type owedStep struct {
 // one notice told the owner, and a notice that reached no turn — dropped, or delivered to an
 // agent that died or lost its session before reading it — leaves the step waiting with nothing
 // that will tell anyone. Its two readers tell it again: the periodic pass over an owner idle past
-// the silence bound (ownerSilent) and the owner's catch-up at each launch (claimReady). Both tell
-// through the one writer of the notice (tellOwner), which goes to the issue's own architect, so a
-// child's step reaches the child's own architect.
+// the silence bound (ownerSilent) and the owner's catch-up at a launch whose session was not given
+// the notice (claimReady, toldThisSession). Both tell through the one writer of the notice
+// (tellOwner), which goes to the issue's own architect, so a child's step reaches the child's own
+// architect.
 func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (owedStep, bool, error) {
 	if !InWorkflow(issue) {
 		return owedStep{}, false, nil
@@ -85,6 +86,32 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 		task = resumeText(issue, at)
 	}
 	return owedStep{step: step, run: runs[open], task: task}, true, nil
+}
+
+// toldThisSession says whether an owner-step of the run owed names already reached the owner of
+// issue as its claim is ready now at launch (record.Store.OwnerStepTold, which the outbox writes
+// as the listener takes the notice): published to this launch, or to the session this launch
+// runs in, a later launch that resumed it, whose transcript holds the notice. A run no owner-step
+// reached, and one whose notice reached a session the claim no longer holds — a fresh session
+// after a loss — was not given to the session ready now, and the catch-up tells it again. A
+// delivered notice row is deleted, so the step's row is the one record of it.
+func (e *Engine) toldThisSession(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, launch uint64) (bool, error) {
+	told, err := e.store.OwnerStepTold(ctx, tx, issue.Key, owed.step.place)
+	if err != nil || told.Launch == 0 {
+		return false, err
+	}
+	if told.Launch == launch {
+		return true, nil
+	}
+	owner, err := record.OwnerClaim(issue)
+	if err != nil {
+		return false, nil
+	}
+	session, err := e.store.ClaimSession(ctx, tx, owner)
+	if err != nil {
+		return false, err
+	}
+	return told.Session != "" && told.Session == session, nil
 }
 
 // tellOwedStep tells the owner of issue again the step owed names, with the task its entry holds,

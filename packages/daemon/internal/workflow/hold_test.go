@@ -60,8 +60,10 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // nothing either, even at a place of its own such as accepting here, since claimFailed answers an
 // architect before it reads the phase: it is told in a worker-died of the architect on the child,
 // which reaches the architect above it, and that architect takes the child's notices but an
-// owner-step, which waits for the child's own architect, until the daemon starts the child's
-// architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
+// owner-step until the child's architect runs again. An owner-step goes to the child's own
+// architect alone and is dropped while that claim has failed; the ready of the launch that starts
+// it again tells it the step where that launch's session was not given it (claimReady), as
+// TestASubArchitectsFailedClaimTellsTheArchitectAboveIt says.
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
