@@ -39,4 +39,4 @@ A head that conflicts with its base keeps the issue in its phase. The daemon rea
 
 ## A wrong pushed commit
 
-Never rewrite a pushed commit: no `jj squash --into` it, no new description, no backward bookmark move, no force push. A rewrite moves every commit built on it and leaves reviews, CI runs and links naming a commit GitHub no longer holds. Answer a wrong commit with a follow-up commit on top, and a wrong message with a line in the PR body. A base frozen for others to stack on takes its fixes the same way; the body's `Chain` line records it.
+Fix a wrong commit of the issue branch without losing or hiding work: add a follow-up commit on top, or rewrite it (`jj describe`, `jj squash --into`, `jj rebase`) and push with `jj git push`, which moves the remote branch only while it stands where jj last saw it (`jj git push --help`). A rewritten head is a new head: CI runs again, a review of the old head decides nothing, and each `before_merge` check is recorded again at it. A base frozen for others to stack on takes its fixes as follow-up commits; the body's `Chain` line records it.
