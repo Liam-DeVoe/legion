@@ -4314,9 +4314,9 @@ func (h listenerDeliveryHarness) registerConsumerTarget(t *testing.T, sessionID,
 // inlineForward is a role forward seam (listenerDeliveryHandlerConfig.forwardRole) whose publish
 // always succeeds and whose wait is forward: a test that stands in for the stream's answer. It
 // reads no context, so a stop does not cut it; a row about the stop writes its own seam.
-func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
-	return func(_ context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		return func() error { return forward(subject, item, msgID, timeout) }, nil
+func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(_ context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, forward(subject, item, msgID, timeout) }, nil
 	}
 }
 

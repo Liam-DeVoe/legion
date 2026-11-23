@@ -422,7 +422,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, err)
+		}()
 	}
 }
 
@@ -732,7 +735,7 @@ func (f *roleForwarder) forwardPinnedOnceMore(ctx context.Context, item contract
 	case stands:
 		forward := roleForward{item: item, sessionID: held.pinned, held: held}
 		subject := contracts.LegacyAgentSubject(held.pinned)
-		err = f.cfg.forwardAndWait(share, subject, forward.forwarded(), forward.msgID(subject), forwardWindow(share))
+		_, err = f.cfg.forwardAndWait(share, subject, forward.forwarded(), forward.msgID(subject), forwardWindow(share))
 		if err == nil || roleForwardEnded(share, f.cfg.client, subject, err, forwardWindow(share)) {
 			finishRoleForward(f.cfg, forward, err)
 			return true
@@ -827,17 +830,17 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // and every send again for the refusal above take it, so a cancel of ctx ends the forward where it
 // is (the role lane's stop, roleForwarder.stopCtx). The wait still releases the reply subscription
 // of each forward it was handed.
-func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			window, cancel := context.WithDeadline(ctx, deadline)
 			defer cancel()
-			_, err := publishPastInProcess(window, func() (bus.StoredAck, error) {
+			return publishPastInProcess(window, func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
 					if forward, err = client.StartRequestStoredTo(window, subject, item, msgID, time.Until(deadline)); err != nil {
@@ -846,11 +849,10 @@ func startRoleForward(client *bus.Client) func(ctx context.Context, subject stri
 				}
 				// Every forward StartRequestStoredTo returned is waited for, which releases its
 				// reply subscription, and the next send is a forward of its own.
-				err := forward.Wait()
+				ack, err := forward.Wait()
 				forward = nil
-				return bus.StoredAck{}, err
+				return ack, err
 			})
-			return err
 		}, nil
 	}
 }

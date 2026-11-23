@@ -130,18 +130,18 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	defer cancel()
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
-	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		forward := cfg.forwardRole
-		return func(ctx context.Context, subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		return func(ctx context.Context, subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 			wait, err := forward(ctx, subject, forwarded, msgID, timeout)
 			if err != nil {
 				return nil, err
 			}
-			return func() error {
-				err := wait()
+			return func() (bus.StoredAck, error) {
+				ack, err := wait()
 				handed = append(handed, forwarded.DedupeKey)
 				after()
-				return err
+				return ack, err
 			}, nil
 		}
 	}

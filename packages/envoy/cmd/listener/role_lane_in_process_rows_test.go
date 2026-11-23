@@ -17,9 +17,9 @@ import (
 // of the same Nats-Msg-Id and its resend then left nothing on the wire
 // (publishPastInProcess: errEarlierAttemptInProcess wrapping bus.ErrNotSent). after runs between
 // the store and that report.
-func forwardEndingInProcessFirst(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+func forwardEndingInProcessFirst(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 	real := startRoleForward(client)
-	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		wait, err := real(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
@@ -27,12 +27,12 @@ func forwardEndingInProcessFirst(client *bus.Client, forwards *atomic.Int32, aft
 		if forwards.Add(1) > 1 {
 			return wait, nil
 		}
-		return func() error {
-			if err := wait(); err != nil {
-				return err
+		return func() (bus.StoredAck, error) {
+			if _, err := wait(); err != nil {
+				return bus.StoredAck{}, err
 			}
 			after()
-			return fmt.Errorf("%w: %w", errEarlierAttemptInProcess,
+			return bus.StoredAck{}, fmt.Errorf("%w: %w", errEarlierAttemptInProcess,
 				fmt.Errorf("%w: the resend's window was spent before its publish", bus.ErrNotSent))
 		}, nil
 	}

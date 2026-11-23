@@ -75,14 +75,14 @@ func TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt(t *testing.T) 
 	cfg := harness.config
 	cfg.client = slow
 	cfg.keepPublish = keepThatNeverAnswers
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) > 1 {
-			return func() error { return nil }, nil
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			close(entered)
 			time.Sleep(time.Until(<-waitUntil))
-			return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrTimeout)
+			return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrTimeout)
 		}, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
@@ -142,12 +142,12 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	cfg := harness.config
 	cfg.claims = claims
 	cfg.keepPublish = keepThatNeverAnswers
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) == 1 {
 			claims.stopAnswering.Store(true)
 			return nil, fmt.Errorf("%w: the window was spent before the publish", bus.ErrNotSent)
 		}
-		return func() error { return nil }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	forwarder := cfg.roleForwards
@@ -210,12 +210,12 @@ func TestAForwardResolvedAgainOnItsWorkerAtTheStopEndsBeforeTheDrainsWait(t *tes
 	cfg.claims = claims
 	cfg.keepPublish = keepThatNeverAnswers
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) == 1 {
 			close(entered)
 			<-release
 		}
-		return func() error { return nil }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	forwarder := cfg.roleForwards
@@ -314,21 +314,21 @@ func TestAForwardWhoseAcknowledgementIsLateAtTheStopEndsForwarded(t *testing.T) 
 	var mu sync.Mutex
 	var msgIDs []string
 	cfg := harness.config
-	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		msgIDs = append(msgIDs, msgID)
 		first := len(msgIDs) == 1
 		mu.Unlock()
 		if !first {
-			return func() error { return nil }, nil
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			close(entered)
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, ctx.Err())
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, ctx.Err())
 			case <-time.After(timeout):
-				return bus.ErrForwardNotStored
+				return bus.StoredAck{}, bus.ErrForwardNotStored
 			}
 		}, nil
 	}
@@ -379,13 +379,13 @@ func TestAForwardWhosePublishIsHeldAtTheStopEndsWithTheMessageBehindIt(t *testin
 	var mu sync.Mutex
 	var msgIDs []string
 	cfg := harness.config
-	cfg.forwardRole = func(ctx context.Context, subject string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, subject string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		msgIDs = append(msgIDs, msgID)
 		first := len(msgIDs) == 1
 		mu.Unlock()
 		if !first {
-			return func() error { return nil }, nil
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 		}
 		close(entered)
 		select {
@@ -454,7 +454,7 @@ func TestARoleForwardOverTheBusEndsAtItsContextsCancel(t *testing.T) {
 	}
 	cancel()
 	started := time.Now()
-	err = wait()
+	_, err = wait()
 	if elapsed := time.Since(started); elapsed >= window/2 {
 		t.Fatalf("the cancelled forward's wait took %s, its window's; want it to end at the cancel", elapsed)
 	}
@@ -467,7 +467,7 @@ func TestARoleForwardOverTheBusEndsAtItsContextsCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start the forward, control: %v", err)
 	}
-	if err := wait(); !errors.Is(err, bus.ErrForwardNotStored) || errors.Is(err, context.Canceled) {
+	if _, err := wait(); !errors.Is(err, bus.ErrForwardNotStored) || errors.Is(err, context.Canceled) {
 		t.Fatalf("the uncancelled forward = %v, want ErrForwardNotStored at its window, without a cancel", err)
 	}
 }

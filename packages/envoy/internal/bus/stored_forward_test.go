@@ -35,18 +35,26 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	}
 	const window = 2 * time.Second
 	subject := contracts.LegacyAgentSubject("ses_serving_port")
+	var acks []bus.StoredAck
 	for range 2 {
 		started := time.Now()
 		forward, err := client.StartRequestStoredTo(context.Background(), subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
 		if err != nil {
 			t.Fatalf("StartRequestStoredTo: %v", err)
 		}
-		if err := forward.Wait(); err != nil {
+		ack, err := forward.Wait()
+		if err != nil {
 			t.Fatalf("the stored forward's wait = %v, want nil on the stream's acknowledgement", err)
 		}
 		if elapsed := time.Since(started); elapsed >= window {
 			t.Fatalf("the stored forward's wait took %s, the whole window; want it to end on the acknowledgement", elapsed)
 		}
+		acks = append(acks, ack)
+	}
+	// The second forward under the same Nats-Msg-Id is the stream's duplicate of the first, and its
+	// acknowledgement names the first's copy, which a role send answers (roleSend.deliveredHeld).
+	if acks[0].Duplicate || acks[0].Sequence == 0 || !acks[1].Duplicate || acks[1].Sequence != acks[0].Sequence {
+		t.Fatalf("the two forwards' acknowledgements are %+v, want the first new at a sequence and the second a duplicate naming it", acks)
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
@@ -61,7 +69,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo on %s: %v", uncaptured, err)
 	}
-	if err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
+	if _, err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
 		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
 	}
 }
@@ -170,7 +178,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}
-	if err := forward.Wait(); err != nil {
+	if _, err := forward.Wait(); err != nil {
 		t.Fatalf("the stored forward's wait against a healthy server = %v, want nil", err)
 	}
 
@@ -232,7 +240,7 @@ func TestAForwardsWaitEndsAtItsContextsCancel(t *testing.T) {
 	}
 	cancel()
 	started := time.Now()
-	err = forward.Wait()
+	_, err = forward.Wait()
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrForwardNotStored) || !errors.Is(err, context.Canceled) || errors.Is(err, bus.ErrNotSent) {
 		t.Fatalf("the cancelled forward's wait = %v, want ErrForwardNotStored wrapping context.Canceled and not ErrNotSent", err)
@@ -246,7 +254,7 @@ func TestAForwardsWaitEndsAtItsContextsCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo, control: %v", err)
 	}
-	if err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) || errors.Is(err, context.Canceled) {
+	if _, err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) || errors.Is(err, context.Canceled) {
 		t.Fatalf("the uncancelled forward's wait = %v, want ErrForwardNotStored at its window, without a cancel", err)
 	}
 }

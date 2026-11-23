@@ -2817,20 +2817,25 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it, its window ends,
-// or its caller's context is cancelled, and releases its reply subscription. No acknowledgement by
-// the deadline, the stream's error answer (named by storedRefusal), and the server's no-responders
-// answer are each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not
-// confirm the publish, the reason for that. A cancel of the caller's context is ErrForwardNotStored
-// wrapping the context's error too: the forward was published, so the stream may have stored it,
-// and the caller that sends it again under the same Nats-Msg-Id finds the duplicate it then is. No
-// responders does not mean that no stream captures the subject:
-// a clustered stream changing its leader answers a captured subject so too, which is why nats.go's
-// own JetStream publish retries it. Only a read of the deployed stream tells the two apart
-// (ReadDeployedStreamCaptures). A clustered stream's refusal of a forward whose Nats-Msg-Id an
-// earlier forward still has in process wraps ErrDuplicateInProcess too, since the same forward
-// sent again once the earlier one is stored is acknowledged as its duplicate (cmd/listener's
-// publishPastInProcess).
-func (f *PendingForward) Wait() error {
+// or its caller's context is cancelled, releases its reply subscription, and returns the stream's
+// acknowledgement: the sequence of the copy it holds under the forward's Nats-Msg-Id, and Duplicate
+// where an earlier forward stored that copy. No acknowledgement by the deadline is
+// ErrForwardNotStored, wrapping, when publishConfirmed could not confirm the publish, the reason
+// for that. A cancel of the caller's context is ErrForwardNotStored wrapping the context's error
+// too: the forward was published, so the stream may have stored it, and the caller that sends it
+// again under the same Nats-Msg-Id finds the duplicate it then is. The stream's error answer
+// (named by storedRefusal), the server's no-responders answer, and the stream's duplicate
+// acknowledgement that names no sequence are each ErrForwardNotStored wrapping that answer. No
+// responders does not mean that no stream captures the subject: a clustered stream changing its
+// leader answers a captured subject so too, which is why nats.go's own JetStream publish retries
+// it. Only a read of the deployed stream tells the two apart (ReadDeployedStreamCaptures). A
+// clustered stream's refusal of a forward whose Nats-Msg-Id an earlier forward still has in
+// process wraps ErrDuplicateInProcess too, since the same forward sent again once the earlier one
+// is stored is acknowledged as its duplicate (cmd/listener's publishPastInProcess). The duplicate
+// that names no sequence wraps ErrDuplicateWithoutSequence, which says the stream answered and no
+// later reply comes, so a caller that answers for the forward can say so at once rather than wait
+// out its window. Any other reply is not the stream's acknowledgement and is passed over.
+func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.cancel()
 	defer f.replies.Unsubscribe()
 	for {
@@ -2839,9 +2844,9 @@ func (f *PendingForward) Wait() error {
 			// The caller's context ended: the forward ends now, whatever its window has left. A
 			// reply that came before is read first, above, since it settles the forward.
 			if f.unconfirmed != nil {
-				return fmt.Errorf("%w: %w: %w", ErrForwardNotStored, f.stopped.Err(), f.unconfirmed)
+				return StoredAck{}, fmt.Errorf("%w: %w: %w", ErrForwardNotStored, f.stopped.Err(), f.unconfirmed)
 			}
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, f.stopped.Err())
+			return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.stopped.Err())
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			break
@@ -2849,33 +2854,47 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing took the forward just then.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
-			return err
+			return StoredAck{}, err
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
+			// A stream's duplicate with sequence 0 names no copy (nats-server v2.10.29 sent one for
+			// an id it had staged at 0; the 2.11 line answers that with the in-process error, and
+			// later lines stage nothing): nothing says the forward is stored, and no later reply
+			// comes. Any other reply that is no acknowledgement (readPublishAcknowledgement) is
+			// passed over.
+			if ack.Stream != "" && ack.Duplicate {
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
+			}
 			continue
 		}
 		// The stream's error answer to the forward, named as the ErrStreamFull or the
 		// ErrDuplicateInProcess it may be (storedRefusal), which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, storedRefusal(ack.Error))
+			return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, storedRefusal(ack.Error))
 		}
-		return nil
+		return StoredAck{Sequence: ack.Seq, Duplicate: ack.Duplicate}, nil
 	}
 	if f.unconfirmed != nil {
-		return fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
+		return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
 	}
-	return ErrForwardNotStored
+	return StoredAck{}, ErrForwardNotStored
 }
 
-// publishAcknowledgement is a stream's answer to a publish it captured: the stream and the sequence
-// it stored the message at (a duplicate's earlier sequence), or its error.
+// ErrDuplicateWithoutSequence is wrapped by a forward's Wait when the stream answered it as a
+// duplicate of a copy it named no sequence of, so no copy can be read back (PendingForward.Wait).
+var ErrDuplicateWithoutSequence = errors.New("the stream acknowledged a duplicate with no sequence")
+
+// publishAcknowledgement is a stream's answer to a publish it captured: the stream, the sequence
+// it stored the message at (a duplicate's earlier sequence) and whether it was a duplicate, or its
+// error.
 type publishAcknowledgement struct {
-	Stream string         `json:"stream"`
-	Seq    uint64         `json:"seq"`
-	Error  *nats.APIError `json:"error"`
+	Stream    string         `json:"stream"`
+	Seq       uint64         `json:"seq"`
+	Duplicate bool           `json:"duplicate"`
+	Error     *nats.APIError `json:"error"`
 }
 
 // readPublishAcknowledgement reads data as a stream's publish acknowledgement, reporting false for

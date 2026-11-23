@@ -1,6 +1,10 @@
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { EnvoyApiError, type PublishResult } from "@legion/envoy-client/transport";
+import {
+  EnvoyApiError,
+  type KeyTakenResult,
+  type PublishResult,
+} from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import {
   architectLive,
@@ -148,7 +152,7 @@ type NoticeAttempt =
 
 /** One publish of a notice: the same topic, message, payload and idempotency key every attempt,
  * answered with the part of the listener's answer this teller reads. */
-type NoticeSend = () => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
+type NoticeSend = () => Promise<Pick<PublishResult, "kept" | "keptUntil"> | KeyTakenResult>;
 
 /** What the first attempt of a notice achieved. */
 interface NoticeSent {
@@ -305,6 +309,16 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   ): Promise<NoticeAttempt> => {
     try {
       const answer = await send();
+      // Another sender's message already holds the notice's key, so the listener stored nothing
+      // and told no owner: the notice was not delivered, which is a refusal.
+      if ("keyTaken" in answer) {
+        deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
+          ...where,
+          attempt,
+          error: `another sender's message (${answer.keyTaken.eventId}) already holds the notice's idempotency key`,
+        });
+        return { kind: "refused" };
+      }
       // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
       // role: the listener kept the notice on the role's kept lane for the next session that holds
       // it live within the hour. That has told no owner yet, so the worker records no owner as

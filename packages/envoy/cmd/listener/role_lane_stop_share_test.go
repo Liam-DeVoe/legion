@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -24,14 +25,14 @@ func TestAPinnedMessageTheStopLeavesNoTimeToForwardIsKeptAtOnce(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) > 1 {
-			return func() error { return nil }, nil
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			close(entered)
 			<-release
-			return stalledForward
+			return bus.StoredAck{}, stalledForward
 		}, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)

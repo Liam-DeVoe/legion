@@ -7,6 +7,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 )
@@ -47,7 +48,7 @@ func TestAQueuedForwardPastTheFenceGoesToTheRolesHolderNow(t *testing.T) {
 	real := startRoleForward(r.harness.client)
 	cfg := r.harness.config
 	cfg.now = clock.now
-	cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) == 1 {
 			<-release
 		}

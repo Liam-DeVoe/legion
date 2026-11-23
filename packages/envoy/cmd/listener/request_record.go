@@ -62,6 +62,12 @@ const (
 	// reading the record looks at the stream's configuration or at the sender's message size, and
 	// knows no retry of it can land.
 	outcomeStreamRefused requestOutcome = "stream_refused"
+
+	// outcomeStoredCopyUnreadable is a send, a topic publish or a role send whose message id the
+	// stream already knows, when the listener read no stored copy to answer (errStoredCopyUnread
+	// names the cases): the 503 with Retry-After: 1 under storedCopyUnreadablePrefix, and not
+	// outcomeBusUnavailable: the bus answered.
+	outcomeStoredCopyUnreadable requestOutcome = "stored_copy_unreadable"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a
 	// session, resolved a role, reported a wake or stored anything, so no other record holds the
@@ -108,8 +114,13 @@ type requestRecord struct {
 	lane    string
 	// item is the envelope the handler built, taken by pointer rather than copied, and nil on a
 	// request refused before the envelope exists (an undecodable body): that request still gets
-	// its line, with the envelope's four fields empty rather than no line at all.
+	// its line, with the envelope's four fields empty rather than no line at all. A route that
+	// answers a copy another request stored keeps the envelope it built in asked, whose source,
+	// source_session and payload_summary the line names, and that copy's event_id in held, which
+	// the line names whatever the answer carries (answerStored).
 	item   *contracts.Envelope
+	asked  *contracts.Envelope
+	held   string
 	holder string
 	// charge is the message's take from its sender's count (senderLimit.admit), nil for a message
 	// the limit does not count, and refused the refusal of a message whose count was empty. The
@@ -153,16 +164,19 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // often it is sent, 403 the publish this listener's own grant denies, and anything else the bus not
 // answering. The status is read back from the write rather than classified a second time here, so
 // the pair cannot drift - a refusal that ended a publish an earlier send of which may have stored
-// the message is the maybe-stored 503, and is recorded bus_unavailable as that 503 is - with two
+// the message is the maybe-stored 503, and is recorded bus_unavailable as that 503 is - with three
 // exceptions that share their 503 with the bus not answering, so the error tells them apart: a full
-// stream (bus.ErrStreamFull) and a request that ended while an earlier publish under its message
-// id was still in process (earlierAttemptInProcess).
+// stream (bus.ErrStreamFull), a stored copy that could not be read back (errStoredCopyUnread), and
+// a request that ended while an earlier publish under its message id was still in process
+// (earlierAttemptInProcess).
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
 	case status == http.StatusConflict:
 		outcome = outcomeStreamRefused
+	case errors.Is(err, errStoredCopyUnread):
+		outcome = outcomeStoredCopyUnreadable
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
 	case status == http.StatusRequestEntityTooLarge:
@@ -210,11 +224,19 @@ func (rec *requestRecord) refuseSenderRateLimited(w http.ResponseWriter, refusal
 }
 
 // write emits the one line, INFO for a request this listener took and WARN for one it refused.
+// Its event_id is the envelope the request was answered with (item), or the stored copy a route
+// answered for it (held), and its source, source_session and payload_summary are the request's own
+// (asked, where a route answered a copy another request stored), so a repeat of another sender's
+// key is logged as who made it.
 func (rec *requestRecord) write(status int, outcome requestOutcome) {
 	var eventID, source, sourceSession, payloadSummary string
 	if rec.item != nil {
 		eventID, source = rec.item.EventID, rec.item.Source
 		sourceSession, payloadSummary = rec.item.SourceSession, rec.item.PayloadSummary
+	}
+	if rec.asked != nil {
+		eventID = rec.held
+		source, sourceSession, payloadSummary = rec.asked.Source, rec.asked.SourceSession, rec.asked.PayloadSummary
 	}
 	attrs := make([]slog.Attr, 0, 9)
 	attrs = append(attrs,

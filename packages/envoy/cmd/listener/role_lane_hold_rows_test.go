@@ -39,11 +39,11 @@ func TestForwardsQueuedBehindAHoldersWorkerAtShutdownAreKeptAfterTheDrain(t *tes
 	release := make(chan struct{})
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) == 1 {
 			<-release
 		}
-		return func() error { return nil }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	forwarder := cfg.roleForwards
@@ -103,9 +103,9 @@ func TestForwardsQueuedBehindAHoldersWorkerAtShutdownAreKeptAfterTheDrain(t *tes
 // client's stream, except that the first forward's acknowledgement is lost: the stream stores that
 // forward, then after runs, and the forward reports the error a forward whose acknowledgement never
 // came reports, which leaves the stream's copy unknown (roleForwardEnded holds it).
-func forwardLosingTheFirstAcknowledgement(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+func forwardLosingTheFirstAcknowledgement(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 	real := startRoleForward(client)
-	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		wait, err := real(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
@@ -113,12 +113,12 @@ func forwardLosingTheFirstAcknowledgement(client *bus.Client, forwards *atomic.I
 		if forwards.Add(1) > 1 {
 			return wait, nil
 		}
-		return func() error {
-			if err := wait(); err != nil {
-				return err
+		return func() (bus.StoredAck, error) {
+			if _, err := wait(); err != nil {
+				return bus.StoredAck{}, err
 			}
 			after()
-			return fmt.Errorf("%w: the acknowledgement was lost", bus.ErrForwardNotStored)
+			return bus.StoredAck{}, fmt.Errorf("%w: the acknowledgement was lost", bus.ErrForwardNotStored)
 		}, nil
 	}
 }

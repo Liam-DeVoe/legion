@@ -66,19 +66,19 @@ func TestAPinnedMessageAtTheStopEndsInsideTheDrainsWait(t *testing.T) {
 	var mu sync.Mutex
 	var forwardEnds, keepEnds []time.Time
 	cfg := harness.config
-	cfg.forwardRole = func(_ context.Context, _ string, _ contracts.Envelope, _ string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(_ context.Context, _ string, _ contracts.Envelope, _ string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		first := forwards.Add(1) == 1
 		end := time.Now().Add(timeout)
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			if first {
 				forwarder.stopHolding()
-				return stalledForward
+				return bus.StoredAck{}, stalledForward
 			}
 			mu.Lock()
 			forwardEnds = append(forwardEnds, end)
 			mu.Unlock()
 			time.Sleep(time.Until(end))
-			return stalledForward
+			return bus.StoredAck{}, stalledForward
 		}, nil
 	}
 	cfg.keepPublish = func(ctx context.Context, _ string, _ contracts.Envelope, _ string) (bus.StoredAck, error) {
@@ -215,12 +215,12 @@ func TestAForwardQueuedPastItsBoundIsKeptNotMade(t *testing.T) {
 	var forwards atomic.Int32
 	cfg := harness.config
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
-	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
 		if forwards.Add(1) == 1 {
 			close(entered)
 			<-release
 		}
-		return func() error { return nil }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	handler := coreNATSDeliveryHandler(cfg)

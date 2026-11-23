@@ -44,17 +44,17 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(_ context.Context, subject string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
+	cfg.forwardRole = func(_ context.Context, subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() error {
+			return func() (bus.StoredAck, error) {
 				<-release
-				return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, &natsgo.APIError{Code: 400, ErrorCode: 10109, Description: "invalid operation on sealed stream"})
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, &natsgo.APIError{Code: 400, ErrorCode: 10109, Description: "invalid operation on sealed stream"})
 			}, nil
 		}
-		return func() error { settled.Add(1); <-settling; return nil }, nil
+		return func() (bus.StoredAck, error) { settled.Add(1); <-settling; return bus.StoredAck{}, nil }, nil
 	}
 	forwarder := newRoleForwarder(cfg)
 	closeOnce := func(held chan struct{}) {
