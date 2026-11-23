@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -107,4 +108,44 @@ func TestTheRetroRunsAsTheRoleOfItsAgent(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 		assertRetroStartsCoder(t, pool, engine, root.Key)
 	})
+}
+
+// A report of the retro that lands after the issue moved on without it is of the retro, whichever
+// role's agent did the retro (record.PhaseLeftBy): in `coder checker`, coder of the type
+// implementation, the coder's report of its retro, landing once the issue stands at its merge, is
+// judged as a report of the retro the coder left, as the implementer's is under phase.LeftBy. It
+// ends no retro: carrying a rating it is refused PLAN_RATING_UNEXPECTED, naming the retro, and
+// without one it is recorded on the coder's row and moves nothing, the issue still at its merge.
+// The control is the phase alone (phase.LeftBy), which reads the coder's report as one of a step.
+func TestALateReportOfTheRetroOfARoleOfTheDeploymentIsOfTheRetro(t *testing.T) {
+	pool := migratedPool(t)
+	engine := coderEngine()
+	root := coderCheckerAtStep2(t, pool, false)
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+	assertRetroStartsCoder(t, pool, engine, root.Key)
+	coder := seedPhaseWorker(t, pool, root.Key, "coder", "")
+	if coder != coderToken(t, root.Key) {
+		t.Fatalf("the coder's claim is %s and its retro's start names %s: this test proves nothing", coder, coderToken(t, root.Key))
+	}
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
+	if row := roleRowOf(t, pool, engine, root.Key, "coder"); row.Completed() {
+		t.Fatalf("the coder's row before its late report = %+v, want no completion recorded: this test proves nothing", row)
+	}
+	apply := applyFacts(t, pool, engine)
+	late := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: "coder", Claim: coder, Summary: "retro done", Commit: stepHead, Entry: 1}
+
+	rated := late
+	rated.PlanRating = &record.PlanRating{Rating: 4, Reason: "the steps fit the work"}
+	result := apply("late-rated", rated)
+	if result.Refusal == nil || result.Refusal.Code != "PLAN_RATING_UNEXPECTED" || !strings.Contains(result.Refusal.Message, "this completion of phase retro of "+root.Key) {
+		t.Fatalf("the coder's rated report after its retro = %+v, want PLAN_RATING_UNEXPECTED naming the retro it left", result.Refusal)
+	}
+	if result := apply("late", late); result.Refusal != nil {
+		t.Fatalf("the coder's report after its retro = %+v, want it taken", result.Refusal)
+	}
+	if row := roleRowOf(t, pool, engine, root.Key, "coder"); !row.Completed() || row.HandoffCommit != stepHead {
+		t.Fatalf("the coder's row after its late report = %+v, want the report recorded at %s", row, stepHead)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 }

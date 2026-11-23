@@ -257,6 +257,25 @@ func PlaceWorker(task string, place TaskPlace, steps []PlanStep) (Worker, bool) 
 	return Worker{}, false
 }
 
+// PhaseLeftBy is the phase role has left when its issue, standing at at, no longer stands where
+// role works, on an issue whose one task is task with the plan rows steps (task "" for an issue
+// with none): the phase its role last worked in the task. Once the issue stands past the retro,
+// the agent of the task's retro (PlaceWorker at the retro) has left the retro, whichever role it
+// is, as the implementer has under phase.LeftBy, so the retro of a role of the deployment or of the
+// plan of the type implementation is the retro it reports and not a step; every other role, and
+// every role with no plan rows, has left what phase.LeftBy answers, which reads the phase alone.
+// It is the one reading of a completion that is not the work of where the task stands: the
+// workflow's (completionOf, judgedReport) and the completion route's (api's answerCompletion),
+// which judges by it what the report must carry, so the two judge a late report of a retro alike.
+func PhaseLeftBy(role claim.Role, at phase.Phase, task string, steps []PlanStep) phase.Phase {
+	if task != "" && phase.MovesBack(at, phase.Retro) {
+		if retro, ok := PlaceWorker(task, TaskPlace{Kind: PlaceRetro}, steps); ok && retro.Role == role {
+			return phase.Retro
+		}
+	}
+	return phase.LeftBy(role, at)
+}
+
 // ReturnTarget is the step, from 1, that the failed step at position of a task on steps returns
 // its work to when its report names none: the first step before it whose recorded type is
 // implementation. ok is false where no step before it has that type, and for a position that is no

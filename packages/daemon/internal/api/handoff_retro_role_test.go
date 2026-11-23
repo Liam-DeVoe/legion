@@ -30,6 +30,12 @@ func coderDeployment() plan.Deployment {
 // its retro, which the coder does: the store reads key's running role at the retro as the coder.
 func seedCoderRetro(t *testing.T, h *harness, key string) {
 	t.Helper()
+	seedCoderAt(t, h, key, record.TaskPlace{Kind: record.PlaceRetro})
+}
+
+// seedCoderAt writes the plan `coder checker` of key at generation 1 with its task running at at.
+func seedCoderAt(t *testing.T, h *harness, key string, at record.TaskPlace) {
+	t.Helper()
 	ctx := context.Background()
 	err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		records := record.NewStore()
@@ -43,10 +49,10 @@ func seedCoderRetro(t *testing.T, h *harness, key string) {
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
+		return records.MoveTask(ctx, tx, key, 1, "a", at, record.TaskRunning)
 	})
 	if err != nil {
-		t.Fatalf("seed the coder's retro of %s: %v", key, err)
+		t.Fatalf("seed the plan `coder checker` of %s at %+v: %v", key, at, err)
 	}
 }
 
@@ -111,4 +117,37 @@ func TestTheRetroOfARoleOfTheDeploymentIsReported(t *testing.T) {
 			assertIssuePhase(t, h, tc.standAt)
 		})
 	}
+}
+
+// A report of the retro that lands after the issue moved on without it is reported as a report of
+// the retro, whichever role's agent did the retro (record.PhaseLeftBy, the workflow's own reading):
+// in `coder checker`, coder of the type implementation, the coder's report of its retro, with its
+// commit and no verdict, landing once the issue stands at its merge, is not asked for the verdict a
+// step of the coder carries. It ends no retro: carrying a rating it is refused
+// PLAN_RATING_UNEXPECTED, naming the retro, and without one it is taken on the coder's row and the
+// issue stays at its merge. The control is the phase alone (phase.LeftBy), which judges the
+// coder's report as one of a step and refuses it STEP_VERDICT_REQUIRED.
+func TestALateReportOfTheRetroOfARoleOfTheDeploymentIsOfTheRetro(t *testing.T) {
+	const key = "LEGION-208"
+	h, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Deployment: coderDeployment()})
+	seedIssueAt(t, h, key, phase.Merging)
+	seedCoderAt(t, h, key, record.TaskPlace{Kind: record.PlaceMerge})
+	seedPullRequest(t, h, key, headSHA)
+	seedEntry(t, h, key, "coder", 1)
+	coder := newLiveClaim(t, h, key, "coder")
+	takeTask(t, h, coder.token, "outbox:77", "retro "+key, 1, 1)
+	late := HandoffCompleteRequest{Summary: "retro done", Commit: headSHA}
+
+	rated := late
+	rated.GrantID, rated.PlanRating, rated.PlanReason = coder.grant(t), new(4), new("the steps fit the work")
+	if message := refused(t, h.complete(rated), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED"); !strings.Contains(message, "this completion of phase retro of "+key) {
+		t.Fatalf("the refusal = %q, want it to name the retro the coder left", message)
+	}
+	late.GrantID = coder.grant(t)
+	completion(t, h.complete(late))
+	if row := phaseRowOf(t, h, key, "coder"); row == nil || !row.Completed() || row.HandoffCommit != headSHA {
+		t.Fatalf("the coder's row after its late report = %+v, want the report recorded at %s", row, headSHA)
+	}
+	assertIssuePhase(t, h, phase.Merging)
 }

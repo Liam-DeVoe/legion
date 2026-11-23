@@ -239,11 +239,13 @@ func RoleFor(p Phase) claim.Role {
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
 // it stands past it. A role the deployment or the plan defines answers step wherever the issue
-// stands, the retro it does as its task's last step of the type implementation included. A
-// completion that arrives after the issue moved on without its role is of this phase (Of). The
-// architect leaves no phase here, and neither does a name that is no role: the architect signs
-// an acceptance off, and its report of a step of its own is the completion of that step's role
-// (api's completeStep).
+// stands, since the phase alone does not say which role's agent did the task's retro: where the
+// task's plan rows are read, the retro's agent has left the retro once the issue stands past it,
+// whichever role it is (record.PhaseLeftBy, which reads them and answers this for every other
+// role). A completion that arrives after the issue moved on without its role is of this phase
+// (Of). The architect leaves no phase here, and neither does a name that is no role: the architect
+// signs an acceptance off, and its report of a step of its own is the completion of that step's
+// role (api's completeStep).
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -270,7 +272,8 @@ func LeftBy(role claim.Role, at Phase) Phase {
 // (RoleFor), and otherwise the phase role has left (LeftBy). It reads the phase alone, so the
 // workflow judges by it only a completion of a run with no plan rows (workflow's completionOf),
 // where the completion route's own reading, the issue's phase where record.Issue.RoleAt names the
-// role and LeftBy elsewhere (api's handoffComplete), gives the same answer. It is "" for the
+// role and record.PhaseLeftBy, which is LeftBy with no plan rows, elsewhere (api's
+// answerCompletion), gives the same answer. It is "" for the
 // architect anywhere but admitted and accepting, the two phases RoleFor gives it, since the
 // architect leaves no phase. At admitted that answer is the issue's phase, the one the route read
 // for the architect's completion while RoleFor named no role there, and the workflow refuses an

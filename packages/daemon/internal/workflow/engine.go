@@ -1030,8 +1030,10 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.I
 // where the task runs at its place now (record.RunsAt: it runs, and issue stands in the phase that
 // place derives) and role is the role that works the place (Walk.RoleAt: a step's role, a role the
 // deployment defines at step among them, and at the retro the role of the agent that does it,
-// record.PlaceWorker); otherwise it is of the phase role left (phase.LeftBy). A run with no plan
-// rows judges by the phase alone (phase.Of), as it always did.
+// record.PlaceWorker); otherwise it is of the phase role left in the task (record.PhaseLeftBy: the
+// retro, for the retro's agent once the issue stands past it, whichever role it is, and
+// phase.LeftBy for every other). A run with no plan rows judges by the phase alone (phase.Of), as
+// it always did.
 func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, bool) {
 	if !w.Stored {
 		reported := phase.Of(role, issue.Phase)
@@ -1040,7 +1042,7 @@ func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, boo
 	if record.RunsAt(issue, w.State, w.Place, w.Steps) && role == w.RoleAt(w.Place) {
 		return issue.Phase, true
 	}
-	return phase.LeftBy(role, issue.Phase), false
+	return record.PhaseLeftBy(role, issue.Phase, w.Task, w.Steps), false
 }
 
 // judgedReport is the phase fact, a completion on issue whose walk is w, is of and whether it is
@@ -1061,7 +1063,7 @@ func judgedReport(issue record.Issue, w Walk, fact intake.HandoffComplete) (phas
 	}
 	reported, current := completionOf(issue, w, fact.Role)
 	if current && w.OwnerAt(w.Place) {
-		return phase.LeftBy(fact.Role, issue.Phase), false, nil
+		return record.PhaseLeftBy(fact.Role, issue.Phase, w.Task, w.Steps), false, nil
 	}
 	return reported, current, nil
 }

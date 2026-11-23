@@ -13,8 +13,8 @@ import (
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
 // snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, the
 // task the issue runs (record.StoredPlan.Task; "" for an issue with no plan rows at its
-// generation, which walks today's line), its pass — that task's count of returns to an earlier
-// step, which an issue with no plan rows keeps on its implementer's row
+// generation, which walks today's line) and that task's plan rows, its pass — that task's count of
+// returns to an earlier step, which an issue with no plan rows keeps on its implementer's row
 // (record.ImplementerCounts), which tells each implementing, testing, and reviewing pass from the
 // last — the handoff record the implementer last named for a file-backed phase
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
@@ -26,6 +26,7 @@ type completionPosition struct {
 	treeGeneration uint64
 	lingers        bool
 	task           string
+	steps          []record.PlanStep
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -66,13 +67,14 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return completionPosition{}, err
 	}
 	var task string
+	var steps []record.PlanStep
 	counts := record.ImplementerCounts(rows)
 	if stored != nil {
 		running, err := stored.Task()
 		if err != nil {
 			return completionPosition{}, err
 		}
-		task, counts = running.Task, running.Counts
+		task, steps, counts = running.Task, stored.Steps[running.Task], running.Counts
 	}
 	pr, err := s.records.PullRequest(ctx, tx, key)
 	if err != nil {
@@ -82,7 +84,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
+	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, steps: steps, pass: counts.Pass,
 		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

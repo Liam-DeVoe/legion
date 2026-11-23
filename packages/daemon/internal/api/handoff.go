@@ -234,13 +234,23 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			grant.Issue, whose))
 		return
 	}
-	// The role that works the issue's retro (record.Issue.RoleAt: the role of its agent's last step
-	// of the type implementation, a role of the deployment among them) reports it as the
-	// implementer reports its retro. What a report of a step carries is one rule, which the owner's
-	// complete_step takes too (stepReportRefusal); a reviewer's verdict turns on whether the issue
-	// has a pull request record, read with the issue.
-	worksRetro := issue.Phase == phase.Retro && issue.RoleAt(phase.Retro) == grant.Role
-	if refusal := stepReportRefusal(grant.Role, worksRetro, false, position.pullRequest != nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
+	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
+	// the role of the claim that works the task's place, so a role the deployment or the plan
+	// defines is current only at its own step, and at a step or a retro the owner does no worker's
+	// completion is, since that role is the architect), and otherwise the phase the role left in
+	// the task (record.PhaseLeftBy, the workflow's own reading: the retro, for the agent of the
+	// task's retro once the issue stands past it, whichever role it is, and phase.LeftBy for every
+	// other). A report of the retro, current or of a retro the issue has left, is reported as the
+	// implementer reports its retro, by whichever role's agent does it, so a role of the deployment
+	// whose retro report lands after the issue moved on is not asked for a step's verdict. What a
+	// report of a step carries is one rule, which the owner's complete_step takes too
+	// (stepReportRefusal); a reviewer's verdict turns on whether the issue has a pull request
+	// record, read with the issue.
+	of := record.PhaseLeftBy(grant.Role, issue.Phase, position.task, position.steps)
+	if issue.RoleAt(issue.Phase) == grant.Role {
+		of = issue.Phase
+	}
+	if refusal := stepReportRefusal(grant.Role, of == phase.Retro, false, position.pullRequest != nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -331,22 +341,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
-	// the role of the claim that works the task's place, so a role the deployment or the plan
-	// defines is current only at its own step, and at a step or a retro the owner does no worker's
-	// completion is, since that role is the architect), the phase the role left otherwise
-	// (phase.LeftBy), and the issue's for the architect, which leaves none. The record a phase with
-	// a handoff ends with is read back and held to the completion before anything is recorded:
-	// always when the role works the issue's
+	// The record a phase with a handoff ends with is read back and held to the completion before
+	// anything is recorded, of the phase this completion is of (above), which for the architect,
+	// which leaves no phase, is the issue's: always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
 	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
 	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
-	of := phase.LeftBy(grant.Role, issue.Phase)
-	if issue.RoleAt(issue.Phase) == grant.Role {
-		of = issue.Phase
-	}
 	if of == "" {
 		of = issue.Phase
 	}
