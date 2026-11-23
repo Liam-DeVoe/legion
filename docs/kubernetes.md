@@ -884,7 +884,7 @@ the image compiles the Go `legion` at `go.work`'s Go version, so a change that m
 It also fails when trigger (2)'s `worker_image` filter matches a file the build does not read (one the `.dockerignore` drops, or one no `COPY` names), since a pull request touching only that file would build an image for nothing;
 the filter's `!` patterns drop those, under its step's `some-with-excludes`.
 Trigger (2) selects by the pull request's whole diff:
-on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (retro's learnings, a docs fix) still gets the build and the PR head never loses it.
+on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (a docs fix, say) still gets the build and the PR head never loses it.
 A filter on the pushed commits alone would leave such a head unguarded.
 The `worker-image` job of `ci.yaml` grants the called workflow its `packages`/`contents` permissions, which apply to same-repo pull requests (this repository takes no fork PRs, whose token would be read-only).
 The `attest` job's `id-token` and `attestations` scopes reach a pull request run only if it drops that job's `if:`, and its attestation then names `refs/pull/<n>/merge`, which the verify command above refuses.
@@ -2314,7 +2314,11 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
 The last two sentences of each task a reviewer is sent are always the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.` or ` Review entry: none.`, in every phase and whatever queued the task.
 A stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
-Since the release whose owner does a step, the column also holds the commit that a review step no review on GitHub decides reported with its verdict (a reviewer of an issue with no pull request, the fresh agent of `acceptance`, and the owner in a review step of its own), and the pull request's head where the owner's `sign_off` or `request_backward_move` ended a review step of its own; each role but the reviewer whose step is of the type review is told its row's commit, ` Last reviewed commit: <sha>.`, in the phase its step runs as.
+Since the release whose owner does a step, the column also holds the commit a verdict reported at a review step no review on GitHub decides.
+Those steps are a reviewer's on an issue with no pull request, the fresh agent of `acceptance`'s, and each review step of the owner's.
+Where the owner's `sign_off` or `request_backward_move` ended a review step of its own, the column holds the pull request's head.
+A task of the role reviewer ends with both sentences, the owner's `reviewer:owner` step included.
+Each other role whose step is of the type review is told its row's commit alone, in the phase its step runs as: ` Last reviewed commit: <sha>.`.
 A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
 A task of the reviewer without that fact, which a start row or a pending delivery of the earlier release and an operator's own task are, is sent with ` Last reviewed commit: none. Review entry: none.` at its end, so its reviewer reads the whole change and keeps the entry of its round.
 All three statements run in the migration's one transaction: the two adds take a short lock on their tables and rewrite no row, and the update writes the reviewer's rows that store a task.

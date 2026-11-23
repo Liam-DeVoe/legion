@@ -15,7 +15,8 @@ plan for the issue picks. The default steps are a planner, an implementer that w
 and opens a pull request, a tester and a reviewer, then the architect's acceptance; the architect
 can also do any step of its plan itself. A merger follows each issue whose steps opened a pull
 request. Each agent is an
-[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
+[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, and under Kubernetes every agent of
+an issue runs in that issue's one pod.
 
 When the issue's steps have passed (in the default steps, the change is tested, reviewed, approved
 and accepted by the architect), the merger merges the pull request itself, at the head it read,
