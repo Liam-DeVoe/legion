@@ -85,25 +85,54 @@ const tables = [
   "user_sessions",
 ];
 
+// The node and tuple store (migration 20261109013400), which the closure above never reaches:
+// it walks foreign keys from a named table to the tables that reference it, and the key runs the
+// other way - `comments`, `document_blocks` and `block_refs` carry it into `graph_nodes` - so
+// naming them empties the rows and leaves the nodes those rows project. A reseeded database then
+// holds nodes whose rows are gone, which `envoy-dispatch census --store` reads as "a live node no
+// row projects". `graph_tuples` carries no foreign key at all. So the two are emptied here
+// instead, by a delete of their own, and locked beside the closure's tables so the reset still
+// holds every table it empties.
+//
+// The schema's own nodes stay: migration 20261109051232 seeds one `supertag` node per block type
+// and one `attribute` node per attribute, with their base-attribute and `attribute_of` tuples,
+// and nothing writes them again until a migration runs. They are the block schema the server
+// installs (pmdoc/schemanodes) and the targets `block_pointer_targets` reads for `graph_edges`,
+// so a reset that took them would leave the instance with no block type at all. `source_event`
+// tells them apart for nothing: the kind does, and that is what these predicates keep.
+const storeDeletes: ReadonlyArray<{ table: string; keep?: string }> = [
+  { table: "graph_tuples", keep: "from_kind IN ('supertag', 'attribute')" },
+  { table: "graph_nodes", keep: "kind IN ('supertag', 'attribute')" },
+];
+
 /** Whether the server under test is a base build's (`DISPATCH_E2E_BASE_BUILD=1`): this head's
  *  harness run against a server binary and web dist of an older commit
  *  (DISPATCH_E2E_SERVER_BIN, DISPATCH_E2E_SERVER_WEB_DIST), as a negative control does. That
  *  server migrated the database to its own schema, which lacks the tables this head adds, and the
  *  reset below names every table by regclass, which fails on one the database does not hold. So
- *  under the switch the reset leaves out the listed tables the database does not hold, read once
- *  per process through to_regclass and printed once, and without it a missing table still fails
- *  the reset, since there it is a head whose own migrations did not run. */
+ *  under the switch the reset leaves out the listed tables, and the store's (storeDeletes), the
+ *  database does not hold, read once per process through to_regclass and printed once, and
+ *  without it a missing table still fails the reset, since there it is a head whose own
+ *  migrations did not run. */
 const baseBuild = process.env.DISPATCH_E2E_BASE_BUILD === "1";
 
-/** The listed tables a base build's database holds, once read. */
-let baseBuildTables: readonly string[] | undefined;
+/** The tables the reset names: the listed ones, whose foreign-key closure it empties, and the
+ *  store's, which it empties by a scoped delete of each. */
+interface ResetTables {
+  targets: readonly string[];
+  store: typeof storeDeletes;
+}
 
-async function resetTables(): Promise<readonly string[]> {
-  if (!baseBuild) return tables;
+/** The listed tables and the store's that a base build's database holds, once read. */
+let baseBuildTables: ResetTables | undefined;
+
+async function resetTables(): Promise<ResetTables> {
+  if (!baseBuild) return { targets: tables, store: storeDeletes };
   if (baseBuildTables === undefined) {
+    const named = [...tables, ...storeDeletes.map((entry) => entry.table)];
     const missing = (
       await sql(
-        `SELECT name FROM unnest(ARRAY[${tables.map(sqlLiteral).join(", ")}]::text[]) AS name ` +
+        `SELECT name FROM unnest(ARRAY[${named.map(sqlLiteral).join(", ")}]::text[]) AS name ` +
           "WHERE to_regclass(name) IS NULL"
       )
     )
@@ -115,7 +144,10 @@ async function resetTables(): Promise<readonly string[]> {
           "base build's database does not hold"
       );
     }
-    baseBuildTables = tables.filter((table) => !missing.includes(table));
+    baseBuildTables = {
+      targets: tables.filter((table) => !missing.includes(table)),
+      store: storeDeletes.filter((entry) => !missing.includes(entry.table)),
+    };
   }
   return baseBuildTables;
 }
@@ -184,11 +216,12 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // the delete's own transaction makes, and the reset pays psql one round trip rather than the five
 // a BEGIN, the block, each insert and a COMMIT paid.
 async function resetDatabaseOnce(): Promise<void> {
-  const targets = await resetTables();
+  const { targets, store } = await resetTables();
   await sql(
     `DO $$
       DECLARE
         targets regclass[];
+        locked regclass[];
         target regclass;
         logging regclass[];
         refilled boolean;
@@ -212,6 +245,10 @@ async function resetDatabaseOnce(): Promise<void> {
             WHERE c.contype = 'f'
         )
         SELECT array_agg(rel ORDER BY rel::text) INTO targets FROM truncated;
+        -- Every table this block empties, which is the closure plus the store's own three: the
+        -- locks cover what the scoped deletes below touch as well, so nothing writes a node or a
+        -- tuple between the projection's delete and theirs.
+        locked := targets || ARRAY[${store.map((entry) => sqlLiteral(entry.table)).join(", ")}]::regclass[];
         LOOP
           -- A failed try rolls back this block, releasing every lock it took.
           BEGIN
@@ -223,7 +260,7 @@ async function resetDatabaseOnce(): Promise<void> {
                 true);
               EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE', contended);
             END IF;
-            FOREACH target IN ARRAY targets LOOP
+            FOREACH target IN ARRAY locked LOOP
               EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE NOWAIT', target);
             END LOOP;
             EXIT;
@@ -279,6 +316,15 @@ async function resetDatabaseOnce(): Promise<void> {
             RAISE EXCEPTION 'tables still held rows after % delete passes: %', passes, deletes;
           END IF;
         END LOOP;
+        -- The store, after the projections it holds: a node may go only once the rows whose
+        -- foreign key names it are gone, which the loop above did. Each delete keeps the rows
+        -- the schema migration seeded and takes every row a scenario wrote.
+${store
+  .map(
+    (entry) =>
+      `        DELETE FROM ${entry.table}${entry.keep === undefined ? "" : ` WHERE NOT (${entry.keep})`};`
+  )
+  .join("\n")}
         -- What RESTART IDENTITY did, for the tables that were emptied: the sequences their own
         -- columns own (pg_depend's 'a' for a serial, 'i' for an identity column). A DELETE leaves
         -- them where they stood, and the next insert would then collide with a row a trigger

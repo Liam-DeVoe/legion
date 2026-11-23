@@ -1,5 +1,5 @@
 {
-  "commands": 135,
+  "commands": 136,
   "refusals": 29,
   "runs": [
     {
@@ -1988,6 +1988,28 @@
       "outcome": "result",
       "text": [
         "{\"route\":\"GET /api/v1/near-copy-checks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_person_nodes",
+      "call": "valid",
+      "args": {
+        "person": "ana@example.com"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/people/ana%40example.com/nodes",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/people/{login}/nodes\"}"
       ]
     },
     {

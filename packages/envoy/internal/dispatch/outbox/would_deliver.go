@@ -72,16 +72,16 @@ func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Bro
 		item.item = envelope
 	}
 	want := newWanted()
-	_, _, _, _ = eventDestinations(ctx, Deps{Store: database}, item, want)
+	_, _ = eventDestinations(ctx, Deps{Store: database}, item, want)
 	found, err := loadLookups(ctx, database.Pool, want)
 	if err != nil {
 		return false, fmt.Errorf("read the recipients of a %s event: %w", event.Type, err)
 	}
-	list, _, _, err := eventDestinations(ctx, Deps{Store: database}, item, found)
+	reading, err := eventDestinations(ctx, Deps{Store: database}, item, found)
 	if err != nil {
 		return false, fmt.Errorf("list the destinations of a %s event: %w", event.Type, err)
 	}
-	for _, destination := range list {
+	for _, destination := range reading.list {
 		if reachesSession(destination.subject) {
 			return true, nil
 		}

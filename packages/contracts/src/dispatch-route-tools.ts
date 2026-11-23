@@ -860,6 +860,31 @@ export const dispatchRouteToolSpecs = [
     routes: get("/api/v1/users"),
   },
   {
+    name: "dispatch_list_person_nodes",
+    label: {
+      kind: "read",
+      verb: "list",
+      present: "Listing what {person} wrote and received",
+      past: "Listed what {person} wrote and received",
+      count: "item",
+    },
+    example: { person: "ana@example.com" },
+    description: `List one person's page, newest first, a page at a time: each comment they wrote and each one delivered to an agent session of theirs, with the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. A person none of whose items the person you act for may see is not found (404), as a login nobody holds is; the page of the person you act for always answers. ${AS_DATA}`,
+    arguments: (z) => ({
+      person: z.string({ min: 1 }).describe("Email of the person whose page it lists."),
+      limit: z
+        .number({ int: true, min: 1, max: 200 })
+        .describe("How many items a page holds, 1 to 200; 50 by default.")
+        .optional(),
+      offset: z.number({ int: true, min: 0 }).describe("How many items to skip.").optional(),
+    }),
+    strict: true,
+    routes: get("/api/v1/people/{login}/nodes", {
+      params: { login: "person" },
+      query: ["limit", "offset"],
+    }),
+  },
+  {
     name: "dispatch_read_dashboard_builds",
     label: {
       kind: "read",

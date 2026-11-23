@@ -13,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -161,6 +163,34 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		if eventSeq == nil || *eventSeq > ownerSeq || eventBody == nil || *eventBody != comment.Body {
 			t.Errorf("comment %s has the comment.created event %v with the body %v under an owner whose last sequence is %d, want one at or below it with the comment's body",
 				comment.ID, eventSeq, eventBody, ownerSeq)
+		}
+		// The comment is a node of the store as a comment the server writes is: its row names its
+		// node, the node is held, and the comment's authored_by tuple ends at a held node of the
+		// author its row records (graphstore.AuthorOf), as production's census reads a comment.
+		var stored model.Actor
+		var nodeKind, nodeAddress *string
+		var nodeHeld bool
+		var authoredKinds, authoredIDs []string
+		if err := database.Pool.QueryRow(ctx, `
+			select c.author, c.node_kind, c.node_address,
+			       exists (select 1 from graph_nodes n where n.kind = c.node_kind and n.id = c.node_address),
+			       coalesce(array_agg(t.to_kind order by t.seq) filter (where t.seq is not null), '{}'),
+			       coalesce(array_agg(t.to_id order by t.seq) filter (where t.seq is not null), '{}')
+			from comments c
+			left join graph_tuples t on t.from_kind = $2 and t.from_id = c.id::text and t.kind = $3 and t.asserted
+			  and exists (select 1 from graph_nodes a where a.kind = t.to_kind and a.id = t.to_id)
+			where c.id = $1
+			group by c.id
+		`, ItemID("comment", comment.ID), graphstore.KindComment, graphstore.TupleAuthoredBy).Scan(
+			&stored, &nodeKind, &nodeAddress, &nodeHeld, &authoredKinds, &authoredIDs); err != nil {
+			t.Fatalf("read the store's comment %s: %v", comment.ID, err)
+		}
+		wantKind, wantID, _ := graphstore.AuthorOf(stored)
+		if value(nodeKind) != graphstore.KindComment || value(nodeAddress) != ItemID("comment", comment.ID) || !nodeHeld {
+			t.Errorf("comment %s names the node %q %q (held %t), want its own comment node, held", comment.ID, value(nodeKind), value(nodeAddress), nodeHeld)
+		}
+		if !slices.Equal(authoredKinds, []string{wantKind}) || !slices.Equal(authoredIDs, []string{wantID}) {
+			t.Errorf("comment %s is authored_by %v %v, want one tuple to the held node %s %s", comment.ID, authoredKinds, authoredIDs, wantKind, wantID)
 		}
 	}
 	for _, message := range seed.Messages {

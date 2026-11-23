@@ -246,6 +246,8 @@ export type {
   MyReplyThreadRow,
   OpenAskOwner,
   PatchPriorityInput,
+  PersonNode,
+  PersonNodes,
   PersonSignInResp,
   PersonSignInsResponse,
   Priorities,

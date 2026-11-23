@@ -142,7 +142,7 @@ func (argumentReleaser) TraceRelease(_ *pgxpool.Pool, data pgxpool.TraceReleaseD
 func markLargeArguments(conn *pgx.Conn, args []any) {
 	size := 0
 	for _, arg := range args {
-		size += argumentBytes(arg)
+		size += cheapArgumentBytes(arg)
 	}
 	if size <= largeArgumentBytes {
 		return
@@ -157,9 +157,10 @@ func markLargeArguments(conn *pgx.Conn, args []any) {
 	custom[largeArgumentsKey] = slots
 }
 
-// argumentBytes is how many bytes arg holds, for the kinds of argument whose size is cheap to read,
-// and 0 for every other kind.
-func argumentBytes(arg any) int {
+// cheapArgumentBytes is how many bytes arg holds, for the kinds of argument whose size is cheap to
+// read, and 0 for every other kind. The tracer runs it on every statement's arguments, so it reads
+// no value through reflection, as writebatch.go's argumentBytes, which bounds a write phase, does.
+func cheapArgumentBytes(arg any) int {
 	switch value := arg.(type) {
 	case string:
 		return len(value)

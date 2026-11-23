@@ -167,10 +167,11 @@ func (s *server) goingDecide(ctx context.Context, words string, start goingRunSt
 // that hit, and no model is asked of them. It answers whether the words are such words, with the
 // hit they name where the search found one: words of a key's shape are a key whether or not an
 // issue holds it. The search is the keyword statement alone (searchParameters.keywordsOnly), so
-// it asks no embedding of the words either.
-func (s *server) goingNamedHit(ctx context.Context, words, project string) (*going.Hit, bool, error) {
+// it asks no embedding of the words either. It searches as author, the run's author, as the
+// answer's own search does (goingSearch), so the hit is one that credential may read.
+func (s *server) goingNamedHit(ctx context.Context, words, project string, author model.Actor) (*going.Hit, bool, error) {
 	key := issueKeyPattern.MatchString(strings.ToUpper(words))
-	found, err := s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit, keywordsOnly: true})
+	found, err := s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit, keywordsOnly: true, who: author})
 	if err != nil {
 		return nil, key, err
 	}

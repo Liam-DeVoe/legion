@@ -865,6 +865,7 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_delivery_run":                 {},
 	"dispatch_list_ci_reconcile_passes":          {},
 	"dispatch_list_users":                        {},
+	"dispatch_list_person_nodes":                 {},
 	"dispatch_read_dashboard_builds":             {},
 	"dispatch_read_priority_history":             {},
 	"dispatch_resolve_issue":                     {},

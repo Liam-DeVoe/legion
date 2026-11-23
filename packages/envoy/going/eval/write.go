@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -455,19 +456,15 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 		return fmt.Errorf("its version: %w", err)
 	}
 	located := text.ExtractAt(rendered, "")
-	index, err := refs.ReadBlockIndex(ctx, w.tx, id)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, w.tx, id, 1, at, rendered, blocks, located, nil)
 	if err != nil {
 		return fmt.Errorf("index its blocks: %w", err)
 	}
-	indexing, err := refs.PlanBlocks(index, id, 1, at, rendered, blocks, located, nil)
-	if err != nil {
-		return fmt.Errorf("index its blocks: %w", err)
-	}
-	if err := store.RunWrite(ctx, w.tx, func(b *store.WriteBatch) error {
-		indexing.Queue(b)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("index its blocks: %w", err)
+	// The seed records no event of a document's version, so what the index stated in the node and
+	// tuple store carries the sentinel, the cause of a write no event recorded, as
+	// cmd/dispatch-seed's writeDocument records it.
+	if err := graphstore.Caused(ctx, w.tx, blockWrite, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("record what its block index stated: %w", err)
 	}
 	if err := refs.WriteDocumentWindows(ctx, w.tx, id, rendered, blocks); err != nil {
 		return fmt.Errorf("write its windows: %w", err)
@@ -544,7 +541,7 @@ func (w *seedWriter) writeAsks(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 		}
-		parts, err := refs.PlanAskParts(partIndex, refs.NewReader(ctx, w.tx, "ask", id, ""), stored, at)
+		parts, err := refs.PlanAskParts(partIndex, refs.NewReader(ctx, w.tx, stored.Author, "ask", id, ""), stored, at)
 		if err != nil {
 			return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 		}
@@ -615,16 +612,45 @@ func (w *seedWriter) writeComments(ctx context.Context) error {
 // the comment route leaves them, and its comment.created event under its owner's next sequence,
 // which an issue's log lists: the comment as it was written, its body cut as an event carries one
 // (model.EventBody), and for a project document's comment the document it is on.
+//
+// The comment is a node of the node and tuple store as a comment the server writes is, and as
+// cmd/dispatch-seed's writeComments writes one: before its row, since the row's (node_kind,
+// node_address) key is checked inside the statement that writes it, the comment's node, the
+// document that owns it where one does (graphstore.CommentFacts, by the document's ref_key), and
+// who wrote it (graphstore.AuthorFacts: the author's node and the comment's authored_by tuple).
+// The seed appends the comment's event after the row, so all of it takes the sentinel, the cause
+// of a write no event recorded, as the seed's do. Every comment of an author writes the author's
+// node again, so that node restates the author (graphstore.Node's Restates): the first comment
+// makes it, and a later one keeps what the store holds.
 func (w *seedWriter) writeComment(ctx context.Context, comment Comment) error {
 	id := ItemID("comment", comment.ID)
 	where := ownerOf(comment.Owner)
+	actor := w.actor(comment.Author)
 	author, err := w.actorJSON(comment.Author)
 	if err != nil {
 		return err
 	}
+	authorNodes, authored, named := graphstore.AuthorFacts(graphstore.KindComment, id, actor, comment.CreatedAt, graphstore.NoEvent)
+	if !named {
+		return fmt.Errorf("its author %q names nobody the store can name", comment.Author)
+	}
+	ownerAddress := ""
+	if where.artifact != nil {
+		if err := w.tx.QueryRow(ctx, `select ref_key from artifacts where id = $1`, *where.artifact).Scan(&ownerAddress); err != nil {
+			return fmt.Errorf("read the address of its document: %w", err)
+		}
+	}
+	node, tuples := graphstore.CommentFacts(nil, id, actor, comment.CreatedAt, graphstore.NoEvent, "", ownerAddress)
+	for index := range authorNodes {
+		authorNodes[index].Restates = true
+	}
+	if err := graphstore.Write(ctx, w.tx, append([]graphstore.Node{node}, authorNodes...), append(tuples, authored...)); err != nil {
+		return fmt.Errorf("its node: %w", err)
+	}
 	if _, err := w.tx.Exec(ctx, `
-		insert into comments (id, issue_key, artifact_id, author, body, created_at) values ($1, $2, $3, $4::jsonb, $5, $6)
-	`, id, where.issue, where.artifact, author, comment.Body, comment.CreatedAt); err != nil {
+		insert into comments (id, issue_key, artifact_id, author, body, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+	`, id, where.issue, where.artifact, author, comment.Body, comment.CreatedAt, graphstore.KindComment, id); err != nil {
 		return err
 	}
 	if err := w.indexItem(ctx, refs.ItemComment, id, comment.Body, comment.CreatedAt); err != nil {

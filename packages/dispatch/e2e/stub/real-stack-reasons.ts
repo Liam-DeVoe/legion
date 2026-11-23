@@ -167,6 +167,8 @@ export const realStackReasons: Record<string, string> = {
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
   "going-unconfigured.e2e.ts":
     "its claim is the capability the server reports with nothing configured, and that the bar asks it for no answer",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
