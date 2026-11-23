@@ -1069,6 +1069,7 @@ test:
   - 'packages/daemon/internal/controller/liveness.go'
   - 'packages/daemon/internal/supervise/machine.go'
   - 'packages/daemon/internal/intake/consume.go'
+  - 'packages/daemon/internal/record/outbox.go'
   - 'packages/daemon/internal/capabilities/testdata/web-search-open-planner.json'
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
