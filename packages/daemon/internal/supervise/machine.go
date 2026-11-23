@@ -2979,14 +2979,26 @@ func (m *Machine) podRefused(ctx context.Context, cause error) error {
 // podStillRefuses is the fence of every launch and resume of a claim whose last launch was refused
 // on refusedPod (podRefused): while that pod is still the issue's pod (runtime.IssuePodReader), it
 // answers that refusal again (runtime.AwaitsPodUpdate), before anything of the claim is written,
-// and the issue and the controller are told at most hourly. Once another pod stands, or none, or
-// the runtime reads no pod, the record is dropped and the launch goes on.
+// and the issue and the controller are told at most hourly. A runtime that cannot say which pod
+// the issue's Sandbox holds now (read false) has not said that pod is gone, so no answer is read
+// as the pod still standing, as an update round over a pod reads it (runtime.IssuePodReader):
+// forgetting the pod would launch into it at each try, be refused there again, write the claim
+// and tell the issue and the controller every time. Once another pod stands, or none, the record
+// is dropped and the launch goes on, and so it does for a runtime whose processes run in no pod,
+// which reads none.
 func (m *Machine) podStillRefuses() error {
 	if m.refusedPod == "" {
 		return nil
 	}
 	if reader, ok := m.deps.Runtime.(runtime.IssuePodReader); ok {
-		if pod, read := reader.IssuePod(m.claim.Issue); read && pod == m.refusedPod {
+		pod, read := reader.IssuePod(m.claim.Issue)
+		if !read {
+			err := runtime.AwaitsPodUpdate{Pod: m.refusedPod, Reason: fmt.Sprintf("launch %s: the pod %s of %s refused its last launch, and which pod the issue holds now cannot be read",
+				m.claim.Token, m.refusedPod, m.claim.Issue)}
+			m.tellPodRefused(err)
+			return err
+		}
+		if pod == m.refusedPod {
 			err := runtime.AwaitsPodUpdate{Pod: pod, Reason: fmt.Sprintf("launch %s: the pod %s of %s, which refused its last launch, still stands",
 				m.claim.Token, pod, m.claim.Issue)}
 			m.tellPodRefused(err)
