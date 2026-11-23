@@ -25,14 +25,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 const (
 	// specResultsProject is the project the CI job's results token writes the results of.
 	specResultsProject = "ACME"
-	// specResultsRepository is the repository of the job's run, which the project maps.
+	// specResultsRepository is the repository of the job's run, the project's default repository.
 	specResultsRepository = "example-org/example-repo"
 	// specResultsCommit is the commit of the job's run, whose files hold the probe checks.
 	specResultsCommit = "0123456789abcdef0123456789abcdef01234567"
@@ -193,7 +195,8 @@ func (g *specGitHub) serve(t *testing.T) string {
 }
 
 // specResultsRig is a Dispatch whose verifier serves results tokens as cmd/dispatch's does, a
-// GitHub that holds the run's check run and files, and project ACME mapped to the repository.
+// GitHub that holds the run's check run and files, and project ACME whose default repository is
+// the run's.
 type specResultsRig struct {
 	*brokerTokenRig
 	github *specGitHub
@@ -203,6 +206,14 @@ type specResultsRig struct {
 
 func newSpecResultsRig(t *testing.T) *specResultsRig {
 	t.Helper()
+	return newSpecResultsRigOf(t, refs.Renames{}, specResultsRepository)
+}
+
+// newSpecResultsRigOf is newSpecResultsRig on a server given renames, as a boot gives its own
+// (Deps.Renames), with repository ACME's default repository, as PUT
+// /api/v1/projects/{key}/default-repository sets it.
+func newSpecResultsRigOf(t *testing.T, renames refs.Renames, repository string) *specResultsRig {
+	t.Helper()
 	github := &specGitHub{
 		checkRuns: map[int64]specCheckRunAnswer{specResultsCheckRun: {name: "go-checks", headSHA: specResultsCommit}},
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
@@ -211,14 +222,15 @@ func newSpecResultsRig(t *testing.T) *specResultsRig {
 	rig := newBrokerTokenRigOn(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: github.serve(t),
+		renames:       renames,
 	})
 	for _, project := range []string{specResultsProject, "OTHER"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
 			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
 		}
 	}
-	if mapped := rig.asPerson(t, http.MethodPut, "/api/v1/settings/repo-projects/"+specResultsRepository, map[string]any{"project": specResultsProject}); mapped.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: status=%d body=%s", specResultsRepository, specResultsProject, mapped.Code, mapped.Body.String())
+	if set := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": repository}); set.Code != http.StatusOK {
+		t.Fatalf("set %s's default repository to %s: status=%d body=%s", specResultsProject, repository, set.Code, set.Body.String())
 	}
 	return &specResultsRig{brokerTokenRig: rig, github: github, caller: newBrokerCaller(t)}
 }
@@ -662,21 +674,29 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 }
 
 // TestARepositorySpelledWithCapitalsIsTheProjectsRepository: GitHub spells a run's repository as
-// its owner does (`Example-Org/Example-Repo`), and Dispatch stores a mapping's repository, and the
-// name it was renamed to, lowercased (canonicalRepo). Every comparison of a repository reads both
-// sides lowercased (refs.CanonicalRepoSQL), so the run of a mapped repository, and of a repository
-// a mapping was renamed to, writes its result whatever the case of its name. The row is stored
-// under the repository as the run names it. The lowercase run of every other test is the control.
+// its owner does (`Example-Org/Example-Repo`), and a project's default repository is stored as a
+// person names it. Every comparison of a repository reads both sides lowercased, under the name
+// each is called today by the boot's rename pairs (refs.Renames.Canonical), so the run of the
+// project's default repository, and of the repository that default was renamed to, writes its
+// result whatever the case of its name. The row is stored under the repository as the run names
+// it. The lowercase run of every other test is the control.
 func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
-	for _, row := range []struct{ name, repository string }{
-		{"a mapped repository", "Example-Org/Example-Repo"},
-		{"a repository a mapping was renamed to", "Example-Org/New-Repo"},
+	// The renamed default is a row stored under the old name before the boot read the pair, which
+	// the route that sets a default never writes, so it is seeded by SQL.
+	renamed := refs.NewRenames([]store.RepoRename{{From: "example-org/old-repo", To: "Example-Org/New-Repo"}})
+	for _, row := range []struct {
+		name, repository, stored string
+		renames                  refs.Renames
+	}{
+		{"the project's default repository", "Example-Org/Example-Repo", "", refs.Renames{}},
+		{"a repository the project's default was renamed to", "Example-Org/New-Repo", "example-org/old-repo", renamed},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rig := newSpecResultsRig(t)
-			renamed := map[string]any{"project": specResultsProject, "renamed_to": "Example-Org/New-Repo"}
-			if mapped := rig.asPerson(t, http.MethodPut, "/api/v1/settings/repo-projects/example-org/old-repo", renamed); mapped.Code != http.StatusOK {
-				t.Fatalf("map example-org/old-repo, renamed to Example-Org/New-Repo: status=%d body=%s", mapped.Code, mapped.Body.String())
+			rig := newSpecResultsRigOf(t, row.renames, specResultsRepository)
+			if row.stored != "" {
+				if _, err := rig.database.Pool.Exec(context.Background(), `update projects set default_repo = $2 where key = $1`, specResultsProject, row.stored); err != nil {
+					t.Fatalf("store %s's default repository as %s: %v", specResultsProject, row.stored, err)
+				}
 			}
 			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + row.repository + "/.github/workflows/ci-results.yaml"

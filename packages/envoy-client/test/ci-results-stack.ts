@@ -375,11 +375,9 @@ export async function startCIResultsStack(options: {
     };
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
     // The project's default repository, so its issues resolve to the repository a job's run is
-    // of: the issue's results route takes a job's result only for such an issue.
-    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, {
-      project: PROJECT,
-      default: true,
-    });
+    // of: the issue's results route takes a job's result only for such an issue, and the
+    // project's results route only from a run of that repository.
+    await asPerson("PUT", `/api/v1/projects/${PROJECT}/default-repository`, { repo: REPOSITORY });
     const filed = (await asPerson("POST", "/api/v1/issues", {
       project: PROJECT,
       title: "A change a CI job proves",

@@ -231,15 +231,16 @@ func newCIJobRig(t *testing.T) *ciJobRig {
 	return rig
 }
 
-// issueOf creates project, maps repository to it as its default, and files one issue of it whose
-// Verification document is ciJobVerification. It answers the issue and that document.
+// issueOf creates project, sets repository as its default repository, as PUT
+// /api/v1/projects/{key}/default-repository does, and files one issue of it whose Verification
+// document is ciJobVerification. It answers the issue and that document.
 func (r *ciJobRig) issueOf(t *testing.T, project, repository string) (string, string) {
 	t.Helper()
 	if created := r.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
 		t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
 	}
-	if mapped := r.asPerson(t, http.MethodPut, "/api/v1/settings/repo-projects/"+repository, map[string]any{"project": project, "default": true}); mapped.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: status=%d body=%s", repository, project, mapped.Code, mapped.Body.String())
+	if set := r.asPerson(t, http.MethodPut, "/api/v1/projects/"+project+"/default-repository", map[string]any{"repo": repository}); set.Code != http.StatusOK {
+		t.Fatalf("set %s's default repository to %s: status=%d body=%s", project, repository, set.Code, set.Body.String())
 	}
 	filed := r.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "Proved by a CI job", "spec": "A spec\n"})
 	if filed.Code != http.StatusCreated {
