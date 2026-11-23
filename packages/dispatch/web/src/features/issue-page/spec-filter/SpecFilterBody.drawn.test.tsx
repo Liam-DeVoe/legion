@@ -906,10 +906,11 @@ function holdTreeReads(client: QueryClient): void {
   client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
 }
 
-/** The page's stage at the Spec view's address (`AddressedStage`), over `client`'s reads. */
-function drawSpecStage(client: QueryClient, issue: IssueDetails): RenderResult {
+/** The page's stage at the Spec view's address with `after` on its end, such as an item's query
+ *  (`AddressedStage`), over `client`'s reads. */
+function drawSpecStage(client: QueryClient, issue: IssueDetails, after = ""): RenderResult {
   return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec${after}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
@@ -934,17 +935,7 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   holdTreeReads(client);
   client.setQueryData(["whoami"], { kind: "user", login: READER });
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec?comment=reply-b`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = drawSpecStage(client, issue, "?comment=reply-b");
   try {
     const { container } = view;
     await waitFor(() => {
@@ -987,11 +978,8 @@ test("a failed names read says so in its own line, after the view's own, and its
   // Every read the page's tree is built from answered but the decisions read, which is refused,
   // so the view draws a line of its own before the names'.
   client.setQueryData(["whoami"], { kind: "user", login: READER });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
-  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
-  client.setQueryData(["issue-messages", KEY], []);
+  holdTreeReads(client);
+  client.removeQueries({ queryKey: issueDecisionsQuery(KEY, true).queryKey });
   const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
   const view = drawSpecStage(client, issue);

@@ -4,6 +4,7 @@ import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { createComment, createIssue, createProject, getArtifact } from "./api";
 import { PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
+import { onScreen } from "./issue-page-i";
 
 /**
  * How the Spec view's rows read the new issue page's Spec view and its Contents slot
@@ -103,12 +104,9 @@ export async function seedChildWithSpec(): Promise<ChildWithSpecSeed> {
 
 /** The issue of `seedTallSpec`: its key, its spec's artifact id and slug, the block ids of the
  *  statements its spec holds, in document order, and the id of its one comment. */
-export interface TallSpecSeed {
+export interface TallSpecSeed extends IssueWithSpec {
   readonly commentId: string;
-  readonly key: string;
-  readonly requirements: readonly string[];
   readonly specArtifactId: string;
-  readonly specSlug: string;
 }
 
 /** The words of each statement of `seedTallSpec`, in document order: thirty, each a sentence or
@@ -321,13 +319,13 @@ export function ownWords(scope: Locator): Promise<string[]> {
   );
 }
 
-/** Fails unless `row`, the row an address landed on, stands inside the viewport: its top at or
- *  below the viewport's top and its bottom at or above the viewport's bottom. Each failure names
- *  `what` landed there, the row's top and bottom, and how tall the page is and how far it is
- *  scrolled, which together say where a row that left the screen went. */
-export async function expectInViewport(page: Page, row: Locator, what: string): Promise<void> {
-  const box = await row.boundingBox();
-  expect(box, `${what} draws no box for the focused row`).not.toBeNull();
+/** Fails unless `target`, the element an address landed on, stands on screen as `onScreen` reads
+ *  it: clear of what stays at the top of the screen and above the box that stays at its foot.
+ *  Each failure names `what` landed there, the element's top and bottom, and how tall the page is
+ *  and how far it is scrolled, which together say where an element that left the screen went. */
+export async function expectInViewport(page: Page, target: Locator, what: string): Promise<void> {
+  const box = await target.boundingBox();
+  expect(box, `${what} draws no box for the focused element`).not.toBeNull();
   const height = page.viewportSize()?.height ?? Number.NaN;
   const { scrollHeight, scrollY } = await page.evaluate(() => ({
     scrollHeight: document.documentElement.scrollHeight,
@@ -335,7 +333,6 @@ export async function expectInViewport(page: Page, row: Locator, what: string): 
   }));
   const top = box?.y ?? Number.NaN;
   const bottom = top + (box?.height ?? Number.NaN);
-  const where = `${what}: the focused row stands from ${top} px to ${bottom} px in a viewport ${height} px tall, on a page ${scrollHeight} px tall scrolled ${scrollY} px`;
-  expect(top, `${where}, its top above the viewport`).toBeGreaterThanOrEqual(0);
-  expect(bottom, `${where}, its bottom below the viewport`).toBeLessThanOrEqual(height);
+  const where = `${what}: the focused element stands from ${top} px to ${bottom} px in a viewport ${height} px tall, on a page ${scrollHeight} px tall scrolled ${scrollY} px`;
+  await expect.poll(() => onScreen(target), { message: `${where}, not on screen` }).toBe(true);
 }

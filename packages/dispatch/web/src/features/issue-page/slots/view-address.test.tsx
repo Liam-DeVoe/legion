@@ -32,7 +32,7 @@ import {
 } from "./stage-fixtures";
 
 /**
- * Where an address lands on the stage under the Plan and Verification views, and in the
+ * Where an address lands on the stage under the Plan, Spec and Verification views, and in the
  * Conversation's outline as the browser changes the fragment under one key: on a row the view
  * draws, or on a row or a line of the outline, which under a view the stage draws in its place.
  */

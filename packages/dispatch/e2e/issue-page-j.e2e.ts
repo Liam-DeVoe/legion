@@ -1431,11 +1431,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     ).not.toContain(GONE_COMMENT);
     const fallback = FALLBACK_LINES.comment(seeded.key);
     await expectLoadSettled(await fromSettings(`${spec}?comment=${GONE_COMMENT}`));
-    await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
-    await expectInViewport(
-      page,
-      issuePage(page).getByRole("heading", { exact: true, name: fallback.heading }),
-      "a gone comment under Spec"
-    );
+    const heading = await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
+    await expectInViewport(page, heading, "a gone comment under Spec");
   });
 });

@@ -10,7 +10,7 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * How the outline's rows read the outline of the new issue page (`e2e/issue-page-i.e2e.ts`):
  * the readers that `e2e/issue-page.ts` (the page's root and its frame) and
  * `e2e/issue-page-g.ts` (one node's row, and the tree as rows) do not hold. Later rows import
- * from this file rather than change it.
+ * from this file, and add to it only what the rows of more than one part share.
  *
  * What the outline draws, beyond what `e2e/issue-page-g.ts` names:
  *
@@ -773,13 +773,13 @@ export const FALLBACK_LINES = {
 
 /** The page draws part I's line `words` in the place of the view whose body is `view` for the
  *  address it has just loaded, `what`: its heading and its line, with the focus on the heading,
- *  and none of the view beside it. */
+ *  and none of the view beside it. Answers the heading. */
 export async function expectFallbackLine(
   page: Page,
   words: { readonly heading: string; readonly line: string },
   view: Locator,
   what: string
-): Promise<void> {
+): Promise<Locator> {
   const named = { exact: true, name: words.heading } as const;
   const heading = issuePage(page).getByRole("heading", named);
   await expect(heading, `${what} draws no "${words.heading}" in the view's place`).toBeVisible();
@@ -796,4 +796,5 @@ export async function expectFallbackLine(
     `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
   ).toBeFocused();
   await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
+  return heading;
 }
