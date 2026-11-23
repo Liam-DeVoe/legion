@@ -5808,6 +5808,8 @@ Each item below names a path with its method and identity, then its purpose.
   `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
   The store holds each tuple to its type rule: a far end of the wrong type, a `prevented_by` at a check of another project than the risk's or of a retired document, naming the check by its address, a `triggered_by` at the lens itself or at a lens not invoked before it (the `seq` of each lens's first `part_of` tuple, the order the lens read answers), naming both lenses by address, and a lens left with no kind are `400 INVALID_POINTER`, so no `triggered_by` closes a cycle, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
   A node or a far end the caller may not see under the issue (a `prevented_by`'s check in any issue), a far end that is gone, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`, a check the caller may not see answering as one nobody holds; a gone node `{id}` is `409 NODE_GONE`, naming it, since `gone` is final; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  On an issue Legion runs, a pointer out of a requirement, criterion or check block, a requirement's `constrained_by`, from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (`refuseSpecWriterOfNode`, Document errors below), read under the issue's owner lock, and nothing is stored.
+  A pointer out of a lens or a risk, a `prevented_by` at a check among them, is no such write.
   Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
 
 - `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
@@ -5834,12 +5836,16 @@ Each item below names a path with its method and identity, then its purpose.
     A move out of `settled` undoes what a settle decided, a move out of `proposed` ends a proposal and counts a proposed check or plan task as serving its requirement as a settle would, and a move into `proposed` takes a requirement's gaps out of the coverage read and the approval request, so none of them is open to a caller who could not settle the node, and the deployment's shared agent token, which proves no author, makes none of them.
     A write of the state a node already holds moves nothing and appends nothing, so it takes no caller rule.
 
+  - On an issue Legion runs, a write of the state of a requirement, criterion or check block from a writer that is no person and no architect of the issue or of an issue above it is then `403 DOCUMENT_WRITER_NOT_ARCHITECT` (`refuseSpecWriterOfNode`, Document errors below), and nothing is stored.
+    The check runs past the route's own rule, under the issue's owner lock `writeNodeState` takes; each route names it in its own call of `writeNodeStateAs`, so the source guard holds each route to it.
+
 - `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
 
   Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
   A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id; a gone node is `409 NODE_GONE`, naming it, and any other node not at `proposed` `409 NODE_NOT_PROPOSED`.
   A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`maySettle`, `graphstore.SameAuthor`, the Go half of `graphstore.AuthorIsSQL`): the same person for a personal token or a broker session that names a person, the same session for a broker session that names none (`model.Actor.Proven`), and the same workload for a pod's service-account token; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
   A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
+  On an issue Legion runs, a settle of a requirement, criterion or check block from a writer that is no person and no architect of the issue or of an issue above it, its own proposal among them, is then `403 DOCUMENT_WRITER_NOT_ARCHITECT` (`refuseSpecWriterOfNode`, Document errors below), and nothing is stored.
   Answers `200 {node: {address, kind, state, visibility}, previous}`.
 
 - `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
@@ -5970,6 +5976,8 @@ Each item below names a path with its method and identity, then its purpose.
   A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block it adds or changes that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+  So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block (`refuseSpecWriterOfTreeEdit`): the route reads the artifact's blocks before and after the batch, inside the transaction's own write of the artifact, and refuses before any version, so nothing is stored.
+  An edit of the tree artifact that touches no such block, a paragraph or a plan node among them, is taken.
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
   A batch whose markdown (its inserts and replaces together) makes more than 65,536 elements, or that would leave the document's markdown (what `.../text` answers) longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, or a live state ygo could not decode as one update, is `413 CAP_EXCEEDED` with the refusal itself as the error, and writes nothing.
@@ -6060,6 +6068,7 @@ Each item below names a path with its method and identity, then its purpose.
   Apply issue-document edit operations.
   A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+  So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as `/api/v1/artifacts/{id}/edits` answers it.
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
@@ -6408,6 +6417,10 @@ Each item below names a status and code, then its meaning.
   A refusal for proof names the project instead, and says that the request's credential does not prove the session.
   The check holds the issues of a project only once Dispatch has taken a role-holder publication for an issue of that project, which marks it (`project_role_holder_marks`), so nothing changes for a project until its daemon publishes its first role holders.
   A create under no parent is not checked, nor is an anchored comment, ask or suggestion: such a write adds only its writer's mark around words others wrote, and a comment or a suggestion is how a worker proposes a change to the architect.
+  The same check holds every write of a requirement, criterion or check node of such an issue, or of a value or a relation out of one (`refuseSpecWriterOfNode`): its state and its settle (`POST /api/v1/issues/{key}/nodes/{id}/state`, `.../settle`), a pointer out of it, a requirement's `constrained_by` (`.../pointers`), and an edit of the issue's tree artifact that creates, changes, removes or moves one (`refuseSpecWriterOfTreeEdit`).
+  Its message then names the node by its type and its `dispatch://` address, and its log line carries the node.
+  A plan node, a result, a lens, a finding, a risk and a constraint are no such nodes, and a relation out of one of them into such a node, a risk's `prevented_by` among them, is a relation out of it, so a worker still writes each.
+  The pre-mortem conversion's `moved_to` runs out of the document it retires, so the conversion is not checked.
 
 - `409 DOC_SCHEMA`
 

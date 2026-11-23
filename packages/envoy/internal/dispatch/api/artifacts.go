@@ -1955,10 +1955,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		release = sync.OnceFunc(acquired)
 		defer release()
 	}
-	// Read before the transaction opens (specWriterOf), for the check below, and only for a document
-	// the check holds: the check passes every other document without reading the writer.
+	// Read before the transaction opens (specWriterOf), for the checks below, and only for a document
+	// the check holds or an issue's tree artifact: the check passes every other document without
+	// reading the writer.
 	writer := specWriter{actor: actor}
-	if _, held := specWriterDocumentName(artifact); held {
+	_, held := specWriterDocumentName(artifact)
+	tree := issueTreeArtifact(artifact)
+	if held || tree {
 		writer = s.specWriterOf(r, actor)
 	}
 	tx, err := s.begin(r.Context())
@@ -1991,10 +1994,41 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if personScoped {
 		documentCtx = docs.WithPersonScope(documentCtx)
 	}
+	// An edit of an issue's tree artifact by a writer who is no person is held to the check of who
+	// writes a requirement, criterion or check node once its batch says which of its blocks it
+	// writes (refuseSpecWriterOfTreeEdit): the blocks before the batch are read here, from the
+	// transaction's own write of the artifact, which this join opens, so the batch below is applied
+	// to the very document they were read from.
+	var treeBefore []model.ArtifactBlock
+	judgeTree := tree && !writer.person
+	if judgeTree {
+		if err := s.deps.Docs.JoinWrite(documentCtx, artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if treeBefore, err = s.deps.Docs.Blocks(documentCtx, artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The check runs before the version, under the owner's lock: a refusal returns with the batch
+	// still in the ledger, which Discard drops, and the transaction, which rolls back, so nothing of
+	// the edit is stored and no event is appended. A batch that changed nothing writes nothing.
+	if judgeTree && edit.Changed {
+		treeAfter, err := s.deps.Docs.Blocks(documentCtx, artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := refuseSpecWriterOfTreeEdit(r.Context(), tx, writer, artifact, treeBefore, treeAfter); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	var written *docs.VersionResult
 	var published []*model.Event
@@ -2115,6 +2149,104 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	advice.SupersededApproval = superseded
 	advice.MovedApprovalRequest = moved
 	WriteJSON(w, http.StatusOK, withAdvice(responsePayload, advice))
+}
+
+// issueTreeArtifact reports whether artifact is an issue's tree artifact (createIssueTree), whose
+// own fragment of the issue's room holds the nodes written into the issue, a criterion among them.
+func issueTreeArtifact(artifact model.Artifact) bool {
+	return artifact.Kind == "tree" && artifact.IssueKey != nil
+}
+
+// refuseSpecWriterOfTreeEdit is the check of an edit of the issue tree artifact that left its
+// blocks, as the document service reads them (docs.API.Blocks), from before to after: the check
+// of who writes a requirement, criterion or check node (refuseSpecWriterOfNodeType) for the first
+// block of those types (specWriterNodeDocuments) the edit wrote (treeSpecNodeWritten), named by its
+// type and its dispatch:// address. An edit that wrote none of them - a paragraph, a plan node, a
+// relation out of one of those into such a node - passes with no read.
+func refuseSpecWriterOfTreeEdit(ctx context.Context, q queryer, writer specWriter, artifact model.Artifact, before, after []model.ArtifactBlock) error {
+	block, written := treeSpecNodeWritten(before, after)
+	if !written {
+		return nil
+	}
+	document := refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary)
+	return refuseSpecWriterOfNodeType(ctx, q, writer, *artifact.IssueKey, block.Type, refs.BlockRef(document, block.ID))
+}
+
+// treeBlockPlace is what an edit of a tree artifact may change of one of its blocks: its type, its
+// token - its words, its attributes and every block it holds (docs' block tokens) - the block that
+// holds it, "" for none, and its index among the blocks of the types the check holds
+// (specWriterNodeDocuments), -1 for a block of another type.
+type treeBlockPlace struct {
+	block  model.ArtifactBlock
+	holder string
+	index  int
+}
+
+// treeBlockPlaces is each block of blocks, by id, with its place. blocks are in document order,
+// each block before what it holds, and a block holds each block whose markdown its own encloses, so
+// a block's holder is the nearest earlier block that encloses it. A second block under one id, which
+// an edit refuses to write, keeps the first's place.
+func treeBlockPlaces(blocks []model.ArtifactBlock) map[string]treeBlockPlace {
+	places := make(map[string]treeBlockPlace, len(blocks))
+	open := make([]model.ArtifactBlock, 0, 8)
+	held := 0
+	for _, block := range blocks {
+		for len(open) > 0 && (block.From < open[len(open)-1].From || block.To > open[len(open)-1].To) {
+			open = open[:len(open)-1]
+		}
+		place := treeBlockPlace{block: block, index: -1}
+		if len(open) > 0 {
+			place.holder = open[len(open)-1].ID
+		}
+		if _, checked := specWriterNodeDocuments[block.Type]; checked {
+			place.index = held
+			held++
+		}
+		if _, placed := places[block.ID]; !placed {
+			places[block.ID] = place
+		}
+		open = append(open, block)
+	}
+	return places
+}
+
+// treeSpecNodeWritten is the first block of a type the check holds (specWriterNodeDocuments) that
+// an edit of a tree artifact wrote, where before and after are the artifact's blocks as the edit
+// found and left them, and whether there is one: a block of such a type that the edit created, or
+// one it removed, retyped from or to such a type, gave another token, put under another block, or
+// moved among the blocks of those types the artifact holds both before and after the edit. A block
+// of another type that it creates, changes or moves is none of these, even one holding a pointer
+// at such a block, which is a relation out of that block.
+func treeSpecNodeWritten(before, after []model.ArtifactBlock) (model.ArtifactBlock, bool) {
+	was, is := treeBlockPlaces(before), treeBlockPlaces(after)
+	var wasOrder, isOrder []string
+	for _, block := range after {
+		place := is[block.ID]
+		if place.block.From != block.From || place.index < 0 {
+			continue
+		}
+		prior, kept := was[block.ID]
+		if !kept || prior.block.Type != block.Type || prior.block.Token != block.Token || prior.holder != place.holder {
+			return block, true
+		}
+		isOrder = append(isOrder, block.ID)
+	}
+	for _, block := range before {
+		place := was[block.ID]
+		if place.block.From != block.From || place.index < 0 {
+			continue
+		}
+		if now, kept := is[block.ID]; !kept || now.index < 0 {
+			return block, true
+		}
+		wasOrder = append(wasOrder, block.ID)
+	}
+	for index, id := range isOrder {
+		if wasOrder[index] != id {
+			return is[id].block, true
+		}
+	}
+	return model.ArtifactBlock{}, false
 }
 
 // artifactIssueKey is the issue a document belongs to, or the empty string for a project

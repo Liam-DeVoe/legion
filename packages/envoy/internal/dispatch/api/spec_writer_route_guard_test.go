@@ -48,6 +48,16 @@ var specWriterSinks = []string{
 // specWriterSinkTypes are the two types a sink is called through, as the graph names them.
 var specWriterSinkTypes = []string{"docs.API.", "docs.Service."}
 
+// specWriterNodeSinks are the writes of package api that write a node's state and a pointer out of
+// a node, as the graph names them: the one write path of the state route and the settle
+// (writeNodeState), and of the pointer route and the pre-mortem conversion's moved_to
+// (writeReasoningPointer). Each writes a requirement, criterion or check node, or a relation out
+// of one, where its node is one, which only a person or an architect writes on an issue Legion
+// runs (refuseSpecWriterOfNode), so the guard counts a call of either as it counts a call of a sink
+// of the document service: a route that reaches one and does not call the check fails, naming the
+// route and the calls that reach it.
+var specWriterNodeSinks = []string{"api.writeNodeState", "api.writeReasoningPointer"}
+
 // specWriterRevision is the write of the document service that appends a version of each query
 // document of an issue whose record a write moved (docs.Service.ReviseQueries), by method name,
 // called through either of specWriterSinkTypes. It is no sink (specWriterSinks), and the routes
@@ -84,30 +94,40 @@ const anchoredWriteExemption = "an anchored comment, ask or suggestion writes a 
 	"proposes a change to the architect; dispatch suggest posts on the two comment routes " +
 	"(packages/envoy-client/src/dispatch-commands/conversation.ts)"
 
-// specWriterExempt names every route that reaches a document write and is left unchecked, with
-// the reason it is left. A route here is held to two things (TestTheSpecWriterExemptionsStillHold):
-// the table serves it, so a renamed row leaves no reason pointing at nothing, and its path still
-// does not call the check, so an exemption that has stopped being true is deleted rather than left
-// to describe the opposite of what the handler does. No test hook reaches a document write today:
-// a hook that does goes in with the reason "a test hook, mounted only with TestHooksEnabled".
+// premortemConvertExemption is why specWriterExempt leaves the pre-mortem conversion unchecked.
+const premortemConvertExemption = "the conversion's one pointer is the moved_to out of the pre-mortem document it retires, to " +
+	"the lens it writes (retireConvertedDocument), a relation out of a document and not out of a requirement, criterion " +
+	"or check node; the lens and the risks it writes are none of those nodes, and a risk's prevented_by at a check is a " +
+	"relation out of the risk"
+
+// specWriterExempt names every route that reaches a document write, or a node write of
+// specWriterNodeSinks, and is left unchecked, with the reason it is left. A route here is held to
+// two things (TestTheSpecWriterExemptionsStillHold): the table serves it, so a renamed row leaves
+// no reason pointing at nothing, and its path still does not call the check, so an exemption that
+// has stopped being true is deleted rather than left to describe the opposite of what the handler
+// does. No test hook reaches a document write today: a hook that does goes in with the reason "a
+// test hook, mounted only with TestHooksEnabled".
 var specWriterExempt = map[string]string{
-	"POST /api/v1/issues/{key}/comments":   anchoredWriteExemption,
-	"POST /api/v1/artifacts/{id}/comments": anchoredWriteExemption,
-	"POST /api/v1/issues/{key}/asks":       anchoredWriteExemption,
-	"POST /api/v1/artifacts/{id}/asks":     anchoredWriteExemption,
+	"POST /api/v1/issues/{key}/comments":                           anchoredWriteExemption,
+	"POST /api/v1/artifacts/{id}/comments":                         anchoredWriteExemption,
+	"POST /api/v1/issues/{key}/asks":                               anchoredWriteExemption,
+	"POST /api/v1/artifacts/{id}/asks":                             anchoredWriteExemption,
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": premortemConvertExemption,
 }
 
 // TestEveryRouteThatWritesADocumentChecksItsWriter holds R1 of INFRA-4764 - on a Legion-run
 // issue, a version of the spec or the Verification document from a writer who is no person and no
 // architect is refused on every route that writes one - to the server's own route inventory rather
-// than to a list of the routes that check today.
+// than to a list of the routes that check today; and with it the rule that a write of a
+// requirement, criterion or check node's state, or of a pointer out of one, is held to the same
+// check, so the guard counts the node writes of specWriterNodeSinks beside the sinks.
 //
 // The inventory is the table (routes_table.go) with its test hooks in, read from the source so that
 // each row's handler is read with it, and held to the table the server mounts. A row whose path
-// reaches a sink (specWriterSinks) passes when its path also calls the check (specWriterCheck),
-// when its row declares the person scope in routeScopes, which no worker's credential holds, or
-// when specWriterExempt names it with its reason. Its failure names each route and each sink it
-// reaches, with the calls that reach it.
+// reaches a sink (specWriterSinks, specWriterNodeSinks) passes when its path also calls the check
+// (specWriterCheck), when its row declares the person scope in routeScopes, which no worker's
+// credential holds, or when specWriterExempt names it with its reason. Its failure names each route
+// and each sink it reaches, with the calls that reach it.
 //
 // The same walk finds each route whose path reaches the query revision (specWriterRevision), which
 // is no sink, and the test holds those routes to specWriterRevisions: a route that reaches it and
@@ -118,7 +138,8 @@ var specWriterExempt = map[string]string{
 // followed as the copy-lock graph resolves it, plus every function handed to it as an argument. It
 // reads each body whole, branches included, so a route reaches every sink of every function on its
 // path, and a handler that calls the check under a condition passes here as it does in the other
-// static guards of this package; the behavior tests (spec_writer_test.go) hold the branches.
+// static guards of this package; the behavior tests (spec_writer_test.go, node_writer_test.go) hold
+// the branches.
 func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 	graph := copyLockGraph(t)
 	if graph.named[specWriterCheck] == nil {
@@ -132,6 +153,14 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 	for _, sink := range specWriterSinks {
 		if graph.named["docs.Service."+sink] == nil {
 			t.Errorf("docs.Service.%s, a document write the guard looks for, is gone: point specWriterSinks at its replacement", sink)
+		}
+		if !slices.ContainsFunc(slices.Collect(maps.Values(routes)), func(reach specWriterReach) bool { return len(reach.sinks[sink]) > 0 }) {
+			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
+		}
+	}
+	for _, sink := range specWriterNodeSinks {
+		if graph.named[sink] == nil {
+			t.Errorf("%s, a node write the guard looks for, is gone: point specWriterNodeSinks at its replacement", sink)
 		}
 		if !slices.ContainsFunc(slices.Collect(maps.Values(routes)), func(reach specWriterReach) bool { return len(reach.sinks[sink]) > 0 }) {
 			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
@@ -161,8 +190,8 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 		}
 	}
 	if unchecked := uncheckedSpecWriters(routes, routeScopes, specWriterExempt); len(unchecked) > 0 {
-		t.Errorf("a route writes a document and never checks its writer:\n\t%s\n"+
-			"Call refuseSpecWriter on the route's path before its first document call (spec_writer.go), "+
+		t.Errorf("a route writes a document or a node and never checks its writer:\n\t%s\n"+
+			"Call refuseSpecWriter on the route's path before its first document call or node write (spec_writer.go), "+
 			"declare model.ScopePerson for the route in routeScopes, or name it in specWriterExempt with the reason it is left.",
 			strings.Join(unchecked, "\n\t"))
 	}
@@ -364,8 +393,9 @@ type specWriterWalk struct {
 	steps map[*lockFunction]*specWriterStep
 }
 
-// specWriterStep is what one function's own body runs: the sinks it calls, by method name, with
-// where; where it calls the query revision; whether it calls the check; and the functions of
+// specWriterStep is what one function's own body runs: the sinks it calls, by method name for a
+// sink of the document service and by the graph's name for a node write (specWriterNodeSinks),
+// with where; where it calls the query revision; whether it calls the check; and the functions of
 // package api its calls run.
 type specWriterStep struct {
 	sinks   map[string][]string
@@ -424,6 +454,9 @@ func (w *specWriterWalk) step(fn *lockFunction) *specWriterStep {
 		name := calledFunctionName(w.graph, call)
 		if name == specWriterCheck {
 			step.checks = true
+		}
+		if slices.Contains(specWriterNodeSinks, name) {
+			step.sinks[name] = append(step.sinks[name], w.graph.line(fn.source, call))
 		}
 		if method, called := specWriterServiceMethod(name); called {
 			switch {

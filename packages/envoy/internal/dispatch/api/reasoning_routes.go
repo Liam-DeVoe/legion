@@ -97,6 +97,13 @@ type reasoningCaller struct {
 // binds the visibility predicate for, as GET /api/v1/references reads as the caller.
 func (c reasoningCaller) reader() model.Actor { return c.proving.Recorded() }
 
+// specWriter is the caller as the check of who writes a requirement, criterion or check node
+// judges it (refuseSpecWriterOfNode): the actor the write records, a person where the credential
+// that proved the caller holds the person scope, as specWriterOf reads it.
+func (c reasoningCaller) specWriter() specWriter {
+	return specWriter{actor: c.recorded, person: c.proving.Credential.Holds(model.ScopePerson)}
+}
+
 // reasoningCallerOf resolves the caller of a reasoning write, answering the refusal itself and
 // false where it does not resolve: a caller with no credential is 401, and a bearer that names
 // no session in actor is 400 ACTOR_KIND, as every write that records its actor answers. The
@@ -1057,7 +1064,10 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 // route. For an append or a retarget of a prevented_by it takes the issue's owner lock and the
 // owner lock of the document of the check at to before it reads a node (its race with a
 // retirement or an index pass: lockReasoningOwners); any other write takes the issue's owner lock
-// at the write (writeReasoningPointer).
+// at the write (writeReasoningPointer). A pointer out of a requirement, criterion or check node of
+// an issue Legion runs - a requirement's constrained_by - is a relation out of one: under the
+// issue's owner lock, a writer who is no person and no architect of the issue or of an issue above
+// it is 403 DOCUMENT_WRITER_NOT_ARCHITECT (refuseSpecWriterOfNode), and nothing is stored.
 func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	var input pointerInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -1141,6 +1151,19 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		write.toKind, write.toID = toEnd.kind, toEnd.id
 		answered := endOf(from)
 		answer.From = &answered
+	}
+	// The check of who writes a requirement, criterion or check node, under the issue's owner lock,
+	// which writeReasoningPointer then finds held; it passes a person with no read, so a person's
+	// write takes the lock at the write, as it always has.
+	if writer := caller.specWriter(); !writer.person {
+		if _, err := lockIssueOwner(ctx, tx, key); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := refuseSpecWriterOfNode(ctx, tx, writer, key, nodeEnd.stored(), node.Ref); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := writeReasoningPointer(ctx, tx, write); err != nil {
 		refusal, _ := refusalNamed(err, namedEnd{storedEnd: nodeEnd.stored(), address: node.Ref},
