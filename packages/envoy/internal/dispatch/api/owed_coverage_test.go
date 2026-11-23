@@ -15,11 +15,20 @@ import (
 // owedRequirement is a spec marking one requirement, r-owed, that no check serves.
 const owedRequirement = ":::requirement{#r-owed}\nThe page draws no gap from an index that is owed.\n:::\n"
 
+// owedPlan is a plan document holding one plan task, t-owed, that serves no requirement: with it
+// the issue has a plan, so a requirement no plan task serves lacks one (coverRequirements).
+const owedPlan = ":::plan_task{#t-owed}\nA task that serves no requirement.\n:::\n"
+
 // coverageSurface is the gap lines one reader of an issue's coverage answers, by its name.
 type coverageSurface struct {
 	name  string
 	lines []string
 }
+
+// approvalCoverage names the reader of the coverage an approval request of the spec answers, the
+// one reader that never writes a requirement's missing plan task, since the plan comes after the
+// approval (missingCheckGaps).
+const approvalCoverage = "the coverage of POST /api/v1/artifacts/{id}/approval-requests"
 
 // coverageSurfaces reads the coverage of the issue key, whose spec is specID, through each of its
 // three readers: the coverage read's gaps, the coverage an approval request of the spec answers,
@@ -41,24 +50,27 @@ func coverageSurfaces(t *testing.T, handler http.Handler, url, key, specID strin
 	}
 	return coverage, []coverageSurface{
 		{name: "GET /api/v1/issues/{key}/coverage", lines: coverage.Gaps},
-		{name: "the coverage of POST /api/v1/artifacts/{id}/approval-requests", lines: approval.Coverage},
+		{name: approvalCoverage, lines: approval.Coverage},
 		{name: "dispatch read --issue", lines: printed},
 	}
 }
 
-// TestAnOwedDocumentDrawsNoCheckGap: while the spec owes its block index - a version written
-// through the upload route past the bound (docs' deferBlockIndexBlocks), which leaves its blocks
-// to the block-index reconciliation - the coverage read, the approval request's answer and
-// `dispatch read --issue` each answer the line that names the spec and that version as still
-// being indexed, and none names a requirement as lacking a check or a plan task, nor does the
-// requirement's own gaps. Once the reconciliation has indexed the spec, each answers the
-// requirement's missing check again, and the owed line is gone (spec requirement
-// r-owed-coverage).
+// TestAnOwedDocumentDrawsNoCheckGap: the issue holds a plan whose one plan task serves no
+// requirement, so its requirement lacks both a check and a plan task. While the spec owes its
+// block index - a version written through the upload route past the bound (docs'
+// deferBlockIndexBlocks), which leaves its blocks to the block-index reconciliation - the coverage
+// read, the approval request's answer and `dispatch read --issue` each answer the line that names
+// the spec and that version as still being indexed, and none names a requirement as lacking a
+// check or a plan task, nor does the requirement's own gaps. Once the reconciliation has indexed
+// the spec, each answers the requirement's missing check again, the coverage read and `dispatch
+// read --issue` its missing plan task too, the approval request's answer no missing plan task,
+// and the owed line is gone (spec requirement r-owed-coverage).
 func TestAnOwedDocumentDrawsNoCheckGap(t *testing.T) {
 	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "OWED")
 	issue := createSpecIssue(t, handler, "OWED", owedRequirement)
 	key, spec := issue.Key, issue.PrimaryArtifactID
+	uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md", owedPlan)
 	reconcileUntilNothingOwed(t, handler, deps, key)
 	served := httptest.NewServer(handler)
 	t.Cleanup(served.Close)
@@ -87,19 +99,28 @@ func TestAnOwedDocumentDrawsNoCheckGap(t *testing.T) {
 			}
 		}
 	}
-	if own := requirementOf(t, coverage, block).Gaps; slices.Contains(own, noCheckReason) {
-		t.Errorf("the gaps of requirement %s in GET /api/v1/issues/{key}/coverage of %s answers %s while %s owes its block index at version %d",
-			block, key, noCheckReason, document, version)
+	for _, reason := range []string{noCheckReason, noPlanTaskReason} {
+		if own := requirementOf(t, coverage, block).Gaps; slices.Contains(own, reason) {
+			t.Errorf("the gaps of requirement %s in GET /api/v1/issues/{key}/coverage of %s answers %s while %s owes its block index at version %d",
+				block, key, reason, document, version)
+		}
 	}
 	t.Logf("while %s owes its block index at version %d, the three readers answer %q", document, version, surfaces)
 
 	reconcileUntilNothingOwed(t, handler, deps, key)
 	requireNothingOwed(t, handler, key, "once the index caught up")
-	missing := noCheckGap(block)
+	missing, missingTask := noCheckGap(block), block+" "+noPlanTaskReason
 	_, surfaces = coverageSurfaces(t, handler, served.URL, key, spec)
 	for _, surface := range surfaces {
 		if !slices.Contains(surface.lines, missing) {
 			t.Errorf("%s of %s answers no has no check line for %s once the index caught up: it answers %q", surface.name, key, block, surface.lines)
+		}
+		planTasks := surface.name != approvalCoverage
+		if planTasks && !slices.Contains(surface.lines, missingTask) {
+			t.Errorf("%s of %s answers no has no plan task line for %s once the index caught up: it answers %q", surface.name, key, block, surface.lines)
+		}
+		if !planTasks && slices.Contains(surface.lines, missingTask) {
+			t.Errorf("%s of %s answers %q once the index caught up, want no missing plan task: the plan comes after the approval", surface.name, key, missingTask)
 		}
 		if slices.Contains(surface.lines, owedLine) {
 			t.Errorf("%s of %s still answers %q once the index caught up", surface.name, key, owedLine)
