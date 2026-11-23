@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `envoy-infra buckets create` stopped by an interrupt or SIGTERM no longer says `nothing more is created`: a `STREAM.CREATE` it had already sent still lands on the hub. It now exits 1 with `envoy-infra buckets create: stopped: <the signal>; it sends no create after this, but one it had sent may still land: run create again to see what the hub holds`. A connection that reports no server version, as one that is not connected does, refuses `create` with exit 1 before any read (`refused: the connection reports no server version`), where it refused every present bucket for its discard policy. The writer proof of `recreate` and `check` counts a container whose command is a shell (`sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`, `mksh`, `busybox`) whose script, in the command or in `args`, names `envoy-listener` as a writer of every copied bucket, and one whose script names `envoy-dispatch` as a writer of `envoy_ci_state`, each blocker saying why; such a pod blocked nothing before. The Envoy image's build context leaves out `packages/envoy/infra/**/.env*`, so an untracked `.env` under the module never enters a local build.
+time: 2026-11-23T16:25:04Z
+custom:
+    Issue: pr5257
