@@ -29,7 +29,8 @@ type roleForSite struct{ file, fn string }
 // RoleFor, and the behaviour tests that hold what the site does with the answer today. The first
 // holds its answer for a phase the architect works; where a task of the deployment's roles added
 // the read or moved it onto a forwarder, the failing test of that task follows, which holds its
-// answer at step, where the forwarder names the role the plan gives the running step.
+// answer at step, where the forwarder names the role of the claim that works the running step:
+// the role the plan gives it, or the architect where its key is owner.
 type roleForReader struct {
 	calls int
 	tests []string
@@ -272,11 +273,12 @@ func functionName(fn *ast.FuncDecl) string {
 // readsRoleFor is whether node reads phase.RoleFor or one of its forwarders: internal/workflow's
 // RoleFor, a selector naming either through its package, in a call or passed as a value, or a call
 // of the bare name inside the package that declares it; and record.Issue.RoleAt and
-// internal/workflow's Walk.RoleAt, each of which answers phase.RoleFor for every phase but step
-// (the issue's) or of every place but a step of a deployment's role (the walk's), and so the
-// architect for admitted and accepting, a selector of RoleAt on any value. A bare RoleFor that is
-// no call is a field key and not a read, and appauth.AppRoleFor is another function and is not one
-// of these.
+// internal/workflow's Walk.RoleAt, each of which can answer phase.RoleFor, and so the architect
+// for admitted and accepting: the issue's at every phase but step that the role of its place
+// (record.Issue.PlaceRole) does not answer, and the walk's at a step of one of Legion's roles but
+// the fresh agent of acceptance's, and at the merge; a selector of RoleAt on any value. A bare
+// RoleFor that is no call is a field key and not a read, and appauth.AppRoleFor is another
+// function and is not one of these.
 func readsRoleFor(node ast.Node) bool {
 	switch read := node.(type) {
 	case *ast.CallExpr:

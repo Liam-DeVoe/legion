@@ -1309,15 +1309,17 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 }
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
-// named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// named for, the entry the phases row of the role that works the issue stands on and the entry
+// that role was given (the role the state's two numbers are of: the role of the claim that works
+// the task's place where the state names one, api.Issue.PlaceRole, else the role of the step at
+// step and the phase's, phase.RoleFor, elsewhere), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
 	// numbered is whether entry and given are role's own, which they are for every row but the
-	// architect of a root past the phases its architect works, where they are that phase's
-	// worker's and the line leaves them off the architect.
+	// architect of a root whose place another role works, where they are that role's and the line
+	// leaves them off the architect.
 	numbered     bool
 	entry, given int64
 	// arms is every arm of the daemon's architect-stalled reading the state names for this root
@@ -1337,10 +1339,12 @@ type entryBehind struct {
 // (dispatch://INFRA-2614, R6): every root reads as behind for the moments between a transition
 // and its delivery, so the difference alone would name a healthy root at every read. A root is an
 // issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
-// past its architect's phases are its phase worker's, which the line names for no root. The
-// numbers are named for the role a phase worker works on any other issue, which is
-// dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
-// phase.RoleFor names the architect's phase, is named for nothing. Where the state names the role
+// where another role works its place are that role's, which the line names for no root; where
+// its architect works the place (admitted, its own acceptance, a step or a retro the owner does),
+// the line names them beside the arms. The numbers are named for the role a phase worker works on
+// any other issue, which is dispatch://INFRA-2800's line; a role of the architect's, a child at
+// admitted among them, which phase.RoleFor names the architect's phase, is named for nothing.
+// Where the state names the role
 // of the claim that works the issue's place (api.Issue.PlaceRole, an issue with plan rows) and the
 // issue is not held, that is the role: at accepting the fresh agent of a step `acceptance` with no
 // key, named as any worker, or the architect where the owner accepts or does any other step of

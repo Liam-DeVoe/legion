@@ -1210,13 +1210,14 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	}
 }
 
-// An issue at step is worked by the role of its running step, which no phase names
-// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`,
-// record.Issue.StepRole) and carries that role's entry and the entry its claim was given, as an
-// issue at testing carries its tester's; a child at step carries that role's handshake too, as a
-// child at testing carries its tester's. An issue held from step names the role too, as it names
-// `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
-// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role.
+// An issue at step whose step's agent is not the owner is worked by the role of its running step,
+// which no phase names (phase.RoleFor answers none for step), so the served issue names that role
+// (`stepRole`, record.Issue.StepRole) and carries that role's entry and the entry its claim was
+// given, as an issue at testing carries its tester's; a child at step carries that role's handshake
+// too, as a child at testing carries its tester's. An issue held from step names the role too, as
+// it names `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
+// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role of
+// its step, and `placeRole` the role of the claim that works it.
 func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 	const project, checker = "LEGION", claim.Role("checker")
 	issue := func(key string, p phase.Phase, running claim.Role) record.Issue {
@@ -1276,7 +1277,7 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		document := wire(t, view)
 		served, carried := document["stepRole"]
 		if want.stepRole == "" && carried {
-			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names its role", want.key, served)
+			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names the role of its step", want.key, served)
 		}
 		if want.stepRole != "" && served != want.stepRole {
 			t.Errorf("%s is served stepRole %v, want %q: %s", want.key, served, want.stepRole, canonical(t, document))

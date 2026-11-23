@@ -25,18 +25,20 @@ import (
 // uses, so the line reads none of its own: a root whose fields would have read as an arm to a
 // reader of the times, the claim and the gate is named by nothing while the state names no arm.
 //
-// The numbers are the architect's where the root stands in a phase its architect works, and past
-// it they are that phase's worker's, so the architect of such a root is named with its arm and no
-// numbers, and its worker is not named for the numbers at all. An issue that is not its tree's
-// root is named for its numbers where they differ, as every role a phase worker works is.
+// The numbers are the architect's where the root's architect works the place it stands at
+// (admitted, its own acceptance, a step or a retro the owner does), and elsewhere they are the
+// numbers of the role that works that place, so the architect of such a root is named with its arm
+// and no numbers, and that role is not named for the numbers at all. An issue that is not its
+// tree's root is named for its numbers where they differ, as every role a phase worker works is.
 //
 // The role is the one that works the place the issue's task stands at, which the state names
 // (api.Issue.PlaceRole) where the issue has plan rows: at accepting, the fresh agent of a step
 // `acceptance` with no key, whose numbers the line names as any worker's, or the architect where
-// the owner accepts. Where the state names none, it is the role the issue's current phase names
-// (phase.RoleFor), and at step the role of the running step (api.Issue.StepRole): an issue whose
-// phase names no role carries neither number, so the line never names one, and neither does an
-// issue held from step, which names its step's role and carries no number.
+// the owner accepts or does another step or a retro of its own, named for nothing. Where the state
+// names none, it is the role the issue's current phase names (phase.RoleFor), and at step the
+// role of the running step (api.Issue.StepRole): an issue whose phase names no role carries
+// neither number, so the line never names one, and neither does an issue held from step, which
+// names its step's role and carries no number.
 func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor(t *testing.T) {
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
