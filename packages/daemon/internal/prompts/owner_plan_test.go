@@ -112,10 +112,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 }
 
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
-// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
-// step on a base whose rules require an approving review leaves a merge only a person or the owner
-// can unblock, and Legion posts no approval of its own, so the merger waits and tells the task's
-// owner which review is missing. This shows the text is loaded, never that a merger follows it.
+// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A base whose rules
+// require an approving review that no step of the task gave, on a task with no review step or one
+// whose reviewer step the owner does and ends by its own report, leaves a merge only a person or the
+// owner can unblock, and Legion posts no approval of its own, so the merger waits and tells the
+// task's owner which review is missing. This shows the text is loaded, never that a merger follows it.
 func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -124,7 +125,7 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
 	for _, phrase := range []string{
 		"Verify that each step your task's Steps line names completed (today's line, on a task with no `Task:` line), and that the retro completed.",
-		"If your task's Steps line names no reviewer step and the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that the task's steps have no review step. Only the owner or a person can give that review or change the plan.",
+		"If the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Such a review can be missing where your task's Steps line names no reviewer step, and where its reviewer step's key is `owner` (`reviewer:owner`), a step that ends by the owner's report and leaves an approval on GitHub only where the owner gives one. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that no step of the task gave it. Only the owner or a person can give that review or change the plan.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed merger prompt omits %q", phrase)
