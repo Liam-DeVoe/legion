@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -209,20 +210,16 @@ func (s *server) runningAt(ctx context.Context, issue string, generation uint64)
 	if s.pool == nil || s.records == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	stored, err := s.records.Plan(ctx, tx, issue, generation)
-	if err != nil || stored == nil {
-		return nil, err
-	}
-	running, err := stored.Running()
-	if err != nil {
-		return nil, err
-	}
-	return running, tx.Commit(ctx)
+	var running []record.RunningStep
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		stored, err := s.records.Plan(ctx, tx, issue, generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		running, err = stored.Running()
+		return err
+	})
+	return running, err
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
