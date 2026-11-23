@@ -284,10 +284,11 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 }
 
 // ciHeadsOf is the heads a check CI proves is read at: the head of each open pull request of
-// issueKey (delivery.Attributor.HeadsAttributedTo), each in its own row's repository and each commit of a
-// repository once, the open pull request of the highest number first, whose read is the check's
-// `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the final head of
-// the merged pull request of the highest number; and none where Dispatch holds neither.
+// issueKey (delivery.Attributor.HeadsAttributedTo), each in its own row's repository and each
+// commit of a repository once, the open pull request of the highest number first, whose read is
+// the check's `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the
+// final head of the merged pull request of the highest number; and none where Dispatch holds
+// neither.
 func (s *server) ciHeadsOf(ctx context.Context, issueKey string) ([]delivery.NewestHead, error) {
 	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {

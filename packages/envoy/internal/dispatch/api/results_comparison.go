@@ -38,11 +38,11 @@ import (
 //
 // An `after_merge` check is compared with the branch the check's issue's pull request merged
 // into — the base branch of the newest merged pull request of the issue's repository attributed
-// to that issue (delivery.Attributor.BaseBranchMergedFor) — and with the repository's default branch. A
-// linked repository's merge names a branch of that repository, which only a result whose commit
-// that repository holds is compared with (results_linked.go, linkedBranchBases). An issue whose
-// work merged into an integration branch has reached that branch, so a commit that branch
-// carries proves the work before the integration branch itself lands. Once that branch has
+// to that issue (delivery.Attributor.BaseBranchMergedFor) — and with the repository's default
+// branch. A linked repository's merge names a branch of that repository, which only a result
+// whose commit that repository holds is compared with (results_linked.go, linkedBranchBases). An
+// issue whose work merged into an integration branch has reached that branch, so a commit that
+// branch carries proves the work before the integration branch itself lands. Once that branch has
 // landed the trunk carries the work too, and answers for it where the base branch — deleted on
 // the merge, as a repository that deletes every merged branch does — can answer nothing at
 // all. So a base branch GitHub no longer holds reads as "this commit is not on it" and never
@@ -231,8 +231,8 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 	}
 }
 
-// noMergedBranch is what delivery.Attributor.BaseBranchMergedFor answers for an issue Dispatch holds no
-// merge of, and for a merged row whose base_ref is empty: no branch to compare with. It is
+// noMergedBranch is what delivery.Attributor.BaseBranchMergedFor answers for an issue Dispatch
+// holds no merge of, and for a merged row whose base_ref is empty: no branch to compare with. It is
 // spelled like delivery.DefaultBranch and means the opposite of it — "there is nothing here to
 // ask about" rather than "ask about the repository's own default branch" — so each is named
 // where it is used. measuredBranches tests for one and answers the other in its place, and
@@ -336,9 +336,9 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // A repository no read of this process ever named a default branch for — the one whose first
 // `GET /repos/{owner}/{repo}` after a restart failed, and every repository of a deployment
 // holding no App key — still has the branch its issue's pull request merged into, which
-// delivery.Attributor.BaseBranchMergedFor reads from the database and no call to GitHub. An `after_merge`
-// check of such an issue compares with that branch alone, so the stored yes at it is reached;
-// only a check no branch at all can be named for compares with nothing.
+// delivery.Attributor.BaseBranchMergedFor reads from the database and no call to GitHub. An
+// `after_merge` check of such an issue compares with that branch alone, so the stored yes at it
+// is reached; only a check no branch at all can be named for compares with nothing.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
 	repo, answered := c.repositoryOf(ctx, check.IssueKey)
 	if !answered || repo == nil {
@@ -879,8 +879,8 @@ func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (st
 
 // baseBranchMergedFor is the branch the check's issue's newest merged pull request in repo, the
 // repository it resolves to, merged into, the pull requests of repo attributed to the issue
-// (delivery.Attributor.BaseBranchMergedFor), read once per read of the results, and whether the read
-// answered at all. An issue Dispatch holds no merge of there answers noMergedBranch, which
+// (delivery.Attributor.BaseBranchMergedFor), read once per read of the results, and whether the
+// read answered at all. An issue Dispatch holds no merge of there answers noMergedBranch, which
 // measuredBranches reads as no branch but the repository's default one to ask about. A merge of
 // a pull request of another repository, which the issue links by its URL and the attribution so
 // gives it, names a branch of that repository: baseBranchMergedIn's, never one to walk in repo.

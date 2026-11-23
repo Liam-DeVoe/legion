@@ -92,7 +92,8 @@ type stackedWorld struct {
 	issue   string
 	other   string
 	// readThrough writes a pull request's head row as production's read-through of its head
-	// commit writes it (delivery.Attributor.ReadThroughCommitPulls), attributed from GitHub's answer.
+	// commit writes it (delivery.Attributor.ReadThroughCommitPulls), attributed from GitHub's
+	// answer.
 	readThrough func(pull stackedPull)
 	// attribution is the issue and the source the head row of the pull request number names.
 	attribution func(number int) (string, string)

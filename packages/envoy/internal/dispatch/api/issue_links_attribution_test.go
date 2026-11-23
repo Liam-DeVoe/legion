@@ -26,10 +26,10 @@ import (
 // pull request, in any repository, while the issue links it, and one whose head is in a fork is
 // no issue's, linked or not. A link a person makes by hand is answered from what Dispatch holds,
 // with no read of GitHub. Each pull request reaches Dispatch through a writer that reads it from a
-// stand-in GitHub (delivery.Attributor.RefreshPullRequestHead), as the reconcile reads one, and the stand-in
-// counts every request, so a test sees whether the PATCH asked GitHub anything. The file builds at
-// a commit whose PATCH read GitHub after a change of the links, and fails there on its own
-// assertion.
+// stand-in GitHub (delivery.Attributor.RefreshPullRequestHead), as the reconcile reads one, and
+// the stand-in counts every request, so a test sees whether the PATCH asked GitHub anything. The
+// file builds at a commit whose PATCH read GitHub after a change of the links, and fails there on
+// its own assertion.
 
 // changedLinkPull is one pull request changedLinkGitHub answers: its title, body, head branch, the
 // repository its head branch is in, its head commit, and whether it merged. A refused one is
@@ -128,8 +128,8 @@ func changedLinkServer(t *testing.T, github *changedLinkGitHub) (http.Handler, *
 }
 
 // readPull has Dispatch read repo#number from GitHub and store its row, as the reconcile's pass
-// reads one (delivery.Attributor.RefreshPullRequestHead): the row's issue is the attribution's over the
-// links the issues hold now, with the inputs it was judged from stored beside it.
+// reads one (delivery.Attributor.RefreshPullRequestHead): the row's issue is the attribution's
+// over the links the issues hold now, with the inputs it was judged from stored beside it.
 func readPull(t *testing.T, served *server, repo string, number int) {
 	t.Helper()
 	if err := served.deps.Attributor.RefreshPullRequestHead(context.Background(), served.deps.Store.Pool, served.deps.GitHub,

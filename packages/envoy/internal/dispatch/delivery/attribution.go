@@ -358,15 +358,15 @@ func attributionCandidates(renames refs.Renames, c attributionColumns) string {
 // citedPullRequest is the condition that the GitHub issue URL the expression url reads, one
 // citedIssues wrote (https://github.com/<owner>/<repo>/issues/<n>), names a pull request Dispatch
 // holds: a pull_request_heads row of that repository, under its canonical name
-// (refs.CanonicalRepoSQL over renames), with that number. GitHub numbers a repository's issues and pull
-// requests in one sequence and answers /issues/<n> for a pull request too, so `#<n>` in a body,
-// and the .../issues/<n> link Dispatch stores for the reference owner/repo#<n>, name the pull
-// request #<n> when it is one. A body that names another pull request mentions that pull
+// (refs.CanonicalRepoSQL over renames), with that number. GitHub numbers a repository's issues
+// and pull requests in one sequence and answers /issues/<n> for a pull request too, so `#<n>` in
+// a body, and the .../issues/<n> link Dispatch stores for the reference owner/repo#<n>, name the
+// pull request #<n> when it is one. A body that names another pull request mentions that pull
 // request's work; it cites no issue whose work it does. Without this condition, a pull request
 // whose body said "#<n> renamed the helper" was credited to the issue that links #<n>, above the
-// issue its own branch names. A pull request Dispatch holds no head row for reads as an issue. The
-// number is compared as text: a citation's digits are not bounded, and a cast of a longer run of
-// them to an integer fails the statement.
+// issue its own branch names. A pull request Dispatch holds no head row for reads as an issue.
+// The number is compared as text: a citation's digits are not bounded, and a cast of a longer run
+// of them to an integer fails the statement.
 func citedPullRequest(renames refs.Renames, url string) string {
 	return `exists (select 1 from pull_request_heads cited_pr
 		where lower(cited_pr.repo) = lower(` + refs.CanonicalRepoSQL(renames, `split_part(`+url+`, '/', 4) || '/' || split_part(`+url+`, '/', 5)`) + `)

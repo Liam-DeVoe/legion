@@ -158,10 +158,10 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 	writeHeadOnBase(t, database, repo, number, sha, state, issueKey, "main")
 }
 
-// writeHeadOnBase stores one pull request head row whose base branch the caller names: the
-// row delivery.Attributor.BaseBranchMergedFor answers an issue's merged branch from, where the row is
-// merged. The conflict clause writes every column either caller means to write, so a second
-// row for the same pull request leaves none of them as the first write left it.
+// writeHeadOnBase stores one pull request head row whose base branch the caller names: the row
+// delivery.Attributor.BaseBranchMergedFor answers an issue's merged branch from, where the row is
+// merged. The conflict clause writes every column either caller means to write, so a second row
+// for the same pull request leaves none of them as the first write left it.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
@@ -1981,9 +1981,9 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 // The merged issue of a repository this process has never named a default branch for: the
 // restart whose first `GET /repos/{owner}/{repo}` failed, which delivery.Branches holds for
 // delivery.BranchCommitStaleAfter, and every repository of a deployment holding no App key.
-// The branch the work merged into is read from the database (delivery.Attributor.BaseBranchMergedFor)
-// and costs no call to GitHub, so the check compares with that branch alone and the stored
-// yes at it places the merge commit.
+// The branch the work merged into is read from the database
+// (delivery.Attributor.BaseBranchMergedFor) and costs no call to GitHub, so the check compares
+// with that branch alone and the stored yes at it places the merge commit.
 //
 // This pins the second half of the reviewer's finding on pull request #3530
 // (dispatch://INFRA-1522): branchBases answered nothing at all as soon as the default branch
@@ -3092,11 +3092,11 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
 	// now, its project's default cleared after the merge — the issue whose project's default
 	// was removed, and the issue whose parent moved. This pins the deep review's finding on
-	// #3530: the merged row, which delivery.BaseBranchMergedFor then read by issue key alone, goes on naming
-	// `integration/x`, so a branch walk chosen before anything tests the repository reached
-	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
-	// what the surface's own rule says — an issue that resolves to no repository is never
-	// unknown, and a retry settles nothing here.
+	// #3530: the merged row, which delivery.BaseBranchMergedFor then read by issue key alone,
+	// goes on naming `integration/x`, so a branch walk chosen before anything tests the
+	// repository reached onNamedBranch with none and answered `unknown`/`read_failed` for every
+	// result, against what the surface's own rule says — an issue that resolves to no repository
+	// is never unknown, and a retry settles nothing here.
 	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Default cleared after the merge")
 	uploadDocument(t, handler, "/api/v1/issues/"+adopted.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 41, adopted.Key, "integration/x")
@@ -4178,9 +4178,9 @@ func TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerStoresTheResult(t
 // is renamed out of the read's reach once the issue links acme/tools#7, so the record's read of
 // them fails as a read of a row the database cannot read does, and no linked pull request is
 // read from GitHub. The read of the heads of the issue's pull requests reads the links too
-// (delivery.Attributor.HeadsAttributedTo), so it fails first, and refuses the record the same way. Where
-// GitHub answers for acme/widgets, a result at a commit it holds is still stored, since neither
-// failed read refuses a commit GitHub says the issue's own repository holds.
+// (delivery.Attributor.HeadsAttributedTo), so it fails first, and refuses the record the same
+// way. Where GitHub answers for acme/widgets, a result at a commit it holds is still stored, since
+// neither failed read refuses a commit GitHub says the issue's own repository holds.
 func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
