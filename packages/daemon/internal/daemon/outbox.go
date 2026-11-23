@@ -2805,7 +2805,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
-		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
+		// Whether a newer start superseded the suspend is workflow.StopActs's rule, which promotion
+		// reads too. A left pod's close's suspend is also held by the turn fence below.
 		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox suspend superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
@@ -2815,8 +2816,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (record.SuperviseRequest.TurnStart): a turn of the claim that started after it may have
 		// made work the check's read did not see, so the stop finishes without acting, as a
 		// release's role stop is cancelled by a turn after its mark. The claim stays live in its
-		// pod, the close's Sandbox suspension waits for it (store.IssueSuspension), and the next
-		// idle pass decides the close again with a read of its own (workflow.LeftPodClose).
+		// pod, the close's Sandbox suspension carries the same fence and finishes without acting
+		// (store.IssueSuspension), so nothing of the close outlives the hold, and the next idle
+		// pass decides the close again with a read of its own (workflow.LeftPodClose).
 		//
 		// The two compare on one precision. The fence is claims.last_turn_start, which the
 		// database keeps to the microsecond, and the machine's stamp of the same turn carries the
@@ -3318,7 +3320,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 		return nil
 	}
 	closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
-		TreeGeneration: value.TreeGeneration, Row: row.ID}
+		TreeGeneration: value.TreeGeneration, Row: row.ID, TurnStart: value.TurnStart}
 	// ended and authorized are the store's answer under the runtime's pod lock, read by two
 	// rules. A close the store refused finishes without acting and may leave the pod standing, so
 	// it turns both false. The pause's hold of the pod is the store's own record, so it ends only

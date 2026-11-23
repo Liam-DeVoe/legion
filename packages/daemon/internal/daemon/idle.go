@@ -630,7 +630,7 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 // (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	if len(decision.Roles) == 0 {
-		return leftPodStopRows(view, decision, now, nil)
+		return leftPodStopRows(view, decision, now, time.Time{})
 	}
 	told := decision.Roles[0]
 	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
@@ -650,15 +650,16 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 // (leftPodStopRows) over a view read again in the store's transaction, where the close still
 // stands there and no claim started a turn after turnStart, the newest turn start of the pass that
 // queued the check (record.IssueWorkspaceCheck.TurnStart, workflow.LeftPodCloseAfterCheck), and no
-// rows where it does not. Each stop carries turnStart on, so a turn that starts after this decision
-// and before the lane runs the stop holds it (record.SuperviseRequest.TurnStart).
+// rows where it does not. Each stop and the suspension carry turnStart on, so a turn that starts
+// after this decision and before the lane runs the stop holds the stop and finishes the suspension
+// (record.SuperviseRequest.TurnStart, record.IssueSuspend.TurnStart).
 func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
 	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		decision := workflow.LeftPodCloseAfterCheck(view, turnStart)
 		if !decision.Close {
 			return store.IdleReleaseMark{}, nil
 		}
-		return leftPodStopRows(view, decision, now, &turnStart)
+		return leftPodStopRows(view, decision, now, turnStart)
 	}
 }
 
@@ -667,9 +668,11 @@ func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store
 // for the daemon with its session kept, and then the issue's Sandbox suspension
 // (record.IssueSuspend), which deletes the Sandbox, the pod and the disk once every role has
 // stopped (store.IssueSuspension). A pod with a live claim reaches it only through the workspace
-// check (leftPodCloseRows, checkLeftPodWorkspace), whose turn start each `suspend` carries as
-// turnStart (record.SuperviseRequest.TurnStart); nil where no claim is live and nothing is stopped.
-func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time, turnStart *time.Time) (store.IdleReleaseMark, error) {
+// check (leftPodCloseRows, checkLeftPodWorkspace), and a close that stops a role fences every row
+// of it on turnStart, the turn start that check read (record.SuperviseRequest.TurnStart,
+// record.IssueSuspend.TurnStart). A close that stops no role has no check, and its suspension
+// carries no fence.
+func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, turnStart time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
 	add := func(payload record.OutboxPayload) error {
 		row, err := record.NewOutboxRow(view.Issue, payload, now)
@@ -679,15 +682,19 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		mark.Rows = append(mark.Rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload})
 		return nil
 	}
+	var fence *time.Time
+	if len(decision.Roles) > 0 {
+		fence = &turnStart
+	}
 	reason := fmt.Sprintf("%s left the workflow, and its pod has been idle for the release period", view.Issue)
 	for _, role := range decision.Roles {
 		if err := add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
-			Generation: view.Generation, Reason: reason, TurnStart: turnStart}); err != nil {
+			Generation: view.Generation, Reason: reason, TurnStart: fence}); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}
 	if err := add(record.IssueSuspend{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation}); err != nil {
+		TreeGeneration: view.Root.Generation, TurnStart: fence}); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	return mark, nil

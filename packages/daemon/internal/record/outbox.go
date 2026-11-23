@@ -1260,8 +1260,9 @@ type SuperviseRequest struct {
 	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
 	// outbox's suspend), since that turn may have made work the check's read did not see, as a
 	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
-	// claim stays live, the close's Sandbox suspension waits for it (store.IssueSuspension), and
-	// the next idle pass decides the close again. Every other request carries none: nil is no
+	// claim stays live, the close's Sandbox suspension carries the same fence and finishes without
+	// acting too (IssueSuspend.TurnStart), and the next idle pass decides the close again. Every
+	// other request carries none: nil is no
 	// fence, and the zero moment is a fence that any turn passes. A release before this field
 	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
 	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
@@ -1330,10 +1331,21 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
 // and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
 // issue fresh on a Sandbox its next launch makes.
+//
+// TurnStart, on the suspension of a left pod's close that stops a role, is the turn start its
+// workspace check read, as each of that close's `suspend` rows carries it
+// (SuperviseRequest.TurnStart): the suspension finishes without acting where a claim of the issue
+// started a turn after it (store.IssueSuspension), as the stop of that claim's role did, so
+// nothing of the close outlives a stop its fence held and the next idle pass decides the close
+// again with a read of its own. Every other suspension carries none: nil is no fence, and the
+// zero moment is a fence that any turn passes. A release before this field refuses a row that
+// carries it (DisallowUnknownFields), so a rollback waits for such rows to run
+// (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 type IssueSuspend struct {
-	Tree           string `json:"tree"`
-	Generation     uint64 `json:"generation"`
-	TreeGeneration uint64 `json:"treeGeneration"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	TurnStart      *time.Time `json:"turnStart,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
