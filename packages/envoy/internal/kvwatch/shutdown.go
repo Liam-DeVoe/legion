@@ -94,7 +94,7 @@ func (w *Watcher) end(ctx context.Context) {
 	w.mu.Unlock()
 	results := make(chan error, len(retired))
 	for _, watcher := range retired {
-		go func() { results <- watcher.stop() }()
+		go func() { results <- watcher.stop(ctx) }()
 	}
 	for range retired {
 		select {
@@ -172,24 +172,26 @@ func (w *Watcher) watchDone() {
 	}
 }
 
-// subscription is one jetstream watcher and the cancel of the context its subscription lives in
-// (watch). Whoever stops it, or reads it to its end, cancels that context, which releases the
-// goroutine nats.go parks on it.
+// subscription is one jetstream watcher, the handle it was made through, and the cancel of the
+// context its subscription lives in (watch). Whoever stops it, or reads it to its end, cancels that
+// context, which releases the goroutine nats.go parks on it.
 type subscription struct {
 	watcher jetstream.KeyWatcher
+	kv      bus.KeyValue
 	cancel  context.CancelFunc
 }
 
 // stop unsubscribes the watcher, which deletes the ordered consumer nats.go created for it, then
-// cancels its context, and returns the stop's error. It never waits for the watcher's updates to
-// close: they close once the subscription's goroutine has delivered what it holds, which needs a
-// reader (consume, discard), since nats.go's delivery blocks holding the watcher's lock on a full
+// cancels its context, and returns the stop's error. It waits for the stop within ctx and the
+// connection's life (bus.KeyValue.StopWatcher), since that delete takes no context and waits out
+// nats.go's own 5 s when its answer never comes: a stop it stopped waiting for goes on by itself,
+// and cancels the context once it returns. It never waits for the watcher's updates to close:
+// they close once the subscription's goroutine has delivered what it holds, which needs a reader
+// (consume, discard), since nats.go's delivery blocks holding the watcher's lock on a full
 // 256-entry buffer. A stop is safe at any moment, mid-scan included: the jetstream watcher has no
 // timer that could send after the close.
-func (s *subscription) stop() error {
-	err := s.watcher.Stop()
-	s.cancel()
-	return err
+func (s *subscription) stop(ctx context.Context) error {
+	return s.kv.StopWatcher(ctx, s.watcher, s.cancel)
 }
 
 // discard reads and drops the watcher's entries until nats.go closes them, then cancels its
@@ -228,14 +230,15 @@ func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
 
 // drainWithin stops the watcher (stop, which unsubscribes it, deleting its consumer, then cancels
 // its context, releasing the goroutine nats.go parks on it) and closes stopped when that returns.
-// It reads and drops the watcher's entries while the stop runs, as discard does, and after it until
-// nats.go closes them or bound passes, whichever comes first. So nothing of the watcher outlives
-// the stop by more than bound.
+// The stop is waited for within the connection's life alone: no caller waits on this goroutine,
+// which retireWithin leaves at run's end. It reads and drops the watcher's entries while the stop
+// runs, as discard does, and after it until nats.go closes them or bound passes, whichever comes
+// first. So nothing of the watcher outlives the stop by more than bound.
 func (s *subscription) drainWithin(bound time.Duration, stopped chan<- struct{}) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = s.stop()
+		_ = s.stop(context.Background())
 	}()
 	updates, waiting := s.watcher.Updates(), (<-chan struct{})(done)
 	var expired <-chan time.Time

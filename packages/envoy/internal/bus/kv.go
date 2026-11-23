@@ -205,7 +205,8 @@ func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T
 // whatever other request on the connection the server refuses meanwhile. A refusal that answers
 // the watch before its construction returns leaves that construction running to its own end, and
 // a watcher it then builds is stopped and read until it closes, since no caller holds it (a grant
-// that refuses a consumer by name is the one way to get there: watchCreate.matches). A handle on a
+// that refuses a consumer by name is the one way to get there: watchCreate.matches). Nothing waits
+// on that stop, which is bound to the connection's life alone (StopWatcher). A handle on a
 // connection no client owns watches as watch does.
 func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
 	if kv.owner == nil {
@@ -213,7 +214,7 @@ func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyW
 	}
 	denied := func(sentAt time.Time) error { return kv.owner.deniedPublishMatching(create.matches, sentAt) }
 	return refusedByRecord(kv.owner, denied, watch, func(watcher jetstream.KeyWatcher) {
-		_ = watcher.Stop()
+		_ = kv.StopWatcher(context.Background(), watcher, nil)
 		DrainWatcher(watcher)
 	})
 }
@@ -890,10 +891,10 @@ func (kv KeyValue) ReadStreamState(ctx context.Context) (StreamState, error) {
 // as nats.go's History answers. A watch that ends before it has delivered every revision -- ctx
 // ended, or its subscription did -- is an error rather than the revisions that arrived, which is
 // what nats.go's History would return: a caller that takes the last one for the key's latest would
-// take an older revision for it. Once complete, the watch is stopped and read until it closes, since
-// nats.go's delivery blocks on a full 256-entry buffer holding the watcher's lock. The watch is
-// bound to the life of the handle's connection (Request): the connection's loss ends it as ctx
-// ending does, and the read answers ErrConnectionLost.
+// take an older revision for it. Once complete, the watch is stopped within ctx (StopWatcher) and
+// read until it closes, since nats.go's delivery blocks on a full 256-entry buffer holding the
+// watcher's lock. The watch is bound to the life of the handle's connection (Request): the
+// connection's loss ends it as ctx ending does, and the read answers ErrConnectionLost.
 func (kv KeyValue) ReadHistory(ctx context.Context, key string) ([]jetstream.KeyValueEntry, error) {
 	return Request(ctx, kv.owner, func(ctx context.Context) ([]jetstream.KeyValueEntry, error) {
 		ctx, cancel := context.WithCancel(ctx)
@@ -908,7 +909,7 @@ func (kv KeyValue) ReadHistory(ctx context.Context, key string) ([]jetstream.Key
 				entries = append(entries, entry)
 				continue
 			}
-			_ = watcher.Stop()
+			_ = kv.StopWatcher(ctx, watcher, nil)
 			go DrainWatcher(watcher)
 			if len(entries) == 0 {
 				return nil, fmt.Errorf("read the history of key %s: %w", key, nats.ErrKeyNotFound)
@@ -930,4 +931,39 @@ func (kv KeyValue) ReadHistory(ctx context.Context, key string) ([]jetstream.Key
 func DrainWatcher(watcher jetstream.KeyWatcher) {
 	for range watcher.Updates() {
 	}
+}
+
+// StopWatcher stops watcher, a watch made through kv, and waits for that stop within ctx, bound to
+// the life of kv's connection (Request): the wait ends at the stop's answer, at ctx's end, or at the
+// connection's loss, which answers ErrConnectionLost. nats.go's Stop unsubscribes the watch at once
+// and then deletes the ordered consumer it created for it (nats.go v1.55.0 nats.go:5495-5497,
+// js.go:1472-1488), a request that takes no context and waits out its JetStream context's default
+// of 5 s (js.go:303 and :318, jsm.go:1833-1838) when its answer never comes: a reply the
+// connection's drop lost, or a server that does not answer. The jetstream package's
+// WithDefaultTimeout does not reach that context, which jetstream/kv.go:891-902 builds with no
+// timeout of its own, so no option bounds the delete and its caller bounds the wait instead.
+//
+// The stop always runs, whatever ctx or the connection is at the call: it runs on a goroutine of its
+// own, and a stop the wait stopped waiting for goes on to its own end there, after which after, when
+// it is not nil, runs (kvwatch cancels the watch's context there, after the stop as before). Request
+// is used rather than RequestBounded for that reason: Bounded starts no call once ctx has ended, and
+// Request none once the connection's life has, and a stop must still unsubscribe then.
+func (kv KeyValue) StopWatcher(ctx context.Context, watcher jetstream.KeyWatcher, after func()) error {
+	stopped := make(chan error, 1)
+	go func() {
+		err := watcher.Stop()
+		if after != nil {
+			after()
+		}
+		stopped <- err
+	}()
+	_, err := Request(ctx, kv.owner, func(ctx context.Context) (struct{}, error) {
+		select {
+		case err := <-stopped:
+			return struct{}{}, err
+		case <-ctx.Done():
+			return struct{}{}, context.Cause(ctx)
+		}
+	})
+	return err
 }

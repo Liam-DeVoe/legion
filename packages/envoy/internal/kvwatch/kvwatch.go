@@ -496,7 +496,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	if !abandon() {
 		// run ended while the create was in flight, and cancelled the watcher's context.
 		if err == nil {
-			sub := &subscription{watcher: watcher, cancel: cancel}
+			sub := &subscription{watcher: watcher, kv: kv, cancel: cancel}
 			sub.retireWithin(run, abandonedDrain)
 		}
 		cancel()
@@ -506,7 +506,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		cancel()
 		return err
 	}
-	sub := &subscription{watcher: watcher, cancel: cancel}
+	sub := &subscription{watcher: watcher, kv: kv, cancel: cancel}
 	w.applyMu.Lock()
 	w.mu.Lock()
 	if w.stopped {
@@ -514,7 +514,9 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// request outside the drain's deadline, so it is kept for End, which runs within it; until
 		// then it is read and dropped, since a drain waits for every pending message to be
 		// delivered. Once End has taken the retired watchers, which it does only after this watch
-		// returns or its deadline passes, nothing else would end this one, so the watch ends it.
+		// returns or its deadline passes, nothing else would end this one, so the watch ends it,
+		// waiting for that stop only until run ends (subscription.stop): End has stopped waiting,
+		// and the stop's consumer delete would otherwise hold this watch up to nats.go's own 5 s.
 		w.kv = kv
 		ended, endCause := w.ended, w.endCause
 		if !ended {
@@ -524,7 +526,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		w.applyMu.Unlock()
 		go sub.discard()
 		if ended {
-			w.logEnd(lateStop(sub.stop(), endCause))
+			w.logEnd(lateStop(sub.stop(run), endCause))
 		}
 		return nil
 	}
@@ -588,19 +590,12 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// Its consume goes on reading it until it closes. Stop reports a consumer the server has
 		// lost to its caller, never at ERROR. Stop deletes the consumer nats.go created for the
 		// previous watcher, a request that takes no context, so it is waited for only until run
-		// ends: a reconnect hook's run whose connection drops while that delete is unanswered ends
-		// at the drop rather than at the request's own bound, and the stop goes on by itself
+		// ends or the connection's life does (subscription.stop): a reconnect hook's run whose
+		// connection drops while that delete is unanswered ends at the drop rather than at the
+		// request's own bound, and the stop goes on by itself
 		// (TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete). A run that does not end waits
 		// for it, so a caller that returns from a live Rewatch has the previous watcher stopped.
-		stopped := make(chan struct{})
-		go func() {
-			_ = previous.stop()
-			close(stopped)
-		}()
-		select {
-		case <-stopped:
-		case <-run.Done():
-		}
+		_ = previous.stop(run)
 	}
 	go w.consume(sub, generation, read, started, idle, idleSince)
 	return nil
