@@ -60,17 +60,25 @@ func fetchSignInStatus(t *testing.T, base string) (signInStatus, string) {
 }
 
 // awaitClientCheck waits for the boot pass of a broker's client check to reach the row, and
-// answers the status it then reads.
-func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
+// answers the status it then reads. Each read of GET /signin/status spends the bucket that route
+// shares with the approval page's routes, so the wait asks the route only once the broker's
+// database holds the check's state, which costs the bucket nothing.
+func awaitClientCheck(t *testing.T, databaseURL, base string) (signInStatus, string) {
 	t.Helper()
+	checks := connectToBroker(t, databaseURL)
 	var status signInStatus
-	var body string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		status, body = fetchSignInStatus(t, base)
-		return status.ClientCheck != nil
-	}) {
-		t.Fatalf("the broker took no client check within %s: %s", awaitTimeout, body)
-	}
+	body := testwait.Until(t, "the broker's boot pass of its client check", func() (string, bool) {
+		var written bool
+		if err := checks.QueryRow(t.Context(), `select exists (select 1 from signin_status where client_check_state is not null)`).Scan(&written); err != nil {
+			t.Fatalf("read the client check's row: %v", err)
+		}
+		if !written {
+			return "the database holds no client check yet", false
+		}
+		var read string
+		status, read = fetchSignInStatus(t, base)
+		return read, status.ClientCheck != nil
+	})
 	return status, body
 }
 
@@ -241,7 +249,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 	public.route(t, first)
 	base := public.URL
 
-	status, body := awaitClientCheck(t, base)
+	status, body := awaitClientCheck(t, databaseURL, base)
 	t.Logf("the first broker's boot client check: %s", body)
 	if *status.ClientCheck != string(oidc.ClientCheckReady) {
 		t.Fatalf("the boot client check against the fixture's provider = %s, want ready", body)
@@ -286,7 +294,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 	// And after a restart: both processes gone, a third started on the same database.
 	for _, process := range []*brokerProcess{first, second} {
 		process.Terminate(t)
-		if err := process.AwaitExit(t, stopTimeout); err != nil {
+		if err := process.AwaitExit(t); err != nil {
 			t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -72,7 +73,7 @@ func (c checkedDocsAPI) ReplaceText(ctx context.Context, artifactID, markdown st
 	return c.next.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 }
 
-func (c checkedDocsAPI) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error) {
+func (c checkedDocsAPI) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	c.check(ctx, "IndexDocumentReferences")
 	return c.next.IndexDocumentReferences(ctx, artifactID, version, markdown)
 }

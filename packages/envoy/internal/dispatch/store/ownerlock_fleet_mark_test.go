@@ -99,9 +99,13 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 			writerPID := writer.Conn().PgConn().PID()
 			wrote := make(chan error, 1)
 			go func() {
-				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
+				_, err := raceWriter(ctx, t, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
 				wrote <- err
 			}()
+			// The earlier build's write either queues behind this build's write, which Postgres
+			// records as backend writerPID blocking it, or goes through, which is the defect. The
+			// wait ends on whichever comes first, and gives up only 30 s before the test binary's
+			// deadline (testwait.Until), so a write that is merely slow to start is no failure.
 			type earlierWrite struct {
 				Ended  bool
 				Err    error

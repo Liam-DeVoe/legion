@@ -97,7 +97,7 @@ func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	relay.coalesce = time.Millisecond
 	reads := make(chan int64, 1024)
 	relay.readAfter = func(ctx context.Context, after, through int64) ([]model.Event, error) {
-		page, err := relay.server.readEventsAfterID(ctx, after, through, maxEventReplay)
+		page, err := relay.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
 		reads <- after
 		return page, err
 	}
@@ -393,7 +393,7 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
 	handler, processB := secondProcess(t, database)
-	held := relayReads(processB.eventRelay)
+	held := reportRelayReads(processB.eventRelay)
 	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
@@ -421,7 +421,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
 	relay, reads := newCountedRelay(t, deps)
-	held := relayReads(relay)
+	held := reportRelayReads(relay)
 	dials := recordRelayDials(relay, deps)
 	subscription, _, opened := subscribeRelay(t, relay)
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
@@ -655,12 +655,18 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	// open below b's, before it waits for the horizon a holds back (firstRelayCursor). An event that
 	// commits before that read counts as committed before the subscription began, so a commits
 	// once the start has read: the count of starts that have read the log is the one fact the
-	// start leaves of that read (server.relayStartReads).
-	reads := processB.relayStartReads.Load()
+	// start leaves of that read (eventStreamRelay.startsRead).
+	relay := processB.eventRelay
+	startsRead := func() int {
+		relay.mu.Lock()
+		defer relay.mu.Unlock()
+		return relay.startsRead
+	}
+	reads := startsRead()
 	waiting := dial()
 	sendEventsSubscribe(t, waiting, "events", nil)
 	testwait.Eventually(t, "the start of B's relay for the subscription made while a is open to read the log", func() bool {
-		return processB.relayStartReads.Load() > reads
+		return startsRead() > reads
 	})
 	commitLow()
 	renameIssue(t, first, issue.Key, "Renamed after the reset")

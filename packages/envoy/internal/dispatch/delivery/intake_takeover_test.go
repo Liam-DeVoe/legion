@@ -46,7 +46,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	}
 	t.Cleanup(func() { bustest.Close(t, client) })
 	intake := newIntake(client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() { intake.stop(testwait.Context(t)) })
 	return &takeOverAttempt{intake: intake, client: client}
 }

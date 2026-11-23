@@ -324,14 +324,14 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
-        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        functions=("TestTheModelRefusesAHostlessEntry",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
             "comparison runs a host-less entry carrying guidance, a field the generator never "
-            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
-            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
-            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
-            "the comparison runs only in airlock-lean."
+            "writes, through both the Go validation and the Lean model's, which each refuse it, "
+            "with AIRLOCK_MODEL set. envoy-go's step \"Count the database broker suites' skips\" "
+            "lists it too, and it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean."
         ),
     ),
     Exception_(
@@ -410,7 +410,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="efba9ead59c22a7967534bf00bc8a9cac623ad608c181a235c8b8411754202b2",
+        sha256="9b56067382dd56dd9c7b18998229628346dc681820ea46cb930f077707462408",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its

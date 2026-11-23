@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -204,6 +205,12 @@ var unresponsiveClaim = roleClaimStub{
 	holder:  retainedHolder,
 	seenAgo: session.LiveWindow + time.Minute,
 	windows: roles.Windows{Now: time.Now},
+}
+
+// liveClaim is the claim of a holder that registered a moment before it is judged: its record
+// stands and is live, so the resolution judges the holder by its own state.
+func liveClaim(holder string) roleClaimStub {
+	return roleClaimStub{holder: holder, seenAgo: time.Millisecond, windows: roles.Windows{Now: time.Now}}
 }
 
 // unclaimedRoles is the store in which no role is claimed.
@@ -448,11 +455,14 @@ func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing
 // claimUnder makes holder role's holder, registered with entry, as a session plugin's
 // registration does, and reports what failed rather than failing the test: it is called on the
 // goroutine the outbox publishes its keep on, where a t.Fatalf would end that goroutine alone.
-// roleRig.claim is this call made from a test's own goroutine.
+// roleRig.claim is this call made from a test's own goroutine. An entry naming no machine is
+// registered through test-machine, the listener the claim is made through, as every
+// registration names the listener it came through.
 func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) error {
 	if _, err := r.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		return fmt.Errorf("claim %s for %s: %w", role, holder, err)
 	}
+	entry.MachineID = cmp.Or(entry.MachineID, "test-machine")
 	if err := r.sessions.Put(holder, entry); err != nil {
 		return fmt.Errorf("register %s: %w", holder, err)
 	}

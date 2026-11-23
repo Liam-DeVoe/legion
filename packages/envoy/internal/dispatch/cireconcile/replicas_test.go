@@ -18,7 +18,7 @@ import (
 // App's budget.
 func TestOneProcessServesEachPeriod(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -71,7 +71,7 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 // integration banned.
 func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	// GitHub refuses the head's Checks fields to a query, so the pass reads it over REST, which
 	// is the read this test's limit is answered to.
@@ -120,7 +120,7 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 // An alarm reads the pass by that line alone.
 func TestTheStopIsInThePassLine(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -166,7 +166,7 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 // at Interval whatever its caller set arms its bound elsewhere.
 func TestAPassIsBoundAtThePassTimeoutItsCallerSets(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	pull := head(1)
 	h.listHeads(pull)
 	h.github.refuseChecks(gitHubRepository, pull.sha)

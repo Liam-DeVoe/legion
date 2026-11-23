@@ -380,20 +380,21 @@ func awaitTakeOver(t *testing.T, tries *clocktest.Fake, taken func() bool, failu
 // acknowledges, and holds the fetch of each number block reports true until the handler's context
 // ends or the test's end. The client's own bound on that fetch is past any run
 // (githubapptest.RequestTimeoutPastTheRun), so a row stages its next step while the fetch is held.
-func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool) *intakeProcess {
+// options are added to its NATS client's own.
+func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, options ...bus.ConnectOption) *intakeProcess {
 	t.Helper()
-	return startIntakeProcessWith(t, pool, natsURL, block, nil)
+	return startIntakeProcessWith(t, pool, natsURL, block, nil, options...)
 }
 
 // startIntakeProcessWith is startIntakeProcess with before run on the process once it is built
 // and before its intake runs, for a row that gives the intake a clock of its own, a message
 // timeout past the run (processAckWaitPastTheRun) or in-flight slots of its own, or cuts its lease
-// pool from the start. A nil before does nothing.
-func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, before func(*intakeProcess)) *intakeProcess {
+// pool from the start. A nil before does nothing. options are added to its NATS client's own.
+func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, before func(*intakeProcess), options ...bus.ConnectOption) *intakeProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	leasePool := storetest.Leases(t, second.Pool)
-	client, err := bus.Connect([]string{natsURL}, bus.WithName(intakeConnectionName))
+	client, err := bus.Connect([]string{natsURL}, append([]bus.ConnectOption{bus.WithName(intakeConnectionName)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
@@ -424,7 +425,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool))
+	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	process.intake = intake
 	if before != nil {
 		before(process)

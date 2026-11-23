@@ -1,8 +1,9 @@
 // Package docstest speaks the Hocuspocus websocket sync that docs.Service.ServeHTTP serves,
-// writes the deep trees a crafted client sends, builds the load harness's spec and shuts a
+// writes the deep trees a crafted client sends, builds the load harness's spec, holds the
+// whole-view backlink count refs.BacklinkCounts is held to (ViewBacklinkCountSQL) and shuts a
 // document service down through the shared wait, for Dispatch tests in more than one package. It
-// is an ordinary package rather than a _test.go file because api, docs and pmdoc cannot import one
-// another's test helpers, and it imports none of them.
+// is an ordinary package rather than a _test.go file because api, docs, pmdoc and refs cannot
+// import one another's test helpers, and it imports none of them.
 package docstest
 
 import (

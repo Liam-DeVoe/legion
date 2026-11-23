@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -153,7 +154,9 @@ func (h *HandshakeHold) Release() {
 // each waits behind such a write, and nothing about the connection changes. The fixture takes the
 // lock rather than filling the socket, so no span decides when a write blocked: the lock is held
 // when the take returns, and let go when the row calls the func it returns, which the test's end
-// calls too. The take's give-up fails the test. The proxy is left as it is.
+// calls too. The take's give-up fails the test. The proxy is left as it is. Since the lock is the
+// row's own, no reset or close of the connection's socket lets it go: a row that measures what such
+// a reset ends holds the lock with a write of nats.go's own (HoldStalledWrite).
 func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	release, err := h.TakeWriteLock(conn)
@@ -183,9 +186,86 @@ func (h *HandshakeHold) TakeWriteLock(conn *natsgo.Conn) (release func(), err er
 	return func() { once.Do(lock.Unlock) }, nil
 }
 
+// stalledWriteSpan is how long one publish must stay inside nats.go, with every try to take its
+// connection lock for reading failing, before HoldStalledWrite takes the write to be blocked on the
+// frozen socket rather than merely under way (main's lockHeldWait, 200 ms). It decides when the
+// hold is in place and is no verdict: the shared wait it sits in has no bound of its own, and what
+// a row asserts of the lock is RequireLockHeld's reading of it.
+const stalledWriteSpan = 200 * time.Millisecond
+
+// HoldStalledWrite holds conn's nats.go connection lock with a write of nats.go's own, on a
+// connection through the hold that stays connected: it freezes the proxy (Freeze) and publishes to
+// conn until a write to the socket blocks under the lock, as a write to a socket whose peer has
+// stopped reading blocks. HoldWriteLock takes the lock itself, so only its release lets the lock go;
+// here the lock is the write's, so a reset or a close of the write's socket (bus.Client.Sever) fails
+// the write and lets the lock go, as it does in production. It returns once one publish has stayed in
+// nats.go for stalledWriteSpan while every try to take the lock for reading failed, so neither a slow
+// read nor a slow publish alone decides it. The func it returns thaws the proxy (Restore) and stops
+// the publishes; the test's end calls it too. It waits through the shared wait's helper form
+// (testwait.InHelper), and when no write holds the lock by the time that wait gives up it fails the
+// test by name without ending its goroutine, which may be a hook's rather than the test's, and
+// returns that func.
+func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (release func()) {
+	t.Helper()
+	h.Freeze()
+	stop := make(chan struct{})
+	release = sync.OnceFunc(func() {
+		close(stop)
+		h.Restore()
+	})
+	t.Cleanup(release)
+	lock, err := connLockOf(conn)
+	if err != nil {
+		t.Errorf("testnats: %v", err)
+		return release
+	}
+	// begun counts the publishes begun and returned those that returned, so returned below begun
+	// means the publish numbered begun is still inside nats.go.
+	var begun, returned atomic.Uint64
+	go func() {
+		payload := make([]byte, 64<<10)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			begun.Add(1)
+			err := conn.Publish("testnats.stalled-write", payload)
+			returned.Add(1)
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var watched uint64
+	var since time.Time
+	if err := testwait.InHelper("testnats", "a write of nats.go's own to hold its connection lock behind the frozen proxy", func() bool {
+		publish := begun.Load()
+		inside := returned.Load() < publish
+		free := lock.TryRLock()
+		if free {
+			lock.RUnlock()
+		}
+		switch {
+		case !inside || free:
+			watched = 0
+		case publish != watched:
+			watched, since = publish, time.Now()
+		case time.Since(since) >= stalledWriteSpan:
+			return true
+		}
+		return false
+	}); err != nil {
+		t.Errorf("%v", err)
+	}
+	return release
+}
+
 // RequireLockHeld fails the test when nats.go's connection lock on conn is free (lockFree): the
-// handshake or the write the row holds it with is not held. A row calls it once the calls it
-// measures have answered, so their answers are known to have come while the lock was held.
+// handshake, HoldWriteLock or HoldStalledWrite the row holds it with is not held. A row calls it
+// once the calls it measures have answered, so their answers are known to have come while the lock
+// was held.
 func RequireLockHeld(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
 	if lockFree(t, conn) {

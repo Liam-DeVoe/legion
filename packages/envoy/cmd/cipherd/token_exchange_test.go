@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -254,7 +255,8 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	t.Run("a lapsed token is renewed by the same standing pod token", func(t *testing.T) {
 		// Its own broker run, on a schema of its own, started with an access-token lifetime of a
 		// few seconds: the proof is that the first token lapses, not that the test waits.
-		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, storetest.URL(t), cluster, github, shortAccessSeconds)})
+		renewalDB := storetest.URL(t)
+		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, renewalDB, cluster, github, shortAccessSeconds)})
 		renewalBroker.Await(t, "token exchange")
 		renewalAddr := renewalBroker.Addr
 		renewal := newLiveBroker(renewalAddr, key)
@@ -267,12 +269,41 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			t.Fatalf("the renewing role's first exchange = %d %v, want 200 with an access token", status, body)
 		}
 
-		time.Sleep((shortAccessSeconds + 1) * time.Second)
-		status, body = renewal.introspect(t, first, apiToken)
-		if status != http.StatusOK || body["active"] != false {
-			t.Fatalf("introspection of the first token %ds after it was minted = %d %v, want 200 with active false: this broker was started with a %ds access-token lifetime, past which its token is not live",
-				shortAccessSeconds+1, status, body, shortAccessSeconds)
+		// The lifetime the broker stamped on the first token, read from the one row it stored
+		// an access token in: the expiry it wrote against the moment the exchange request was
+		// made (the stored request's requestedAt), both on the broker's clock. The stamp is the
+		// configured lifetime plus the milliseconds the exchange took between those two moments,
+		// so it is read to the whole second.
+		var tokens int
+		var stamped float64
+		if err := connectToBroker(t, renewalDB).QueryRow(t.Context(), `select count(*), coalesce(max(extract(epoch from expires_at - (request->>'requestedAt')::timestamptz)), 0)::float8
+			from oauth_access_tokens`).Scan(&tokens, &stamped); err != nil {
+			t.Fatalf("read the first token's stored lifetime: %v", err)
 		}
+		if lifetime := time.Duration(stamped * float64(time.Second)); tokens != 1 || lifetime.Truncate(time.Second) != shortAccessSeconds*time.Second {
+			t.Fatalf("the broker stored %d access tokens, the first stamped to live %s from its request; want one, stamped with the %ds access-token lifetime this broker was started with", tokens, lifetime, shortAccessSeconds)
+		}
+
+		// The first token lapses at this broker's own access-token lifetime, which it was
+		// started with: the row waits for the introspection that says so. Each introspection
+		// spends the listed caller's address bucket, so the wait asks the broker only once the
+		// token's stored expiry has passed on the database's clock, which costs the bucket
+		// nothing; from then the broker's answer is what the row waits for.
+		lapse := connectToBroker(t, renewalDB)
+		testwait.Until(t, "the first access token to lapse", func() (string, bool) {
+			var expired bool
+			if err := lapse.QueryRow(t.Context(), `select coalesce(now() >= max(expires_at), false) from oauth_access_tokens`).Scan(&expired); err != nil {
+				t.Fatalf("read the first token's stored expiry: %v", err)
+			}
+			if !expired {
+				return "the stored expiry has not passed on the database's clock", false
+			}
+			status, body := renewal.introspect(t, first, apiToken)
+			if status != http.StatusOK {
+				t.Fatalf("introspection of the first token = %d %v, want 200", status, body)
+			}
+			return fmt.Sprintf("introspection answered %v", body), body["active"] == false
+		})
 
 		status, body = renewal.exchange(t, exchangeForm(podToken, renewalSession))
 		second, _ := body["access_token"].(string)

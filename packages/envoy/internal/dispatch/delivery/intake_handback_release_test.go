@@ -25,13 +25,19 @@ import (
 // in the order the server's messages arrive, so the record orders an answer against a creation.
 // That order cannot show a hand-back that made the recreated consumer deliver a message again: the
 // server sends a creation's advisory after the new consumer already takes answers, so the rows also
-// read that consumer itself (requireDeliveredOnceAfterTakeOver).
+// read that consumer itself (requireDeliveredOnceAfterTakeOver). A third subscription takes the
+// watch's own barrier messages (barrier), which say that every earlier event has been recorded.
 type durableEvents struct {
-	mu     sync.Mutex
-	events []string
+	conn     *natsgo.Conn
+	mu       sync.Mutex
+	events   []string
+	barriers map[string]bool
 }
 
 const durableCreated = "created"
+
+// durableEventsBarrier is the subject of the watch's own barrier messages (durableEvents.barrier).
+const durableEventsBarrier = "testdelivery.durable-events.barrier"
 
 func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	t.Helper()
@@ -40,6 +46,7 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	for _, subject := range []string{
 		"$JS.ACK." + bus.Stream + "." + bus.DispatchDeliveryDurable + ".>",
 		"$JS.EVENT.ADVISORY.CONSUMER.CREATED." + bus.Stream + "." + bus.DispatchDeliveryDurable,
+		durableEventsBarrier,
 	} {
 		if _, err := conn.ChanSubscribe(subject, arrived); err != nil {
 			t.Fatalf("subscribe to %s: %v", subject, err)
@@ -48,15 +55,18 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the durable's watch: %v", err)
 	}
-	recorded := &durableEvents{}
+	recorded := &durableEvents{conn: conn, barriers: map[string]bool{}}
 	go func() {
 		for msg := range arrived {
-			event := string(msg.Data)
-			if strings.HasPrefix(msg.Subject, "$JS.EVENT.") {
-				event = durableCreated
-			}
 			recorded.mu.Lock()
-			recorded.events = append(recorded.events, event)
+			switch {
+			case msg.Subject == durableEventsBarrier:
+				recorded.barriers[string(msg.Data)] = true
+			case strings.HasPrefix(msg.Subject, "$JS.EVENT."):
+				recorded.events = append(recorded.events, durableCreated)
+			default:
+				recorded.events = append(recorded.events, string(msg.Data))
+			}
 			recorded.mu.Unlock()
 		}
 	}()
@@ -76,14 +86,36 @@ func (r *durableEvents) count() int {
 	return len(r.events)
 }
 
+// barrier waits until the watch has recorded every event the server had handled when barrier
+// began: it publishes a message of its own on the watch's connection and waits until the watch
+// records it. The server sends the watch each event as it handles the publish that makes it, and
+// handles this one later, so the watch receives it after them, in order on its one channel.
+func (r *durableEvents) barrier(t *testing.T) {
+	t.Helper()
+	id := natsgo.NewInbox()
+	if err := r.conn.Publish(durableEventsBarrier, []byte(id)); err != nil {
+		t.Fatalf("publish the durable watch's barrier: %v", err)
+	}
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.barriers[id]
+	}, func() string {
+		return fmt.Sprintf("the durable's watch has not recorded its barrier %s; it holds %d event(s)", id, r.count())
+	})
+}
+
 // stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
 // request with a second message of it waiting behind, stops the holder, and holds a write on the
 // holder's link from inside the stop's hand-back of the waiting message, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline,
 // intakeStopBudget, is on the holder's stop clock (heldDurable.clock), a fake that moves only when a
-// row moves it past that deadline (passStopDeadline).
-func stopWithAHeldHandBack(t *testing.T) heldHandBack {
+// row moves it past that deadline (passStopDeadline). A non-nil holdClock is the holder's hold clock
+// (heldDurable.holdClock), a fake the row moves to lose the hold (loseHoldUntilSevered); its
+// hold's row is then kept live on the database's clock until the row lapses it (keepHoldRowLive,
+// lapseHoldRow). With a nil one the hold runs on the real clock and renews itself.
+func stopWithAHeldHandBack(t *testing.T, holdClock *clocktest.Fake) heldHandBack {
 	t.Helper()
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
@@ -104,9 +136,16 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	holder := startIntakeProcessWith(t, pool, link.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
 		ackWaitPastTheRun(p.intake)
 		p.intake.clock = row.stopClock
+		if holdClock != nil {
+			p.intake.holdClock = holdClock
+		}
 	})
 	row.holder = holder
+	row.holdClock = holdClock
 	awaitBoundDurable(t, publisher)
+	if holdClock != nil {
+		keepHoldRowLive(t, pool, holder)
+	}
 	startIntakeProcessWith(t, pool, natsURL, nil, processAckWaitPastTheRun)
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
@@ -199,8 +238,9 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 // heldHandBack is a holder's stop with a hand-back's publish held (stopWithAHeldHandBack): thaw
 // lets the holder's link move and ends the held write; stopped closes when the holder's Run has
 // returned; conn is the holder's connection, delivery the subscription its stop stopped, from the
-// first durable event of the stop, stopClock the holder's stop clock, and sequences the stream
-// sequences of the row's two messages.
+// first durable event of the stop, stopClock the holder's stop clock, holdClock its hold clock when
+// the row moves it (nil when the hold runs on the real clock), and sequences the stream sequences
+// of the row's two messages.
 type heldHandBack struct {
 	holder    *intakeProcess
 	pool      *store.Pool
@@ -212,6 +252,7 @@ type heldHandBack struct {
 	conn      *natsgo.Conn
 	delivery  *intakeDelivery
 	stopClock *clocktest.Fake
+	holdClock *clocktest.Fake
 	sequences []uint64
 }
 
@@ -242,6 +283,133 @@ func holdLive(t *testing.T, pool *store.Pool) bool {
 		t.Fatalf("read the delivery durable's hold: %v", err)
 	}
 	return live
+}
+
+// keepHoldRowLive keeps the delivery durable's hold row, which holder took, live on the database's
+// clock past anything the run waits for, as the holder's renewals would. A holder whose hold runs on
+// a fake the row has not moved renews nothing (duty.Hold), so its row would lapse intakeHoldTTL
+// after the take while the row still stages its steps, and a standby would take the durable over
+// then. The holder's own loss deadline stays on its fake.
+func keepHoldRowLive(t *testing.T, pool *store.Pool, holder *intakeProcess) {
+	t.Helper()
+	tag, err := pool.Exec(t.Context(), `update duty_holds set expires_at = now() + interval '1 day' where name = $1 and holder = $2`,
+		intakeHoldName(bus.DispatchDeliveryDurable), holder.intake.holder)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("keep the holder's hold live on the database's clock as its renewals would: %d rows, %v", tag.RowsAffected(), err)
+	}
+}
+
+// lapseHoldRow ends the hold row keepHoldRowLive kept live, as the database's clock passing
+// intakeHoldTTL after the last renewal does: its expiry is set to the database's now(), its holder
+// and token are kept, and no release is notified, so a standby takes the durable over at its next
+// try (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse lapses its hold the same
+// way).
+func lapseHoldRow(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update duty_holds set expires_at = now() where name = $1`, intakeHoldName(bus.DispatchDeliveryDurable)); err != nil {
+		t.Fatalf("lapse the holder's hold on the database's clock: %v", err)
+	}
+}
+
+// loseHoldUntilSevered loses the hold of holder, whose lease pool the row has cut and whose hold
+// runs on holdClock, a fake the row has not moved since the take, and waits until severed reports
+// the effect of the sever the loss must bring, under what. It moves holdClock to the hold's loss
+// deadline, where the hold is lost, since no renewal lands on the cut pool (duty.Hold). The
+// delivery's loss watcher then waits intakeFlushWait on that clock for a flush's answer
+// (heldDurable.lostWith), and severs the holder's connection when none has come by then
+// (severHandBacks): each reading of severed that finds no sever yet moves holdClock past that wait
+// once the watcher has armed it, and never further (clocktest.Fake.SetWhen). A watcher whose flush
+// answers false first severs at that answer and disarms its wait, which is then never there to
+// pass. The wait decides whether the sever comes, so it runs on the hold's clock and not on the wall
+// clock. It is half the hold's margin, the time the hold's row stays live past the loss deadline,
+// so in production the sever comes before a standby can take the durable over; the row's own order
+// (lapseHoldRow once the sever came) does not read that, so this reads the two constants.
+func loseHoldUntilSevered(t *testing.T, holdClock *clocktest.Fake, holder *intakeProcess, what string, severed func() (string, bool)) {
+	t.Helper()
+	if intakeFlushWait >= intakeHoldMargin {
+		t.Fatalf("intakeFlushWait (%s) is not under intakeHoldMargin (%s): a lost hold's sever could come after the hold's row has lapsed and a standby has recreated the durable", intakeFlushWait, intakeHoldMargin)
+	}
+	delivering := subscribedDelivery(holder.intake)
+	if delivering == nil || delivering.hold == nil {
+		t.Fatal("control: the holder delivers under no hold")
+	}
+	deadline := delivering.hold.Deadline()
+	holdClock.Set(deadline)
+	select {
+	case <-delivering.hold.Lost():
+	default:
+		t.Fatalf("control: the holder's hold was not lost with its clock at the loss deadline %s", deadline)
+	}
+	waited := deadline.Add(intakeFlushWait)
+	testwait.Until(t, what, func() (string, bool) {
+		reading, done := severed()
+		if !done {
+			holdClock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+				return waited, now.Before(waited) && slices.ContainsFunc(armed, waited.Equal)
+			})
+		}
+		return fmt.Sprintf("%s; the hold's clock %s past its loss deadline", reading, holdClock.Now().Sub(deadline)), done
+	})
+}
+
+// connectionClosed is a reading of whether conn is closed that never blocks the wait that asks it.
+// conn.IsClosed takes nats.go's connection lock, which a write to a stalled socket holds until
+// something fails that write, so each read runs on a goroutine of its own, one at a time, and the
+// reading takes a read's answer only once it has come: a read that has not answered is what it
+// says then.
+func connectionClosed(conn *natsgo.Conn) func() (string, bool) {
+	var asked chan bool
+	return func() (string, bool) {
+		if asked == nil {
+			asked = make(chan bool, 1)
+			go func(answer chan<- bool) { answer <- conn.IsClosed() }(asked)
+		}
+		select {
+		case closed := <-asked:
+			asked = nil
+			if closed {
+				return "the holder's connection is closed", true
+			}
+			return "the holder's connection is open (IsClosed answered false)", false
+		default:
+			return "the holder's connection has not answered IsClosed: nats.go's connection lock is held", false
+		}
+	}
+}
+
+// driveStop moves stopClock, the stop clock of a holder whose Run's context has ended, through the
+// bounds its stop arms on it until the Run returns (stopped): the stop's deadline, intakeStopBudget
+// on from the moment the context ended (stopContext), and the bound of the flush that confirms its
+// hand-backs, intakeFlushWait on from where that flush began (flushHandBacks). stopClock has not
+// moved since it was made, so it stands where it stood as the context ended, and only driveStop
+// moves it from there, so the flush began there or at the deadline. Each reading that finds the
+// Run still running moves the clock to the earliest of those three moments the stop has armed past
+// where the clock stands, and never further (clocktest.Fake.SetWhen): a stop whose drain ended
+// early, as one at a reconnect does, has its flush's bound passed before its deadline. Nothing else
+// the stop arms on the clock is moved to: a release's bound (releaseHold) falls intakeHoldRenew on,
+// and a handler's deadline messageTimeoutPastTheRun on.
+func driveStop(t *testing.T, stopClock *clocktest.Fake, stopped <-chan struct{}) {
+	t.Helper()
+	start := stopClock.Now()
+	bounds := []time.Time{start.Add(intakeFlushWait), start.Add(intakeStopBudget), start.Add(intakeStopBudget + intakeFlushWait)}
+	waitFor(t, func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+		}
+		stopClock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			for _, at := range armed {
+				if at.After(now) && slices.ContainsFunc(bounds, at.Equal) {
+					return at, true
+				}
+			}
+			return now, false
+		})
+		return false
+	}, func() string {
+		return fmt.Sprintf("the holder's Run has not returned with its stop clock %s past the stop's start; armed there: %v", stopClock.Now().Sub(start), stopClock.Armed())
+	})
 }
 
 // holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
@@ -403,7 +571,7 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, nil)
 		waitFor(t, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
@@ -416,7 +584,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a hand-back still pending at the stop's deadline", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, nil)
 		row.passStopDeadline(t)
 		testwait.Receive(t, "the holder's stop to return at its deadline while its hand-back is held (a stop that waits for the hand-back never does)", row.stopped)
 		testnats.RequireLockHeld(t, row.conn)
@@ -444,7 +612,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBack(t, nil)
 		row.passStopDeadline(t)
 		testwait.Receive(t, "the holder's Run to return at its deadline while its hand-back is held", row.stopped)
 		if !row.handBackPending() {

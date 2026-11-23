@@ -191,7 +191,7 @@ func TestBackfillRunsAdvancesOneFinishedHourAtATime(t *testing.T) {
 	}
 	fake, github := newBackfillFake(t, runs, 2)
 	fake.limit = func(created string, page int) bool { return created == hourWindow(hourB) && page == 2 }
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	now := hourA.Add(3 * time.Hour)
 	startBackfill(t, reconcile, hourA, now)
 
@@ -266,7 +266,7 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	github.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fpr-checks.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	// The pass runs at a moment the row names, on a whole second, so each stamp it writes reads
 	// back exactly.
 	pass := time.Now().UTC().Truncate(time.Second)
@@ -300,7 +300,7 @@ func TestBackfillRunsStartsFromTheBackfillWindow(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake, github := newBackfillFake(t, nil, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 
 	reconcile.backfillDeploys(t, now)
@@ -324,7 +324,7 @@ func TestBackfillRunsWalksAtMostTwentyFourWindowsAPass(t *testing.T) {
 		runs = append(runs, backfillRun(int64(1000+hour), start.Add(time.Duration(hour)*time.Hour+10*time.Minute)))
 	}
 	fake, github := newBackfillFake(t, runs, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	now := start.Add(30 * time.Hour)
 	startBackfill(t, reconcile, start, now)
 
@@ -466,7 +466,7 @@ func TestBackfillProgressIsNotRecreatedAfterASettingsChange(t *testing.T) {
 	}
 
 	_, github := newBackfillFake(t, nil, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	later := first.Add(2 * time.Hour)
 	reconcile.backfillDeploys(t, later)
 	_, beganAt, found := deployBackfill(t, reconcile)
@@ -500,7 +500,7 @@ func TestBackfillRunsListsJobsOnlyForRunsWithoutStoredJobs(t *testing.T) {
 		}
 	}
 	fake, github := newBackfillFake(t, runs, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 	startBackfill(t, reconcile, hourA, hourA.Add(time.Hour))
 
 	reconcile.backfillDeploys(t, hourA.Add(time.Hour))
@@ -543,7 +543,7 @@ func TestBackfillRunsLeavesTheRegularStepAlone(t *testing.T) {
 		}
 	}
 	fake, github := newBackfillFake(t, runs, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.backfillDeploys(t, now)
 	if calls := fake.listingCalls(); len(calls) != 0 {
@@ -596,7 +596,7 @@ func TestCreatedAtBackfillFillsDeployRunsAfterTheRunsBackfillFinished(t *testing
 		t.Fatalf("start the created_at backfill: %v", err)
 	}
 	fake, github := newBackfillFake(t, []map[string]any{served}, 10)
-	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.backfillDeploys(t, hourA.Add(time.Hour))
 	if calls := fake.listingCalls(); len(calls) != 0 {

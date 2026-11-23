@@ -369,7 +369,7 @@ func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
 // the horizon (events.Horizon), and that stays below a while A is open.
 func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
-	reads := relayReads(rig.served.eventRelay)
+	reads := reportRelayReads(rig.served.eventRelay)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
 	// This subscription starts the relay before A opens. A relay starting while A is open takes its

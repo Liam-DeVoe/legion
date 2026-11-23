@@ -21,20 +21,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-// unshownText is text made this run's own by a run number after it, so the process's display
-// cache holds no reading of it. That cache is the process's, keyed by the text (TextSum), and it
-// stands in front of the table: a row that ran before in this process (go test -count=N) left
-// its texts' trees there, and a second run of it would answer them from the cache - reading no
-// stored tree, building none and storing none - whatever the read does with the table. The
-// number is plain words in the text's last paragraph, so the text keeps every mark and block it
-// was written with.
-func unshownText(text string) string {
-	return text + " Run " + strconv.FormatUint(unshownTexts.Add(1), 10) + "."
-}
+// unshownTexts counts the texts unshownText has made, so each one differs from every text this
+// process read before it.
+var unshownTexts atomic.Int64
 
-// unshownTexts counts the texts unshownText has made in this process, which keeps any two of
-// them apart.
-var unshownTexts atomic.Uint64
+// unshownText is text with this process's next number on it, which makes it a text no reader of
+// this process has been shown: the state a restart leaves every text in. The process's display
+// cache is keyed by the text itself (pmdoc.TextSum and the mode) and keeps every tree it is
+// handed for the process's life, so a test that read a fixed text would find, when it runs again
+// in the same process (go test -count), the tree its first run left there: the read would build
+// nothing, read no stored tree and store none, whatever the test counts.
+func unshownText(text string) string {
+	return text + " (" + strconv.FormatInt(unshownTexts.Add(1), 10) + ")"
+}
 
 // storedTreeOf is the table's display tree of text, in the mode and at the version a read serves,
 // and whether the table holds one at all. It reads no markdown of its own, so a test can ask
@@ -95,9 +94,9 @@ func commentingIssue(t *testing.T, handler http.Handler, project, body string) s
 //
 // The restart is the cache's state for this text and not the process's age: the cache is keyed by
 // the text itself (its SHA-256 and the mode), so a text no reader of this process has been shown
-// stands in exactly the state a restart leaves every text in. The body below is this run's alone
-// (unshownText), and the write that stored its tree read it through pmdoc.DisplayTreeToStore,
-// which fills no cache.
+// stands in exactly the state a restart leaves every text in. The body below is written by this
+// test alone and made unshown (unshownText), and the write that stored its tree read it through
+// pmdoc.DisplayTreeToStore, which fills no cache.
 func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	commentBody := unshownText("The **restart** read's own body: stored once, read back as bytes.")
@@ -287,10 +286,8 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 // first read leaves its body's tree in this process's display cache, which stands in front of
 // the table for every later read of that text.
 func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
-	var (
-		storedBody   = unshownText("The **deploy** is held: send status, please.")
-		unstoredBody = unshownText("The *rollback* is rehearsed: carry on, all of you.")
-	)
+	storedBody := unshownText("The **deploy** is held: send status, please.")
+	unstoredBody := unshownText("The *rollback* is rehearsed: carry on, all of you.")
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	send := func(body string) string {

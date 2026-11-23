@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -546,4 +547,57 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 	}()
 	close(start)
 	testwait.Receive(t, what+" to both answer", answered)
+}
+
+// holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
+// test can stop requests at a known point and let them through together.
+func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), lock, args...); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("take %q: %v", lock, err)
+	}
+	released := false
+	release = func() {
+		if !released {
+			released = true
+			_ = tx.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
+// current_database() because one Postgres serves every test in the package.
+func lockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%d request(s) waiting on a lock", count), func() (int, bool) {
+		waiting := lockWaiters(t, database)
+		return waiting, waiting >= count
+	})
+}
+
+// awaitAnswer waits for the answer of a request a test sent from a goroutine of its own, and
+// fails the test, naming the request by what, when none arrives.
+func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
+	t.Helper()
+	return testwait.Receive(t, what+" to answer", answered)
 }

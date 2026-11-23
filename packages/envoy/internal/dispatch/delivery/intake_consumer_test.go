@@ -69,7 +69,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 			created.Config.AckWait, created.Config.MaxAckPending)
 	}
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	// bind replaces this durable (it carries a filter-subject set), deleting it and creating its
@@ -113,7 +113,7 @@ func TestAnIntakeCreatesItsDurableWithItsOwnFlowControl(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
 	const slots = intakeMaxAckPending + 1
-	intake := ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	intake := ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	intake.maxAckPending = slots
 	runIntake(t, intake)
 
@@ -444,7 +444,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 		mu.Unlock()
 		mustEncode(t, w, smallRun(id, time.Now().UTC()))
 	})
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	awaitRuns(t, ctx, pool, natsClient, unacknowledged)
@@ -509,7 +509,7 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -573,7 +573,7 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 		publishWorkflowEnvelope(t, natsClient, "acme", "widgets", settings.DeployWorkflowPath, int64(5000+i))
 	}
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	awaitRuns(t, ctx, pool, natsClient, backlog)
@@ -742,7 +742,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	t.Cleanup(releaseLease)
 	testwait.Receive(t, fmt.Sprintf("the other caller to take the %s lease", consumerLease(bus.DispatchDeliveryDurable)), taken)
 
-	runIntake(t, newIntake(natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	runIntake(t, newIntake(natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	// Each attempt the intake makes while the lease is held elsewhere ends in the lease skipped,
 	// which duty logs every time: three of them are the first attempt and the two after it, a
 	// durableBindInterval apart, and none of them may have changed the durable.
@@ -840,7 +840,7 @@ func TestTheConsumerConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation %d has no pinned rows; add them with the configs it ships", consumerConfigGeneration)
 	}
-	for _, config := range []natsgo.ConsumerConfig{newIntake(nil, nil, nil, nil, nil, nil).config(), jobConsumerConfig()} {
+	for _, config := range []natsgo.ConsumerConfig{newIntake(nil, nil, nil, nil, nil, nil, nil).config(), jobConsumerConfig()} {
 		row, ok := rows[config.Durable]
 		if !ok {
 			t.Errorf("generation %d has no pinned row for %s", consumerConfigGeneration, config.Durable)

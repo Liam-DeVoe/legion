@@ -24,20 +24,80 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// awaitRelayStart returns once the subscription that starts served's relay, the server's first
-// relay start, has read the log its first cursor comes from (firstRelayCursor) and waits on
-// Horizon.Await. An event committed after it returns therefore commits after that read, and so
-// stands above the cursor the start answers, which is what the tests of that cursor turn on. Every
-// caller holds the horizon back (a transaction open elsewhere on the instance, or an event id
-// still open in this database), so the start cannot finish until the caller lets it.
-func awaitRelayStart(t *testing.T, served *server) {
+// awaitRelayStart returns once a subscription has started relay's first generation and that start
+// has read the log (eventStreamRelay.startsRead: firstRelayCursor's floor mark, newest id and
+// gaps). An event committed after awaitRelayStart therefore commits after that read, and so stands
+// above the cursor the start answers, which is what the tests of that cursor turn on; a sleep
+// guessed at the read's length let an event commit first on a machine slower than the guess. Every
+// caller holds the horizon back (a transaction open elsewhere on the instance, or an event id still
+// open in this database), so the start is waiting on Horizon.Await by then and cannot finish until
+// the caller lets it; the count reads the same if the start has finished since.
+func awaitRelayStart(t *testing.T, relay *eventStreamRelay) {
 	t.Helper()
-	relay := served.eventRelay
-	testwait.Eventually(t, "the relay's first start to have read the log and to wait on the horizon", func() bool {
+	testwait.Until(t, "the relay's first start to read the log", func() (int, bool) {
 		relay.mu.Lock()
 		defer relay.mu.Unlock()
-		return relay.starting != nil && served.relayStartReads.Load() == 1
+		return relay.startsRead, relay.startsRead > 0
 	})
+}
+
+// relayReads holds back the reads of a relay's generations and counts the ones under way, through
+// the relay's own hook (eventStreamRelay.aroundRead): a test orders a reset of the event log
+// against what the relay is doing, rather than against a sleep guessed at how long it takes.
+type relayReads struct {
+	mu sync.Mutex
+	// held is open while reads are held back, and nil while they are let through.
+	held     chan struct{}
+	underWay int
+}
+
+// holdRelayReads installs relay's read hook, which must happen before any subscription starts a
+// generation, and lets every read through until hold. The test's end lets them through again, so
+// no read the server's shutdown waits for stays held.
+func holdRelayReads(t *testing.T, relay *eventStreamRelay) *relayReads {
+	t.Helper()
+	reads := &relayReads{}
+	relay.aroundRead = func() func() {
+		reads.mu.Lock()
+		for held := reads.held; held != nil; held = reads.held {
+			reads.mu.Unlock()
+			<-held
+			reads.mu.Lock()
+		}
+		reads.underWay++
+		reads.mu.Unlock()
+		return func() {
+			reads.mu.Lock()
+			reads.underWay--
+			reads.mu.Unlock()
+		}
+	}
+	t.Cleanup(reads.release)
+	return reads
+}
+
+// hold holds back every read that begins from now on, and returns once every read already under
+// way has ended: from then until release, the relay reads nothing.
+func (reads *relayReads) hold(t *testing.T) {
+	t.Helper()
+	reads.mu.Lock()
+	reads.held = make(chan struct{})
+	reads.mu.Unlock()
+	testwait.Until(t, "the relay's reads under way to end", func() (int, bool) {
+		reads.mu.Lock()
+		defer reads.mu.Unlock()
+		return reads.underWay, reads.underWay == 0
+	})
+}
+
+// release lets the reads held back, and every read after them, through.
+func (reads *relayReads) release() {
+	reads.mu.Lock()
+	defer reads.mu.Unlock()
+	if reads.held != nil {
+		close(reads.held)
+		reads.held = nil
+	}
 }
 
 // holdEventWriterTransactionID opens a transaction in Dispatch's own database and takes a
@@ -87,11 +147,11 @@ const relayHoldWhy = "the relay reads a commit on its own goroutine once Postgre
 	"no state the test reads says that read has run and found nothing to publish below the held horizon, the socket " +
 	"and the database are real I/O (no synctest), and no later action of the test is ordered after that read"
 
-// relayReads reports every read relay's generations make, once the read has published and its
-// re-read is scheduled (eventStreamRelay.afterRead). A test calls it before the relay's first
+// reportRelayReads reports every read relay's generations make, once the read has published and
+// its re-read is scheduled (eventStreamRelay.afterRead). A test calls it before the relay's first
 // subscription starts it. A report the buffer has no room for is dropped, so the relay never
 // waits on a test that stopped reading.
-func relayReads(relay *eventStreamRelay) <-chan relayRead {
+func reportRelayReads(relay *eventStreamRelay) <-chan relayRead {
 	reads := make(chan relayRead, 1024)
 	relay.afterRead = func(safe int64, gap events.Gap) {
 		select {
@@ -196,7 +256,7 @@ func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ..
 // relay's published cursor, which never passes an id still open, it is sent a and then b.
 func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
-	reads := relayReads(rig.served.eventRelay)
+	reads := reportRelayReads(rig.served.eventRelay)
 	first := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	second := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
 	// This subscription starts the relay before A opens: a relay starting while A is open waits for
@@ -253,11 +313,12 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 
 // TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset: after the log is reset
 // (e2e/seed.ts truncates it between browser scenarios) the relay keeps the old log's cursor until
-// its reset check has run, which waits for a horizon proven after the reset, so a subscription can
-// take its relay subscription in between, on a published cursor above the new log's newest id.
-// Served from there it would drop the new log's events up to that id, and then the relay's reset
-// would end it, sending the page through a resubscribe and the whole refresh a gap owes. So it
-// waits for that reset and subscribes again, with its socket open and heartbeating meanwhile: a
+// its reset check has run, on the next read a notification or a subscriber wakes, so a
+// subscription can take its relay subscription in between, on a published cursor above the new
+// log's newest id. Served from there it would drop the new log's events up to that id, and then the
+// relay's reset would end it, sending the page through a resubscribe and the whole refresh a gap
+// owes. So it waits for that reset and subscribes again, with its socket open and heartbeating
+// meanwhile, while the next generation's first cursor waits for a horizon proven after the reset: a
 // cold subscription starts then, and one resuming from an id of the new log is replayed every event
 // after it. Either way the new log's events reach the page on the subscription it already has.
 //
@@ -283,6 +344,7 @@ func TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset(t *test
 func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	t.Helper()
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, liveSocketClock: clocktest.Held()}, nil)
+	reads := holdRelayReads(t, rig.served.eventRelay)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 
 	// The first subscription starts the relay; once it has been sent an event, the relay's cursor
@@ -293,13 +355,24 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	old := eventHead(t, rig.database)
 	expectEventsInOrder(t, first, "events", old)
 
-	// The reset's first event commits with the truncate, in one transaction, and wakes the relay's
-	// reset check, which then waits on the held horizon. No read of the relay's - a pending
-	// notification's among them - can land between the two and find the log empty: one that did
-	// would take a cursor of 0 with nothing left to prove, and so reset before the subscription this
-	// test is about ever finds the relay on the replaced log.
+	// The relay's reset check is the first thing each of its reads does, a read of the log that
+	// waits on nothing, so any read landing after the truncate below resets the relay at once: one
+	// for a notification it has not answered yet (its LISTEN's, or the rename's when that came
+	// during a read), or the one the refill's own commit wakes. Either would reset it before the
+	// subscription this test is about finds it on the replaced log, and the test would prove
+	// nothing. So every read is held back from here, once those under way have ended, until that
+	// subscription has taken its relay subscription and been sent its heartbeat, the relay still
+	// on the replaced log.
+	reads.hold(t)
+
+	// Once the reads go on and the relay resets, the next generation's first cursor waits on this
+	// held horizon, the subscription's socket heartbeating meanwhile. No verdict below turns on how
+	// long the hold lasts: a start the hold no longer stops answers the same cursor.
 	release := storetest.HoldClusterTransactionID(t)
-	resetEventLog(t, rig.database, rig.served.deps.Events, issue.Key)
+	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
+		t.Fatalf("reset the event log: %v", err)
+	}
+	renameIssue(t, rig.handler, issue.Key, "Renamed after the reset")
 	afterReset := eventHead(t, rig.database)
 	for i := 0; climbPast && afterReset <= old; i++ {
 		renameIssue(t, rig.handler, issue.Key, fmt.Sprintf("Renamed past the old cursor %d", i))
@@ -311,7 +384,12 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 
 	second := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, second, "events", since)
+	testwait.Until(t, "the subscription to take its relay subscription on the generation still on the replaced log", func() (int, bool) {
+		subscribers := relaySubscribers(rig.served.eventRelay)
+		return subscribers, subscribers == 2
+	})
 	awaitHeartbeat(t, second, "while the relay still stood on the replaced log")
+	reads.release()
 	release()
 	if start := eventsStartID(t, second, "events"); start > afterReset {
 		t.Fatalf("the subscription starts after event %d, above the new log's newest id %d: it was served from the replaced log's cursor", start, afterReset)
@@ -321,30 +399,6 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	}
 	renameIssue(t, rig.handler, issue.Key, "Renamed once the relay has reset")
 	expectEventsInOrder(t, second, "events", eventHead(t, rig.database))
-}
-
-// resetEventLog truncates the event log and appends one event on issueKey in the same
-// transaction, so the log is never seen empty: a reader finds the old log or the new one, which
-// that event begins.
-func resetEventLog(t *testing.T, database *store.Store, broker *events.Broker, issueKey string) {
-	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the event log's reset: %v", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `truncate events restart identity cascade`); err != nil {
-		t.Fatalf("reset the event log: %v", err)
-	}
-	if _, err := broker.Append(ctx, tx, model.Event{
-		IssueKey: new(issueKey), Type: "test.concurrent", Actor: model.Actor{Kind: "session", ID: "seed"}, Payload: map[string]any{},
-	}); err != nil {
-		t.Fatalf("append the reset log's first event: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the event log's reset: %v", err)
-	}
 }
 
 // TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts: the first
@@ -381,7 +435,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -403,7 +457,7 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 	release := storetest.HoldClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -430,7 +484,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventCommittedWhileAWriteFromBeforeBoot
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the relay starts")
 	committed := eventHead(t, rig.database)
 	release()
@@ -526,14 +580,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 		release = holdEventWriterTransactionID(t, database)
 		return nil
 	}}, nil)
-	testwait.Eventually(t, "the server's boot mark is taken", func() bool {
-		select {
-		case <-rig.served.bootMark:
-			return true
-		default:
-			return false
-		}
-	})
+	testwait.Receive(t, "the server's boot mark", rig.served.bootMark)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		insert into events (seq, type, actor, payload, notify, published_at)
@@ -548,7 +595,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 	before := eventsTuplesRead(t, rig.database)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	// The writer ends a second into the start, as a write holding its id for seconds does: the
 	// span is that production write's own length, which the start must not read the log over.
 	testwait.Span(t, time.Second, "the writer this test stands in for holds its transaction id for seconds in "+
@@ -582,7 +629,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T
 	sendEventsSubscribe(t, client, "events", nil)
 	// The start's gap read finds low missing and then waits on it: low's own transaction holds a
 	// transaction id in this database, so no horizon is proven while it is open.
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	commitLow()
 
 	eventsStartID(t, client, "events")
@@ -615,7 +662,7 @@ func TestTheFirstColdSubscriptionSkipsAnIdThatRolledBack(t *testing.T) {
 
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, rig.served)
+	awaitRelayStart(t, rig.served.eventRelay)
 	release()
 	if start := eventsStartID(t, client, "events"); start != backlog {
 		t.Fatalf("the first cold subscription starts after event %d, want the log's newest id %d: the gap that rolled back moved its cursor", start, backlog)
@@ -716,15 +763,12 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	// An event insert that opened before the next process boots, and outlives its first start.
 	open, release := holdEventInsert(t, database)
 	read := eventsTuplesRead(t, database)
-	// The next process, on a pool of its own over the same database (storetest.SecondProcess), as
-	// secondProcessHandler mounts one, but answered with its server, whose relay start the test
-	// waits on.
-	second, _, _, served := newRegisteredTestServer(t, testServerOptions{store: storetest.SecondProcess(t, database)})
-	server := httptest.NewServer(second)
+	handler, served := secondProcess(t, database)
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	sendEventsSubscribe(t, client, "events", nil)
-	awaitRelayStart(t, served)
+	awaitRelayStart(t, served.eventRelay)
 	renameIssue(t, first, issue.Key, "Renamed while the insert is open")
 	committed := eventHead(t, database)
 	release()

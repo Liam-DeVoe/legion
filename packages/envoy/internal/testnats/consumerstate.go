@@ -122,6 +122,15 @@ func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string)
 	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
 }
 
+// ConnAccount is the account the server conn is connected to holds conn in, as that server's
+// Connz names it for conn's client id, "$G" where it names none: a test of where a hub placed a
+// client reads it here. It fails the test as connectedServer does.
+func ConnAccount(t testing.TB, conn *natsgo.Conn) string {
+	t.Helper()
+	_, _, account := connectedServer(t, conn)
+	return account
+}
+
 // AwaitNoSubscription waits until the server conn is connected to holds no subscription that a
 // message published on subject reaches, in the account conn belongs to: the server's own list of
 // subscriptions (Subsz, tested against subject), which is what it routes a publish by, and which

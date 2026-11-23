@@ -99,8 +99,12 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
-ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
+# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
+# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
+# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
+# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
+# on a large pack fills an issue pod again.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
 ARG GH_TOOL=gh@2.98.0
 # The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
 # checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
@@ -110,14 +114,16 @@ ARG GH_TOOL=gh@2.98.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Each was read on 2026-11-21 as the `digest` GitHub's API gives the release asset
-# (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the sha256
-# of the archive downloaded from the address the tools stage reads. gh's is also its line in the
-# release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo cli/cli`
-# verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj releases
-# carry no attestation (the same command answers 404 for both). A bump repeats those reads.
-ARG OMP_SHA256=9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
-ARG JJ_SHA256=19f6ffdecb4b3eb9e15bdeb3248f891c9e2f26fffe816c2771171243f96e01db
+# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
+# 0.46.0-sami.20261120-120102 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
+# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
+# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
+# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
+# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
+# releases carry no attestation (the same command answers 404 for both). A bump repeats those
+# reads.
+ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
@@ -127,13 +133,15 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
-# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# newest, read with
+# `gh api --paginate repos/example-org/deployment/git/matching-refs/tags/leak-check-v` at
+# 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
+# LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v31
+ARG LEAK_CHECK_TAG=leak-check-v33
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -249,10 +257,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
-# node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -271,7 +277,18 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# --ignore-scripts skips the lifecycle script of every package installed here, so the install
+# fetches what bun.lock pins and nothing else. better-sqlite3 is the reason for it:
+# packages/proof-editor reaches that package through proof-sdk, and under Bun its install script
+# ends in `bunx node-gyp@latest` compiling it from source (oven-sh/bun#4290). That fetches
+# node-gyp's newest release from npm and then the Node headers from nodejs.org, two downloads no pin
+# or digest holds, so the image build passed or failed on them: worker-image run 44089746339 failed
+# there once, and passed on its next attempt. Nothing of that build reaches the image, since no
+# later stage copies /repo/node_modules, and nothing in this stage runs esbuild, the one other
+# package here with an install script (Bun's bundler builds the plugins). Bun still applies the
+# patches the root package.json names. packages/envoy/docker/Dockerfile installs the same
+# workspace with the same flag.
+RUN bun install --frozen-lockfile --ignore-scripts
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
 # linker, so playwright-core is not hoisted at /repo/node_modules, and
@@ -750,7 +767,7 @@ RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,t
 COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 
 # ------------------------------------------------------------------------------------------------
-# runtime-base: debian:trixie-slim for its git (2.47; jj 0.45's git backend needs >= 2.42 — bookworm
+# runtime-base: debian:trixie-slim for its git (2.47; jj 0.46's git backend needs >= 2.42 — bookworm
 # and bookworm-backports stop at 2.39.5). The dynamically linked binaries copied in below were built
 # or fetched on bookworm; trixie's newer glibc runs them, and the probe RUN below proves it.
 # No later layer may install a package: the image's Debian packages are the base's own and those this
@@ -1327,6 +1344,19 @@ COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-test
 # test database reads an empty file there. The final step refuses an image where it is anything
 # else.
 RUN install -m 0444 -o root -g root /dev/null /var/run/legion/testpg.log
+# /etc/gitconfig holds the four pack settings of every git in an issue pod or a repository cache
+# (packWindowConfig, packages/daemon/internal/workspace/config.go): pack data mapped 32 MiB at a
+# time up to 256 MiB, and 64 MiB each of pack-objects' window memory and of cached delta bases.
+# git's defaults map 1 GiB windows, and gVisor counts every window a process touched whole as the
+# pod's memory. This file is for provisioning's git in the init container: its runner removes the
+# role environment's GIT_CONFIG pairs, which carry the same four to every role's git, and the
+# shared clone's own configuration, which provisioning writes them into, does not hold them yet
+# when that git first clones it. A Dockerfile cannot read the Go list, so the values are written
+# out here, and the final step fails the build when the file holds any others.
+RUN /usr/bin/git config --system core.packedGitWindowSize 32m \
+    && /usr/bin/git config --system core.packedGitLimit 256m \
+    && /usr/bin/git config --system pack.windowMemory 64m \
+    && /usr/bin/git config --system core.deltaBaseCacheLimit 64m
 # Keep Debian's chromium package for its shared-library dependency closure, but make its vulnerable
 # executable unreachable and expose the pinned Chrome for Testing binary under the usual name.
 RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
@@ -1530,6 +1560,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
+# /etc/gitconfig holds the four pack settings the runtime stage wrote, at their values: the step
+# prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
+# any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
 # commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
@@ -1620,6 +1653,22 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
+# Each client plugin's build-commit stamp: the commit this image is built from, written beside the
+# bundle of pi-envoy and of claude-envoy, which the plugin names after its NATS connection's name
+# (@legion/envoy-client's clientBuild: a plugin this image packs from its checkout carries that
+# checkout's manifest version, not a release's), and which legacy-subjects-gate.sh reads from the
+# hub's census of connections. Root's and mode 0444, as every plugin file is root's alone (the check
+# below). A revision that is no whole commit id writes none. pi-envoy then names its packed
+# manifest's version, @sjawhar/pi-envoy@<version>, which the gate judges by that release's tag, not
+# by this checkout's commit, so a tag behind the new-form commit shuts it; claude-envoy, which reads
+# a version only from a plugin cache's path, names no build, which the gate reads as unknown.
+USER root
+RUN if printf '%s\n' "$LEGION_REVISION" | grep -Eqx '[0-9a-f]{40}'; then \
+      for dir in /opt/legion/pi-envoy/dist /opt/legion/claude-envoy/dist; do \
+        printf '%s\n' "$LEGION_REVISION" > "$dir/build-commit" && chmod 0444 "$dir/build-commit"; \
+      done; \
+    fi
+USER 1000:1000
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
     set -eu; \
@@ -1645,6 +1694,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
     git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
+    for setting in core.packedGitWindowSize=32m core.packedGitLimit=256m pack.windowMemory=64m core.deltaBaseCacheLimit=64m; do \
+      key="${setting%%=*}"; value="$(/usr/bin/git config --system --get "$key" || true)"; \
+      echo "gitconfig: $key=$value"; test "$key=$value" = "$setting"; \
+    done; \
     jj="$(command -v jj)"; echo "jj: $jj"; test "$jj" = /opt/legion/bin/jj; /usr/local/bin/jj --version; \
     hook="$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push)"; echo "pre-push hook: $hook"; \
     test "$hook" = "0:0 755"; test -x /opt/legion/githooks/pre-push; \

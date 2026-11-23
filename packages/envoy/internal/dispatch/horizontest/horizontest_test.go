@@ -316,6 +316,47 @@ func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
 	}
 }
 
+// TestSilenceEndsNoWaitOnTheHorizon holds what main's UntilTheDeadline row
+// (TestAWatchOfATestThatWaitsUntilTheDeadlineIsEndedBySilenceNowhere) held, for every wait on the
+// horizon here: a horizon that says nothing ends no wait. A result arrives silence after the wait
+// began, past the 3 s main's watch gave a horizon that never warned (its Base) and the 3 s it gave
+// one that had stopped warning (its Extension), and Wait returns it: on a horizon that never
+// warned, and on one that warned once of a foreign holder after the wait began and then said
+// nothing. A watch that a silence ended, by either of main's lengths or by any span shorter than
+// silence, fails the row by name, naming the result it waited for. The late result stands for a
+// server the machine is merely slow to run (dispatch://INFRA-3904); its delay is the row's one
+// span, since a wait that a silence did not end leaves no state to read before the result comes.
+func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
+	const silence = 4 * time.Second
+	for _, row := range []struct {
+		name   string
+		logged []Warning
+	}{
+		{"a horizon that never warned", nil},
+		{"a horizon that warned once of a foreign holder and then said nothing", []Warning{FromLine(stallWarningLine("other_service", time.Second))}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			// The watch reads the warnings first as it begins (NewWatch), so row.logged, which every
+			// later read answers, is logged after the wait began.
+			began := false
+			warnings := func() []Warning {
+				if !began {
+					began = true
+					return nil
+				}
+				return row.logged
+			}
+			arrived := make(chan string, 1)
+			late := time.AfterFunc(silence, func() { arrived <- "the late result" })
+			defer late.Stop()
+			if got := Wait(t, fmt.Sprintf("a result %v after the wait began", silence), arrived, warnings, "dispatch_test_ab", nil); got != "the late result" {
+				t.Fatalf("Wait answered %q; want the late result", got)
+			}
+		})
+	}
+}
+
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix
 // match would read a foreign hold as the test's own and fail the wait at once on a database the
 // test does not own.

@@ -21,12 +21,14 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -108,8 +110,10 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
 		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
-	w.handlers = []intake.Handler{w.engine, w.admission}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	// The daemon's handlers, in its order (workflowRuntime's boot): the copy of Dispatch's issues
+	// first, so each event applied writes its row before the engine and admission read it.
+	w.handlers = []intake.Handler{blockers.NewMirror(w.records, "LEGION"), w.engine, w.admission}
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, anchor := range []record.Issue{anchorOn(anchorWidgets, "acme/widgets"), anchorOn(anchorTools, "zeta/tools")} {
 			if err := records.Store.PutIssue(ctx, tx, anchor); err != nil {
 				return err
@@ -129,8 +133,13 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	if err != nil {
 		t.Fatal(err)
 	}
+	// AckWait is a hang guard, not the subject: the consumers' preparation reads the issue's record
+	// from the store (prepareRepository, recordOf), bounded by AckWait. At 1 s a read a loaded
+	// runner made slower was cut and its event naked and prepared again, so whether a row's event
+	// applied inside its wait was the machine's to decide. hangGuardAckWait is longer than the
+	// rows' waits.
 	if w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{Project: "LEGION", Repositories: heard, Logger: quietLogger(),
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, PrepareRepository: w.prepareRepository}); err != nil {
+		AckWait: hangGuardAckWait(t), NakDelay: 10 * time.Millisecond, PrepareRepository: w.prepareRepository}); err != nil {
 		t.Fatal(err)
 	}
 	return w, client, installs, stream, js
@@ -193,7 +202,7 @@ func githubFilterSubjects(t *testing.T, stream jetstream.Stream) []string {
 func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = w.records.Issue(context.Background(), tx, key)
 		return err
@@ -210,7 +219,7 @@ func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *testing.T) {
 	ctx := context.Background()
 	w, _, _, stream := repositoryRig(t, map[string]bool{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Done,
 			Generation: 1, Status: "done", Rank: "A", Repo: "orbit/gadgets", DefaultBranch: "main", GitHubRepo: "orbit/gadgets"})
 	}); err != nil {
@@ -254,7 +263,7 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
 	ctx := context.Background()
 	w, _, _, _ := repositoryRig(t, map[string]bool{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for index, issue := range []record.Issue{
 			{Key: "LEGION-300", Repo: "ACME/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
 			{Key: "LEGION-301", Repo: "orbit/gadgets", DefaultBranch: "main", GitHubRepo: "Orbit/Gadgets"},
@@ -1782,7 +1791,7 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 	t.Cleanup(server.Close)
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: dispatch.New(server.URL, "dispatch-test-token"),
 		dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets"))), log: quietLogger()}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{anchorOn("LEGION-1", "acme/widgets"), doneOn("LEGION-2", "LEGION", "orbit/gadgets", "main")} {
 			if err := w.records.PutIssue(ctx, tx, issue); err != nil {
 				return err
@@ -1916,11 +1925,9 @@ func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 		}
 		closed := anchorOn(anchorTools, "zeta/tools")
 		closed.Phase, closed.Status, closed.DispatchStatus = phase.Done, "done", "done"
-		scoped, committed := intake.WithCommitHooks(ctx)
-		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error { return w.records.PutIssue(scoped, tx, closed) }); err != nil {
+		if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error { return w.records.PutIssue(ctx, tx, closed) }); err != nil {
 			t.Fatal(err)
 		}
-		committed()
 		testwait.Eventually(t, "zeta/tools out of the cache set once its tree closed", func() bool {
 			return slices.Equal(repositoryNames(w.cacheRepositories()), []string{"acme/widgets"})
 		})

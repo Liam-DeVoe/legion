@@ -361,7 +361,7 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 		runsPage(t, w, r, runs)
 	})
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	settings, err := GetSettings(ctx, pool)
@@ -447,7 +447,7 @@ func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T)
 
 	fake := newFakeGitHub(t)
 	fake.installations = []fakeInstallation{{id: live, repos: []string{"acme/widgets"}}}
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	rows, err := pool.Query(ctx, `select step from delivery_reconcile_progress where starts_with(step, $1) order by step`, mergedPullRequestsStepPrefix)
 	if err != nil {

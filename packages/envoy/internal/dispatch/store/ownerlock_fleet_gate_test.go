@@ -37,6 +37,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			s, owners := openFleetStore(t)
 			gateWaitsEndOnlyByTheLock(t, s)
 			ctx := context.Background()
+			waitRegistrationsOut(ctx, t, s)
 			writer, err := s.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -63,7 +64,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 			// The arrival waits for the gate the writer holds shared (awaitGateWait read it
 			// waiting), so it cannot end before the writer commits: that state is what this reads.
@@ -106,13 +107,19 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if gate, _ := gateLock(t, s, next.Conn().PgConn().PID()); gate != "" {
 				t.Errorf("the writer after %s holds the gate as %q, want no gate in the mode beside an earlier build", arrival.name, gate)
 			}
-			// A writer in the mode beside an earlier build holds no gate, so the second arrival
-			// waits for nothing; one that waited on the gate would never end while next stands,
-			// which the shared wait's end fails by name.
+			againConn, err := s.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer againConn.Release()
 			again := make(chan error, 1)
-			go func() { again <- arrive(ctx, s, arrival, uuid.NewString()) }()
-			if err := testwait.Receive(t, "a second arrival beside a writer that holds no gate to end", again); err != nil {
-				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", err)
+			go func() { again <- arriveOn(ctx, t, againConn, arrival, uuid.NewString()) }()
+			answer := awaitUnblockedAnswer(t, s, againConn.Conn().PgConn().PID(), again, "a second arrival")
+			if !answer.answered {
+				t.Fatalf("a second arrival waited for backend(s) %v beside a writer that holds no gate", answer.blockers)
+			}
+			if answer.err != nil {
+				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", answer.err)
 			}
 		})
 	}
@@ -339,10 +346,19 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 				t.Fatalf("the writer stopped at the pause holds the gate as %q (granted %t), want no gate: the pause is in its first fleet read, before its try", gate, granted)
 			}
 			if c.arrival != nil {
+				arrivalConn, err := s.Pool.Acquire(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer arrivalConn.Release()
 				arrived := make(chan error, 1)
-				go func() { arrived <- arrive(ctx, s, *c.arrival, uuid.NewString()) }()
-				if err := testwait.Receive(t, c.arrival.name+" beside a writer stopped before its try, which holds no gate, to end", arrived); err != nil {
-					t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, err)
+				go func() { arrived <- arriveOn(ctx, t, arrivalConn, *c.arrival, uuid.NewString()) }()
+				answer := awaitUnblockedAnswer(t, s, arrivalConn.Conn().PgConn().PID(), arrived, c.arrival.name)
+				if !answer.answered {
+					t.Fatalf("%s waited for backend(s) %v beside a writer stopped before its try, which holds no gate", c.arrival.name, answer.blockers)
+				}
+				if answer.err != nil {
+					t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, answer.err)
 				}
 			}
 			if err := pause.Commit(ctx); err != nil {
@@ -369,21 +385,60 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 	}
 }
 
+// lockAnswer is what a transaction's lock came to: its answer, or, before it answered, the
+// backends Postgres records its backend as waiting for, and what that backend was doing then
+// (its pid, state and wait event in pg_stat_activity), which a give-up prints.
+type lockAnswer struct {
+	answered bool
+	err      error
+	blockers []int32
+	backend  string
+}
+
+// awaitUnblockedAnswer waits for what runs on backend pid - an owner lock, an arrival - to answer
+// on answered, and reads between its questions whom Postgres records that backend as waiting for
+// (pg_blocking_pids): one that queues behind another transaction is seen waiting there, and the
+// wait ends with those backends rather than at any span of the clock. Its one bound is the test
+// binary's deadline less testwait's margin (testwait.Until). A try that finds neither reads what
+// the backend is doing, so a give-up names it.
+func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan error, what string) lockAnswer {
+	t.Helper()
+	return testwait.Until(t, what+" to answer or to wait for another backend", func() (lockAnswer, bool) {
+		select {
+		case err := <-answered:
+			return lockAnswer{answered: true, err: err}, true
+		default:
+		}
+		var blockers []int32
+		var backend string
+		if err := s.Pool.QueryRow(context.Background(), `
+			select pg_blocking_pids($1),
+				coalesce((select format('backend %s %s (wait %s/%s)', pid, state, wait_event_type, wait_event)
+					from pg_stat_activity where pid = $1), format('backend %s not in pg_stat_activity', $1))`,
+			int32(pid)).Scan(&blockers, &backend); err != nil {
+			t.Fatalf("read whom backend %d waits for: %v", pid, err)
+		}
+		return lockAnswer{blockers: blockers, backend: backend}, len(blockers) != 0
+	})
+}
+
 // A writer of this build that starts while an earlier build's arrival waits for the owner lock gate
 // never queues behind that arrival. The arrival waits for a transaction that read no earlier build
 // and holds the gate shared; the writer's owner lock tries the gate shared, which Postgres refuses
 // while the arrival's exclusive request waits, and so takes its owners' rows, as it does beside an
-// earlier build, at once. Each read-phase owner lock - LockOwner, LockOwnersShared, TryLockOwners -
-// answers in the mode beside an earlier build, holding its owner's row and no gate, and the arrival
-// is still waiting after them. That none of them waits is read from pg_locks, not from how long it
-// took: each must answer without its backend ever being seen waiting for the gate. With the gate
-// waited for rather than tried, the first of them queues behind the arrival until the transaction
-// it waits for ends, and pg_locks shows it waiting.
+// earlier build, without waiting. Each read-phase owner lock - LockOwner, LockOwnersShared,
+// TryLockOwners - answers in the mode beside an earlier build, holding its owner's row and no gate,
+// and the arrival is still waiting after them. No clock decides the row: while each writer runs,
+// Postgres's record of whom its backend waits for is read (awaitUnblockedAnswer), and a writer seen
+// waiting for another backend fails the row naming it. With the gate waited for rather than tried,
+// the first of them queues behind the arrival until the transaction it waits for ends, and that
+// read sees it.
 func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
 			ctx := context.Background()
+			waitRegistrationsOut(ctx, t, s)
 			holder, err := s.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -402,7 +457,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 
 			writers := []struct {
@@ -433,40 +488,17 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				}
 				locked := make(chan error, 1)
 				go func() { locked <- writer.lock(tx) }()
-				type lockReading struct {
-					Answered bool
-					Err      error
-					Gate     string
-				}
-				// A try that finds the lock neither answered nor waiting for the gate reads the
-				// writer's hold of the gate: none, or granted.
-				var got lockReading
-				testwait.Until(t, writer.name+" to answer, or to wait for the gate", func() (string, bool) {
-					select {
-					case err := <-locked:
-						got = lockReading{Answered: true, Err: err}
-						return fmt.Sprintf("answered: %v", err), true
-					default:
-					}
-					gate, granted := gateLock(t, s, writerPID)
-					if gate != "" && !granted {
-						got = lockReading{Gate: gate}
-						return "waits for the gate as " + gate, true
-					}
-					if gate == "" {
-						return fmt.Sprintf("not answered; backend %d holds no lock of the gate", writerPID), false
-					}
-					return fmt.Sprintf("not answered; backend %d holds the gate as %s, granted", writerPID, gate), false
-				})
-				if !got.Answered {
-					t.Errorf("%s waits for the gate (%s) while %s waits for it; want it to try the gate, not queue behind the arrival", writer.name, got.Gate, arrival.name)
+				answer := awaitUnblockedAnswer(t, s, writerPID, locked, writer.name)
+				if !answer.answered {
+					t.Errorf("%s waited for backend(s) %v while %s (backend %d) waited for the gate; want it to try the gate, not queue behind the arrival",
+						writer.name, answer.blockers, arrival.name, arrivalPID)
 					_ = holder.Rollback(ctx)
-					testwait.Receive(t, "the writer's lock to return once the holder rolled back", locked)
+					testwait.Receive(t, writer.name+"'s owner lock once the transaction the arrival waited for ended", locked)
 					_ = tx.Rollback(ctx)
 					t.FailNow()
 				}
-				if got.Err != nil {
-					t.Fatalf("%s: %v", writer.name, got.Err)
+				if answer.err != nil {
+					t.Fatalf("%s: %v", writer.name, answer.err)
 				}
 				if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
 					t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)

@@ -46,7 +46,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -157,7 +157,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -237,7 +237,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, stopClock, messageTimeoutPastTheRun)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), stopClock, messageTimeoutPastTheRun)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -286,7 +286,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, ackWaitPastTheRun(newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))))
+	runIntake(t, ackWaitPastTheRun(newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())))
 	awaitAcknowledged(t, publisher)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -299,7 +299,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
-	}, nil, IntakeLeases{}, nil, nil, nil, nil)
+	}, nil, IntakeLeases{}, nil, nil, nil, nil, unrenamed())
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 		var err error
 		first, err = bus.Connect([]string{natsURL})
 		return first, err
-	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil, unrenamed())
 	if !errors.Is(err, refused) {
 		t.Fatalf("start the intakes = %v, want the job intake's connect error", err)
 	}
@@ -373,7 +373,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	runIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	runIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	var refusal map[string]any
 	waitFor(t, func() bool {
 		for _, record := range logs() {

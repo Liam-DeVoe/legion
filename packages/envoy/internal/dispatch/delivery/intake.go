@@ -62,16 +62,19 @@ type Intake struct {
 	// once (deliveryConsumerConfig): intakeMaxAckPending, which newIntake gives it, and a test's
 	// own, set before Run.
 	maxAckPending int
+	// attributor attributes each pull request an envelope reports and keys its head row, by the
+	// rename pairs the process read at boot.
+	attributor *Attributor
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
-// holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings, maxAckPending: intakeMaxAckPending}
+// holding its durable and taking it over under a hold and a lease it takes on leases, routing by
+// settings, and attributing each pull request by attributor.
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor, maxAckPending: intakeMaxAckPending}
 	// The durable's config reads the intake's flow control each time a take-over or a subscribe
 	// asks for it, so a value a test sets before Run is the one the durable is created with.
 	in.heldDurable = newHeldDurable(natsClient, leases, func() natsgo.ConsumerConfig {
@@ -620,7 +623,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := in.attributor.completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -642,7 +645,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 // head write does, for a pull request its title, body and branch left unattributed — and nil
 // when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
 // this the same paginated call a second time.
-func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
+func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
 		paged, err := fetchCommitMessages(ctx, github, owner, repo, number)
@@ -654,11 +657,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
+	inputs := a.attributionInputsFrom(attributionFacts{
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
+	issueKey, _, err := a.resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
 	if err != nil {
 		return err
 	}

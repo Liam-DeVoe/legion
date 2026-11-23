@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -51,7 +52,7 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 	}
 	records := record.NewStore()
 	now := time.Now().UTC()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// A slot's index is unique across every project's slots, so this run's take indices above
 		// any the shared database already holds.
 		taken, err := records.Slots(ctx, tx)
@@ -361,7 +362,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	lock, err := st.Pool().Begin(ctx)
+	lock, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the report lock: %v", err)
 	}
@@ -467,7 +468,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 	}
 	view := &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports: func() map[claim.Token]capabilities.Report { return nil },
 	}
 	state, _, err := view.State(ctx, tx)

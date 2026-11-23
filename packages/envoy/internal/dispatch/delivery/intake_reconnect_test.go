@@ -276,8 +276,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	holderFetches, releaseHolder, holderGitHub := writingGitHub(t, true)
 	keeperFetches, _, keeperGitHub := writingGitHub(t, false)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := ackWaitPastTheRun(newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
-	keeper := ackWaitPastTheRun(newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	holder := ackWaitPastTheRun(newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	keeper := ackWaitPastTheRun(newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 
 	runIntake(t, holder)
 	waitFor(t, func() bool {
@@ -516,8 +516,8 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake, pa
 	holderFetches, holderHeld, holderGitHub := holderFakeGitHub(t, holderFake)
 	keeperFetches, keeperGitHub := countingGitHub(t)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	if pastTheRun {
 		ackWaitPastTheRun(holder)
 		ackWaitPastTheRun(keeper)
