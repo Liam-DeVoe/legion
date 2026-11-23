@@ -905,10 +905,12 @@ type startMarks struct {
 	// operator's own request brings (restart).
 	reasserts bool
 	// agent is the claim of the agent of the step the start is of, which the start's row names
-	// (record.SuperviseRequest.Claim): a start of a copy of the issue read for one task of a plan of
-	// several sets it (start), and every other start names none, whose row reaches the claim of the
-	// worker on its role's step. A start that names a claim takes out the start of that claim alone
-	// (record.Store.EnqueueStart), so the starts of two tasks' agents of one role stand side by side.
+	// (record.SuperviseRequest.Claim): a door may set it (start), and started sets it on every
+	// start of a copy of the issue read for one task of a plan of several that names none
+	// (copyClaim), whatever door composed it; a start of the issue itself names none, and its row
+	// reaches the claim of the worker on its role's step. A start that names a claim takes out the
+	// start of that claim alone (record.Store.EnqueueStart), so the starts of two tasks' agents
+	// stand side by side.
 	agent claim.Token
 }
 
@@ -942,9 +944,26 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
+	if marks.agent == "" {
+		var err error
+		if marks.agent, err = e.copyClaim(ctx, tx, issue, role); err != nil {
+			return err
+		}
+	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: marks.agent, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+}
+
+// copyClaim is the claim a start of role on issue names: for a copy of the issue read for one
+// task of a plan of several (view, StepCopy), the claim of the agent of the work that copy stands
+// at (placeToken), so a start of one task's step takes out no start of another task's; and none
+// for the issue itself, whose start reaches the worker on its role's step.
+func (e *Engine) copyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
+	if issue.ViewTask == "" {
+		return "", nil
+	}
+	return e.placeToken(ctx, tx, issue, record.StandsAt(issue), role)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

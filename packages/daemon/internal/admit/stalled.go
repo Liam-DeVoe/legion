@@ -393,9 +393,10 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // working states are never read; and a tree another claim keeps at work is at work whatever its
 // worker in ready is, so that worker is not judged either.
 //
-// What it costs: at most two batched reads, made only where some claim is left to judge: the
+// What it costs: at most three batched reads, made only where some claim is left to judge: the
 // phases rows of those claims' issues, which name the claim of the worker on each phase's step
-// (phaseWorkers, workerEntries, record.WorkerClaimOf), and the runs of those workers
+// (phaseWorkers, workerEntries, record.WorkerClaimOf), the plans of those issues, which each
+// worker's copy is read on (workerPlans), and the runs of those workers
 // (record.Store.RoleRuns), the reads the tick's silent list makes for the same rule; and walks of
 // the pass's own records and of the claims quietTrees already read. It makes no read per tree or
 // per issue, and the caller builds it at most once per pass, at the first of its two readers the

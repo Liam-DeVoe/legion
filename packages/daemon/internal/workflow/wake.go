@@ -537,11 +537,33 @@ func OpenStepsOf(issue record.Issue) []record.RunningStep {
 	return open
 }
 
-// IssueAtStep is issue as a reader that gives step its work reads it: the issue standing at the
-// phase step runs as, so what the reader queues for the step names that phase, and two steps of
-// one issue at two phases are two starts rather than one start of the issue's phase. For an
-// issue whose one task runs, that is the issue's own phase.
-func IssueAtStep(issue record.Issue, step record.RunningStep) record.Issue {
+// StepCopy is issue as a reader that weighs or gives step its work reads it, read in tx from its
+// run's plan rows (StepCopyOn). It is the one read of each reader that gives one step its work,
+// the boot's resume (suspendedPhaseOwners), the ready of a claim (readyWorkerTask) and the silence
+// repair (phaseWorkerRecord); admission's repairs over phase workers (admit's phaseWorkersOf), which
+// weigh every issue of a project on every fact, read the plans of all of them at once
+// (record.Store.PlansOf) and take each copy from StepCopyOn.
+func StepCopy(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, step record.RunningStep) (record.Issue, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return record.Issue{}, err
+	}
+	return StepCopyOn(issue, stored, step)
+}
+
+// StepCopyOn is StepCopy on stored, the plan of issue's run, which the caller read: for an issue
+// whose plan holds several tasks, the copy read for step's task (view), which names that task and
+// stands in its phase, so a walk of it, and the resume composed on it (ResumeTask), is that task's;
+// for an issue whose plan holds one task, or none, the issue itself standing at the phase step
+// runs as, which for an issue whose one task runs is the issue's own phase. What the reader queues
+// for the step names the step's phase, so two steps of one issue at two phases are two starts
+// rather than one start of the issue's phase. A plan of several tasks has no one walk, so a start
+// composed on the issue that names no task would fail its fact.
+func StepCopyOn(issue record.Issue, stored *record.StoredPlan, step record.RunningStep) (record.Issue, error) {
 	issue.Phase = step.Phase
-	return issue
+	copied, _, ok, err := viewOn(issue, stored, step.Task)
+	if err == nil && !ok {
+		err = fmt.Errorf("read %s at generation %d for the step of task %s: its plan holds no such task", issue.Key, issue.Generation, step.Task)
+	}
+	return copied, err
 }

@@ -141,8 +141,12 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // waits in the line for its tree to open, starts no retro, as it runs no transition: the promotion
 // or the reopen that runs it again writes its root, and that settle starts the retro.
 //
-// The hold is cleared and parent stands in its retro, where its task already stands ({retro 0},
-// moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
+// The retro is that of the task held for the issues beneath (heldForChildren): the issue's one
+// task, or of a plan of several the task that merges, read on its own copy, whose hold the issue's
+// is derived from. A held task is released at its retro (record.Store.ReleaseTask); the one task of
+// a plan of one stands running there beneath its issue's hold. The hold is cleared and the issue
+// stands in its retro, where its task already stands ({retro 0}, moveTask at the hold). The
+// retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
 // empty). The implementer is started with the task the pass into the retro would have started it
 // with (transition): the handoff of the step the task passed last, which the hold kept on that
@@ -164,7 +168,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if beneath, err := e.openBeneath(ctx, tx, parent); err != nil || len(beneath) > 0 {
 		return err
 	}
-	w, err := e.walk(ctx, tx, parent)
+	held, w, err := e.heldForChildren(ctx, tx, parent)
 	if err != nil {
 		return err
 	}
@@ -177,36 +181,62 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
 		return fmt.Errorf("start the held retro of %s: task %s stands at %+v of the line %v, not at its retro", parent.Key, w.Task, w.Place, w.Line)
 	}
+	if w.State == record.TaskHeld {
+		if err := e.store.ReleaseTask(ctx, tx, held.Key, held.Generation, w.Task); err != nil {
+			return err
+		}
+		w.State = record.TaskRunning
+	}
 	// The report of the task's last step is on the row of that step's role, whatever runs it: one of
 	// Legion's roles or a role the deployment defines, whose phase (step) names no role of its own.
-	last, err := e.phaseRow(ctx, tx, parent.Key, claim.Role(w.Steps[len(w.Steps)-1].Role))
+	last, err := e.phaseRow(ctx, tx, held.Key, claim.Role(w.Steps[len(w.Steps)-1].Role))
 	if err != nil {
 		return err
 	}
-	pr, err := e.store.MergePullRequest(ctx, tx, parent.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, held.Key)
 	if err != nil {
 		return err
 	}
 	status := PhaseStatus(phase.Retro)
-	if err := e.status(ctx, tx, parent, status, ""); err != nil {
+	if err := e.status(ctx, tx, held, status, ""); err != nil {
 		return err
 	}
-	parent.Phase, parent.Hold, parent.Status = phase.Retro, nil, status
-	if err := e.WriteIssue(ctx, tx, parent); err != nil {
+	held.Phase, held.Hold, held.Status = phase.Retro, nil, status
+	if err := e.WriteIssue(ctx, tx, held); err != nil {
 		return err
 	}
 	// The release takes the issue out of held into a phase, which is a movement (the rule in
 	// dispatchIssue).
-	if err := e.store.MarkIssueMoved(ctx, tx, parent.Key, e.now()); err != nil {
+	if err := e.store.MarkIssueMoved(ctx, tx, held.Key, e.now()); err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", parent.Key, "tree", parent.Tree,
-		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", parent.Status)
+	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", held.Key, "tree", held.Tree,
+		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", held.Status)
 	role := phase.RoleFor(phase.Retro)
-	if err := e.clearHandoff(ctx, tx, parent.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
 		return err
 	}
-	return e.start(ctx, tx, parent, w, role, func(at Standing) string {
-		return task(parent, at, last, pr, "")
+	return e.start(ctx, tx, held, w, role, func(at Standing) string {
+		return task(held, at, last, pr, "")
 	}, false)
+}
+
+// heldForChildren is parent, held for the issues beneath it, read for the task whose hold that is,
+// and the walk of that task: for a parent whose plan holds one task, or none, the parent itself,
+// whose hold is its own; of a plan of several, the copy read for the task held for the issues
+// beneath (record.HoldForChildren), the one task whose line runs a retro (the one that merges), which
+// stands held there once every other task is done. A plan of several with no such task is an error.
+func (e *Engine) heldForChildren(ctx context.Context, tx pgx.Tx, parent record.Issue) (record.Issue, Walk, error) {
+	views, walks, err := e.viewsOf(ctx, tx, parent)
+	if err != nil {
+		return record.Issue{}, Walk{}, err
+	}
+	if len(views) == 1 {
+		return views[0], walks[0], nil
+	}
+	at := slices.IndexFunc(walks, func(w Walk) bool { return w.State == record.TaskHeld && w.HoldReason == record.HoldForChildren })
+	if at < 0 {
+		return record.Issue{}, Walk{}, fmt.Errorf("start the held retro of %s: no task of its plan is held for the issues beneath it", parent.Key)
+	}
+	return views[at], walks[at], nil
 }

@@ -196,31 +196,32 @@ func (e *Engine) handoffView(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // task the call names, or, where it names none, for the one task that stands at at; for a plan of
 // one task, or none, the issue itself, as before tasks, whatever the call names. A named task that
 // does not stand at at is refused (intake.TaskNotAtPhase), and so is a call that names none while
-// two or more tasks stand there (intake.TaskRequired); with none there, the issue itself is
-// answered, which stands at another act and which the call's own guard refuses.
-func (e *Engine) actView(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, at phase.Phase) (record.Issue, *intake.Refusal, error) {
+// two or more tasks stand there (intake.TaskRequired). With none there, the issue itself is
+// answered and ok is false: it stands at another act, it names no task of a plan that has no one
+// walk, and each call refuses it before any read for a task (signOff's phase guard, backwardView).
+func (e *Engine) actView(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, at phase.Phase) (record.Issue, bool, *intake.Refusal, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
-		return issue, nil, err
+		return issue, true, nil, err
 	}
 	if task != "" {
 		view, _, ok, err := viewOn(issue, stored, task)
 		switch {
 		case err != nil:
-			return record.Issue{}, nil, err
+			return record.Issue{}, false, nil, err
 		case !ok:
-			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, "", at), nil
+			return record.Issue{}, false, intake.TaskNotAtPhase(issue.Key, task, "", at), nil
 		case view.Phase != at:
-			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, view.Phase, at), nil
+			return record.Issue{}, false, intake.TaskNotAtPhase(issue.Key, task, view.Phase, at), nil
 		}
-		return view, nil, nil
+		return view, true, nil, nil
 	}
 	var standing []record.Issue
 	var ids []string
 	for _, row := range stored.Tasks {
 		view, _, _, err := viewOn(issue, stored, row.Task)
 		if err != nil {
-			return record.Issue{}, nil, err
+			return record.Issue{}, false, nil, err
 		}
 		if view.Phase == at {
 			standing, ids = append(standing, view), append(ids, row.Task)
@@ -228,21 +229,27 @@ func (e *Engine) actView(ctx context.Context, tx pgx.Tx, issue record.Issue, tas
 	}
 	switch len(standing) {
 	case 0:
-		return issue, nil, nil
+		return issue, false, nil, nil
 	case 1:
-		return standing[0], nil, nil
+		return standing[0], true, nil, nil
 	}
-	return record.Issue{}, intake.TaskRequired(issue.Key, ids, at), nil
+	return record.Issue{}, false, intake.TaskRequired(issue.Key, ids, at), nil
 }
 
 // backwardView is the copy of issue a move back (fact) is read on: the owner's, at accepting, on
 // the task it names or the one task there (actView); a phase worker's on the task of the step its
 // claim's agent runs, which its route names (intake.BackwardMove.Task). Of a plan of one task, or
-// none, it is the issue itself, as before tasks. A worker's move of a plan of several tasks that
-// names no task of it, its agent running no step there, is refused and changes nothing.
+// none, it is the issue itself, as before tasks. The owner's move of a plan of several tasks that
+// names no task while none stands at accepting, and a worker's that names no task of it, its agent
+// running no step there, are refused and change nothing.
 func (e *Engine) backwardView(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.BackwardMove) (record.Issue, *intake.Refusal, error) {
 	if fact.Requester == claim.RoleArchitect {
-		return e.actView(ctx, tx, issue, fact.Task, phase.Accepting)
+		view, ok, refusal, err := e.actView(ctx, tx, issue, fact.Task, phase.Accepting)
+		if err != nil || refusal != nil || ok {
+			return view, refusal, err
+		}
+		return record.Issue{}, refused("BACKWARD_REFUSED", fmt.Sprintf("no task of %s stands at %s, the act the owner's move back is of, so the %s's move to %s changed nothing",
+			issue.Key, phase.Accepting, fact.Requester, fact.To)).Refusal, nil
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
@@ -257,13 +264,16 @@ func (e *Engine) backwardView(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // heldView is the copy of issue read for the held task an owner's decision on a hold is of
-// (retryOrEscalate): the task it names; else the task whose step the claim it names runs, the
-// operator's retry of one claim; else the one held task of the plan. With none held, it is the
-// first stopped task in task id order, whose hold its stop is (planHoldRefusal refuses its
-// release), and with none of either the issue as it stands, which stands in no hold. A named task
-// that is not held is refused (intake.TaskNotAtPhase), and so is a decision that names neither a
-// task nor a claim while two or more tasks are held (intake.TaskRequired). An issue whose plan
-// holds one task, or none, is its own view, as before tasks were held, whatever the decision names.
+// (retryOrEscalate): the task it names; else the task of the claim it names, the operator's retry
+// of one claim: the task whose step that claim's agent runs (record.Issue.StepOfAgent, as
+// viewOfAgent reads it), or, where its agent runs none, the one held or stopped task whose step at
+// its place is that agent's (agentsHeldTask); else the one held task of the plan. With none held, a
+// decision that names neither is of the first stopped task in task id order, whose hold its stop
+// is (planHoldRefusal refuses its release), and with none of either the issue as it stands, which
+// stands in no hold. A named task that is not held is refused (intake.TaskNotAtPhase), and so is a
+// decision that names no task while two or more tasks are held, or a claim whose agent stands at no
+// held or stopped task or at two of them (intake.TaskRequired). An issue whose plan holds one task,
+// or none, is its own view, as before tasks were held, whatever the decision names.
 func (e *Engine) heldView(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, by claim.Token) (record.Issue, *intake.Refusal, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
@@ -282,11 +292,11 @@ func (e *Engine) heldView(ctx context.Context, tx pgx.Tx, issue record.Issue, ta
 		}
 		return view, nil, nil
 	case by != "":
-		view, _, ok, err := e.viewOfAgent(ctx, tx, issue, agentOf(by))
-		if err != nil || ok {
+		if step, ok := issue.StepOfAgent(agentOf(by)); ok {
+			view, _, _, err := viewOn(issue, stored, step.Task)
 			return view, nil, err
 		}
-		return issue, nil, nil
+		return agentsHeldTask(issue, stored, agentOf(by))
 	}
 	var held, stopped []string
 	for _, row := range stored.Tasks {
@@ -305,6 +315,35 @@ func (e *Engine) heldView(ctx context.Context, tx pgx.Tx, issue record.Issue, ta
 	}
 	view, _, _, err := viewOn(issue, stored, slices.Concat(held, stopped)[0])
 	return view, nil, err
+}
+
+// agentsHeldTask is the copy of issue, whose plan stored holds several tasks, read for the one held
+// or stopped task whose step at its place agent does (Walk.AgentAt): the task of a decision that
+// names agent's claim where that agent runs no step, a stopped task's step being no running one.
+// Where no such task, or more than one, stands so, the decision names none of them, and is refused
+// (intake.TaskRequired) naming the held and stopped tasks of none, or the agent's tasks of two. With
+// no task held or stopped it is the issue as it stands, which stands in no hold.
+func agentsHeldTask(issue record.Issue, stored *record.StoredPlan, agent claim.Agent) (record.Issue, *intake.Refusal, error) {
+	var holding, agents []string
+	for _, w := range walksOf(issue.Key, stored) {
+		if w.State != record.TaskHeld && w.State != record.TaskStopped {
+			continue
+		}
+		holding = append(holding, w.Task)
+		if agent != "" && w.AgentAt(w.Place) == agent {
+			agents = append(agents, w.Task)
+		}
+	}
+	switch {
+	case len(holding) == 0:
+		return issue, nil, nil
+	case len(agents) == 0:
+		return record.Issue{}, intake.TaskRequired(issue.Key, holding, phase.Held), nil
+	case len(agents) == 1:
+		view, _, _, err := viewOn(issue, stored, agents[0])
+		return view, nil, err
+	}
+	return record.Issue{}, intake.TaskRequired(issue.Key, agents, phase.Held), nil
 }
 
 // putIssue writes issue, the issue itself or a copy of it read for one of its tasks (view), and
