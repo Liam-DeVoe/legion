@@ -449,8 +449,8 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 }
 
 // startRowEnded asks the workflow to read a claim's queued starts again (intake.RefusedStartEnded)
-// once a start row of that claim has finished while the claim's last launch stands refused by its
-// issue's pod (supervise's Machine.RefusedPod). The refusal's own report (workflow's
+// once a start row that reached that claim has finished while the claim's last launch stands
+// refused by its issue's pod (supervise's Machine.RefusedPod). The refusal's own report (workflow's
 // podRefusedLaunch) reads the outbox in its transaction and queues the claim's start where none
 // stands, and a row whose launch the wake pacing parked, or whose launch's write failed and is
 // retried, has delivered its task and returned when that launch is refused on its timer: the report
@@ -458,9 +458,18 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 // none. Read after the finish has committed, the machine holds the refusal if it was made before:
 // then this fact reads the outbox with the row gone, and the two facts, applied one at a time
 // (intake.ApplyFact), leave one start whichever runs second. A refusal made after the read is one
-// whose report reads the outbox after the finish. It runs on a goroutine of its own, since the
-// read waits out the decision in flight on the claim's machine, which can hold a Sandbox relaunch
-// for minutes, and the lane goes on meanwhile; a fact it cannot apply is logged at ERROR.
+// whose report reads the outbox after the finish.
+//
+// Only a row that reached the claim is such a row: the claim records it as the newest start run
+// against it (supervise.Claim.LastStartRow, Machine.StartedBy), and a launch it raised is the only
+// one the report could have read it behind. A row the outbox finished at a fence above that record
+// — a phase or a step the issue has left, a stopped task's step, a lingering tree — raised no
+// launch, so its end tells the workflow nothing; asking there would queue a start the same fence
+// finishes, whose end would ask again, at the database's speed.
+//
+// It runs on a goroutine of its own, since the read waits out the decision in flight on the
+// claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile; a
+// fact it cannot apply is logged at ERROR.
 func (r *outbox) startRowEnded(row record.OutboxRow) {
 	if row.Kind != record.OutboxKindSupervise || r.supervisor == nil || len(r.handlers) == 0 {
 		return
@@ -484,6 +493,9 @@ func (r *outbox) startRowEnded(row record.OutboxRow) {
 			return
 		}
 		held := machine.Claim()
+		if held.LastStartRow != row.ID {
+			return
+		}
 		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token}
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID), fact, r.handlers...); err != nil {
 			r.log.Error("apply the end of a start row of a claim its pod refused", "row", row.ID, "claim", token, "error", err)

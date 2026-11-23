@@ -1969,6 +1969,15 @@ func (e *Engine) startRefusedClaim(ctx context.Context, tx pgx.Tx, issue record.
 // none. A claim of a role the deployment lost, or one that runs in the slot of such a role
 // (lostSlot), is queued nothing: its task is stopped (stopLostRoles), no pod the deployment builds
 // has its slot, and its start would wait for one for ever; the skip is logged.
+//
+// Nor is a start queued that the outbox would finish without acting, before it reaches the claim
+// (the daemon outbox's start): the start of the role of a stopped task's step (StoppedStepRole),
+// whose task the owner starts again with a start of its own (restartTask), and any start of a
+// member of a tree that lingers, which re-admission starts again. Such a start would bring the
+// claim back no more than none, and it is logged as skipped. An issue held for another reason, an
+// escalation or the issues beneath it, is not one of these: the outbox runs a start of no phase
+// of its claim as it runs any other, and the machine judges a start that names no phase by nothing
+// (supervise's startHolds).
 func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
 	if record.OutOfWorkflow(issue.Status) {
 		return nil
@@ -1976,6 +1985,20 @@ func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.
 	if lostRole(fact.Role, e.cfg.Deployment) || lostSlot(fact.Claim, e.cfg.Deployment) {
 		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a claim whose role or slot the deployment no longer defines",
 			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim)
+		return nil
+	}
+	if StoppedStepRole(issue) == fact.Role {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of the role of a stopped task's step; the task's restart starts it",
+			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim, "from", issue.Hold.From)
+		return nil
+	}
+	root, err := e.store.Issue(ctx, tx, issue.Tree)
+	if err != nil {
+		return err
+	}
+	if root != nil && root.Lingers() {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a member of a lingering tree; re-admission starts it",
+			"issue", issue.Key, "tree", issue.Tree, "role", fact.Role, "claim", fact.Claim)
 		return nil
 	}
 	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
