@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -109,18 +110,9 @@ func (r *ownerStepsRig) launchedInOrder(steps []claim.Role) error {
 		}
 	}
 	if !slices.Equal(got, want) {
-		return fmt.Errorf("%s's workers were first launched in the order %s, want %s", r.key, joinRoles(got), joinRoles(want))
+		return fmt.Errorf("%s's workers were first launched in the order %s, want %s", r.key, runtime.JoinRoles(got), runtime.JoinRoles(want))
 	}
 	return nil
-}
-
-// joinRoles is roles as a list, `a, b, c`.
-func joinRoles(roles []claim.Role) string {
-	names := make([]string, len(roles))
-	for i, role := range roles {
-		names[i] = string(role)
-	}
-	return strings.Join(names, ", ")
 }
 
 // A step that reads the implementer's pull request waits for an implementer step before it:
