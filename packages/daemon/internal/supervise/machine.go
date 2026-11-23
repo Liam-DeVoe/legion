@@ -436,6 +436,15 @@ type Claim struct {
 	// it with the process it is about, and the claim written there records no process for a
 	// later report to be about.
 	DeathCharged bool
+	// UnrecordedRefusal is a launch of this claim its issue's pod refused whose fact the store has
+	// not taken yet: the refusal's report to the workflow, or its re-check at the end of a start
+	// row (Machine.RefusalNotRecorded). The daemon tries such a fact again on a backoff for as long
+	// as it fails, and until one is taken the issue and the controller are told nothing and no
+	// start that only that fact would queue is queued. Nil while no such fact fails. It is memory
+	// only, as Compacting is: Machine.Claim and Machine.View report it, and the store never writes
+	// it, so the operator's listing, which reads the live machine, is the one surface that carries
+	// it (`legion claims list` prints it as the cause word `refusal-unrecorded`).
+	UnrecordedRefusal *UnrecordedRefusal
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -2265,6 +2274,15 @@ func (m *Machine) RefusedPod() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.refusedPod
+}
+
+// UnrecordedRefusal is a refused launch's fact the store has not taken (Claim.UnrecordedRefusal):
+// Since is when the first failed try of it failed, Attempts how many tries have failed since, and
+// Error the last failed try's error, kept as a far side's text is (storetext.FarSideError).
+type UnrecordedRefusal struct {
+	Since    time.Time
+	Attempts int
+	Error    string
 }
 
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or

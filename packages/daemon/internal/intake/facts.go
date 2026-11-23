@@ -1475,6 +1475,10 @@ type RefusedStartEnded struct {
 	Issue string
 	Role  claim.Role
 	Claim claim.Token
+	// Pod is the uid of the issue pod that refused the claim's last launch when the row ended
+	// (supervise.Machine.RefusedPod), which the start this fact queues is marked with
+	// (record.SuperviseRequest.RefusedPod).
+	Pod string
 }
 
 func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
