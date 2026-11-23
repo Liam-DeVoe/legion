@@ -3236,11 +3236,9 @@ test("a change request sent from the header leaves the focus in the header", asy
       ).toBeVisible();
       await open();
       await expect(dialog, `${from} opened no Request changes`).toBeVisible();
-      // The dialog is laid out, and so visible to the row, before it takes the focus: `useDialog`
-      // moves the focus into its Reason box at the next animation frame, which a loaded machine
-      // draws late. A key typed before that frame lands on the control that opened the dialog,
-      // and the Space of "One change." then presses Approve and approves the document. A reader
-      // types once the caret is in the box.
+      // Request changes gives its Reason the focus in the commit that opens it
+      // (`initialFocusRef`); the row still waits for the caret, as a reader types once it is
+      // there.
       await expect(
         dialog.getByRole("textbox", { name: "Reason" }),
         `${from} left the focus outside Request changes' Reason`

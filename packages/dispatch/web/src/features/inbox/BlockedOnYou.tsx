@@ -12,9 +12,9 @@ import { isSnoozed } from "./snooze";
  *  deferred. Whose turn it is, not whose question it is: who answers it is the person the ask
  *  waits on, which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
  *  agent, whoever replied last; a snooze keeps its ask off every "needs you" surface - the nav
- *  badge, the sidebar, this banner - until it returns, because deferring it is the viewer
- *  saying it does not need them now. A row that carries no snooze at all (an issue header's
- *  `open_asks`) is never deferred. */
+ *  badge, the sidebar, the Inbox's banner (`BlockedOnYouLink.tsx`) - until it returns, because
+ *  deferring it is the viewer saying it does not need them now. A row that carries no snooze at
+ *  all (an issue header's `open_asks`) is never deferred. */
 export function waitingOnHuman<
   T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
 >(asks: readonly T[]): T[] {
