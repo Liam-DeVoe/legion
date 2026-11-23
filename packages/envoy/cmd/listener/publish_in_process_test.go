@@ -580,3 +580,88 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 		t.Fatalf("the lane holds %+v (held: %t), want event %s", stored, ok, item.EventID)
 	}
 }
+
+// A delivery exception is published under no Nats-Msg-Id (publishDeliveryException), so a
+// clustered stream never refuses it as still in process (bus.ErrDuplicateInProcess). Two
+// listeners that raise an exception for one message each store a copy, and neither logs a line.
+// A failure of the same publish, an exception past the server's max payload, is still logged once
+// at ERROR as exceptionPublishFailedLine, which the deployed publish-failure filter counts:
+// `{ $.level = "ERROR" && $.msg = "listener exception publish failed" }`
+// (packages/envoy/infra/aws/rendering/metricfilters.go). The first row freezes the members'
+// routes and thaws them once the leader holds both publishes. Under one message id the stream
+// would refuse the second publish while the first is in process.
+func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t *testing.T) {
+	rig := newInProcessRig(t)
+	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
+	lane := bus.ExceptionTopicPrefix + topic
+	for _, row := range []struct {
+		name     string
+		tooLarge bool
+	}{
+		{"raised by two listeners while the routes are frozen", false},
+		{"past the server's max payload", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			logs := &cmdtest.LockedBuffer{}
+			cfg := *rig.d.delivery
+			cfg.client = rig.d.client
+			cfg.logger = logging.NewWithWriter("test", logs)
+			item := listenerTestEnvelope(topic, "exception-in-process-"+id.New())
+			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true}
+			if row.tooLarge {
+				item.Payload = strings.Repeat("p", int(rig.d.client.Conn.MaxPayload()))
+				applyDeliveryOutcome(cfg, item, outcome)
+				var counted, refusals []string
+				for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
+						continue
+					}
+					if record["level"] == "ERROR" && record["msg"] == exceptionPublishFailedLine {
+						counted = append(counted, line)
+					}
+					if text, _ := record["error"].(string); strings.Contains(text, bus.ErrTooLarge.Error()) {
+						refusals = append(refusals, line)
+					}
+				}
+				if len(refusals) != 1 || len(counted) != 1 || counted[0] != refusals[0] {
+					t.Fatalf("an exception the server refused as too large logged %d lines naming %q and %d lines the publish-failure filter counts, want one line that is both:\n%s",
+						len(refusals), bus.ErrTooLarge, len(counted), logs.String())
+				}
+				return
+			}
+			rig.requireLeader(t)
+			heard, before := rig.hear(t, lane), rig.copies(t, lane)
+			thaw := rig.cluster.FreezeRoutes(t)
+			t.Cleanup(thaw)
+			other := make(chan error, 1)
+			go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient) }()
+			applied := make(chan struct{})
+			go func() {
+				defer close(applied)
+				applyDeliveryOutcome(cfg, item, outcome)
+			}()
+			for n := range 2 {
+				msg, err := heard.NextMsg(10 * time.Second)
+				if err != nil {
+					t.Fatalf("the leader was handed %d of the 2 publishes: %v", n, err)
+				}
+				if msgID := msg.Header.Get(natsgo.MsgIdHdr); msgID != "" {
+					t.Errorf("an exception was published under Nats-Msg-Id %q, want none", msgID)
+				}
+			}
+			thaw()
+			if err := <-other; err != nil {
+				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
+			}
+			<-applied
+			waitFor(t, 10*time.Second, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
+			if got := rig.copies(t, lane) - before; got != 2 {
+				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
+			}
+			if text := strings.TrimSpace(logs.String()); text != "" {
+				t.Fatalf("the exception the stream stored logged lines, want none:\n%s", text)
+			}
+		})
+	}
+}
