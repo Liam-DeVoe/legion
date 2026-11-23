@@ -333,7 +333,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // drawn into an arm names that arm's overlays under any mode. A project that declares no
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
-// lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
+// lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets). The
+// Options' RoleApps holds the deployment's roles alone, which `legion probe-boot` reads for the
+// pod's issue roles (ProbeBoot); the factory replaces it with the boot's one reader of a claim's
+// App (roleApps), which holds the same roles and reads a role of an issue's plan too.
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
@@ -568,11 +571,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, minted as the App the role acts as, opts.RoleApps naming the App of
-// each role the deployment defines and reading, from the store, a role the plan of a claim's issue
-// defines, a directory for each owner the role's App is installed on, read
-// from GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while served answers the name it moved to is served), with the
+// bundle (gitHubCredential, minted as the App the role acts as, roleApps, the boot's one reader of
+// a claim's App, naming the App of each role the deployment defines and reading, from the store, a
+// role the plan of a claim's issue defines, a directory for each owner the role's App is
+// installed on, read from GitHub at every bundle, and one for each owner a configured rename
+// moved a repository away from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -608,12 +611,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut,
 	githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
-		// The one reader of a role's App, which the credential and each walk's memo of bundles
-		// read alike: the deployment's roles, and a role of an issue's plan from the store.
-		opts.RoleApps = roleApps(opts.RoleApps.Deployed, planRoleOf(st))
+		// The boot's one reader of a role's App, which the credential and each walk's memo of
+		// bundles read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes

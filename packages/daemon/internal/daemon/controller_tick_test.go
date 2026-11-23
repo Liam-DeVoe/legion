@@ -182,7 +182,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 		WorkerBackground: 4 * time.Hour, Projects: map[string]config.Project{"CAPTURE": {}},
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
+	w, err := openWorkflow(ctx, cfg, st, roleApps(deploymentApps(cfg.Roles), planRoleOf(st)), "project-id", "dispatch-token", nil,
 		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
