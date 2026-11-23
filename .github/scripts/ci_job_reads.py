@@ -607,8 +607,8 @@ RULES = {
     f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:270 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:839-840")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
@@ -761,7 +761,7 @@ RULES = {
          "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451")),
     f"{DAEMON}/internal/workflow/engine_test.go": reads(
         ("skills/legion-worker/references/merge-gate.md",
-         "internal/workflow/engine_test.go:432 reads it under ../../../..")),
+         "internal/workflow/engine_test.go:410 reads it under ../../../..")),
     f"{DAEMON}/internal/workflow/waiting_line_band_test.go": reads(
         (f"{DAEMON}/cmd/legion/main.go",
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../.."),
@@ -2995,7 +2995,7 @@ GATES = [
     gate("contracts", "contracts", reads=reads(
         ("packages/contracts/**", f"{at('contracts', 'Typecheck contracts')}, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
         ("skills/dispatch/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts's dispatchSkillHeadings reads skills/dispatch/SKILL.md headings"),
-        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1565 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
+        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1601 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
@@ -3089,11 +3089,11 @@ GATES = [
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:372-373"),
         (f"{FIX}/envelope-without-role.json", "packages/pi-envoy/extensions/envoy.test.ts:108"),
         (f"{FIX}/session-grant.json", "packages/pi-envoy/extensions/envoy.test.ts's reply-grant row runs sessionGrantConfig, which packages/envoy-client/test/nats-server.ts:4 imports it for"),
-        ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
+        ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-33); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
-        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:216-220 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_omp("pi-envoy") + bun_job("pi-envoy")),
 

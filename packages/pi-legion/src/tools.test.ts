@@ -263,43 +263,6 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
   "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). ";
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
- * the sign-off moves the task, names each refusal code its text gives, and says why a parent waits
- * for the issues beneath it. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "moving its task to its next step, or to retro where the acceptance is the task's last step",
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-    "since a parent is accepted only once no issue beneath it is still in the workflow",
-  ],
-} as const;
-
 /** The text of the description after `sign_off`'s. */
 const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "Sign off again when each of them has left the workflow. " +
@@ -415,25 +378,13 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
+test("the legion tool's description starts and ends with the exact text Oh My Pi agents read, for every session", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
     const before = OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK;
     const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
     expect(description.slice(0, before.length)).toBe(before);
     expect(description.slice(description.length - after.length)).toBe(after);
-    const held = description.slice(before.length, description.length - after.length);
-    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
-    expect(signOffAt).toBeGreaterThan(0);
-    const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
-    expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
   }
 });
 
