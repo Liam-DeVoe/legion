@@ -66,6 +66,23 @@ func (r *idleRig) wrote(t *testing.T, token claim.Token, minutes int) {
 	}
 }
 
+// releasedAgo leaves the finish of the issue's last release of a pod no claim owns minutes minutes
+// ago (unowned_release_fences): the rule releases the issue again only once a claim of it was
+// written after that finish, and a test that backdates its claims' writes, so that the pod reads
+// quiet, backdates the release before them.
+func (r *idleRig) releasedAgo(t *testing.T, minutes int) {
+	t.Helper()
+	tag, err := r.pool.Exec(context.Background(), `update unowned_release_fences
+		set released_at = now() - make_interval(mins => $3) where project = $1 and issue = $2`,
+		"legion", r.issue.Key, minutes)
+	if err != nil {
+		t.Fatalf("backdate the release of %s: %v", r.issue.Key, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("backdated %d releases of %s, want its one", tag.RowsAffected(), r.issue.Key)
+	}
+}
+
 // releaseMark is the kind of release the pod's mark records and the role it names
 // (issue_releases): `unowned` with no role at all is the release of a pod no role can use, which
 // has no live claim to stop and no role whose shim a bundle could be asked of.
@@ -828,6 +845,12 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 			t.Fatal("the failed launch left none of the Sandbox's Secrets, want the ones it wrote")
 		}
 
+		// A real launch writes its claim (the generation it starts, launching, then failed) after
+		// the release finished, and the pod is released again only once that write has gone
+		// quiet. The test runs the runtime's launch alone, so it leaves the two times as that
+		// would: the release an hour ago, the claim's failure half an hour ago.
+		rig.releasedAgo(t, 60)
+		rig.stoppedImplementer(t, false)
 		answers(t, rig, rt, true)
 		releasesOnce(t, rig, "the failed launch left the Sandbox owning its Secrets")
 		from = writes.count()
