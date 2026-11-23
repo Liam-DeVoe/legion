@@ -58,11 +58,13 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     leaks: readonly Leak[] = [],
     {
       withoutCookie = false,
+      tokenProxy = false,
       full,
       omit,
       createdAt,
     }: {
       withoutCookie?: boolean;
+      tokenProxy?: boolean;
       full?: readonly Leak[];
       omit?: ReadonlySet<string>;
       createdAt?: string | null;
@@ -82,7 +84,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       feed: { live: true },
       ...(omit === undefined ? {} : { omit }),
       ...(createdAt === undefined ? {} : { createdAt }),
-      proxyReadsCookies: true,
+      proxyReadsCookies: !tokenProxy,
       ...(full === undefined ? {} : { full }),
       rows: someRows,
     });
@@ -93,7 +95,8 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
    *  given), its document socket served, and its live feed served unless `live` is false: a run
    *  that a leak decides, or that stops before its feed, need not wait out a live window.
    *  `createdAt` is when its fake's OWN was created; `env` changes its inputs, and `feed` its
-   *  fake's sockets. */
+   *  fake's sockets. A runner whose feed is served reads it for the 45 s live window, so it is
+   *  stopped at the `runnerSweep` bound; one that is not stays under `short`. */
   function runner(
     file: string,
     leaks: readonly Leak[] = [],
@@ -121,6 +124,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         ...env,
       },
       ...(createdAt === undefined ? {} : { createdAt }),
+      bound: live ? "runnerSweep" : "short",
       feed: { doc: true, live, ...feed },
       rows,
     });
@@ -244,7 +248,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code, stdout).toBe(0);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // The control of the row above: the same runner, with a leak planted, fails.
@@ -313,11 +317,12 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     rowLimit("short", "short")
   );
 
-  // Without the full member's cookie no proxy read can fail: fills mode keeps each with no
-  // can_fail line, so the rest of the split still runs, and a runner reads each UNKNOWN, never a
-  // pass of a read that could not fail. The agent view's half is the full member's token's.
+  // With no cookie on a build before cybermonklabs/legion#5079, whose proxy refuses the full
+  // member's token, no proxy read can fail: fills mode keeps each with no can_fail line, so the
+  // rest of the split still runs, and a runner reads each UNKNOWN, never a pass of a read that
+  // could not fail. The agent view's half is the full member's token's.
   test(
-    "fills mode with no full member's cookie writes the fills, no proxy read among the rows that can fail, and a runner reads each UNKNOWN",
+    "fills mode with no full member's cookie, against a proxy that refuses the token, writes the fills, no proxy read among the rows that can fail, and a runner reads each UNKNOWN",
     async () => {
       const { code, file, stdout } = await fills([], { withoutCookie: true });
       expect(verdictOf(stdout)).toStartWith("FILLS: ");
@@ -326,10 +331,10 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       for (const shape of proxyReads()) {
         const label = `GET /api/github/rest/repos/{owner}/{repo}/${shape}`;
         expect(stdout).toContain(
-          `\nfill    ${label} (cannot fail: SWEEP_FULL_COOKIE is not given, and the proxy reads the browser's person alone, so the full member's read of it was not made)\n`
+          `\nfill    ${label} (cannot fail: the proxy refused the full member's token (401 NO_IDENTITY): a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE)\n`
         );
         expect(lines).not.toContain(`can_fail\t${label}`);
-        expect(lines).toContain(`full_status\tnone ${label}`);
+        expect(lines).toContain(`full_status\t401 ${label}`);
       }
       expect(lines).toContain("can_fail\t/ws/live agent view of {session_id}");
       const run = await runner(file);
@@ -347,7 +352,30 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(run.code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
+  );
+
+  // A build from #5079 on reads the proxy with the full member's token: with no cookie at all,
+  // the fills hold each proxy read as one that can fail, and a runner of them passes.
+  test(
+    "fills mode with no full member's cookie, against a proxy that reads the token, holds each proxy read as one that can fail, and a runner passes",
+    async () => {
+      const { code, file, stdout } = await fills([], { withoutCookie: true, tokenProxy: true });
+      expect(verdictOf(stdout)).toStartWith("FILLS: ");
+      expect(code, stdout).toBe(0);
+      const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+      for (const shape of proxyReads()) {
+        expect(lines).toContain(`can_fail\tGET /api/github/rest/repos/{owner}/{repo}/${shape}`);
+      }
+      const run = await runner(file);
+      expect(verdictOf(run.stdout)).toMatch(
+        new RegExp(
+          `^${literally(passed)}; the live check holds once a writer's delivered write falls inside the live window \\S+ \\S+, which the tailnet leg joins$`
+        )
+      );
+      expect(run.code, run.stdout).toBe(0);
+    },
+    rowLimit("short", "runnerSweep")
   );
 
   // With the cookie, a proxy read the full member's half could not make fail still leaves no
@@ -390,7 +418,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // A row the fills hold no line of was never asked of the full member: neither whether it can
@@ -453,7 +481,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(memberPaths).toEqual([]);
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // Fills made at another deployment fill every row with objects that name nothing here, each of
@@ -528,7 +556,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(memberPaths).toEqual([]);
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   test(
@@ -577,7 +605,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code, stdout).toBe(0);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // The control of the row above: the same runner, its member's own writes cut from their feed.
@@ -596,7 +624,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // Each write is a comment on the write issue and a direct message to the fills' session of the

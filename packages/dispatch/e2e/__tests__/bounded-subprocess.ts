@@ -105,11 +105,18 @@
  *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
  *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
  *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
+ * - `runnerSweep`, against 48 s: a runner of `e2e/acceptance/restricted-sweep.sh` in
+ *   `restricted-sweep-split.test.ts` that reads the member's live feed, whose window is the fixed
+ *   45 s a runner takes at least (the script's `runner_live_floor`). Each of the six such rows'
+ *   runners took about 48 s in the build cluster's whole-file run of that file at 9ce18a69c9 (Job
+ *   legion-judging-c5xpq, 2026-11-23), against the `short` bound's 60 s. Three times 48 s,
+ *   rounded up, is 150 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * whole-index sweep after 5 minutes, a listing after 6 minutes, the generation after 6.5 minutes,
- * a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * sweep runner that reads the live feed after 2.5 minutes, a whole-index sweep after 5 minutes, a
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
+ * minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -153,6 +160,9 @@ export const bounds = Object.freeze({
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
+  /** One runner of `e2e/acceptance/restricted-sweep.sh` against the fake Dispatch of
+   *  `restricted-sweep-split.test.ts` that reads the member's feed over the 45 s live window. */
+  runnerSweep: 150_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

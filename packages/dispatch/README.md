@@ -1018,10 +1018,13 @@ inputs are `SWEEP_ORIGIN`
 `SWEEP_MEMBER_ISSUE`, `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`,
 a file in the
 conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
-member's session cookie, for the GitHub proxy reads alone: the proxy reads the browser's person and
-never a token, so without it no proxy read can fail, and each is `UNKNOWN`, naming it, while every
-other row still runs. The direct messages and the agent view are made as `SWEEP_FULL_TOKEN`, which
-needs the `person` scope there (a full member's personal token). It needs bash 3.2 or later, curl
+member's session cookie, which makes the GitHub proxy reads alone. Without it the proxy reads are
+`SWEEP_FULL_TOKEN`'s, which a build from cybermonklabs/legion#5079 on reads; a build before it reads
+the proxy as the browser's person alone and refuses the token (401, or 403 `OAUTH_SCOPE_REQUIRED`),
+and each proxy read is then `UNKNOWN`, naming the build and `SWEEP_FULL_COOKIE`, never `PASS` or
+`FAIL`, while every other row still runs. The direct messages and the agent view are made as
+`SWEEP_FULL_TOKEN` too, which needs the `person` scope (a full member's personal token). It needs
+bash 3.2 or later, curl
 7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed
 (`bun install`), which runs the socket
 probe `e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
@@ -1044,9 +1047,10 @@ time of each of the member's own projects (`deployment`), which tell one deploym
 and read the same at its private origin and its public one; fills mode and a runner each refuse a
 list of projects that gives no creation time of each of them. A row that can fail is a
 `can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
-them, and every row it judged has a `full_status` line. With `SWEEP_FULL_COOKIE`, a proxy read it
-cannot make fail leaves no file; without it, each proxy read is kept with no `can_fail` line, which
-a runner reads `UNKNOWN`. Fills mode writes no file that lacks a fill. It takes
+them, and every row it judged has a `full_status` line. A proxy read the full member's credential
+made that cannot fail leaves no file; one the proxy refused the full member's token for is kept
+with no `can_fail` line, which a runner reads `UNKNOWN`. Fills mode writes no file that lacks a
+fill. It takes
 the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the ones whose access
 lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
 half with the member's cookie alone, refuses a full member's credential, and refuses fills of
