@@ -174,9 +174,10 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
-testing or review, at the nearest implementer step before it, and the change goes through the
-issue's steps after that step again: in
-the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
+testing or review, at the task's first implementer step, even where a later implementer step
+stands nearer the step that failed, and the change goes through the issue's steps after that step
+again: in the default steps, the tester before the reviewer sees it. A tester's fail can name
+another earlier step to go back to instead (`return_to`). A head that starts conflicting with its
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
 reviewer's approval of the head ends the round whatever the daemon reads of CI at that commit,

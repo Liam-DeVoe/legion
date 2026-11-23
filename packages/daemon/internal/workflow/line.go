@@ -544,12 +544,13 @@ func (w Walk) endingRole(from phase.Phase) claim.Role {
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
 // once (PlaceOf); for a stored walk the place before w.Place whose step, retro or merge runs as to,
-// the nearest of them where a role that stands at two steps runs to at two places before w.Place,
-// as a failed step's work returns to the nearest step of the type implementation before it
-// (returnOf). Where no earlier place runs as to, no backward row serves the move. Where to is step
-// and two or more places before w.Place run as step, they are steps of roles the move does not
-// tell apart, and its third answer is the two of them nearest w.Place, the lower first, which the
-// move's refusal names (backwardRefusal); it is nil in every other case.
+// the nearest of them where a role that stands at two steps runs to at two places before w.Place.
+// A failed step's work does not go to the nearest: it returns to the first step of the type
+// implementation before it (returnTarget). Where no earlier place runs as to, no backward row
+// serves the move. Where to is step and two or more places before w.Place run as step, they are
+// steps of roles the move does not tell apart, and its third answer is the two of them nearest
+// w.Place, the lower first, which the move's refusal names (backwardRefusal); it is nil in every
+// other case.
 func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.TaskPlace) {
 	if !w.Stored {
 		place, ok := w.PlaceOf(to)
