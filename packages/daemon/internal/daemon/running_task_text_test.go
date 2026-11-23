@@ -67,19 +67,34 @@ func holdsText(t *testing.T, who, task, want, was string) {
 	}
 }
 
+// runningAct is a running task's act as register_plan's answer names it (`running`), decoded here
+// rather than as api.RunningStep, so this file builds on a daemon that answers none.
+type runningAct struct {
+	Kind  string `json:"kind"`
+	Place int    `json:"place"`
+	Role  string `json:"role"`
+}
+
 // registeredRunning is register_plan's answer of artifact at version, which must be 200, and the
 // act each task of it runs, by task.
-func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[string]*api.RunningStep {
+func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[string]*runningAct {
 	r.t.Helper()
 	status, body := r.registerPlan(artifact, version)
 	if status != http.StatusOK {
 		r.t.Fatalf("register_plan of %s's version %d = %d %s, want 200", r.key, version, status, body)
 	}
-	var taken api.PlanRegisterResponse
+	var taken struct {
+		Plan struct {
+			Tasks []struct {
+				ID      string      `json:"id"`
+				Running *runningAct `json:"running"`
+			} `json:"tasks"`
+		} `json:"plan"`
+	}
 	if err := json.Unmarshal([]byte(body), &taken); err != nil {
 		r.t.Fatalf("decode register_plan's answer %s: %v", body, err)
 	}
-	running := map[string]*api.RunningStep{}
+	running := map[string]*runningAct{}
 	for _, task := range taken.Plan.Tasks {
 		running[task.ID] = task.Running
 	}
@@ -89,13 +104,27 @@ func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[stri
 // taskRow is where task a of the walk's issue stands in the daemon's store, with its counts.
 func (r *ownerStepsRig) taskRow(task string) string {
 	r.t.Helper()
-	var state, kind string
+	var state, kind, moves, capTold string
 	var position, pass, rounds, conflicts int
-	if err := r.st.Pool().QueryRow(context.Background(), `select state, running_kind, position, pass, rounds, conflict_rounds
-		from plan_tasks where issue = $1 and task = $2`, r.key, task).Scan(&state, &kind, &position, &pass, &rounds, &conflicts); err != nil {
+	if err := r.st.Pool().QueryRow(context.Background(), `select state, running_kind, position, pass, rounds, conflict_rounds,
+		backward_moves::text, cap_told::text from plan_tasks where issue = $1 and task = $2`, r.key, task).
+		Scan(&state, &kind, &position, &pass, &rounds, &conflicts, &moves, &capTold); err != nil {
 		r.t.Fatalf("read task %s of %s: %v", task, r.key, err)
 	}
-	return fmt.Sprintf("%s at %s %d, pass %d, rounds %d, conflict rounds %d", state, kind, position, pass, rounds, conflicts)
+	return fmt.Sprintf("%s at %s %d, pass %d, rounds %d, conflict rounds %d, backward moves %s, cap told %s",
+		state, kind, position, pass, rounds, conflicts, moves, capTold)
+}
+
+// entryTask is the stored start task of role's entry on the walk's issue (record.PhaseRow.EntryTask),
+// which the send of an owed entry sends again.
+func (r *ownerStepsRig) entryTask(role claim.Role) string {
+	r.t.Helper()
+	var task string
+	if err := r.st.Pool().QueryRow(context.Background(), `select entry_task from phases where issue = $1 and role = $2`,
+		r.key, string(role)).Scan(&task); err != nil {
+		r.t.Fatalf("read the %s's stored start task of %s: %v", role, r.key, err)
+	}
+	return task
 }
 
 // launchCount is how many launches of method the runtime has made of token.
@@ -155,7 +184,7 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 
 	r.editPlan(plan, map[string]any{"op": "replace", "find": one, "with": two}, 2)
 	running := r.registeredRunning(plan, 2)
-	if got := running["a"]; got == nil || *got != (api.RunningStep{Kind: "step", Place: 1, Role: string(claim.RoleImplementer)}) {
+	if got := running["a"]; got == nil || *got != (runningAct{Kind: "step", Place: 1, Role: string(claim.RoleImplementer)}) {
 		t.Fatalf("register_plan of version 2 names task a running at %+v, want step 1, the implementer", got)
 	}
 	if after := r.taskRow("a"); after != before {
@@ -166,16 +195,21 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 		t.Fatalf("the implementer at work was sent %q for version 2, want nothing", prompt.Message)
 	case <-time.After(liveSettle):
 	}
+	// The stored start task of the implementer's entry holds version 2's text (retext): the send of
+	// an owed entry sends it again. The held task's send reads the text apart (Deps.TaskText).
+	if stored := r.entryTask(claim.RoleImplementer); !strings.Contains(stored, "\n"+two+"\n") || strings.Contains(stored, one) {
+		t.Fatalf("the implementer's stored start task after version 2 = %q, want it to hold %q and not %q", stored, two, one)
+	}
 
 	// The implementer's session is lost: no store holds it, so the relaunch spawns a fresh agent.
 	r.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
 		implementer.token, runtime.ErrSessionFileMissing)})
 	r.processEnds(implementer, "Spawn")
+	if spawn := lastLaunch(t, r.rt, implementer.token); spawn.ResumeSessionFile != "" {
+		t.Fatalf("the implementer's relaunch resumed %s, want a fresh session", spawn.ResumeSessionFile)
+	}
 	delete(r.claims, implementer.token)
 	fresh := r.worker(claim.RoleImplementer)
-	if fresh.session == implementer.session {
-		t.Fatalf("the implementer's fresh agent registered in the lost session %s", implementer.session)
-	}
 	holdsText(t, "fresh implementer", takeText(fresh), two, one)
 
 	// Its process ends again and resumes its own session: the task is sent to it again.
@@ -210,12 +244,25 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 	r.waitPhase(phase.Retro)
 	holdsText(t, "retro", takeText(fresh), two, one)
 
-	starts := strings.Join(r.stepStarts(), "\n")
-	for _, want := range []string{"a step 1 starts 2 ", "a step 2 starts 2 ", "a retro 0 starts 1 "} {
-		if !strings.Contains(starts+" ", want) {
-			t.Fatalf("the step starts of %s are\n%s\nwant %q, as a run with no version 2 counts them", r.key, starts, want)
+	// The step records in Dispatch count the starts and attempts of a run with no version 2: each
+	// step of a twice, its first attempt and the one after the review's return, and the retro once.
+	// The lost session and the resume start no attempt.
+	r.waitSteps("task a's step records", func(read stepRecordsRead) error {
+		want := []struct {
+			kind          string
+			step, attempt int
+			role          string
+		}{{"step", 1, 1, "implementer"}, {"step", 2, 1, "reviewer"}, {"step", 1, 2, "implementer"}, {"step", 2, 2, "reviewer"}, {"retro", 0, 1, "implementer"}}
+		for _, w := range want {
+			if got := read.find(w.kind, w.step, w.attempt); got.ID == "" || got.Task != "a" || got.Role != w.role {
+				return fmt.Errorf("the read holds %+v for %s %d attempt %d, want task a's record of the %s", got, w.kind, w.step, w.attempt, w.role)
+			}
 		}
-	}
+		if got := len(read.records()); got != len(want) {
+			return fmt.Errorf("the read holds %d records, want %d", got, len(want))
+		}
+		return nil
+	})
 
 	r.on(r.issues[1].key)
 	r.openGate(phase.Planning)
