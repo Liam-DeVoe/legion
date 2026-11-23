@@ -52,9 +52,11 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.
 //  2. Each other key that an earlier row names takes the name of its latest such row, and a key no
-//     earlier row names takes the name whose claim holds its session, where it is the key that held
-//     that name last: the key of the latest earlier row of the name, else the key whose session the
-//     name's claim holds. Every such key is named before any other pass gives a name. Rows written
+//     earlier row names takes the name whose claim holds its session, each only where it is the
+//     key that held that name last. The key that held a name last is the key of the latest earlier
+//     row of the name that names a key, and a later row of the name with no key does not end that
+//     hold; where no earlier row of the name names a key, it is the key whose session the name's
+//     claim holds. Every such key is named before any other pass gives a name. Rows written
 //     before a name a key held was kept for it can show another key holding the name after it,
 //     where that key took by pass 4 the name of a key its version did not name; the name's claim
 //     ran that other key's agent last, so the key whose row held it before is named by pass 4,
@@ -74,8 +76,8 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
 	keyNames := map[string]claim.Agent{}
-	// lastHolder is the key that holds each name a key holds: the key whose latest earlier row held
-	// it, else the key whose agent's session the name's claim holds.
+	// lastHolder is the key that holds each name a key holds: the key of the latest earlier row of
+	// the name that names a key, else the key whose agent's session the name's claim holds.
 	lastHolder := map[claim.Agent]string{}
 	keyHeld := func(name claim.Agent) bool {
 		_, ok := lastHolder[name]
