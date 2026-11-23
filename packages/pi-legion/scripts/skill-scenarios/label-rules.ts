@@ -78,8 +78,13 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
-    has: "The implementer is asked to merge the base forward",
+    has: "The implementer, or in `merging` the merger, is asked to merge the base forward",
     keep: "A forward merge's assignment, not a Dispatch check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "The merger pushes only a merge of the base forward",
+    keep: "The merger's push and its read of the pull request's head, not a Dispatch check.",
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
@@ -195,6 +200,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "skills/legion-worker/references/review-threads.md",
     has: "The implementer records each thread in the PR body's `Threads` section",
     keep: "Review-thread recording, not a Dispatch check.",
+  },
+  {
+    file: "skills/legion-worker/references/conflicts-and-rewrites.md",
+    has: "The merger records none itself: it asks the implementer, and the tester where the task has a tester step",
+    keep: "Whom the merger asks to record results at its merge head, not the reviewer's gate on a pass.",
   },
   ...GUIDE_TWO_ROLES,
 ];
@@ -490,6 +500,11 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
   {
     file: "skills/legion-retro/SKILL.md",
     has: "A `ci_check` check has no pass standing at that head when its derived result is a fail",
+    keep: "Retro's read after the task's last step, not a decision of the reviewer or the architect.",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A `ci_check` check whose derived result is a fail is the merger's",
     keep: "Retro's read after the task's last step, not a decision of the reviewer or the architect.",
   },
   {
