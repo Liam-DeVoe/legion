@@ -90,7 +90,8 @@ type processBinary struct {
 }
 
 // processDirPrefix begins the name of each process's directory of builds, followed by its pid and
-// a dash: Run removes those of this user's processes that no longer run, which go test's alarm
+// a dash. The process holds a flock on its directory while it runs (makeProcessDir), and Run
+// removes those of this user's directories whose lock no process holds, which go test's alarm
 // leaves behind, since the alarm ends the process before Run can remove its own.
 const processDirPrefix = "cmdtest-"
 
@@ -103,10 +104,10 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // Run is Main for a TestMain that also runs another helper's: it runs run, the package's tests,
 // with one build of each command for the whole process, and removes those builds afterwards:
 // os.Exit(cmdtest.Run(func() int { return testnats.Main(m) })). Before the tests, it removes the
-// directories of builds that this user's test processes left behind and that no longer run.
+// directories of builds that this user's test processes left behind and whose lock none holds.
 func Run(run func() int) int {
 	removeBuildsOfEndedProcesses()
-	dir, err := os.MkdirTemp("", processDirPrefix+strconv.Itoa(os.Getpid())+"-")
+	dir, release, err := makeProcessDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cmdtest: make the directory of the process's builds: %v\n", err)
 		return 1
@@ -118,7 +119,9 @@ func Run(run func() int) int {
 	process.mu.Lock()
 	process.on, process.dir, process.builds = false, "", nil
 	process.mu.Unlock()
-	if err := os.RemoveAll(dir); err != nil {
+	err = os.RemoveAll(dir)
+	release()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "cmdtest: remove the process's builds: %v\n", err)
 		if code == 0 {
 			code = 1

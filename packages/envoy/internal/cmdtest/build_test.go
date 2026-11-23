@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -17,6 +19,9 @@ const (
 	buildPathsEnv = "CMDTEST_BUILD_PATHS"
 	// buildSecondEnvEnv makes TestBuildChild's second build ask for another environment.
 	buildSecondEnvEnv = "CMDTEST_BUILD_SECOND_ENV"
+	// buildLockProbeEnv makes TestBuildChild first try to take the lock of its process's directory
+	// of builds (requireOwnDirLocked).
+	buildLockProbeEnv = "CMDTEST_BUILD_LOCK_PROBE"
 	// goLogEnv names the file the go stand-in (goStandIn) appends each build it is asked for to,
 	// goRealEnv the go it then runs, and goFailOnceEnv a file whose presence makes it fail the next
 	// build, once, removing the file.
@@ -31,6 +36,9 @@ const (
 func TestBuildChild(t *testing.T) {
 	if os.Getenv(buildChildEnv) == "" {
 		t.Skip("subprocess of the build rows")
+	}
+	if os.Getenv(buildLockProbeEnv) == "1" {
+		requireOwnDirLocked(t)
 	}
 	for _, name := range []string{"first", "second"} {
 		t.Run(name, func(t *testing.T) {
@@ -52,6 +60,28 @@ func TestBuildChild(t *testing.T) {
 			}
 		})
 	}
+}
+
+// requireOwnDirLocked fails t unless the directory of this process's builds is locked: a lock taken
+// through another open of it, as another process's sweep takes one, would block (EWOULDBLOCK).
+func requireOwnDirLocked(t *testing.T) {
+	t.Helper()
+	process.mu.Lock()
+	dir := process.dir
+	process.mu.Unlock()
+	if dir == "" {
+		t.Fatal("the process has no directory of builds: its tests do not run under Main")
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if !errors.Is(err, unix.EWOULDBLOCK) {
+		t.Fatalf("taking the lock of %s answered %v; want EWOULDBLOCK, the lock its process holds", dir, err)
+	}
+	t.Log("the process's directory of builds is locked")
 }
 
 // buildRun is what one run of a build row's process left: the paths its tests were handed, the
@@ -197,32 +227,36 @@ func TestAFailedBuildIsBuiltAgainByTheNextTestUnderMain(t *testing.T) {
 }
 
 // TestMainRemovesTheBuildsOfEndedProcesses: before the tests, Main removes each directory of
-// builds whose process no longer runs, and keeps one whose process runs and a directory whose name
-// only looks like one.
+// builds whose lock no process holds, and keeps one whose lock a running process holds, whatever
+// pid its name carries, and a directory whose name only looks like one. otherNamespace is what a
+// process in another PID namespace sharing this temporary directory and user leaves, as each role
+// container of a Legion pod does: its name carries a pid that runs nowhere here, and its process
+// holds its lock.
 func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 	tmp := t.TempDir()
 	ended := exec.Command("true")
 	if err := ended.Run(); err != nil {
 		t.Fatal(err)
 	}
-	dead := filepath.Join(tmp, processDirPrefix+strconv.Itoa(ended.Process.Pid)+"-left")
+	gone := strconv.Itoa(ended.Process.Pid)
+	dead := filepath.Join(tmp, processDirPrefix+gone+"-left")
+	otherNamespace := filepath.Join(tmp, processDirPrefix+gone+"-otherns")
 	live := filepath.Join(tmp, processDirPrefix+strconv.Itoa(os.Getpid())+"-running")
 	other := filepath.Join(tmp, processDirPrefix+"notapid-x")
-	for _, dir := range []string{dead, live, other} {
+	for _, dir := range []string{dead, otherNamespace, live, other} {
 		if err := os.MkdirAll(filepath.Join(dir, "build-1"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if processRuns(ended.Process.Pid) {
-		t.Skipf("pid %d runs again: another process took it", ended.Process.Pid)
-	}
+	holdLock(t, otherNamespace)
+	holdLock(t, live)
 	run := runBuildChild(t, "main", "TMPDIR="+tmp)
 	if run.exit != 0 {
 		t.Fatalf("the process exited %d:\n%s", run.exit, run.out)
 	}
 	requireGone(t, dead)
-	for _, dir := range []string{live, other} {
-		if _, err := os.Stat(dir); err != nil {
+	for _, dir := range []string{otherNamespace, live, other} {
+		if _, err := os.Stat(filepath.Join(dir, "build-1")); err != nil {
 			t.Fatalf("%s was removed (%v); want it kept", dir, err)
 		}
 	}
@@ -230,7 +264,33 @@ func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("TMPDIR holds %d entries after the process; want the two kept, its own directory removed", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("TMPDIR holds %d entries after the process; want the three kept, its own directory removed", len(entries))
+	}
+}
+
+// TestAProcessHoldsTheLockOfItsDirectoryOfBuilds: under Main, the directory of the process's
+// builds is locked while its tests run, so no other process's sweep can take it.
+func TestAProcessHoldsTheLockOfItsDirectoryOfBuilds(t *testing.T) {
+	run := runBuildChild(t, "main", buildLockProbeEnv+"=1")
+	if run.exit != 0 || len(run.paths) != 2 {
+		t.Fatalf("the process exited %d with paths %q; want 0 and two:\n%s", run.exit, run.paths, run.out)
+	}
+	if !strings.Contains(run.out, "the process's directory of builds is locked") {
+		t.Fatalf("the process did not find its directory of builds locked while its tests ran:\n%s", run.out)
+	}
+}
+
+// holdLock holds a flock on dir for the rest of t, as a running process holds its directory of
+// builds' (makeProcessDir).
+func holdLock(t *testing.T, dir string) {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("lock %s: %v", dir, err)
 	}
 }
