@@ -1014,7 +1014,7 @@ const repositoriesLiveContract = 202
 const cachesSourceContract = 213
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 214,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 232,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
 // awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
 // the gated step's `basis`, which rides only on a step of the two status words it added, and each
@@ -1047,17 +1047,18 @@ const cachesSourceContract = 213
 // keys and words. One that states a number between 202 and this contract is served the nearest
 // recorded contract at or below it (recordedContractAtOrBelow): one at 203 or 204 is served 202's,
 // one at 205 to 212 is served 205's, whose records are 202's under its own number, as version.go's
-// 205 entry says, and one at 213 is served 213's, which are 205's with `caches` among the words of
-// a capability row's `source` (cachesSourceContract). A caller from 193 to 201 is served the keys
-// 193 added, the block in contract 152's shape and none of this contract's: one that states a
-// number from 194 to 198 is served 193's shape, and one that states 199, 200 or 201 is served
-// 199's, which is 193's, since 199 moves no shape of an answer a plugin parses. Every such caller
-// states its contract: podContracts leaves out a claim at shapedAnswersContract or above, so a pod
-// reading places no caller there.
+// 205 entry says, one at 213 to 216 is served 213's, which are 205's with `caches` among the words
+// of a capability row's `source` (cachesSourceContract), and one at 217 to 231 is served 217's,
+// which are 213's under its own number, as version.go's 217 entry says. A caller from 193 to 201
+// is served the keys 193 added, the block in contract 152's shape and none of this contract's:
+// one that states a number from 194 to 198 is served 193's shape, and one that states 199, 200 or
+// 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin parses.
+// Every such caller states its contract: podContracts leaves out a claim at shapedAnswersContract
+// or above, so a pod reading places no caller there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const gateBasisContract = 214
+const gateBasisContract = 232
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
