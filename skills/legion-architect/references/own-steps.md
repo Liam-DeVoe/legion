@@ -25,8 +25,9 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
 - Legion starts no agent for your step.
   It sends you one `owner-step` notice: its role is the step's role (none for the retro), its phase the phase the issue stands in, and its reason the task a worker of that step would get.
 
-- The notice comes only while that step runs, once your slot holds the GitHub App of the step's role (at once for your acceptance and your retro).
-  While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App; at the step's end it holds your own App again, before your next notice comes.
+- The notice comes only while that step runs, once your slot holds the GitHub App of the step's role: at once for the retro and for a step of your own App, the review App, as the planner, the tester, the reviewer and acceptance act.
+  While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App.
+  At the step's end Legion writes your own App back to your slot, unless your next step, of another App, already runs; a notice that comes after the end waits for that write.
 
 - While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound, and at each launch of your session.
 
