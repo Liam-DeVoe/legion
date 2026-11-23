@@ -1,12 +1,182 @@
 package delivery
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// citationReach is the most of a body before an issue path that the reading hands the host check
+// of that path (attribution_keys): 507 bytes, 2 x 253 + 1, the bound the Go reading of the default
+// branch gives its own host check.
+const citationReach = 2*253 + 1
+
+// readingPath finds each issue path of a body as the path alternative of the reading's one pass
+// finds it, so a row can say what the reading should have handed the check of each.
+var readingPath = regexp.MustCompile(`/([\w.-]+)/([\w.-]+)/issues/([1-9][0-9]*)\b`)
+
+// readingSlice is the slice of a body the reading hands each issue path's host check: the
+// citationReach bytes before the path, or the bytes before it where the path stands nearer the
+// start. readingSliceFromTheStart is the body from its start to the path, the slice a check that
+// scans back from each path to the nearest space would need. readingCheckInput is the call the
+// slice is handed to, which drops the trailing bytes of a character the slice cuts at its start,
+// and readingContinuationBytes the second argument of that call, which ends it.
+const (
+	readingSlice             = "pg_catalog.substring(b.bytes, greatest(path_at - 507, 0) + 1, least(path_at, 507))"
+	readingSliceFromTheStart = "pg_catalog.substring(b.bytes, 1, path_at)"
+	readingCheckInput        = "pg_catalog.ltrim("
+	readingContinuationBytes = `, '\x808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'::bytea)`
+)
+
+// readingSpans is what a reading handed the host checks of one body: Spans slices, Handed bytes in
+// all, the Longest of them.
+type readingSpans struct{ Spans, Handed, Longest int }
+
+// createCountedReading creates name, a copy of the reading in which whatever the reading hands
+// each issue path's host check, the first argument of its one readingCheckInput call, passes
+// through reading_span first; edits change the copy before that. reading_span counts each slice it
+// is given in the session's settings reading.spans, reading.handed and reading.longest, and
+// readingSpansOf reads them for one body. A reading with no such call fails here rather than
+// counting nothing; a reading that hands the call more than the reach is counted as it is.
+func createCountedReading(t *testing.T, ctx context.Context, q readingSession, name string, edits ...readingEdit) {
+	t.Helper()
+	schema := readingSchema(t, ctx, q)
+	if _, err := q.Exec(ctx, `create or replace function reading_span(span bytea) returns bytea language plpgsql as $$
+		declare
+		  n bigint := pg_catalog.octet_length(span);
+		begin
+		  perform pg_catalog.set_config('reading.spans', (pg_catalog.current_setting('reading.spans')::bigint + 1)::text, false);
+		  perform pg_catalog.set_config('reading.handed', (pg_catalog.current_setting('reading.handed')::bigint + n)::text, false);
+		  perform pg_catalog.set_config('reading.longest', greatest(pg_catalog.current_setting('reading.longest')::bigint, n)::text, false);
+		  return span;
+		end $$`); err != nil {
+		t.Fatalf("create reading_span: %v", err)
+	}
+	if _, err := q.Exec(ctx, `create or replace function reading_spans_of(reading text, repo text, body text,
+		  out cited text[], out spans bigint, out handed bigint, out longest bigint) language plpgsql as $$
+		begin
+		  perform pg_catalog.set_config('reading.spans', '0', false), pg_catalog.set_config('reading.handed', '0', false),
+		    pg_catalog.set_config('reading.longest', '0', false);
+		  execute pg_catalog.format('select k.cited_issues from %s($1, '''', '''', $2, null) k', reading) into cited using repo, body;
+		  spans := pg_catalog.current_setting('reading.spans')::bigint;
+		  handed := pg_catalog.current_setting('reading.handed')::bigint;
+		  longest := pg_catalog.current_setting('reading.longest')::bigint;
+		end $$`); err != nil {
+		t.Fatalf("create reading_spans_of: %v", err)
+	}
+	createReadingCopy(t, ctx, q, name, append(edits,
+		readingEdit{readingCheckInput, readingCheckInput + schema + ".reading_span(", 1},
+		readingEdit{readingContinuationBytes, ")" + readingContinuationBytes, 1})...)
+}
+
+// readingSpansOf is what reading, a copy createCountedReading made, cites in body and what it
+// handed the host checks of that body.
+func readingSpansOf(t *testing.T, ctx context.Context, q Querier, reading, repo, body string) ([]string, readingSpans) {
+	t.Helper()
+	var cited []string
+	var spans readingSpans
+	if err := q.QueryRow(ctx, `select cited, spans, handed, longest from reading_spans_of($1, $2, $3)`, reading, repo, body).Scan(
+		&cited, &spans.Spans, &spans.Handed, &spans.Longest); err != nil {
+		t.Fatalf("%s over %d bytes: %v", reading, len(body), err)
+	}
+	return cited, spans
+}
+
+// holdToTheReading is what the cost rows hold of spans, what a reading handed the host checks of
+// body: one slice for each issue path, since each path's decision needs one and a bare reference's
+// none, and no slice longer than citationReach. Together they bound the bytes the checks read by
+// citationReach times the paths, whatever the body holds before each. It answers each one spans
+// breaks.
+func holdToTheReading(what, body string, spans readingSpans) []string {
+	paths := len(readingPath.FindAllStringIndex(body, -1))
+	var problems []string
+	if spans.Spans != paths {
+		problems = append(problems, fmt.Sprintf("%s: %d slices for %d issue paths: a path was decided from no counted slice, or from more than one", what, spans.Spans, paths))
+	}
+	if spans.Longest > citationReach {
+		problems = append(problems, fmt.Sprintf("%s: one slice handed %d bytes, want at most %d (citationReach): a path is read back to the nearest space rather than a bounded run", what, spans.Longest, citationReach))
+	}
+	return problems
+}
+
+// The reading reads a body in proportion to its length. It reaches the bytes before an issue path
+// only through the one slice it hands that path's host check, and the row counts those slices
+// (createCountedReading, holdToTheReading): one for each path, none longer than citationReach, so
+// how busy the machine is decides nothing. The body is 1 MiB, holds no whitespace, and holds an
+// issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
+// space pays the square of: such a reading needs the body back to its start at every path.
+func TestTheReadingCostsNoMoreThanTheBodyIsLong(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const cited = "https://github.com/acme/widgets/issues/7"
+	createCountedReading(t, ctx, pool, "attribution_keys_counted")
+	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
+	got, spans := readingSpansOf(t, ctx, pool, "attribution_keys_counted", "acme/widgets", body)
+	t.Logf("a body of %d bytes: %+v", len(body), spans)
+	for _, problem := range holdToTheReading(fmt.Sprintf("a body of %d bytes", len(body)), body, spans) {
+		t.Error(problem)
+	}
+	if !slices.Equal(got, []string{cited}) {
+		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
+	}
+	whole := cited + strings.Repeat("x", 4096)
+	if got := readingOf(t, ctx, pool, readingText{Repo: "acme/widgets", Body: whole}).CitedIssues; len(got) != 0 {
+		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
+	}
+}
+
+// Two bodies of one length carry the same 200 citations, separated by spaces in one and by commas
+// in the other. A reading that walks back to the nearest space needs the 65,536 bytes of prose for
+// every path of the comma body; a reading of a bounded run needs the same bytes for both, since
+// neither a space nor a comma is a host byte. The row holds each body's counts (holdToTheReading)
+// and the two bodies to the same counts: a count has no noise to allow for, so the bound is the
+// claim itself rather than a ratio.
+func TestTheReadingCostsNoMoreForACitationFarFromASpace(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	createCountedReading(t, ctx, pool, "attribution_keys_counted")
+	bySpace, byComma := citationsFarFromASpace()
+	_, space := readingSpansOf(t, ctx, pool, "attribution_keys_counted", "acme/widgets", bySpace)
+	_, comma := readingSpansOf(t, ctx, pool, "attribution_keys_counted", "acme/widgets", byComma)
+	t.Logf("separated by spaces %+v, by commas %+v", space, comma)
+	for _, problem := range append(holdToTheReading("the citations separated by spaces", bySpace, space), holdToTheReading("the citations separated by commas", byComma, comma)...) {
+		t.Error(problem)
+	}
+	if comma != space {
+		t.Errorf("citing %d bytes separated by commas handed %+v, and separated by spaces %+v, want the same: a path is read back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	}
+}
+
+// citationsFarFromASpace is the cost row's two bodies: 65,536 bytes of prose and 200 citations,
+// separated by spaces and by commas.
+func citationsFarFromASpace() (bySpace, byComma string) {
+	one := "github.com/acme/widgets/issues/7"
+	prose := strings.Repeat("a", 65536)
+	return prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " "),
+		prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+}
+
+// TestTheReadingCountsAScanBackFromEachPath is the cost rows' control. A copy of the reading whose
+// host checks get the body from its start to each path, the slice a check that scans back to the
+// nearest space needs, hands each check that slice, so holdToTheReading names it: here over the
+// comma body, where the scan needs the body back to its start at every path. It cites what the
+// reading cites, so only the count can tell the two apart.
+func TestTheReadingCountsAScanBackFromEachPath(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	createCountedReading(t, ctx, pool, "attribution_keys_scan_back", readingEdit{readingSlice, readingSliceFromTheStart, 1})
+	_, byComma := citationsFarFromASpace()
+	cited, spans := readingSpansOf(t, ctx, pool, "attribution_keys_scan_back", "acme/widgets", byComma)
+	problems := holdToTheReading("the comma body read back from each path", byComma, spans)
+	t.Logf("%+v: %q", spans, problems)
+	if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "one slice handed") }) {
+		t.Errorf("a scan back from each of 200 paths over %d bytes handed %+v, and the cost rows' check named no slice longer than citationReach: it cannot see the scan", len(byComma), spans)
+	}
+	if want := []string{"https://github.com/acme/widgets/issues/7"}; !slices.Equal(cited, want) {
+		t.Errorf("the scan back cites %v, want %v as the reading does", cited, want)
+	}
+}
 
 // hostCheckReach is how far before an issue path the reading's host check reads: the byte before
 // the host, github.com, the colon and the longest port it credits (attribution_keys).
