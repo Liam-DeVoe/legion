@@ -103,10 +103,13 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	request.Header.Set("Accept", "application/json")
 	response, err := r.http.Do(request)
 	if err != nil {
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is named by its class alone (redact.Class);
+		// errors.Is and errors.As still find the failure beneath it.
 		if transportAnswers(err) {
-			return Answer{}, fmt.Errorf("dispatchread: ask dispatch %s: %w", path, err)
+			return Answer{}, fmt.Errorf("dispatchread: ask dispatch %s: %w", path, redact.Class(err))
 		}
-		return Answer{}, fmt.Errorf("%w to %s: %w", ErrNoAnswer, path, err)
+		return Answer{}, fmt.Errorf("%w to %s: %w", ErrNoAnswer, path, redact.Class(err))
 	}
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, int64(r.limit))

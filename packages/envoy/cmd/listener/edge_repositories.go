@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -112,13 +113,14 @@ type edgeRepositories struct {
 }
 
 // newEdgeRepositories is the reader of the broker at brokerURL, asking as account, for the
-// projects the edge serves.
+// projects the edge serves. Its client follows no redirect (redirects.Refused): every read carries
+// the listener's own bearer, and a Location is the answering party's words.
 func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects []string, withheld *metrics.Counter, logger *logging.Logger) *edgeRepositories {
 	return &edgeRepositories{
 		brokerURL: strings.TrimSuffix(brokerURL, "/"),
 		account:   account,
 		projects:  projects,
-		client:    &http.Client{Timeout: edgeRepositoryReadTimeout},
+		client:    redirects.Refused(&http.Client{Timeout: edgeRepositoryReadTimeout}),
 		now:       time.Now,
 		withheld:  withheld,
 		logger:    logger,
@@ -155,7 +157,10 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	response, err := e.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: ask the broker: %w", errRepositoriesUnknown, err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// which it reads before any redirect policy), so it prints as the broker's address allows
+		// (redact.Cause): a transport failure's own text, or its class.
+		return nil, fmt.Errorf("%w: ask the broker: %w", errRepositoriesUnknown, redact.Cause(err, e.brokerURL))
 	}
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, edgeRepositoryBodyLimit)
