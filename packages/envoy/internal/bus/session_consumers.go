@@ -167,8 +167,9 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
-	// logger is the logger the connection was opened with (ConnectSessionConsumers),
-	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
+	// logger is the logger the connection was opened with (ConnectSessionConsumers), the client's
+	// own (Client.log: WithLogger, else where slog.Default() points at each line) where that was
+	// nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
 	// pendingMu guards pending and createFault.
 	pendingMu sync.Mutex
