@@ -481,7 +481,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), and the claim that works an issue's open phase, read in
 // the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
-// record gives the running step, which can be a keyed agent's beside the role's own claim), which
+// record gives the running step, which can be the claim of a second agent of the role in a task,
+// `…-implementer-2` beside `…-implementer`, or a keyed agent's beside the role's own claim), which
 // the store does not restate (nil arms no backstop). At is required of every cancel, since whether
 // the project is paused is read inside the cancel's own transaction; a cancel made while the
 // project runs reads nothing else of it.
@@ -513,7 +514,8 @@ type ReleaseCancelled struct {
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
 // backstop, which the record arms only where the stop owes no launch. That worker is a claim
-// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step a keyed agent's claim works the
+// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step the claim of a second agent
+// of the role in a task, `…-implementer-2` beside `…-implementer`, or of a keyed agent works the
 // step beside the role's own claim, which gets none. A wake taken since is left open: it is the
 // launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
 // and held's row for share.
@@ -610,8 +612,9 @@ type releasedRole struct {
 
 // stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
 // stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
-// order. Two claims can hold one role — a keyed agent on a step of another role, beside that
-// role's own claim from an earlier version of the plan — and only the ones the release suspended
+// order. Two claims can hold one role — a second agent of the role in a task, `…-implementer-2`
+// beside `…-implementer`, or a keyed agent on a step of another role, beside that role's own
+// claim from an earlier version of the plan — and only the ones the release suspended
 // are its to resume: another claim of the role an earlier release left released is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {

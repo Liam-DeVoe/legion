@@ -41,7 +41,8 @@ const ArchitectGateWake = 90 * time.Minute
 // other rule here is: a judgement over values.
 //
 // Claim is the token of the claim the wake brought back (pod_resumes.claim): two claims can hold
-// one role of an issue, the agent of a key on a step of another role beside that role's own claim,
+// one role of an issue — a second agent of the role in a task, `…-implementer-2` beside
+// `…-implementer`, or the agent of a key on a step of another role beside that role's own claim —
 // and a wake of one is no wake of the other.
 //
 // ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
@@ -167,8 +168,9 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		return nil, err
 	}
 	// The worker of a role's step is the claim the record gives it (record.WorkerClaimOf over the
-	// issues' phases rows, read once here): two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — and
+	// issues' phases rows, read once here): two claims can hold one role — a second agent of the
+	// role in a task, `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of
+	// another role, beside that role's own claim of an earlier version of the plan — and
 	// only the worker is one a start of the phase brings back.
 	var keys []string
 	seen := make(map[string]bool, len(claims))

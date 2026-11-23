@@ -826,7 +826,8 @@ type Issue struct {
 	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
 	// of the running step, StepRole), and GivenEntry the entry of the last task the claim of the
 	// worker on that role's step was queued (supervise.Claim.GivenEntry; the worker is the claim
-	// the record gives the step, record.WorkerClaim, which can be a keyed agent's beside the
+	// the record gives the step, record.WorkerClaim, which can be the claim of a second agent of
+	// the role in a task, `…-implementer-2` beside `…-implementer`, or a keyed agent's beside the
 	// role's own claim). The daemon sends the entry's own work to a worker whose given number is
 	// below the entry its row names, on every admission pass and on a sweep of its own each minute
 	// (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role holding the
@@ -1676,7 +1677,8 @@ type HeldOutboxRow struct {
 // StrandedClaim is one claim nothing will wake — a worker of its issue's phase, or its tree's
 // architect, in a tree that runs — named by its issue, its role, its state and its claim token;
 // the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one
-// role, a keyed agent's on another role's step among them, so the token is what tells them apart;
+// role, the claim of a second agent of the role in a task (`…-implementer-2`) and a keyed agent's
+// on another role's step among them, so the token is what tells them apart;
 // a caller below strandedTokenContract, which knows no `token`, is served each entry without it
 // (shaping.go's withoutStrandedTokens).
 // Its state, its role and who suspended it say the move that brings it back (Move), and that

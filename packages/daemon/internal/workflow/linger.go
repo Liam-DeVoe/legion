@@ -512,7 +512,8 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
 	// across re-admission, so only that tells this linger's rows from a later one's. The rows reach
 	// the claims every request of every claim of a member reaches (claimTargets): each stored claim
-	// by its token, so a claim of a role a keyed agent took over gets its close too, and each role
+	// by its token, so a claim of a role a second agent of the role in a task or a keyed agent took
+	// over gets its close too, and each role
 	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
 	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {

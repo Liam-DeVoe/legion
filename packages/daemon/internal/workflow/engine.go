@@ -1103,7 +1103,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// Two claims of one issue can hold one role — the agent of a key on a step of another role,
+	// Two claims of one issue can hold one role — a second agent of the role in a task,
+	// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
 	// beside that role's own claim of an earlier version of the plan — and the role's row names the
 	// one that works its step (record.WorkerClaim). A completion from the other is no report of
 	// the step: taken, it would move the issue and write its own claim on the row, and every later
@@ -1285,7 +1286,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
-// Two claims of one issue can hold one role — the agent of a key on a step of another role,
+// Two claims of one issue can hold one role — a second agent of the role in a task,
+// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
 // beside that role's own claim of an earlier version of the plan — so the role the fact names does
 // not name the claim that failed: the fact names it too (intake.ClaimFailed.Claim). Only the
 // failure of the claim that works the role's step (workerClaim) holds the issue; another claim of
@@ -2464,8 +2466,9 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
 	}
 	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
-	// role — the agent of a key on a step of another role, beside that role's own claim of an
-	// earlier version of the plan — and the move names the claim that asked it (By). A claim the
+	// role — a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the
+	// agent of a key on a step of another role, beside that role's own claim of an earlier
+	// version of the plan — and the move names the claim that asked it (By). A claim the
 	// role's row does not name on its step works nothing the move would send back, so its move is
 	// refused, unspent. A row that runs no step of the plan names no worker, and a move that names
 	// no claim, from a route before the claim was carried, is judged by its role as before.
@@ -3045,8 +3048,9 @@ type claimTarget struct {
 // linger's tree close), but the one except's close reaches: each stored claim of issue
 // (record.Store.IssueClaims) by its token, whether or not its agent ever reported a handoff — its
 // architect among them, which admission starts with a root's tree and a child's first phase start
-// starts for a child (StartFirstPhase). Two claims can hold one role — a keyed agent on a step of
-// another role, beside that role's own claim from an earlier version of the plan — so a row naming
+// starts for a child (StartFirstPhase). Two claims can hold one role — a second agent of the role
+// in a task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
+// beside that role's own claim from an earlier version of the plan — so a row naming
 // a role alone would reach the claim of the worker on that role's step twice and leave the other
 // claim without its request. except is the one role left out, "" for none: a merged child's close
 // leaves out the role that works its production check (Engine.checkRole), whose claim the check's

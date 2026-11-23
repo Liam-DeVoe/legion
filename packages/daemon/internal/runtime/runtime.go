@@ -251,7 +251,8 @@ func (e AwaitsPodUpdate) Unwrap() error { return ErrAwaitsPodUpdate }
 // without a name, and that pod's uid (PodLacksRole), a name the caller asks both as the slot of a
 // claim (claim.Token.Slot: the agent the claim's token ends in, which can be a name no role has,
 // `implementer-2`, and which the pod's launcher of that name serves) and as the role of its step,
-// whose own resources a launch needs too, since a keyed agent's slot and its step's role can be
+// whose own resources a launch needs too, since the slot of a second agent of one role
+// (`implementer-2` on a step of `implementer`) or of a keyed agent and its step's role can be
 // two names; and whether the launcher of slot in the issue's live pod starts a child only once the
 // slot's gh files hold the start's credential (SlotWaitsForCredential), with the pod's uid where
 // it does not: a launcher of an image before that wait, which a re-role into its slot waits out
@@ -362,7 +363,8 @@ type IssueVolumeReader interface {
 // (IssueReleaser), and the pod after the release takes no saved work that volume holds
 // (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
 // the save is then the one copy of the unpushed work. The claim is named by its token, since the
-// agent that works a role's step can run in a claim another role started (a keyed agent): its
+// agent that works a role's step can run in a claim of its own name (a second agent of the role,
+// `…-implementer-2`) or in a claim another role started (a keyed agent): its
 // process must run, as the shim builds the bundle with the jj and git of the workspace it already
 // works in. A runtime whose processes share no workspace implements nothing here, and the release
 // of such a pod saves nothing because there is no such pod.
@@ -857,8 +859,9 @@ type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, erro
 // step the claim is launched for; at a refresh, the role the slot's process was launched as where
 // the slot records that launch for the stored claim's generation or a later one, and otherwise the
 // claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
-// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
-// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
+// the slot's name: a second agent's slot has a name no role has (`implementer-2`), and a keyed
+// agent's slot is named by its agent, and that agent can do a step of another role. Each write of
+// a slot's gh credential asks it, so a re-roled claim's slot holds the
 // App of the role its process was launched as.
 func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
 	if actsAs == nil {

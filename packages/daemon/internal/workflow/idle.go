@@ -479,8 +479,9 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 // idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which at
 // step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
 // serving the current generation: the one shape of claim a phase reminder is armed in. Two claims
-// of one issue can hold that role — the agent of a key on its step, beside the role's own claim
-// of an earlier version of the plan — and only the claim the record gives the role's step works
+// of one issue can hold that role — a second agent of the role in a task, `…-implementer-2` beside
+// `…-implementer`, or the agent of a key on its step, beside the role's own claim of an earlier
+// version of the plan — and only the claim the record gives the role's step works
 // the phase (record.WorkerClaim over the role's phases row, pods.IdleView.Phases): the claim the
 // row names while it runs a step, and the role's own token otherwise. A reminder due on the other
 // holds no pod.

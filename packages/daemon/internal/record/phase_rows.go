@@ -222,9 +222,11 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 
 // WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
 // the claim role's row names (PhaseRow.Claim) while that row runs a step of the issue's plan
-// (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
-// claim is the one it started on an earlier step of another role, so a role's own token does not
-// name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
+// (StepTask set), which the step's entry writes. A step's agent can be a second agent of the role
+// in a task, whose claim has a name of its own (`…-implementer-2` beside `…-implementer`), or the
+// agent of a key, whose claim is the one it started on an earlier step of another role, so a
+// role's own token does not name it.
+// Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
 // plan rows, a row the issue's own new generation cleared (ClearGeneration, and ClearTreeGeneration
 // for the root it re-admits, clear StepTask and keep Claim), a row no entry was raised on, and a row
 // the release before wrote. project is the project's token, as claim.NewToken takes it, and a role
@@ -237,8 +239,8 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 // at is the role's own: an issue a new generation put back at admitted, a run of the release
 // before, whose plans name no key, and an issue with no plan rows. The clear of a tree leaves the
 // steps of every member whose generation it keeps (Store.ClearTreeGeneration), so no row loses its
-// step while its issue stands at a step of a keyed agent, and the start of a step and every reader
-// of its worker name one agent.
+// step while its issue stands at a step of a second agent of a role or of a keyed agent, and the
+// start of a step and every reader of its worker name one agent.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
 	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
 		return row.Claim, nil

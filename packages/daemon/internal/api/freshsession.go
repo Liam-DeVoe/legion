@@ -17,9 +17,10 @@ import (
 // compaction take the same members, so they take one type (controllerClaim).
 //
 // Claim, from contract 222, names the claim by its token: two claims of one issue can hold one
-// role — the agent of a key on a step of another role, beside that role's own claim of an earlier
-// version of the plan — and the issue and the role reach the one that works the role's step, while
-// a notice of provider errors can name the other. It must be a claim of Issue that holds Role.
+// role — a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the
+// agent of a key on a step of another role, beside that role's own claim of an earlier version of
+// the plan — and the issue and the role reach the one that works the role's step, while a notice
+// of provider errors can name the other. It must be a claim of Issue that holds Role.
 // Without it the request reaches the worker on the role's step, as it did before 222; a daemon
 // below 222 refuses the member as unknown.
 type ClaimRequest struct {

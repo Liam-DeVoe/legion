@@ -658,7 +658,8 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 // held was read before, whose role is the one its process runs; a record of an earlier one is of a
 // process a later launch replaced, by a release that leaves no record, whose role the stored claim
 // holds. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
-// slot's name for a claim that holds another role: a keyed agent's slot is named by its agent.
+// slot's name for a claim that holds another role: a keyed agent's slot is named by its agent, and
+// a second agent's slot has a name no role has (`implementer-2`).
 func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Agent, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {

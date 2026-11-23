@@ -595,7 +595,8 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // above it, and the sentence names it that way.
 //
 // workers is the agent of each step of the plan c's issue runs (specs.stepWorkers). Two claims of
-// one issue can hold one role — the agent of a key works a step of another role than its name —
+// one issue can hold one role — a second agent of the role runs in a task, `…-implementer-2`
+// beside `…-implementer`, or the agent of a key works a step of another role than its name —
 // and a role can stand at two steps, so a topic spelled from a role reaches the agent named for
 // that role, which need not be the one that works the step of that role the reader means: the
 // sentence names the topic of each step's agent, and says what a

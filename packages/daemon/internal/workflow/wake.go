@@ -467,7 +467,8 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // OpenWorker is the claim of the worker of issue's open phase, and "" where there is none: the
 // claim the record gives the step of the open phase's role (OpenRoleOf, which at step is the role
 // of the running step, read with the issue), through record.ReadWorkerClaim over the issue's
-// phases rows, read in tx. That claim can be a keyed agent's, whose token names another role,
+// phases rows, read in tx. That claim can be the claim of a second agent of the role in a task,
+// `…-implementer-2` beside `…-implementer`, or a keyed agent's, whose token names another role,
 // beside the role's own claim of an earlier version of the plan, so a role does not name it. It
 // answers which claim a pause's stop and a release arm a backstop for — an architect gets none,
 // because nothing of its own is due and a sub-architect woken for nothing would hold a pod open for

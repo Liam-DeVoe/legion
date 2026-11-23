@@ -2251,9 +2251,11 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 // the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix):
 // held, the claim the row's producer named, where it names one; otherwise the claim of the worker
 // on role's step over the issue's phases rows as the record holds them when the row runs, read in
-// a transaction of its own (record.ReadWorkerClaim). A step's agent can be the agent of a key,
-// which works the step in the claim it started on an earlier step of another role, so the role's
-// own token would reach no agent or the wrong one. issue is the row's own (record.OutboxRow.Issue),
+// a transaction of its own (record.ReadWorkerClaim). A step's agent can be a second agent of the
+// role in a task, which works the step in a claim of its own (`…-implementer-2` beside
+// `…-implementer`), or the agent of a key, which works the step in the claim it started on an
+// earlier step of another role, so the role's own token would reach no agent or the wrong one.
+// issue is the row's own (record.OutboxRow.Issue),
 // or for a pause's stop keyed by the project the issue its payload names (pauseStop).
 func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role, held claim.Token) (claim.Token, error) {
 	if held != "" {
@@ -2465,7 +2467,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
 	// for, or the one stored claim a row of another op stands for. A row that names none, one the
 	// release before wrote, acts on the claim of the worker on its role's step (record.WorkerClaim),
-	// which can be the claim of a key's agent that started on an earlier step of another role.
+	// which can be the claim of a second agent of the role in a task, `…-implementer-2`, or of a
+	// key's agent that started on an earlier step of another role.
 	token := payload.Claim
 	if token == "" {
 		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
@@ -3179,8 +3182,9 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
 // until its machine is available, and otherwise finishes without acting. The claim is the one the
 // row names, else the claim of the worker on the role's step (workerToken), as reservedTreeClose
-// reads it: two claims of one issue can hold one role — the agent of a key on a step of another
-// role, beside that role's own claim of an earlier version of the plan — so the role's own token
+// reads it: two claims of one issue can hold one role — a second agent of the role in a task,
+// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
+// beside that role's own claim of an earlier version of the plan — so the role's own token
 // could stop the other one, or wait for its machine, and leave this claim running in the old tree.
 // This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
@@ -4238,8 +4242,9 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 // the latest pause ended, or in a project no pause has ended, keeps the bound its row was due at.
 // The pause is read as admit's readStallFloor reads it (store.OpenOrLastPauseTx), with the claim
 // of the look, in one transaction: the claim the look's start reaches, the worker on the check
-// role's step (record.ReadWorkerClaim), since two claims of one issue can hold one role — the agent
-// of a key on a step of another role, beside that role's own claim — and the other's ready says
+// role's step (record.ReadWorkerClaim), since two claims of one issue can hold one role — a second
+// agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of a key on
+// a step of another role, beside that role's own claim — and the other's ready says
 // nothing of when the look's claim could take a turn. While the project is paused the row is held
 // and does not run, so a pause read open here began after the row was claimed, and the row ends
 // the look as it would have.

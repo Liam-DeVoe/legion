@@ -3539,8 +3539,9 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 // roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, and the
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
 // `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
-// role of an issue at one generation — the agent of a key on a step of another role, beside that
-// role's own claim of an earlier version of the plan — so one identity can stand for several keys.
+// role of an issue at one generation — a second agent of the role in a task, `…-implementer-2`
+// beside `…-implementer`, or the agent of a key on a step of another role, beside that role's own
+// claim of an earlier version of the plan — so one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string

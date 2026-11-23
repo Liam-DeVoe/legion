@@ -504,7 +504,8 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     stops. It stops nothing itself, so a release cancelled here costs only the save;
 //  2. the claim stops: one `release` supervise row per live claim, each naming that claim
 //     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
-//     can hold one role — a keyed agent on a step of another role, beside that role's own claim
+//     can hold one role — a second agent of the role in a task, `…-implementer-2` beside
+//     `…-implementer`, or a keyed agent on a step of another role, beside that role's own claim
 //     from an earlier version of the plan — so a stop names its claim rather than a role. The
 //     first of them is the release's boundary — the stop of the first role process of the pod —
 //     which is what R4's cancel is read against, so a delivery queued while the save ran is still
