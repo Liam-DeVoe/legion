@@ -793,7 +793,8 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 // unspecified, multicast or the IPv4 broadcast address; a cloud metadata server's IPv6 address; an
 // address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse
 // the start, naming the setting and the fault. No refusal quotes the URL's user, path, query or
-// fragment, where a credential can sit. A private address, one in 100.64.0.0/10, one inside the
+// fragment, where a credential can sit, nor a URL written with no <host>= before it, whose user
+// and path then sit before the first =. A private address, one in 100.64.0.0/10, one inside the
 // cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with
 // its port, the local stack's stand-in of Dispatch, are read: each is an address the dial opens.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
@@ -826,7 +827,8 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		}
 	}
 	// The URL's user, path, query and fragment carry a word a refusal must not quote; each URL is
-	// put together here, so the word is one constant the check below reads too.
+	// put together here, so the word is one constant the check below reads too. A URL written with
+	// no <host>= before it puts its user, and its path up to a query's =, before the first =.
 	const userWord = "secret-word"
 	for _, row := range []struct{ name, value, dialAllow, want string }{
 		{"two entries", "dispatch.test=http://10.0.0.5:8766 other.test=http://10.0.0.6:8766", "", "names 2 entries"},
@@ -834,16 +836,20 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"an entry with no URL", "dispatch.test=", "", "must be one <host>=<url> entry"},
 		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
 		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
-		{"a URL that does not parse", "dispatch.test=http://[10.0.0.5", "", "does not parse"},
+		{"a URL that does not parse", "dispatch.test=http://u:" + userWord + "@[10.0.0.5", "", "does not parse"},
 		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21/" + userWord, "", "must be http or https"},
 		{"a URL with no host", "dispatch.test=http://:8766/" + userWord, "", "names no host"},
 		{"a URL with port 0", "dispatch.test=http://10.0.0.5:0/" + userWord, "", "port outside 1 to 65535"},
 		{"a URL with port 65536", "dispatch.test=http://10.0.0.5:65536", "", "port outside 1 to 65535"},
 		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "", "carries a user"},
 		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/" + userWord, "", "has a path"},
+		{"a loopback URL with a path", "dispatch.test=http://127.0.0.1:8766/" + userWord, "", "has a path"},
 		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q=" + userWord, "", "has a query"},
 		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
 		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
+		{"a URL with no <host>=, a user and a query", "http://u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>= and no scheme, a user and a query", "u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>=, a path and a query", "10.0.0.5:8766/" + userWord + "?a=b", "", "holds a URL's scheme, user or path"},
 		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
 		{"localhost with the root's trailing dot", "dispatch.test=http://localhost.:8766", "", "resolves to loopback"},
 		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},

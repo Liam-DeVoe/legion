@@ -2045,15 +2045,18 @@ const privateUpstreamSetting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 
 // ParsePrivateUpstream reads BROKER_AIRLOCK_PRIVATE_UPSTREAM's one <host>=<url> entry; a
 // blank value is none. It refuses, naming the setting and the fault: more than one entry, since
-// the exception is for one host; an entry with no host before its first = or no URL after it; a
-// host rulehost.Refusal refuses, a "*." pattern or a capital letter, since the proxy compares the
-// host as written with one lower-cased CONNECT host; and a URL that does not parse, carries a user,
-// is not http or https, names no host, names a port outside 1 to 65535, or has a path other than /,
-// a query or a fragment, since the proxy sends each request's own path and query to the URL's
-// scheme, host and port alone. No refusal quotes a part of the URL a credential can sit in - its
-// user, its path, its query or its fragment - or the URL whole: a refusal names the URL's scheme at
-// most, and the start writes it to the broker's log. Load reads the setting with it, and
-// `profiles check` its --private-upstream argument, so both hold the destination to one form.
+// the exception is for one host; an entry with no host before its first = or no URL after it; text
+// before the first = that holds "/" (a scheme's "://" or a path) or "@" (a user), which is a URL
+// written with no <host>= before it rather than a host; a host rulehost.Refusal refuses, a "*."
+// pattern or a capital letter, since the proxy compares the host as written with one lower-cased
+// CONNECT host; and a URL that does not parse, carries a user, is not http or https, names no
+// host, names a port outside 1 to 65535, or has a path other than /, a query or a fragment, since
+// the proxy sends each request's own path and query to the URL's scheme, host and port alone. No
+// refusal quotes a part of the URL a credential can sit in - its user, its path, its query or its
+// fragment - or the URL whole, nor text before the first = that holds a URL's user or path: a
+// refusal names the URL's scheme at most, and the start writes it to the broker's log. Load reads
+// the setting with it, and `profiles check` its --private-upstream argument, so both hold the
+// destination to one form.
 func ParsePrivateUpstream(value string) (PrivateUpstream, error) {
 	const setting = privateUpstreamSetting
 	entries := strings.Fields(value)
@@ -2067,6 +2070,12 @@ func ParsePrivateUpstream(value string) (PrivateUpstream, error) {
 	host, raw, _ := strings.Cut(entries[0], "=")
 	if host == "" || raw == "" {
 		return PrivateUpstream{}, fmt.Errorf("%s must be one <host>=<url> entry, with a host before its first = and a URL after it", setting)
+	}
+	// A URL with no <host>= before it, such as http://u:password@10.0.0.5:8766/?a=b, reads as the
+	// host "http://u:password@10.0.0.5:8766/?a": its user and password sit in the text, so it is
+	// refused here without being quoted, before the host refusals below quote what they refuse.
+	if strings.ContainsAny(host, "/@") {
+		return PrivateUpstream{}, fmt.Errorf("%s must be one <host>=<url> entry: the text before its first = holds a URL's scheme, user or path (a / or an @), so it names no host; the refusal does not repeat it, since a URL's user can be a credential", setting)
 	}
 	if why := rulehost.Refusal(host); why != "" {
 		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock rules entry can bind before its =, got %q, which %s", setting, host, why)
