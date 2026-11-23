@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,7 +356,10 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // markingStatementDigests is, for each value refs.BlockIndexMarkingRule has held, the digest of the
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
 // (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
-// of what a pass owes, which raises the rule and records the new digest here beside the old.
+// of what a pass owes, which raises the rule and records the new digest here beside the old. The
+// digest is taken over each statement's words joined by single spaces, so a statement's layout -
+// its line breaks and indentation, which the text it splices in from another place gives it -
+// moves no digest, and a change of any word does.
 //
 // Rule 1's digest was re-recorded when the node store's project columns joined these statements:
 // they read and write each comment's and each block's project beside what they read before
@@ -374,8 +378,14 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // node's cause: the statement reads the same event id, only through events' primary key, so it
 // moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
 // text of LatestEventID the statements give the digest recorded before.
+//
+// It was re-recorded once more when the digest came to fold each statement's whitespace and to
+// cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
+// statement moved a row in or out of what a pass owes. The digest below holds that change and the
+// supertag read above together: the statements are the folded ones with that read added before
+// the node write of refs.CommentWrite.Queue, and nothing else.
 var markingStatementDigests = map[int]string{
-	1: "f43ec48e83d9e62ce19d4d2da0a1446ad761e613770130bd30eab6cc5134c828",
+	1: "2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -386,7 +396,7 @@ var markingStatementDigests = map[int]string{
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
-		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, statement.sql)
+		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))
 	}
 	got := hex.EncodeToString(digest.Sum(nil))
 	if want := markingStatementDigests[refs.BlockIndexMarkingRule]; got != want {
@@ -404,10 +414,13 @@ type namedStatement struct{ name, sql string }
 // write's statements (refs.CommentWrite.Queue), the backfill's block selection
 // (graphcensus.BlockRowsStatement) and its read of a batch's rows again under the locks
 // (graphcensus.HeldBlockRowsStatement), the backfill's marks (graphcensus.BlockBatchMarkStatement,
-// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), and the two marks of
-// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement). The two refs functions are run
-// against a stand-in that records what they send and answers nothing, so no copy of their text is
-// read.
+// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), the two marks of
+// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement), the condition under which a build
+// lists a marked document as owed (refs.OwedMarkListed), which the owed listing, its re-read under
+// the owner's lock and the backlog all read, and the revision fence that decides whether a pass
+// wins and clears a mark (refs.RevisionFenceStatement). The two refs functions that send
+// statements are run against a stand-in that records what they send and answers nothing, so no
+// copy of their text is read.
 func markingStatements(t *testing.T) []namedStatement {
 	t.Helper()
 	ctx := context.Background()
@@ -452,6 +465,8 @@ func markingStatements(t *testing.T) []namedStatement {
 		namedStatement{"graphcensus.StaleBatchMarkStatement", graphcensus.StaleBatchMarkStatement},
 		namedStatement{"docs.oweDocumentIndexStatement", oweDocumentIndexStatement},
 		namedStatement{"refs.RebuildMarkStatement", refs.RebuildMarkStatement},
+		namedStatement{"refs.OwedMarkListed", refs.OwedMarkListed("b", "$1::integer")},
+		namedStatement{"refs.RevisionFenceStatement", refs.RevisionFenceStatement},
 	)
 }
 

@@ -643,7 +643,8 @@ What a reader sees while two servers are serving:
 - `envoy-dispatch census --store` names a document `orphaned` when its node stands and no row
   stands behind it. Neither this version nor the one before it makes one: each states a
   document's node gone in the transaction that deletes its row, so a delete made outside the
-  servers left it. This version names no command that clears an `orphaned` line.
+  servers left it. Its line says `no in-band cure: a delete outside the builds made it`, and this
+  version names no command that clears it.
 - Once the rollout is done, run `envoy-dispatch backfill-graph-store`. It gives each run of the
   command bar recorded before this version its interaction node, and it clears each `gone` line.
 - The dashboard's **A new version is available** notice waits until every server runs one

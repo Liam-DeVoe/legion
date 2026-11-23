@@ -102,7 +102,7 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 			return fmt.Errorf("%w: %s is no issue's document", ErrNotOrphaned, ref)
 		}
 		owners := events.OwnerRows{}
-		owners.Add(issue, "", "the issue of document "+ref)
+		owners.Add(issue, "")
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}
@@ -221,7 +221,7 @@ func StateStaleLensesGone(ctx context.Context, database *store.Store) (int, erro
 		}
 		owners, locked := events.OwnerRows{}, map[string]bool{}
 		for _, issue := range issues {
-			owners.Add(issue, "", "the issue of a stale lens")
+			owners.Add(issue, "")
 			locked[issue] = true
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {

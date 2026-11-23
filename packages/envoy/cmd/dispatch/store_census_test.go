@@ -1,6 +1,6 @@
 //go:build basebuild
 
-// Three tests of this tag are cybermonklabs/legion#3178's acceptance runs:
+// Three acceptance tests of this tag are cybermonklabs/legion#3178's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
 // (read_cost_test.go), which share graph_cost_test.go. The fourth is cybermonklabs/legion#4193's
@@ -8,6 +8,8 @@
 // too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at the commit
 // BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
 // needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
+// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
+// one bound that needs neither a database nor that commit and takes milliseconds.
 // They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
 // time and by name, as
 //

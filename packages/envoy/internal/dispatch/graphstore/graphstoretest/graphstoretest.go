@@ -34,20 +34,17 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // end to another; QueueFrameTuple, Write's append of one frame value of a run queued on a caller's
 // batch; WriteRun, the write of a run's node from its row; WriteArms and WriteArmsUncaused spliced
 // into a caller's statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue
-// those arms for the
-// writers that record an author, a reached session and a session an ask names; EraseNode, the
-// erase's delete of a node and its tuples; and FillScopes, the backfill's fill of the project of a
-// node stored with none. Each is a function of the package, never a method, so a
-// call of one is named by the package wherever it is made. It is the one list the source scans
-// that hold the store's writers read: graphstore's register of their call sites
-// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
-// (TestNoProjectionRowIsWrittenWithoutTheStore).
+// those arms for the writers that record an author, a reached session and a session an ask names;
+// and FillScopes, the backfill's fill of the project of a node stored with none. Each is a
+// function of the package, never a method, so a call of one is named by the package wherever it
+// is made. It is the one list the source scans that hold the store's writers read: graphstore's
+// register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers
+// of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteState", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-		"Retarget", "QueueFrameTuple", "WriteRun",
-		"EraseNode", "FillScopes"}
+		"Retarget", "QueueFrameTuple", "WriteRun", "FillScopes"}
 }
 
 // NamesAsAWord is whether text names each of names as words of its own: text split on spaces and

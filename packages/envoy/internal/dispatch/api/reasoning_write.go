@@ -85,8 +85,8 @@ func lockIssueOwner(ctx context.Context, tx pgx.Tx, key string) (string, error) 
 // that does not exist.
 func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []string) error {
 	owners := events.OwnerRows{}
-	owners.Add(issue, "", "the issue "+issue)
-	documents := make(map[string]string, len(checks))
+	owners.Add(issue, "")
+	documents := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
 		kind, id, ok := decodeNodeAddress(check)
 		if !ok || kind != refs.BlockNodeKind {
@@ -94,21 +94,19 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 		}
 		// A ref_key holds no '#', so the block's id names its document before the first one.
 		if document, _, held := strings.Cut(id, "#"); held {
-			if _, named := documents[document]; !named {
-				documents[document] = check
-			}
+			documents[document] = struct{}{}
 		}
 	}
 	if len(documents) > 0 {
 		rows, err := tx.Query(ctx, `
-			select ref_key, id::text, coalesce(issue_key, '') from artifacts where ref_key = any($1)
+			select id::text, coalesce(issue_key, '') from artifacts where ref_key = any($1)
 		`, slices.Collect(maps.Keys(documents)))
 		if err != nil {
 			return fmt.Errorf("read the documents of the checks the write names: %w", err)
 		}
-		var refKey, id, issueKey string
-		if _, err := pgx.ForEachRow(rows, []any{&refKey, &id, &issueKey}, func() error {
-			owners.Add(issueKey, id, "the check "+documents[refKey])
+		var id, issueKey string
+		if _, err := pgx.ForEachRow(rows, []any{&id, &issueKey}, func() error {
+			owners.Add(issueKey, id)
 			return nil
 		}); err != nil {
 			return fmt.Errorf("read the documents of the checks the write names: %w", err)
