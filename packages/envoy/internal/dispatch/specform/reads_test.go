@@ -21,11 +21,12 @@ import (
 func init() { loudReads = true }
 
 // The charge of a judgment's texts (newTexts, charge.Texts) names two sentences of the same words
-// by one unit, and a sentence of a title by another; it lets ownReads readings of one sentence for
-// the findings that stand elsewhere, each giving the text, and refuses the next with nothing given;
-// it lets ownReads readings for the findings that stand in it, apart from the others, and stops the
-// program at the next where loudReads is set, and refuses it where it is not. Control: another
-// sentence's readings are its own.
+// by one unit, and a sentence of a title and an address of the same words each by another, whose
+// readings are their own: past the charge of the sentence, each still gives the text; it lets
+// ownReads readings of one sentence for the findings that stand elsewhere, each giving the text, and
+// refuses the next with nothing given; it lets ownReads readings for the findings that stand in it,
+// apart from the others, and stops the program at the next where loudReads is set, and refuses it
+// where it is not. Control: another sentence's readings are its own.
 func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *testing.T) {
 	const sentence = "Dispatch reads Web.Config at boot."
 	texts := newTexts()
@@ -33,8 +34,9 @@ func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *test
 	if again := texts.Name(sentence, false, false); again != unit {
 		t.Errorf("two sentences of the same words are the units %v and %v, want one", unit, again)
 	}
-	if title := texts.Name(sentence, false, true); title == unit || !title.Title() {
-		t.Errorf("a sentence of a title is the unit %v, want another than the sentence's %v, and a title's", title, unit)
+	title, address := texts.Name(sentence, false, true), texts.Name(sentence, true, false)
+	if title == unit || !title.Title() || address == unit || !address.Address() {
+		t.Errorf("a sentence of a title and an address of the same words are the units %v and %v, want others than the sentence's %v, a title's and an address's", title, address, unit)
 	}
 	for count := range ownReads {
 		if text, _, ok := texts.Read(unit, false); !ok || text != sentence {
@@ -43,6 +45,14 @@ func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *test
 	}
 	if text, kept, ok := texts.Read(unit, false); ok || text != "" || kept != nil {
 		t.Errorf("reading %d for the findings that stand elsewhere gives %q, %v, %v, want it refused with nothing given", ownReads+1, text, kept, ok)
+	}
+	for _, each := range []struct {
+		kind string
+		unit charge.Unit
+	}{{"a sentence of a title", title}, {"an address", address}} {
+		if text, _, ok := texts.Read(each.unit, false); !ok || text != sentence {
+			t.Errorf("past the charge of the sentence, %s of the same words gives %q, %v, want the text from a charge of its own", each.kind, text, ok)
+		}
 	}
 	if _, _, ok := texts.Read(other, false); !ok {
 		t.Errorf("the control: the charge refuses the first reading of another sentence")
