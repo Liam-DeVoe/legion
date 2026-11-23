@@ -254,3 +254,114 @@ func TestTheCloseOfALeftPodWithNoLiveClaimReadsItsDiskFirst(t *testing.T) {
 		}
 	})
 }
+
+// declinedPod is the pod the issue's decline row names, and whether a row stands.
+func declinedPod(t *testing.T, rig *idleRig) (string, bool) {
+	t.Helper()
+	var pod string
+	err := rig.pool.QueryRow(context.Background(), `select pod_uid from idle_release_declines where issue = $1`, rig.issue.Key).Scan(&pod)
+	if err != nil && strings.Contains(err.Error(), "no rows") {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("read the decline of %s: %v", rig.issue.Key, err)
+	}
+	return pod, true
+}
+
+// A launcher's read is of one pod, and only that pod is named or taken on its word (Sol's read of
+// R6, point 2). The pass marks the release, or queues the close, over pod-a. pod-b then takes its
+// place: while the read is in flight, after the launcher has read pod-a (afterPodRead), or before
+// the read at all.
+//
+// work_then_another_pod: the read found work in pod-a, and the decline names pod-a, not the pod
+// the runtime holds once the read has answered.
+//
+// clean_then_another_pod: the read found pod-a clean, and the release's teardown takes nothing:
+// its authorization under the pod lock is for pod-a, which is gone.
+//
+// close_clean_then_another_pod: the same for the left pod's close: the Sandbox suspension takes
+// nothing.
+//
+// a_read_of_another_pod: pod-b took pod-a's place before the read, so the launcher read pod-b, not
+// the pod the release was marked over. The read is discarded: no decline, no notice, and no
+// teardown.
+func TestALauncherReadNamesAndTakesOnlyThePodItRead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	replaced := func(rig *idleRig) func() {
+		return func() { rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b") }
+	}
+
+	t.Run("work_then_another_pod", func(t *testing.T) {
+		rig, _ := noRoleRig(t, false)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = replaced(rig)
+		rig.rt.mu.Unlock()
+		rig.w.releaseUnownedPods(ctx)
+		rig.drain(t)
+		if pod, declined := declinedPod(t, rig); !declined || pod != "pod-a" {
+			t.Fatalf("the decline names pod %q (standing %t), want pod-a, the pod the launcher read", pod, declined)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the teardown took %d pods, want none: the read found work", suspended)
+		}
+	})
+
+	t.Run("clean_then_another_pod", func(t *testing.T) {
+		rig, _ := noRoleRig(t, false)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = replaced(rig)
+		rig.rt.mu.Unlock()
+		rig.w.releaseUnownedPods(ctx)
+		rig.drain(t)
+		if launcherReads(rig) != 1 {
+			t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the teardown took %d pods, want none: the clean read was of pod-a, and the runtime holds pod-b", suspended)
+		}
+	})
+
+	t.Run("close_clean_then_another_pod", func(t *testing.T) {
+		rig, _ := noRoleRig(t, true)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = replaced(rig)
+		rig.rt.mu.Unlock()
+		idlePasses(rig)
+		rig.drain(t)
+		if launcherReads(rig) != 1 {
+			t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the close's suspension took %d pods, want none: the clean read was of pod-a, and the runtime holds pod-b", suspended)
+		}
+	})
+
+	t.Run("a_read_of_another_pod", func(t *testing.T) {
+		rig, publisher := noRoleRig(t, false)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+		rig.w.releaseUnownedPods(ctx)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b")
+		rig.drain(t)
+		if pod, declined := declinedPod(t, rig); declined {
+			t.Fatalf("a decline naming pod %q stands, want none: the launcher read pod-b, not the pod-a the release was marked over", pod)
+		}
+		if notices := keptNotices(t, rig, publisher); len(notices) != 0 {
+			t.Fatalf("the architect was told %+v, want nothing of a read of another pod", notices)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the teardown took %d pods, want none", suspended)
+		}
+		if rig.marked(t) {
+			t.Fatal("the release's mark still stands, want the release cancelled")
+		}
+	})
+}
