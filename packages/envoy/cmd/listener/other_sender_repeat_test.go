@@ -216,6 +216,7 @@ func TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat(t *testing.T) 
 			w:      recorder,
 			record: &requestRecord{logger: logging.NewWithWriter("test", &logs), line: "listener publish", laneKey: "topic", lane: topic, item: &item},
 			d:      rig.deps,
+			ctx:    t.Context(),
 			item:   item,
 			sender: requestSender{eventID: item.EventID, source: item.Source, session: item.SourceSession, readsKeyTaken: true},
 		}
