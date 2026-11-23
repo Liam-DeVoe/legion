@@ -934,8 +934,9 @@ legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
-  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's newest phases
+  row names (the row of the step it works now, or worked last) is sent that entry's work, which the
+  daemon does on every admission pass and on a sweep
   each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
   stops naming it.
 
@@ -1447,7 +1448,8 @@ These arrive as messages on the Dispatch issue:
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
-  topic of the claim of the agent that works that role's step, and posted this record of it. Nothing
+  topic of the claim of the agent that works that role's step that started last, and posted this
+  record of it. Nothing
   is held: the phase the move opened started its worker, and each agent answers in its own turn. No
   hook writes to an architect: the daemon's own wake to an architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
@@ -1473,7 +1475,8 @@ These arrive as messages on the Dispatch issue:
   the review's own word for the code it read. A review-App review whose footer names another head,
   or none, is set aside and decides nothing, logged at warn as `workflow: a review decides nothing:
   footer names <sha>, not the head <sha>` or `… footer names no head`, with `footer_head` and
-  `head`; the reason is kept on the reviewer's row and named in the stuck notice the architect
+  `head`; the reason is kept on the phases row of the reviewer step whose round it is and named in
+  the stuck notice the architect
   gets, and the remedy is the reviewer submitting again at the head it read, which it takes from
   `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
   that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
@@ -1518,7 +1521,8 @@ These arrive as messages on the Dispatch issue:
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
   commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
-  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
+  footer names the session the reviewer's claim records), the phases row of the reviewer step whose
+  round it is holds the task of
   an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
   round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
   included, and the reviewer writes the number of the newest such sentence of its session into the
@@ -1565,17 +1569,18 @@ These arrive as messages on the Dispatch issue:
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, as when a request for changes ended a review round the
   reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
-  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
-  names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and then what decided it, which is one of five readings: the
+  an entry behind the one the phases row of the step the task stands at names, and nothing is
+  recorded. The refusal names the issue, the role and the phase, the entry the completion is of
+  and the entry that row is on, and then what decided it, which is one of five readings: the
   completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue; it names no commit at all, so it says nothing about any head; the phase
   ends with no handoff record this role writes — retro and merging — so nothing the completion
   names says which entry's work it is, and no head it reports on answers for it; the move
   that handed the phase out again moved the issue back, which asks for this phase's work to be
   done again whatever head the completion names; or the entry the completion serves is of
-  another step of the same role in the task, such as step 1 of `implementer:a reviewer
-  implementer:a` once step 3 runs, whose work is not the work of the step the task stands at.
+  another of the role's steps or its retro, or of a run of this step that the task left for one of
+  them, such as step 1 of `implementer:a reviewer implementer:a` once step 3 runs, whose work is
+  not the work the task stands at.
   When the task of that entry already waits on the claim, the refusal says the turn began
   before it reached the session. It then tells the worker what to do in the same words the
   `legion` tool's description gives for the code
@@ -1588,15 +1593,16 @@ These arrive as messages on the Dispatch issue:
   A completion at the head the record holds is taken rather than refused, where the phase ends
   with a handoff record this role writes and no move back raised the entry it is behind: the
   phase was handed out again at that same head, so the work the new entry's task asks for is the
-  work that turn did. The same code on a completion of an entry above the one the phases row
-  names is one the record never produces, since the daemon raises the row in the transaction
+  work that turn did. The same code on a completion of an entry above the one the row of the step
+  the task stands at names is one the record never produces, since the daemon raises the row in
+  the transaction
   that composes the entry's task; that refusal tells the worker to end the turn and tell the
   architect. Either refusal comes only while the role works the phase the issue stands in. A
-  completion of another entry than the role's phases row names, from a role that no longer
+  completion of an entry that no phases row of the role stands on, from a role that no longer
   works the issue's phase — a taken completion sent again once it has moved the issue on, or one
   naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
   workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
-  completion changed nothing`, and nothing is recorded: the task of that role's entry was
+  completion changed nothing`, and nothing is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none. Where two agents of one role run its steps, as `implementer:a tester:b implementer:b`
   does, a turn of one agent's step that completes while the task stands at the other agent's
