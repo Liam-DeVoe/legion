@@ -780,12 +780,12 @@ const legionIssue = z.object({
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller; and from contract 211 `task-stopped` once its owner stopped its task with
-   * stop_task, and `children` while a parent whose plan has no acceptance step waits, before its
-   * retro, for the issues beneath it. A caller whose contract (the one it states, else its pod's
-   * lowest) is below 211 is served an issue held for either of those two with no `holdReason`
-   * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
-   * the hold took the issue out of, and is absent for an issue that is not held. The linger
-   * suppression is `holdReason`'s alone:
+   * stop_task, and `children` while a parent whose task's last step is not an acceptance waits,
+   * before its retro, for the issues beneath it. A caller whose contract (the one it states, else
+   * its pod's lowest) is below 211 is served an issue held for either of those two with no
+   * `holdReason` (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it
+   * is the phase the hold took the issue out of, and is absent for an issue that is not held. The
+   * linger suppression is `holdReason`'s alone:
    * the reason is absent while the issue's tree lingers or is closed, until it is re-admitted,
    * since it is a decision someone must act on and a lingering tree has none; the phase is a fact
    * of the record that costs one word, so every issue at `phase: held` names the phase that

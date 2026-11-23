@@ -3043,18 +3043,18 @@ package api
 // hold it and the two new routes' requests; no recorded request field leaves.
 // One value set of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gets
 // wider: an issue's `holdReason` takes `task-stopped` (its owner stopped its task) and `children`
-// (a parent whose plan has no acceptance step waits, before its retro, for the issues beneath it)
-// beside `escalated`. Every reader below 211 reads the field with `z.literal("escalated")`, which
-// admits that one value as an enumeration of one would, and the reader of 211 reads it with a
-// `z.enum` of the three, so the field is a row of answers.go's EnumeratedFields: `escalated` is
-// recorded at the floor, and the two new words at 211. A caller whose contract (the one it states,
-// else its pod's lowest) is below 211 is served an issue held for either new reason with no
-// `holdReason`, as a hold of no reason is served (shaping.go's valueStrips,
-// `withoutUnadmittedHoldReason`).
+// (a parent whose task's last step is not an acceptance waits, before its retro, for the issues
+// beneath it) beside `escalated`. Every reader below 211 reads the field with
+// `z.literal("escalated")`, which admits that one value as an enumeration of one would, and the
+// reader of 211 reads it with a `z.enum` of the three, so the field is a row of answers.go's
+// EnumeratedFields: `escalated` is recorded at the floor, and the two new words at 211. A caller
+// whose contract (the one it states, else its pod's lowest) is below 211 is served an issue held
+// for either new reason with no `holdReason`, as a hold of no reason is served (shaping.go's
+// valueStrips, `withoutUnadmittedHoldReason`).
 // A second value set gets wider with it: `admission.held`'s `reason` takes
-// `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
-// with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
-// that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
+// `children_before_retro` (a parent whose task's last step is not an acceptance, held before its
+// retro, with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a
+// task that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
 // plugin reads the word as a `z.enum`, so a caller whose contract is below 211 is served each row
 // of either word as `unclassified` with no `heldBy`, the row it read for that issue before
