@@ -301,6 +301,25 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }
 
+// recipientPublisher is a notice publisher that names the session the listener forwarded a
+// publish to (notify.HTTPPublisher.PublishTo).
+type recipientPublisher interface {
+	PublishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error)
+}
+
+// publishTo is publish, held back as publish is, that answers the session the listener forwarded
+// the message to where the publisher can say ("" where it cannot): the owner-step's executor
+// records it on the step's run (ownerStepTold).
+func (r *outbox) publishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return "", err
+	}
+	if named, ok := r.notices.(recipientPublisher); ok {
+		return named.PublishTo(ctx, topic, message, payload, dedupeKey)
+	}
+	return "", r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
 // publishKept is publish with keep (notify.Publisher.PublishKept), hookPrompt's publish through
 // publishKeptToRole, held as publish is: a topic heldBack refuses is not published, kept or not,
 // and answers the gate's notify.ErrNoHolder.
@@ -1753,8 +1772,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
-// run has ended (ownerStepRuns). It waits besides until its architect's slot's gh files hold the
-// App of its step, the owner's own App among them, under either runtime: the review App, which the
+// run has ended (ownerStepRuns); one the listener takes records on its run the launch and the
+// session of the owner it reached (ownerStepTold). It waits besides until its architect's slot's
+// gh files hold the App of its step, the owner's own App among them, under either runtime: the
+// review App, which the
 // steps of the planner, the tester, the reviewer and acceptance, a role of the deployment or of the
 // plan that acts as that App, and the owner's retro act as (ownApp). The slot is written first
 // only for a step of another role's App, and the runtime judges the App it writes as it writes it
@@ -1963,14 +1984,64 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's notice row %d waits for the write of its slot back to its own App", errNoticeWaits, architect, row.ID)
 	}
 	// An owner's step is told once the owner's slot holds the App of the step's role, so the
-	// owner's gh acts as that App for the whole step (ownerSlotHolds).
+	// owner's gh acts as that App for the whole step (ownerSlotHolds). The owner's claim is read
+	// before the publish, and the publish answers the session the listener forwarded it to; which
+	// of the two the step's run records is ownerStepTold's.
+	var told supervise.Claim
+	var recipient string
+	var published error
+	topic, summary := notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue)
 	if payload.Kind == record.OwnerStepNotice {
 		if holds, err := r.ownerSlotHolds(ctx, row, payload, architect); err != nil || !holds {
 			return err
 		}
+		told = r.supervisedClaim(architect).Claim
+		recipient, published = r.publishTo(ctx, topic, summary, notice, key)
+	} else {
+		published = r.publish(ctx, topic, summary, notice, key)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	if published == nil && payload.OwnerStep != nil {
+		if err := r.ownerStepTold(ctx, row.Issue, *payload.OwnerStep, told, recipient); err != nil {
+			return err
+		}
+	}
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+}
+
+// ownerStepTold records on the run step names whom its owner-step reached
+// (record.Store.MarkOwnerStepTold), in a transaction of its own before the row is finished. A
+// published row is deleted, so this is what the owner's catch-up at a later ready reads to tell
+// the step only to a session that was not given it (workflow's claimReady): between the publish
+// and the row's deletion the row itself is still queued, which that ready reads as the step being
+// told already.
+//
+// Whom it reached is recipient, the session the listener says it forwarded the publish to
+// (notify.HTTPPublisher.PublishTo), where it names one. told, the owner's claim as it was read
+// before the publish, adds its launch only where that claim runs in recipient's session: a
+// relaunch into a fresh session during the publish can hand the role to the fresh session before
+// the listener forwards, and the claim read before names the session it left, whose launch is not
+// the fresh session's. So the fresh session is recorded, by its session alone, and its ready tells
+// it nothing more. That read and the forward cannot be made one step here: the role passes from
+// one session to the next between the agent's plugin and the listener, under no lock and in no
+// transaction of the daemon's, which is why the listener's own answer is what is recorded. A
+// listener that names no recipient — one older than the field — leaves told alone, launch and
+// session, so the same relaunch then tells the fresh session the step once more: a repeat, never
+// a step left untold. A claim this daemon does not supervise, with no recipient named, records
+// nothing, and its next ready tells the step again.
+func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim, recipient string) error {
+	mark := record.OwnerTold{Launch: told.Generation, Session: told.Session}
+	if recipient != "" && !told.HoldsSession(recipient) {
+		mark = record.OwnerTold{Session: recipient}
+	}
+	if mark.Launch == 0 && mark.Session == "" {
+		return nil
+	}
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.records.MarkOwnerStepTold(ctx, tx, issue, step, mark)
+	}); err != nil {
+		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
+	}
+	return nil
 }
 
 // ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it

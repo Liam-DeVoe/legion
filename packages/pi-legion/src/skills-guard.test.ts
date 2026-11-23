@@ -928,6 +928,16 @@ test("the architect's wake table sends each owner-plan notice to where its handl
   ]).toEqual([]);
 });
 
+// The controller restarts a tree only for a root's architect. The section on an architect's
+// `worker-died` opens with the root, and a child's own architect takes `fresh_session` instead.
+test("the controller restarts a tree only for a root's architect", () => {
+  expect(
+    lacks("legion-controller/references/wakes.md", [
+      /## `worker-died` \(architect\) On a root, [^#]*restart the tree: `set_status` the root[^#]*A child's own architect whose restarts[^#]*`fresh_session` with the child's key/,
+    ])
+  ).toEqual([]);
+});
+
 // A duty moved out of a skill body into a reference must still ship in that reference: these are
 // the duties the role skills route to their references by name.
 test("each duty a role skill routes to a reference stands in that reference", () => {

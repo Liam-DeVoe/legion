@@ -423,11 +423,14 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // one released claim the workflow names (workflow.BackstopClaim): at the owner's own place (a step
-// or a retro the issue's owner does) the owner, which may wait there on something no CI settlement
-// reports, a deploy say; at any other place the worker of the pod's open phase
-// (workflow.OpenRoleOf: at step the role of the running step, read with the issue). An architect
-// off its own place gets none: nothing of its own is due, and a sub-architect woken for nothing
-// would hold a pod open for the backstop period. Neither does an issue whose phase no role works.
+// of the key owner other than its acceptance, or the owner's retro) the owner, which may wait
+// there on something no CI settlement reports, a deploy say; at any other place the worker of the
+// pod's open phase (workflow.OpenRoleOf: at step the role of the running step, read with the
+// issue). An architect off its own place gets none: nothing of its own is due, and a sub-architect
+// woken for nothing would hold a pod open for the backstop period. Neither does the owner at its
+// acceptance: a parent can wait there while its children run, and their notices wake it, so a
+// backstop would wake it for nothing at each release. Neither does an issue whose phase no role
+// works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.

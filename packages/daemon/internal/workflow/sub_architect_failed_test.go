@@ -19,9 +19,10 @@ import (
 // A child's own architect's claim failing holds nothing, even at accepting where its acceptance is
 // its own. While that claim no longer holds its role the child's notices go on up to the architect
 // above it, an owner-step aside, which goes to the child's own architect alone (noticeArchitect):
-// when that claim has failed, it is told the step again when it runs again. The architect above
-// must hear why: the failure is one worker-died on the child, naming
-// the architect, the child's phase and the failure the fact carries, whose reason names the child.
+// when that claim has failed, it is told the step again when it runs again, where its session has
+// not had it (claimReady). The architect above must hear why: the failure is one worker-died on
+// the child, naming the architect, the child's phase and the failure the fact carries, whose
+// reason names the child.
 // For a child at a place its own architect does not end alone, as here in testing, the reason says
 // its notices come to the reader until it runs again, and that the daemon starts it again at the
 // child's next phase start; at a step of its own or its retro the daemon starts it again at once,
@@ -63,7 +64,8 @@ func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 		// One row in the whole outbox: the worker-died, and no controller copy beside it.
 		assertOutboxKinds(t, pool, []string{string(record.OutboxKindNotice)})
 		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Testing,
-			Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start",
+			Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
+				"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move",
 			Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
 				LaunchFailures: record.FailureBudget{Count: 1, Limit: 3},
 				Deaths:         record.FailureBudget{Count: 3, Limit: 3},

@@ -25,9 +25,12 @@ decides (after a failure, for example, or after your own exit retired it), the a
 you takes your child's notices until a later start of your role brings you back, all but an
 `owner-step`, which goes to you alone and waits for you while its step runs; when your claim
 has failed, you are told that step again when you run again.
-After a failure, your child's next phase start is such a start, or, where your child stands at a
-step of yours or its retro, the daemon's own start at once, a few times at most in that step's
-run, and then the operator's retry. When your child leaves the workflow,
+After a failure, your child's next phase start is such a start. Where your child stands at a step
+of yours other than its acceptance, or at its retro, the daemon starts you again at once, a few
+times at most in that step's run. After those, the operator's retry or the controller's
+`fresh_session` starts you. At its acceptance the daemon does not start you at once. Its next
+phase start waits for an architect above you to sign it off or move it back. When your child
+leaves the workflow,
 your claim stops as workflow's `leave` decides. A start resumes this session, and you start in a
 new session, which has read none of your earlier work, only once supervise's `forgetSession` has
 dropped this one. The agent of your child's first step may already be working when you start.

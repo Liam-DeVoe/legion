@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // StepPlace is one place of a task where a step runs: the task, the kind of step (step, retro or
@@ -56,12 +58,14 @@ type StepStart struct {
 // of the record, its id among them, and the moment; a start writes nothing else (workflow's
 // startStep) — which the roll forward of a rollback ends the record under where an earlier
 // release ended the run (store migration 20261117064152_step_starts_roll_forward). The new run
-// starts with none of the owner's restarts spent (CountOwnerRestart). It is called in the
-// transaction that writes the start's record.
+// starts with none of the owner's restarts spent (CountOwnerRestart), and with no owner-step of it
+// told to any claim (MarkOwnerStepTold). It is called in the transaction that writes the start's
+// record.
 func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
 	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
-		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open', owner_restarts = 0
+		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open', owner_restarts = 0,
+		owner_told_launch = 0, owner_told_session = ''
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts); err != nil {
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
@@ -132,6 +136,47 @@ func (s *Postgres) ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue stri
 	return nil
 }
 
+// OwnerTold is whom an owner-step of a step's run reached: the session the listener forwarded it
+// to, and the launch generation of the owner's claim where that claim ran in that session when
+// the outbox read it, 0 where it did not (the daemon's ownerStepTold). The zero OwnerTold is a run
+// no owner-step has reached.
+type OwnerTold struct {
+	Launch  uint64
+	Session string
+}
+
+// MarkOwnerStepTold records that the owner-step of the run step names reached told, for the
+// publish the listener took (the daemon's ownerStepTold, which says what told names). It
+// writes only while that run is the place's open run, so a notice of a run that ended, or of a
+// run a later start replaced, marks nothing. A published row is deleted, so this is the one
+// record that a session holds the notice, which the owner's catch-up at a launch reads
+// (workflow's claimReady, OwnerStepTold).
+func (s *Postgres) MarkOwnerStepTold(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep, told OwnerTold) error {
+	if _, err := tx.Exec(ctx, `update step_starts set owner_told_launch = $6, owner_told_session = $7
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and starts = $5 and run = 'open'`,
+		issue, step.Task, step.Kind, step.Place, step.Starts, int64(told.Launch), storetext.Text(told.Session)); err != nil {
+		return fmt.Errorf("record the owner-step of %s %s/%s/%d told: %w", issue, step.Task, step.Kind, step.Place, err)
+	}
+	return nil
+}
+
+// OwnerStepTold is the owner's claim the owner-step of the latest run of place on issue last
+// reached (MarkOwnerStepTold): the zero OwnerTold where none has, or the place has no row.
+func (s *Postgres) OwnerStepTold(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (OwnerTold, error) {
+	var launch int64
+	var told OwnerTold
+	err := tx.QueryRow(ctx, `select owner_told_launch, owner_told_session from step_starts
+		where issue = $1 and task = $2 and kind = $3 and place = $4`, issue, place.Task, place.Kind, place.Place).Scan(&launch, &told.Session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OwnerTold{}, nil
+	}
+	if err != nil {
+		return OwnerTold{}, fmt.Errorf("read whom the owner-step of %s %s/%s/%d reached: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	told.Launch = uint64(launch)
+	return told, nil
+}
+
 // StepEntry is one run of a step of an issue: the place it runs at and the count of starts of that
 // place that began it (StepStart.Starts). The zero StepEntry is no run the record counts.
 type StepEntry struct {
@@ -194,7 +239,7 @@ func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, pl
 // one opened it.
 func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error) {
 	var starts int64
-	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open', owner_restarts = 0
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open', owner_restarts = 0, owner_told_launch = 0, owner_told_session = ''
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts)
 	if errors.Is(err, pgx.ErrNoRows) {
