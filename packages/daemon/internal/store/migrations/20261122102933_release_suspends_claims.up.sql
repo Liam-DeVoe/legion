@@ -23,22 +23,26 @@
 -- record of a release the release before wrote names no claim, the empty string.
 --
 -- The release before names each column it reads and writes, so it never reads pod_releases.claims
--- and writes it at its default. It does read issue_releases.suspended as roles.
+-- and writes it at its default. It does read issue_releases.suspended as roles, and the update
+-- below rewrites the mark of every project's release, not only the project of the daemon that runs
+-- it: a daemon of the release before left running on the same database would match no claim by
+-- the tokens of its own mark, and would append roles to it, which this release then reads as no
+-- claim. So every daemon on the database upgrades, and rolls back, together (docs/kubernetes.md).
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It writes each mark in flight
--- back as the role each of its tokens names, the token's last part (claim.Token.Cut), each once, in
--- the order the stops recorded them, since the release before reads the set as roles and finds the
--- claim of a role by the token it builds from that role. The role a claim stores is not that role
--- where this release moved the claim to the step its key works (supervise.Machine.Rerole writes
--- claims.role): it is the step's role, the last part of another claim's token. This way back runs
--- before 20261117213545's, which puts each claim back in its token's role. It then drops
--- pod_releases.claims and deletes this migration's version row, which is what makes the version the
--- store reports that release's own again, and is owed to the roll-forward, which then runs this file
--- again. What the way back costs is the claims each record named, which the roles it keeps stand
--- for.
+-- paragraph (migrations.WayBack), run with every daemon on that database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It writes each mark
+-- in flight back as the role each of its tokens names, the token's last part (claim.Token.Cut),
+-- each once, in the order the stops recorded them, since the release before reads the set as roles
+-- and finds the claim of a role by the token it builds from that role. The role a claim stores is
+-- not that role where this release moved the claim to the step its key works
+-- (supervise.Machine.Rerole writes claims.role): it is the step's role, the last part of another
+-- claim's token. This way back runs before 20261117213545's, which puts each claim back in its
+-- token's role. It then drops pod_releases.claims and deletes this migration's version row, which
+-- is what makes the version the store reports that release's own again, and is owed to the
+-- roll-forward, which then runs this file again. What the way back costs is the claims each record
+-- named, which the roles it keeps stand for.
 --
 -- begin;
 -- update issue_releases m set suspended = coalesce((select array_agg(r.role order by r.first) from (select substring(t.token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$') as role, min(t.n) as first from unnest(m.suspended) with ordinality t(token, n) group by 1) r where r.role is not null), '{}');

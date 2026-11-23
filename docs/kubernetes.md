@@ -3303,6 +3303,13 @@ The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABL
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issue_releases`, `pod_releases`, `pod_resumes`, `pod_wake_backstops`, `plan_steps` and `claims` are one table each for all of them.
+The five migrations of the release that names each step's agent, `20261117213545_plan_step_agent`, `20261121183336_pod_resume_claim`, `20261122072945_pod_wake_backstop_claim`, `20261122074350_one_open_resume_per_claim` and `20261122102933_release_suspends_claims`, and their way backs act on every project's rows, not only on the rows of the project whose daemon ran them: `20261122102933_release_suspends_claims` rewrites the mark of every project's release in flight, `issue_releases.suspended`, from roles to tokens, and its way back writes every mark back as roles.
+So once one daemon has run that migration, a daemon of the same database that is still on the earlier release reads the tokens in its own marks as roles and matches no claim by them: its cancel of a release resumes no claim it suspended, and each of its later stops appends a role to a list of tokens, which this release then reads as no claim, when that daemon upgrades.
+A daemon left on this release while another rolls back fails the same way, in the other direction.
+Deploy, roll back and roll forward every daemon of one database in the same change, and run those way backs only when all of those daemons are stopped.
+
 **Each issue's experiment assignments in the state (daemon API contract 141).**
 A release at contract 141 carries, on every issue of `GET /legion/v1/state`, `assignments`:
 one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:

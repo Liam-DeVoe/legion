@@ -22,12 +22,12 @@
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the delete of
--- this migration's row go together: the delete is what makes the version the store reports that
--- release's own again, and both are owed to the roll-forward, which then runs this file again and
--- adds the column at its default. What the drop costs is the claim of each resume open at the
--- rollback, which the roll-forward reads as each claim of its role's.
+-- paragraph (migrations.WayBack), run with every daemon on that database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the
+-- delete of this migration's row go together: the delete is what makes the version the store
+-- reports that release's own again, and both are owed to the roll-forward, which then runs this
+-- file again and adds the column at its default. What the drop costs is the claim of each resume
+-- open at the rollback, which the roll-forward reads as each claim of its role's.
 --
 -- begin;
 -- alter table pod_resumes drop column if exists claim;

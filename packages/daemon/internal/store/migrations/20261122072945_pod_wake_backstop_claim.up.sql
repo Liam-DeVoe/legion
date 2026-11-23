@@ -27,14 +27,14 @@
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before allows one
--- open backstop per role, so the way back first deletes every open backstop of a role but the
--- newest, the one the latest release or stop armed; then it puts that one index back over every row
--- and drops the column. The drop and the delete of this migration's row go together: the delete is
--- what makes the version the store reports that release's own again, and both are owed to the
--- roll-forward, which then runs this file again. What the way back costs is the claim of each open
--- backstop and every older open backstop of a role, which a release arms again.
+-- paragraph (migrations.WayBack), run with every daemon on that database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before
+-- allows one open backstop per role, so the way back first deletes every open backstop of a role
+-- but the newest, the one the latest release or stop armed; then it puts that one index back over
+-- every row and drops the column. The drop and the delete of this migration's row go together: the
+-- delete is what makes the version the store reports that release's own again, and both are owed
+-- to the roll-forward, which then runs this file again. What the way back costs is the claim of
+-- each open backstop and every older open backstop of a role, which a release arms again.
 --
 -- begin;
 -- delete from pod_wake_backstops b where not b.fired and exists (select 1 from pod_wake_backstops n where not n.fired and n.project = b.project and n.issue = b.issue and n.role = b.role and n.id > b.id);

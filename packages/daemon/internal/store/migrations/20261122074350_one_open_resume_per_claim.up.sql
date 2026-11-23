@@ -26,15 +26,15 @@
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before allows one
--- open resume per role, so the way back first closes every open resume of a role but the newest, at
--- the time of the newer, as 20261105183200 closed them; then it drops this index and puts the one
--- open resume per role back over every row. A rollback past 20261121183336 runs this block before
--- that migration's own. The delete of this migration's row is what makes the version the store
--- reports that release's own again, and is owed to the roll-forward, which then runs this file
--- again. What the way back costs is the wake of each older open resume of a role, which a later wake
--- of its claim takes again.
+-- paragraph (migrations.WayBack), run with every daemon on that database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before
+-- allows one open resume per role, so the way back first closes every open resume of a role but
+-- the newest, at the time of the newer, as 20261105183200 closed them; then it drops this index and
+-- puts the one open resume per role back over every row. A rollback past 20261121183336 runs this
+-- block before that migration's own. The delete of this migration's row is what makes the version
+-- the store reports that release's own again, and is owed to the roll-forward, which then runs
+-- this file again. What the way back costs is the wake of each older open resume of a role, which
+-- a later wake of its claim takes again.
 --
 -- begin;
 -- update pod_resumes older set closed_at = newer.at from pod_resumes newer where older.first_turn_at is null and older.closed_at is null and newer.first_turn_at is null and newer.closed_at is null and older.project = newer.project and older.issue = newer.issue and older.role = newer.role and older.id < newer.id;
