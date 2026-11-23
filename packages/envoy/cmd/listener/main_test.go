@@ -20,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -338,7 +339,7 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -1445,7 +1446,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1519,7 +1520,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1548,7 +1549,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	testwait.Eventually(t, "the watcher to cache ses_known", func() bool {
 		return get("ses_known").Code == http.StatusOK
 	})
-	client.Close()
+	bustest.Close(t, client)
 	if rec := get("ses_known"); rec.Code != http.StatusOK {
 		t.Fatalf("cached session with NATS down: status %d %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -1625,7 +1626,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	rowsWritten := time.Now().Add(-3 * time.Minute)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return rowsWritten }))
 	if err != nil {
@@ -1756,7 +1757,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -1897,7 +1898,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
@@ -2250,12 +2251,12 @@ func TestDurableConsumerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect publisher bus: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 	firstListener, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to connect first listener bus: %v", err)
 	}
-	t.Cleanup(firstListener.Close)
+	t.Cleanup(func() { bustest.Close(t, firstListener) })
 
 	consumer := "listener-durable-restart-test"
 	_ = publisher.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2315,7 +2316,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 		t.Fatalf("expected first delivery before restart, got %d", firstCount)
 	}
 
-	firstListener.Close()
+	bustest.Close(t, firstListener)
 	testwait.Until(t, "the durable consumer to be released once the first listener closed", func() (string, bool) {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {
@@ -2355,7 +2356,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect second listener bus: %v", err)
 	}
-	t.Cleanup(secondListener.Close)
+	t.Cleanup(func() { bustest.Close(t, secondListener) })
 
 	resub, err := startListenerSubscription(secondListener, consumer, handler)
 	if err != nil {
@@ -2387,7 +2388,7 @@ func TestDurableConsumerSurvivesUnsubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 
 	consumer := "listener-survives-unsubscribe"
 	_ = client.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2429,7 +2430,7 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	for _, tc := range []struct {
 		name     string
 		settings []string
@@ -2530,7 +2531,7 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	consumer := "listener-rebuild-replaces-subscription"
 	_ = client.JS().DeleteConsumer(bus.Stream, consumer)
 	t.Cleanup(func() { _ = client.JS().DeleteConsumer(bus.Stream, consumer) })
@@ -2575,7 +2576,7 @@ func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect first bus: %v", err)
 	}
-	t.Cleanup(first.Close)
+	t.Cleanup(func() { bustest.Close(t, first) })
 
 	consumer := "listener-not-stolen"
 	_ = first.JS().DeleteConsumer(bus.Stream, consumer)
@@ -2599,7 +2600,7 @@ func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect second bus: %v", err)
 	}
-	t.Cleanup(second.Close)
+	t.Cleanup(func() { bustest.Close(t, second) })
 
 	_, err = startListenerSubscription(second, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	if err == nil {
@@ -2628,7 +2629,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 	if err != nil {
 		t.Fatalf("connect the old task: %v", err)
 	}
-	t.Cleanup(old.Close)
+	t.Cleanup(func() { bustest.Close(t, old) })
 	holder, err := startListenerSubscription(old, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	if err != nil {
 		t.Fatalf("bind the durable as the old task: %v", err)
@@ -2682,7 +2683,7 @@ func bindOnRelease(t *testing.T, lane clockLane) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
 	// Each refused attempt reads the durable twice, once in listenerDurable and once in nats.go's
 	// bind, which refuses a durable another subscription holds (v1.55.0 js.go:1611), and nothing
@@ -2715,7 +2716,7 @@ func bindOnRelease(t *testing.T, lane clockLane) {
 		return fmt.Sprintf("%d reads", read), read >= 12
 	})
 	released := time.Now()
-	old.Close()
+	bustest.Close(t, old)
 	outcome := testwait.Receive(t, "the replacement to bind the released durable", done)
 	if outcome.err != nil {
 		t.Fatalf("bind after the old task's exit: %v", outcome.err)
@@ -2749,7 +2750,7 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
 	bind, err := bindListenerDurable(context.Background(), replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
 		logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 200*time.Millisecond)
@@ -2799,7 +2800,7 @@ func bindCancelledInItsWait(t *testing.T, lane clockLane) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(replacement.Close)
+	t.Cleanup(func() { bustest.Close(t, replacement) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2842,7 +2843,7 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	const consumer = "listener-bind-refused"
 	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
 	applyListenerConsumerPolicy(&config, bus.StreamSubjects())
@@ -2873,7 +2874,7 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { bustest.Close(t, owner) })
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -2973,7 +2974,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the replacement: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
@@ -3043,7 +3044,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot migrated listener bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this row that the legacy
 	// durable may be bound again: startListenerSubscription binds once and does not retry a
@@ -4250,7 +4251,7 @@ func TestHealthzConsumerLag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create bus client: %v", err)
 	}
-	defer client.Close()
+	defer bustest.Close(t, client)
 
 	// Create a consumer
 	consumerName := "listener-test-machine"
@@ -4431,7 +4432,7 @@ func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
 		t.Fatalf("open session registry: %v", err)
 	}
 
-	client.Close()
+	bustest.Close(t, client)
 
 	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil); err == nil {
 		t.Fatal("probe after conn close should return error")
@@ -5130,7 +5131,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -5299,7 +5300,7 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	observer := testnats.Connect(t, uri)
 	t.Cleanup(observer.Close)
 

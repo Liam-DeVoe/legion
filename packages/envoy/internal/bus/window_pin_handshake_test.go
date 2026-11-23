@@ -31,7 +31,7 @@ func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 	if err != nil {
 		t.Fatalf("connect through the handshake hold: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { closeClient(t, client) })
 	t.Cleanup(hold.Restore)
 	t.Cleanup(hold.Release)
 	return client, hold

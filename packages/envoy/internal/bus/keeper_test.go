@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"reflect"
 	"slices"
 	"strings"
@@ -110,6 +111,16 @@ func heldFor(t *testing.T, keepers []*Client, js nats.JetStreamContext, stream, 
 	}
 }
 
+// closeClient is bustest.Close, which this package's tests cannot import (bustest imports the
+// bus): it closes client, as a test's cleanup does once the test is over. Close stops the client,
+// closes its connection and returns once its stream keeper has ended (awaitKeeper), which it waits
+// for on no context, so the call runs through the shared wait: a keeper that never ends fails the
+// test naming the close rather than hanging the binary to its timeout.
+func closeClient(t testing.TB, client *Client) {
+	t.Helper()
+	testwait.Returns(t, "the NATS client to close and its stream keeper to end", client.Close)
+}
+
 // keptAtSettings reports whether the stream has the setting program's three copies and byte limit
 // and an id, id itself when it is not empty.
 func keptAtSettings(id string) func(*nats.StreamInfo) bool {
@@ -197,14 +208,36 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 	}
 
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-	var setting *Client
+	// The hook runs on the goroutine the default program's update is bounded on (Bounded), not on
+	// the test's, so it ends no test there: it keeps what the setting program's start answered and
+	// the stream that start left, and the row fails on them once the default program's start has
+	// returned.
+	var (
+		hooked     bool
+		setting    *Client
+		settingErr error
+		left       infoRead
+	)
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
-		if info, err := js.StreamInfo(Stream); err != nil || !keptAtSettings(id)(info) {
-			t.Fatalf("the setting program's start left the stream at %+v (%v), want three copies, the byte limit and the id", info, err)
+		hooked = true
+		setting, settingErr = ConnectOwningStream(cluster.URLs(), WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+		if settingErr == nil {
+			left = readOf(js, Stream)
 		}
 	}}
-	if _, err := ensureStreamWithConfig(t.Context(), defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
+	_, err := ensureStreamWithConfig(t.Context(), defaultStart, &defaults, capsAnUnsetStream, atStart)
+	if setting != nil {
+		t.Cleanup(func() { closeClient(t, setting) })
+	}
+	if hooked {
+		if settingErr != nil {
+			t.Fatalf("the setting program's start: %v", settingErr)
+		}
+		if left.err != nil || !keptAtSettings(id)(left.info) {
+			t.Fatalf("the setting program's start left the stream at %v, want three copies, the byte limit and the id", left)
+		}
+	}
+	if err != nil {
 		t.Fatalf("the default program's start: %v", err)
 	}
 	if n := defaultStart.updates.Load(); n != 1 {
@@ -251,15 +284,33 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 		t.Fatalf("remove the byte limit: %v", err)
 	}
 
+	// The hook runs on the goroutine the keeper's update is bounded on (Bounded), not on the
+	// test's, so it ends no test there: it keeps what the newer release's start answered and the
+	// subjects it left, and the row fails on them once the keeper's pass has returned.
+	var (
+		hooked   bool
+		newerErr error
+		left     []string
+	)
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		if _, err := ensureStreamWithConfig(t.Context(), js, &newer, capsAnUnsetStream, atStart); err != nil {
-			t.Fatalf("the newer release's start: %v", err)
+		hooked = true
+		if _, newerErr = ensureStreamWithConfig(t.Context(), js, &newer, capsAnUnsetStream, atStart); newerErr != nil {
+			return
 		}
-		if subjects := deployedStream(t, js).Config.Subjects; !slices.Contains(subjects, added) {
-			t.Fatalf("the newer release's start left the subjects %v, want %s among them", subjects, added)
+		var info *nats.StreamInfo
+		if info, newerErr = js.StreamInfo(Stream); newerErr == nil {
+			left = info.Config.Subjects
 		}
 	}}
 	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
+	if hooked {
+		if newerErr != nil {
+			t.Fatalf("the newer release's start: %v", newerErr)
+		}
+		if !slices.Contains(left, added) {
+			t.Fatalf("the newer release's start left the subjects %v, want %s among them", left, added)
+		}
+	}
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the limited program's keeper restored %v (%v), want %v", restored, err, want)
 	}
@@ -706,7 +757,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	if err != nil {
 		t.Fatalf("connect owning the stream while the server is down: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { closeClient(t, client) })
 	srv.Start(t)
 
 	reader := testnats.Connect(t, uri)
@@ -735,7 +786,10 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 }
 
 // An owning client that connects in the background and stops before its server ever answered
-// started no keeper, and Close and Drain return at once rather than wait for one.
+// started no keeper, and Close and Drain return at once rather than wait for one. The client dials
+// a listener that answers nothing and counts its dials (dialsCounted), and the row stops it only
+// once its dial loop has dialled again after the constructor's first dial, so a keeper the loop
+// started would be running by the stop.
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
 	for _, stop := range []struct {
 		name string
@@ -745,13 +799,15 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
-			srv, uri := testnats.Start(t)
-			srv.Stop(t)
+			uri, dials := dialsCounted(t)
 			client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithKeepInterval(time.Millisecond))
 			if err != nil {
-				t.Fatalf("connect owning the stream while the server is down: %v", err)
+				t.Fatalf("connect owning the stream while no server answers: %v", err)
 			}
-			time.Sleep(20 * time.Millisecond)
+			testwait.Until(t, "the background client's dial loop to dial again after its first dial", func() (string, bool) {
+				n := dials.Load()
+				return fmt.Sprintf("%d dials", n), n >= 2
+			})
 			stopped := make(chan struct{})
 			go func() {
 				stop.stop(client)
@@ -766,6 +822,30 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 			}
 		})
 	}
+}
+
+// dialsCounted listens on a port of its own, closes every connection it accepts at once and
+// answers none, as a NATS server that never answered would, and returns its NATS URL and how many
+// connections it has accepted so far. It stops listening when the test ends.
+func dialsCounted(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the client's dials: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	var dials atomic.Int64
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			dials.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	return "nats://" + listener.Addr().String(), &dials
 }
 
 // The keeper names the consumer cap it raised, with the deployed value and the new one, so an
