@@ -201,18 +201,19 @@ test("the failing table lists failures and results", async () => {
     socket,
     failing,
     itemsPage([
-      itemRow("build / lint", "job", {
+      itemRow("acme/widgets/build / lint", "job", {
         failures: 3,
         last_failed_at: lastFailed,
         last_run_url: "https://github.com/acme/widgets/actions/runs/51",
         name: "build / lint",
+        repo: "acme/widgets",
         results: 4,
       }),
     ])
   );
   await waitFor(() =>
     expect(cells("PR CI: jobs that failed in the last 24 hours")).toEqual([
-      ["build / lint", "3", "4", "75%", "2 h ago"],
+      ["build / lint", "acme/widgets", "3", "4", "75%", "2 h ago"],
     ])
   );
   expect(
@@ -220,6 +221,29 @@ test("the failing table lists failures and results", async () => {
       screen.getByRole("table", { name: "PR CI: jobs that failed in the last 24 hours" })
     ).getByRole("link", { name: "2 h ago" })
   ).toHaveAttribute("href", "https://github.com/acme/widgets/actions/runs/51");
+});
+
+test("a job of one name that failed in two repositories draws a row of each, under its name and its repository", async () => {
+  const socket = await renderSection([timed("pr-ci", PR_CI)]);
+  const failing = await jobsView(socket, "failures");
+  const lastFailed = new Date(Date.now() - 2.5 * 3600 * 1000).toISOString();
+  // Each row keyed `<repo>/<name>`, as the items route keys a failing job.
+  const job = (repo: string, failures: number, results: number) =>
+    itemRow(`${repo}/build / lint`, "job", {
+      failures,
+      last_failed_at: lastFailed,
+      last_run_url: `https://github.com/${repo}/actions/runs/51`,
+      name: "build / lint",
+      repo,
+      results,
+    });
+  serve(socket, failing, itemsPage([job("acme/widgets", 3, 4), job("acme/gadgets", 1, 5)]));
+  await waitFor(() =>
+    expect(cells("PR CI: jobs that failed in the last 24 hours")).toEqual([
+      ["build / lint", "acme/widgets", "3", "4", "75%", "2 h ago"],
+      ["build / lint", "acme/gadgets", "1", "5", "20%", "2 h ago"],
+    ])
+  );
 });
 
 test('a staging chart whose eval has no data reads "no data", never 0, and an eval the view lacks draws none', async () => {

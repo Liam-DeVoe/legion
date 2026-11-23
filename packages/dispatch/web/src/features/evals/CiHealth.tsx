@@ -109,15 +109,23 @@ const SLOWEST_COLUMNS: ColumnDef<EvalItemRow>[] = [
   },
 ];
 
-/** The failed jobs' columns, as the Pipeline page's list had them: each job's failures, the
- *  results they are of, their share, and its latest failure, linking to its run. */
+/** The failed jobs' columns, as the Pipeline page's list had them: each job's name and the
+ *  repository whose workflow ran it (a row is keyed by both, `<repo>/<name>`, since two
+ *  repositories' workflows can name a job alike), its failures, the results they are of, their
+ *  share, and its latest failure, linking to its run. */
 function failedColumns(nowMs: number): ColumnDef<EvalItemRow>[] {
   return [
     {
-      accessorFn: (row) => row.row_key,
+      accessorFn: (row) => textOf(row, "name"),
       enableColumnFilter: false,
       header: "Job",
       id: "job",
+    },
+    {
+      accessorFn: (row) => textOf(row, "repo"),
+      enableColumnFilter: false,
+      header: "Repository",
+      id: "repo",
     },
     {
       accessorFn: (row) => numberOf(row, "failures") ?? undefined,
