@@ -1,6 +1,6 @@
 ---
 name: legion-worker
-description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, or merger — booted from the daemon's LEGION_* environment.
+description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, acceptance, or merger — booted from the daemon's LEGION_* environment.
 ---
 
 # Legion Phase Worker
@@ -21,7 +21,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
 4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
-   the working copy is the next role's first commit.
+   the working copy is the next commit.
 
 5. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.

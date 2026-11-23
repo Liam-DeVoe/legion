@@ -10,15 +10,16 @@ The architect's acceptance precedes it only where the task names `acceptance:own
 `<issue>` is your `LEGION_ISSUE`.
 The agent of the task's last step of the type implementation does it, as that step's role;
 where there is none, or it is the owner's, the owner does it and completes with `complete_step`, `step: 0`, where this skill says `handoff_complete`.
+Where the retro is yours, what this skill sends the architect is yours to act on.
 Run every step, even on a mechanical change.
 
 Retro commits nothing and pushes nothing:
 where the issue has a pull request, the merger merges the branch's head, and a push would put a commit above the head the last step passed.
-No Legion check compares the head that merges with a review's head, so whether a push after a review needs a new review is the repository's own rule.
+Whether a push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
 In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
-It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon.
+It sets no GitHub or Dispatch label.
 What the work taught is a `dispatch comment` for the skill librarian; no role writes to `docs/solutions/`.
 
 ## When retro stops
@@ -38,17 +39,17 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet:
-     never wait for, watch or poll it, as your role prompt says of CI.
+     never wait for, watch or poll it.
      Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on;
-     when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
+     when CI settles, the daemon tells the architect and any worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
-     `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or, where the task has a tester step, `to: testing` for the tester's result;
+     `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or `to: testing` for the tester's result, where the task has that step, else send it to the architect;
      name the check's block id in the reason.
 
-   - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
+   - With no reviewer step and a pull request, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
      For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
 
 2. **Get a second reading.**
@@ -86,8 +87,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    EOF
    ```
 
+   With no pull request, its last three lines read `none`.
    A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-   Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
