@@ -186,7 +186,9 @@ func TestAWatcherEndedByADeletedBucketIsAnsweredAsTheMissingBucket(t *testing.T)
 func TestTheMissingBucketRepairIsTheRunbooksBreakGlassCreate(t *testing.T) {
 	t.Parallel()
 	logs := &cmdtest.LockedBuffer{}
-	logMissingBuckets(logging.NewWithWriter("test-machine", logs), []string{bus.SessionBucket})
+	missing := &missingBuckets{}
+	missing.observe(bucketReads{missing: []string{bus.SessionBucket}})
+	missing.report(logging.NewWithWriter("test-machine", logs))
 	var line struct {
 		Action string `json:"action"`
 	}

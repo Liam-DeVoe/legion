@@ -112,13 +112,12 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	}
 }
 
-// A registration whose 30-day record cannot be written for any cause but a missing bucket is
-// answered, with the WARN it logged before the bucket could be missing. Here the known-session
-// store's own connection is closed, so its write fails while the bucket is still there, as a write
-// that runs out of the request's budget on a slow hub does after the entry, the interests and the
-// consumer have landed. A missing bucket still refuses the registration
-// (TestAMissingKnownSessionBucketHoldsTheStartAndRefusesARegistration). At 999fd607c2 every failed
-// write refused it with the bus-unavailable 503.
+// A registration whose 30-day record cannot be written is answered, with the WARN it logged before
+// the bucket could be missing. Here the known-session store's own connection is closed, so its
+// write fails while the bucket is still there, as a write that runs out of the request's budget on
+// a slow hub does after the entry, the interests and the consumer have landed. A missing bucket
+// answers it too, and writes nothing (TestAListenerStartsAndServesWithTheKnownSessionBucketMissing).
+// At 999fd607c2 every failed write refused it with the bus-unavailable 503.
 func TestARegistrationIsAnsweredWhenItsRecordWriteFailsWithTheBucketThere(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	storeConn := testnats.Connect(t, rig.url)
@@ -134,7 +133,7 @@ func TestARegistrationIsAnsweredWhenItsRecordWriteFailsWithTheBucketThere(t *tes
 		t.Fatal("control: the store wrote the record over a closed connection, so this test says nothing about a failed write")
 	}
 	if _, err := rig.harness.client.JS().StreamInfo("KV_" + bus.KnownSessionBucket); err != nil {
-		t.Fatalf("control: the known-session bucket is not there, so the refusal would be right: %v", err)
+		t.Fatalf("control: the known-session bucket is not there, so this test says nothing about a write that failed with it there: %v", err)
 	}
 	if _, ok := rig.harness.registry.CachedInterest("ses_record_failed"); !ok {
 		t.Fatal("the answered registration stored no interest row")

@@ -29,6 +29,22 @@ import (
 // missingBucketLine at ERROR, which the AWS listener's bucket-missing alarm pages on
 // (infra/aws/rendering/metricfilters.go). The operator makes the bucket with `envoy-infra buckets
 // create` (missingBucketRepair).
+//
+// The one exception is optionalCopiedBucket, the known-session bucket: a listener serves without
+// it, missing at its start or lost later, and creates it no more than any other.
+
+// optionalCopiedBucket is the one copied bucket a listener serves without: the known-session
+// bucket, whose store no delivery depends on and which a hub can lack, since older listeners
+// created it only once their NATS user held its grant. Missing at the start or lost later, it holds
+// no start (awaitCopiedBuckets reads it not), /healthz answers 200 "degraded" naming it, the
+// listener logs it once at WARN (missingBuckets.report) and not missingBucketLine, and the store
+// answers no record and writes none (session.KnownSessions.RecordWithin) until it opens the bucket
+// the operator created.
+const optionalCopiedBucket = bus.KnownSessionBucket
+
+// optionalBucketMissingLine is the WARN a listener logs, once in its life, for optionalCopiedBucket
+// found missing.
+const optionalBucketMissingLine = "listener KV bucket is missing; the listener serves without it, and its store answers no record and writes none until the bucket is there"
 
 // missingBucketLine is the ERROR a listener logs for each check that finds a copied bucket missing.
 const missingBucketLine = "listener KV bucket is missing"
@@ -42,11 +58,8 @@ const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--
 // bucketWaitInterval is how often a start that found a copied bucket missing asks again, and
 // missingBucketLogInterval how often it logs missingBucketLine while one stays missing: as often
 // as the self-health monitor checks a serving listener, so the alarm reads one cadence.
-// bucketCheckTimeout bounds each read of a bucket's stream, the known-session bucket's included: a
-// shorter bound for that bucket alone would hold the start for good on a hub slower than it, since
-// a read that fails with no refusal holds the turn. The listener client's JetStream context returns
-// a refused read as bus.ErrPublishDenied, so the start's wait ends it at once and the bound costs
-// such a start nothing.
+// bucketCheckTimeout bounds each read of a bucket's stream: a read that fails holds the start's
+// turn (awaitCopiedBuckets), and at a tick changes nothing the listener holds missing.
 const (
 	bucketWaitInterval       = 2 * time.Second
 	missingBucketLogInterval = 30 * time.Second
@@ -61,6 +74,20 @@ const (
 type missingBuckets struct {
 	mu    sync.Mutex
 	names []string
+	// warned is whether this listener has logged optionalCopiedBucket missing (report,
+	// foundMissingAtStart): it does so once in its life.
+	warned bool
+}
+
+// foundMissingAtStart is the known-session store's open at the start finding optionalCopiedBucket
+// missing (session.KnownSessions.BucketMissing): the bucket is held missing from before the
+// listener serves, so /healthz names it from its first answer, and since the store's open logged
+// its own WARN for it (session.OpenKnownSessions), report logs it no second time.
+func (m *missingBuckets) foundMissingAtStart() {
+	m.observe(bucketReads{missing: []string{optionalCopiedBucket}})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.warned = true
 }
 
 // observe applies reads to the set: each bucket read missing is added, each read present removed,
@@ -87,6 +114,11 @@ func (m *missingBuckets) list() []string {
 	return slices.Clone(m.names)
 }
 
+// required is list without optionalCopiedBucket: the buckets a listener cannot serve without.
+func (m *missingBuckets) required() []string {
+	return slices.DeleteFunc(m.list(), func(bucket string) bool { return bucket == optionalCopiedBucket })
+}
+
 // holdsAnyOf reports whether the latest check found one of buckets missing, read under the lock
 // with no copy of the set: every self-health tick asks it for each cache.
 func (m *missingBuckets) holdsAnyOf(buckets []string) bool {
@@ -98,7 +130,8 @@ func (m *missingBuckets) holdsAnyOf(buckets []string) bool {
 	return anyOf(buckets, m.names)
 }
 
-// count is how many buckets the latest check found missing: the envoy_kv_buckets_missing gauge.
+// count is how many buckets the latest check found missing, optionalCopiedBucket included: the
+// envoy_kv_buckets_missing gauge.
 func (m *missingBuckets) count() int {
 	if m == nil {
 		return 0
@@ -113,9 +146,10 @@ func anyOf(a, b []string) bool {
 	return slices.ContainsFunc(a, func(bucket string) bool { return slices.Contains(b, bucket) })
 }
 
-// err is the missing buckets as the error /healthz and the self-health monitor report, nil when none.
+// err is the required buckets found missing as the error the self-health monitor reports, nil when
+// none: optionalCopiedBucket missing fails no tick, and is logged once instead (report).
 func (m *missingBuckets) err() error {
-	names := m.list()
+	names := m.required()
 	if len(names) == 0 {
 		return nil
 	}
@@ -126,9 +160,9 @@ func (m *missingBuckets) err() error {
 // missing: 200 "degraded", naming them in "error" and listing them in "missing_buckets", with what
 // issuers answers (writeHealth). Degraded and not 503: a running listener still serves every route
 // that needs no missing bucket, reads from its copy within the stale bound included, and answers
-// each write to a missing bucket its 503; a 503 here would take it out of a load balancer's
-// rotation, and have ECS replace the task with one that waits at its start for the same bucket and
-// serves nothing.
+// each write to a missing bucket its 503, but for optionalCopiedBucket, whose store writes nothing;
+// a 503 here would take it out of a load balancer's rotation, and have ECS replace the task with
+// one that waits at its start for the same bucket and serves nothing.
 func writeMissingBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
 	writeHealth(w, http.StatusOK, map[string]any{
 		"status":          "degraded",
@@ -138,11 +172,11 @@ func writeMissingBuckets(w http.ResponseWriter, names []string, issuers func() m
 }
 
 // writeWaitingForBuckets answers /healthz while the start waits for copied buckets it found
-// missing (awaitCopiedBuckets): 503 "waiting", naming them in "error" and listing them in
-// "missing_buckets", with what issuers answers (writeHealth). The wait comes before both starting
-// gates open (openWebhooks, openV1Routes), so every webhook and /v1 route answers 503 "service
-// starting" until they exist: the listener serves nothing, and each reader of /healthz's status is
-// told so:
+// missing (awaitCopiedBuckets), optionalCopiedBucket never among them: 503 "waiting", naming them
+// in "error" and listing them in "missing_buckets", with what issuers answers (writeHealth). The
+// wait comes before both starting gates open (openWebhooks, openV1Routes), so every webhook and /v1
+// route answers 503 "service starting" until they exist: the listener serves nothing, and each
+// reader of /healthz's status is told so:
 //   - GKE's readiness probe (curl -fsS, infra/gcp) takes the pod out of service, and a rollout
 //     waits instead of replacing a pod that serves with one that serves nothing; its startup and
 //     liveness probes read /livez, so the waiting pod is not restarted;
@@ -153,7 +187,7 @@ func writeMissingBuckets(w http.ResponseWriter, names []string, issuers func() m
 //     `docker compose up --wait` fails instead of passing a listener that serves nothing.
 //
 // None of them can repair the wait: only the operator's `envoy-infra buckets create` does, and the
-// ERROR the wait logs for each bucket (logMissingBuckets) pages for it.
+// ERROR the wait logs for each bucket (missingBuckets.report) pages for it.
 func writeWaitingForBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
 	writeHealth(w, http.StatusServiceUnavailable, map[string]any{
 		"status":          "waiting",
@@ -175,7 +209,8 @@ func (e *bucketsMissingError) Error() string {
 }
 
 // listenerCopiedBuckets are the copied buckets this listener opens: all of bus.CopiedBuckets but
-// the CI state bucket, which only a listener with the GitHub webhook route opens.
+// the CI state bucket, which only a listener with the GitHub webhook route opens. The self-health
+// monitor reads each of them; the start waits for all but optionalCopiedBucket (awaitCopiedBuckets).
 func listenerCopiedBuckets(ci bool) []string {
 	return slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string) bool { return bucket == bus.CIStateBucket && !ci })
 }
@@ -186,8 +221,8 @@ func listenerCopiedBuckets(ci bool) []string {
 // the read, so it can find the bucket neither present nor missing: it would cost the tick
 // bucketCheckTimeout and log, every tick, the connection's `envoy nats async error` ERROR for
 // the refused publish and checkCopiedBuckets' WARN for a failed read, ten times the store's own
-// retry. The start's wait lets that read through for the same reason (awaitCopiedBuckets). Once the
-// store opens the bucket, or finds it missing, the monitor reads it again.
+// retry. The start's wait reads that bucket not at all (awaitCopiedBuckets). Once the store opens
+// the bucket, or finds it missing, the monitor reads it again.
 func monitoredBuckets(copied []string, known *session.KnownSessions) []string {
 	if !known.Unreadable() {
 		return copied
@@ -267,18 +302,18 @@ func readBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string
 }
 
 // checkCopiedBuckets is the self-health monitor's read of the copied buckets, each tick: it reads
-// every bucket, applies the reads to missing, and logs missingBucketLine for every bucket missing
-// holds - one this read could not read included, so the alarm keeps firing until a read finds the
-// bucket present. It returns the reads, for the monitor to tell a store whose bucket a read found
-// present (session.KnownSessions.BucketPresent). A tick ctx ended (the shutdown) says nothing,
-// logs nothing and returns no read.
+// every bucket, applies the reads to missing, and logs what missing holds (report) - a bucket this
+// read could not read included, so the alarm keeps firing until a read finds the bucket present.
+// It returns the reads, for the monitor to tell a store whose bucket a read found present
+// (session.KnownSessions.BucketPresent). A tick ctx ended (the shutdown) says nothing, logs nothing
+// and returns no read.
 func checkCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) bucketReads {
 	reads := readBuckets(ctx, js, buckets)
 	if ctx.Err() != nil {
 		return bucketReads{}
 	}
 	missing.observe(reads)
-	logMissingBuckets(logger, missing.list())
+	missing.report(logger)
 	if err := reads.err(); err != nil {
 		logger.Warn("listener could not read whether its KV buckets exist; it keeps what it last read", slog.String("error", err.Error()))
 	}
@@ -289,8 +324,8 @@ func checkCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.Jet
 // copied it monitors (monitoredBuckets: the known-session bucket is left to its store while the
 // store cannot read it), applied to missing (checkCopiedBuckets). A read that finds the
 // known-session bucket there tells the store, which opens it at once if its last attempt found it
-// missing (session.KnownSessions.BucketPresent), so its registrations are answered again within a
-// tick of the operator creating it, rather than at its retry's next attempt, up to five minutes
+// missing (session.KnownSessions.BucketPresent), so it writes and answers its records again within
+// a tick of the operator creating it, rather than at its retry's next attempt, up to five minutes
 // later, while /healthz already reads the bucket there.
 func checkMonitoredBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, copied []string, known *session.KnownSessions, missing *missingBuckets) {
 	reads := checkCopiedBuckets(ctx, logger, js, monitoredBuckets(copied, known), missing)
@@ -299,11 +334,25 @@ func checkMonitoredBuckets(ctx context.Context, logger *logging.Logger, js nats.
 	}
 }
 
-// logMissingBuckets logs missingBucketLine for each bucket of names.
-func logMissingBuckets(logger *logging.Logger, names []string) {
-	for _, bucket := range names {
+// report logs what missing holds: missingBucketLine at ERROR for each bucket a listener cannot
+// serve without, every call, and optionalBucketMissingLine at WARN for optionalCopiedBucket, once in
+// the listener's life.
+func (m *missingBuckets) report(logger *logging.Logger) {
+	for _, bucket := range m.required() {
 		logger.Error(missingBucketLine,
 			slog.String("bucket", bucket),
+			slog.String("action", missingBucketRepair+"; no listener creates a bucket it copies"))
+	}
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	warn := !m.warned && slices.Contains(m.names, optionalCopiedBucket)
+	m.warned = m.warned || warn
+	m.mu.Unlock()
+	if warn {
+		logger.Warn(optionalBucketMissingLine,
+			slog.String("bucket", optionalCopiedBucket),
 			slog.String("action", missingBucketRepair+"; no listener creates a bucket it copies"))
 	}
 }
@@ -311,24 +360,15 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // awaitCopiedBuckets returns once a read finds every bucket of buckets present, or ctx ends. A
 // start runs it before it opens a store, so a missing bucket holds the start at its gates, which
 // answer every route 503, while /healthz names the bucket (missing) and the log carries
-// missingBucketLine every missingBucketLogInterval. It creates nothing: only the operator's
-// `envoy-infra buckets` does.
+// missingBucketLine every missingBucketLogInterval. A read of a bucket that fails holds the turn
+// and is made again on the next, so a read the hub did not answer in time never lets the start go
+// with a bucket missing. It creates nothing: only the operator's `envoy-infra buckets` does.
 //
-// The known-session bucket holds the start as every other bucket does, but for one case: a read of
-// it that fails holds the turn, as a failed read of any other bucket does, and is made again on the
-// next, so a read that waits out bucketCheckTimeout on a slow hub, or one the hub did not answer,
-// never lets the start go with the bucket missing. The one case is a read the listener's JetStream
-// context returns as bus.ErrPublishDenied: a hub whose users were rendered before that bucket's
-// grant (#2643), and not applied since, lets the listener read no part of it, and its store then
-// opens it once the grant arrives (session.OpenKnownSessions).
-//
-// Once the context returns bus.ErrPublishDenied for the known-session bucket, the wait leaves the
-// bucket to its store and reads it no more: on such a hub every later read would be refused, each
-// a permissions violation and the connection's `envoy nats async error` ERROR, every three seconds
-// for as long as another bucket holds the start, and none of them can tell the wait anything. The
-// store's own attempts cover the bucket from its open on (session.KnownSessions), and the
-// self-health monitor's reads once the store can read it (monitoredBuckets).
+// It neither reads nor waits for optionalCopiedBucket, which a listener serves without: that
+// bucket's store finds it at its own open (session.OpenKnownSessions), which no missing bucket and
+// no refused or slow read of it holds, and the self-health monitor reads it from then on.
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
+	buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == optionalCopiedBucket })
 	var logged time.Time
 	for {
 		reads := readBuckets(ctx, js, buckets)
@@ -336,15 +376,11 @@ func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.Jet
 			return err
 		}
 		missing.observe(reads)
-		if slices.Contains(reads.refused, bus.KnownSessionBucket) {
-			delete(reads.unread, bus.KnownSessionBucket)
-			buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
-		}
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
 		}
-		if held := missing.list(); len(held) > 0 && time.Since(logged) >= missingBucketLogInterval {
-			logMissingBuckets(logger, held)
+		if missing.count() > 0 && time.Since(logged) >= missingBucketLogInterval {
+			missing.report(logger)
 			logged = time.Now()
 		}
 		if err := reads.err(); err != nil {

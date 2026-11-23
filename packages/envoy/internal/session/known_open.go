@@ -15,8 +15,8 @@ import (
 // that keeps its records in memory and the sweep that gives back the memory of the records that
 // aged out. It creates no bucket: the operator's `envoy-infra buckets` creates it, with a 30-day
 // TTL (KnownSessionRetention) on file storage (bus.CopiedBucketConfig), and so does a test fixture
-// on a server of its own (internal/bus/bustest). A bucket the server says it does not hold is
-// owed: the store's writes answer bus.ErrBucketMissing until an attempt opens it.
+// on a server of its own (internal/bus/bustest). A bucket the server says it does not hold leaves
+// the store answering no record and writing none until an attempt opens it (BucketMissing).
 //
 // A bucket that does not open - a listener whose NATS user may not open it, on a hub whose grant
 // does not carry the bucket - is no error and stops no start: the store is returned, logs the one

@@ -699,7 +699,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets,
 		if d == nil {
 			// A start that found a copied bucket missing waits for it (awaitCopiedBuckets) and
 			// serves no route meanwhile, so it answers 503 "waiting" rather than merely starting.
-			if names := missing.list(); len(names) > 0 {
+			// The optional bucket holds no start, so it never makes this answer.
+			if names := missing.required(); len(names) > 0 {
 				writeWaitingForBuckets(w, names, issuers)
 				return
 			}
@@ -1439,7 +1440,8 @@ func main() {
 	}
 	// The copied buckets, before any store opens: no listener creates one (missing_buckets.go), so
 	// a start that finds one missing waits here, every route behind its starting gate answering
-	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it.
+	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it -
+	// every one but the known-session bucket (optionalCopiedBucket), which this wait does not read.
 	// Each store below opens through openExisting, which waits here again for a bucket deleted
 	// between this wait and its open, rather than ending the start.
 	// No configuration makes the listener create one: a test or a dev rig provisions its own
@@ -1628,6 +1630,12 @@ func main() {
 	if knownErr != nil {
 		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", knownErr.Error()))
+	}
+	// A store whose open found its bucket missing serves on without it (optionalCopiedBucket): the
+	// bucket is held missing from here, so /healthz answers 200 "degraded" naming it from the first
+	// answer the listener serves, rather than from the self-health monitor's first tick.
+	if known.BucketMissing() {
+		missing.foundMissingAtStart()
 	}
 
 	// The store's watcher fills the records in the background, so wait for a read that delivered

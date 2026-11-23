@@ -224,7 +224,9 @@ one acknowledged. So before `scripts/up-listener.sh` first starts one on a NATS 
 deployment's operator makes them with `envoy-infra buckets create`
 ([`../infra/README.md`](../infra/README.md#envoy-infra-buckets)). A start that finds one missing
 waits, every route answering 503 and `/healthz` 503 `waiting` (its health check fails), and logs
-the ERROR `listener KV bucket is missing` until the bucket exists. `compose/single-node.compose.yml`
+the ERROR `listener KV bucket is missing` until the bucket exists, but for `envoy_known_sessions`:
+a listener starts and serves without it, `/healthz` 200 `degraded` naming it, and logs it once at
+WARN. `compose/single-node.compose.yml`
 runs that command itself, as its `buckets` one-shot, since its NATS is its own.
 
 | Var | Required | Notes |

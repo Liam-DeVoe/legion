@@ -168,8 +168,9 @@ type KnownSessions struct {
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
 	// bucketMissing is whether the last attempt to open the bucket found it missing - the server
-	// says it holds none (bus.ErrBucketMissing) - rather than unreadable to this user: a write is
-	// then owed and refused (writeWithin).
+	// says it holds none (bus.ErrBucketMissing) - rather than unreadable to this user: the listener
+	// then names the bucket missing (BucketMissing), and a read that finds it there wakes the next
+	// attempt (BucketPresent).
 	bucketMissing atomic.Bool
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
@@ -587,15 +588,21 @@ func (s *KnownSessions) Unreadable() bool {
 	return s != nil && s.watch() == nil && !s.bucketMissing.Load()
 }
 
+// BucketMissing reports whether the store's bucket is not open because its last attempt found it
+// missing: the server says it holds none. The store then answers no record and writes none, as an
+// unreadable one does, and retries the open (repairUntilStopped); a nil store answers false.
+func (s *KnownSessions) BucketMissing() bool {
+	return s != nil && s.watch() == nil && s.bucketMissing.Load()
+}
+
 // BucketPresent is the listener's word that a read of the store's bucket's stream found it there
 // (the self-health monitor's tick). A store whose last attempt found the bucket missing, and so
 // never opened it, then attempts again now, as a connection event that found no bucket open does
-// (Rewatch), rather than at its retry's next attempt, which backs off to retryMax: so the
-// registrations it refuses while its bucket is missing are answered again within a tick of the
-// operator creating it, and not up to five minutes after the monitor and /healthz already read it
-// there. Any other store is left as it is: an open one's watcher follows a bucket created again
-// under it by itself, and one that cannot read the bucket is its retry's. The wait for the retry's
-// lock ends with ctx, the tick's.
+// (Rewatch), rather than at its retry's next attempt, which backs off to retryMax: so it writes and
+// answers its records again within a tick of the operator creating the bucket, and not up to five
+// minutes after the monitor and /healthz already read it there. Any other store is left as it is:
+// an open one's watcher follows a bucket created again under it by itself, and one that cannot
+// read the bucket is its retry's. The wait for the retry's lock ends with ctx, the tick's.
 func (s *KnownSessions) BucketPresent(ctx context.Context) {
 	if s == nil || s.watch() != nil || !s.bucketMissing.Load() {
 		return
@@ -677,14 +684,13 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // has delivered the others' writes, and a write made before that compares an older copy, which
 // costs at most one write of a record the bucket already holds.
 //
-// A store whose bucket is not open because its user may not read it yet - a hub whose users were
-// rendered before that bucket's grant (#2643) - writes nothing and answers nil, as a nil store
-// does: its reads answer no record either, so nothing it could write would be read. One whose last
-// attempt found the bucket missing answers bus.ErrBucketMissing instead, and so does a write that
-// failed where a read of the bucket's stream then finds none: the record is owed and cannot be
-// written, so the registration that asks for it is refused rather than answered as if it had
-// been. Any other failure, a write past ctx among them, is answered as itself, and the registration
-// logs it and is answered.
+// A store whose bucket is not open - its user may not read it yet, a hub whose users were rendered
+// before that bucket's grant (#2643), or its last attempt found it missing - writes nothing and
+// answers nil, as a nil store does: its reads answer no record either, so nothing it could write
+// would be read, and the listener serves without the bucket. So does a write that failed where a
+// read of the bucket's stream then finds none, a bucket deleted under the store's watcher: nothing
+// landed, and the listener names the bucket missing from its own read. Any other failure, a write
+// past ctx among them, is answered as itself, and the registration logs it and is answered.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
 	return s.writeWithin(ctx, record, true)
 }
@@ -692,19 +698,10 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // writeWithin is the write both of this store's write paths make. throttled is RecordWithin's
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
-//
-// A registration (RecordWithin) is refused when this answers bus.ErrBucketMissing, as every other
-// write of the registration to a missing bucket is, and logs any other error; a subscription change
-// and a clean stop (TouchWithin) log every error.
+// Each caller logs the error it answers.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
-	if record.SessionID == "" {
-		return nil
-	}
-	if watcher == nil {
-		if s != nil && s.bucketMissing.Load() {
-			return fmt.Errorf("write %s's 30-day record: %w", record.SessionID, bus.ErrBucketMissing)
-		}
+	if record.SessionID == "" || watcher == nil {
 		return nil
 	}
 	now := s.now()
@@ -736,10 +733,11 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	}
 	if err != nil {
 		// A write the bucket's stream did not take is the bucket missing only when a read of that
-		// stream says the server holds none: a bucket deleted under the store's watcher. Any other
-		// failure is that failure, which the registration's caller logs and answers over.
+		// stream says the server holds none: a bucket deleted under the store's watcher, over which
+		// the store writes nothing and the listener serves on (RecordWithin). Any other failure is
+		// that failure, which the caller logs and answers over.
 		if _, read := kv.ReadStreamState(ctx); errors.Is(read, nats.ErrStreamNotFound) {
-			return fmt.Errorf("write %s's 30-day record: %w: %w", record.SessionID, bus.ErrBucketMissing, err)
+			return nil
 		}
 		return err
 	}

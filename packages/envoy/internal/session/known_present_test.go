@@ -17,7 +17,8 @@ import (
 // hour, standing in for the five-minute cap the production retry backs off to: the store stays
 // unopened for the whole control window once the bucket is created, and opens within seconds of
 // BucketPresent. Before BucketPresent nothing woke such a store but its retry or a connection event,
-// so a registration was refused for up to five minutes after /healthz read the bucket there.
+// so it wrote no record for up to five minutes after /healthz read the bucket there. A write while
+// the bucket is missing answers nil and writes nothing: the listener serves without the bucket.
 func TestAStoreWhoseBucketWasMissingOpensWhenToldItIsThere(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
@@ -34,16 +35,22 @@ func TestAStoreWhoseBucketWasMissingOpensWhenToldItIsThere(t *testing.T) {
 	if testwait.Holds(2*time.Second, 50*time.Millisecond, known.Opened) {
 		t.Fatal("control: the store opened the created bucket on its own, inside its retry's hour, so this test says nothing about BucketPresent")
 	}
-	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_before_present"}); err == nil {
-		t.Fatal("control: a record was written before the store opened its bucket")
+	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_before_present"}); err != nil {
+		t.Fatalf("a write before the store opened its bucket = %v, want nil: the store writes nothing and its caller is answered", err)
 	}
 
 	known.BucketPresent(context.Background())
 	if !testwait.Holds(10*time.Second, 50*time.Millisecond, known.Opened) {
 		t.Fatal("the store did not open its bucket within 10 s of BucketPresent, with the bucket there")
 	}
+	if _, ok := known.Get("ses_before_present"); ok {
+		t.Fatal("the write made before the store opened its bucket is in the bucket, want nothing written")
+	}
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_after_present"}); err != nil {
 		t.Fatalf("a record after the store opened its bucket: %v", err)
+	}
+	if _, ok := known.Get("ses_after_present"); !ok {
+		t.Fatal("control: the write after the store opened its bucket is not there, so the check above says nothing")
 	}
 }
 

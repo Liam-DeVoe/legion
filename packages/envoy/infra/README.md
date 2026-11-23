@@ -28,18 +28,14 @@ No listener creates the key-value buckets it keeps a copy of: `envoy_interests`,
 bucket deleted and created again while a listener runs loses every write the deleted bucket
 acknowledged, and the listener told its caller each of them landed. So the
 operator creates them with [`envoy-infra buckets`](#envoy-infra-buckets), the one command that
-does. A listener that finds one missing fails closed:
+does. A listener that finds one missing fails closed, but for `envoy_known_sessions`, which it
+serves without (the last bullet):
 
 - a start waits for each missing bucket with every route answering 503, and a read of any bucket
-  that fails, `envoy_known_sessions` included, holds that turn and is made again on the next, so a
-  read the hub did not answer in time never lets the start go with a bucket missing. The one
-  exception is a read the server refused: `envoy_known_sessions` when the listener's NATS user may
-  not read it, on a hub whose users were rendered before that bucket's grant (#2643) and not
-  applied since. Then the start reads that bucket no more and goes on, and the listener opens it
-  once the grant arrives;
-- a running listener answers 503 to every write that needs a missing bucket, a registration whose
-  30-day record cannot be written included (only that ungranted case stays best effort), and serves
-  reads from its last copy for at most the copy's stale bound, two minutes for these buckets
+  that fails holds that turn and is made again on the next, so a read the hub did not answer in
+  time never lets the start go with a bucket missing;
+- a running listener answers 503 to every write that needs a missing bucket, and serves reads from
+  its last copy for at most the copy's stale bound, two minutes for these buckets
   (`internal/kvwatch/serving.go`), after which they answer 503 too;
 - `/healthz` answers 503 `"waiting"` naming the buckets under `"missing_buckets"` while a start
   waits for them, so every probe that reads its status takes the listener out of service: a Docker
@@ -49,7 +45,14 @@ does. A listener that finds one missing fails closed:
   passes, and 503 when any other check fails. Every check, every 30 seconds, logs the ERROR
   `listener KV bucket is missing` with the bucket's name, until a read confirms the bucket is back.
   The AWS listener's `bucket-missing` alarm pages on that line, and the listener's
-  `envoy_kv_buckets_missing` gauge counts the buckets missing.
+  `envoy_kv_buckets_missing` gauge counts the buckets missing;
+- `envoy_known_sessions` missing, at the start or later, holds no start and fails no request: no
+  delivery depends on its store. `/healthz` answers 200 `"degraded"` naming it under
+  `"missing_buckets"` (the gauge counts it), the listener logs it once at WARN and never the ERROR
+  above, and the known-session store answers no 30-day record and writes none, so a registration
+  is answered, a publish carries no recipient count, and a send to a session with no registry entry
+  answers 404. The store opens the bucket within a check of the operator creating it, with no
+  restart.
 
 A deployment's buckets therefore come from the operator. **The command's proof is best effort**
 until the coming server-side hold lands: it checks only the Kubernetes contexts, hosts and

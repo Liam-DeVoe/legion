@@ -1823,7 +1823,8 @@ absent(nats_stream_last_seq{stream_name="KV_envoy_interests"})
 ```
 
 The listener says the same in its own log, the ERROR `listener KV bucket is missing` naming the
-bucket every 30 seconds until a read confirms it is back, and in its `envoy_kv_buckets_missing`
+bucket every 30 seconds until a read confirms it is back (for `envoy_known_sessions`, which a
+listener serves without, one WARN instead), and in its `envoy_kv_buckets_missing`
 gauge; the AWS listener's `bucket-missing` alarm pages on that line
 ([the module README](../README.md#the-aws-components)). This module renders no alerting policy for
 Google Cloud: the deployment repository's companion change installs this query for its hubs.

@@ -19,9 +19,9 @@ import (
 // the store opens on a server without the bucket, on the production retry schedule (a second,
 // doubling to five minutes), and the operator creates the bucket 16 s in, when the retry's next
 // attempt is 15 s away. The store stays unopened for a 2 s control window, then the tick opens it
-// within 3 s. Before the tick told the store, its registrations were refused until that attempt,
-// and on a store that had been waiting longer, for up to five minutes, while /healthz and the
-// alarm already read the bucket there.
+// within 3 s. Before the tick told the store, it wrote and answered no record until that attempt,
+// and on a store that had been waiting longer, for up to five minutes, while /healthz already read
+// the bucket there.
 func TestTheMonitorOpensAKnownSessionStoreWhoseBucketCameBack(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
