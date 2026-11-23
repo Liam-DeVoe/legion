@@ -132,9 +132,12 @@ func requireStillPending(t *testing.T, consumers *bus.SessionConsumers, sessionI
 // again: envoy-client's LISTENER_CALL_RETRY_DELAY_MS (packages/contracts/src/envoy-session.ts:64).
 const clientResendPause = 250 * time.Millisecond
 
-// registrationSpare is what registerAsTheClientDoes leaves of the test binary's deadline for the
-// row to fail in and run its cleanups when the listener never takes the registration.
-const registrationSpare = 30 * time.Second
+// deadlineSpare is what a wait that ends on its fact leaves of the test binary's deadline for its
+// row to fail in and run its cleanups when the fact never comes: each relay-reply row's
+// registrations (registerAsTheClientDoes), and the publishes (publishUntilAcknowledged) and frames
+// (sessionStandIn.collect) of TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt.
+// It is testwait's own margin, at which that row's other waits give up.
+const deadlineSpare = 30 * time.Second
 
 // registerAsTheClientDoes posts body to the listener's /v1/interests/subscribe as the test's
 // shared-token caller and returns once the listener takes it (200), sending a 5xx again as the
@@ -149,7 +152,7 @@ const registrationSpare = 30 * time.Second
 // makes again, not one it never makes.
 //
 // Each 5xx is sent again after its Retry-After when it carries one, else after the client's own
-// pause (clientResendPause), until registrationSpare before the test binary's deadline, which is
+// pause (clientResendPause), until deadlineSpare before the test binary's deadline, which is
 // the one bound: a listener that never takes the registration fails the row then, naming the last
 // refusal (its status, reason and body) and how many registrations were sent. The client itself
 // ignores Retry-After: envoy-client pauses 250 ms whatever the answer says, and the plugins' next
@@ -168,11 +171,11 @@ func registerAsTheClientDoes(t *testing.T, port int, body string) {
 	if err := json.Unmarshal([]byte(body), &request); err != nil {
 		t.Fatalf("read the session id of the registration %s: %v", body, err)
 	}
-	end := time.Now().Add(testwait.Remaining(t, registrationSpare))
+	end := time.Now().Add(testwait.Remaining(t, deadlineSpare))
 	gaveUp := func(sent int, last string) {
 		t.Helper()
 		line := fmt.Sprintf("the listener took none of %d registrations of %s sent as the client sends them, each 5xx again after its Retry-After or %s, before %s ahead of the test binary's deadline; the last refusal: %s",
-			sent, request.SessionID, clientResendPause, registrationSpare, last)
+			sent, request.SessionID, clientResendPause, deadlineSpare, last)
 		_, _ = os.Stderr.WriteString(line + "\n")
 		t.Fatal(line)
 	}
@@ -231,12 +234,52 @@ func registerAsTheClientDoes(t *testing.T, port int, body string) {
 	}
 }
 
+// untilTheDeadline is the acknowledgement clock of a publisher connectPublisherUntilTheDeadline
+// makes (bus.WithPublishAcknowledgementClock): each stored publish through it is bounded by end,
+// the test binary's deadline less deadlineSpare, in place of the bus's own 5 s (publishBound in
+// internal/bus), so a server that acknowledges late is waited for, and one that never does fails
+// the publish at end.
+type untilTheDeadline time.Time
+
+func (end untilTheDeadline) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(parent, time.Time(end))
+}
+
+// connectPublisherUntilTheDeadline is connectPublisher with that clock, and the moment it ends.
+func connectPublisherUntilTheDeadline(t *testing.T, uri string) (*bus.Client, time.Time) {
+	t.Helper()
+	end := time.Now().Add(testwait.Remaining(t, deadlineSpare))
+	client, err := bus.Connect([]string{uri}, bus.WithName("listener-test-publisher"), bus.WithPublishAcknowledgementClock(untilTheDeadline(end)))
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client, end
+}
+
+// publishUntilAcknowledged publishes item through client, a publisher
+// connectPublisherUntilTheDeadline made, and returns once the stream has acknowledged it, so the
+// server holds it when it returns. It fails the row at end, naming the publish.
+func publishUntilAcknowledged(t *testing.T, client *bus.Client, end time.Time, item contracts.Envelope) {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(t.Context(), end)
+	defer cancel()
+	if err := client.PublishWithin(ctx, item); err != nil {
+		t.Fatalf("publish %s, its acknowledgement waited for until %s before the test binary's deadline: %v", item.Topic, deadlineSpare, err)
+	}
+}
+
 // Two sessions behind one real listener, each holding its own grant. s2 holds a frame unwritten
 // (received, no done) and s1 answers done for it twice: on s2's own reply subject, which s1's
 // grant does not let it publish to, and on its own reply prefix carrying s2's frame token, which
 // its grant does. Neither moves the frame: the server refuses the first and the relay refuses the
 // second, logging it. s2 is still delivered the frame when it registers a new epoch, and its own
 // done acknowledges it.
+//
+// Each wait ends on its fact - a registration taken, a publish acknowledged, a frame received, a
+// refusal seen - bounded only by the test binary's deadline less deadlineSpare, so a server on a
+// loaded machine that answers late is not the row's failure, and one that never answers still
+// fails it, naming the wait. awaitAcked keeps its own 5 s.
 //
 // On main the listener gave every frame a token from one counter shared by every session behind its
 // reply inbox (_INBOX.<inbox>.1, .2, ...) and the session grant let a session publish to every
@@ -248,18 +291,18 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	s1, s2 := newSessionUser(t, "ses_one_"), newSessionUser(t, "ses_two_")
 	uri, listenerURI, listener := startSessionGrantHub(t, "relay-reply-sessions", s1, s2)
 	consumers := observeConsumers(t, listenerURI)
-	publisher := connectPublisher(t, listenerURI)
+	publisher, end := connectPublisherUntilTheDeadline(t, listenerURI)
 	one := startSessionStandInOn(t, s1.connect(t, uri), s1.id, answerDone)
 	two := startSessionStandInOn(t, s2.connect(t, uri), s2.id, func(relayedFrame) []string { return []string{relayReplyReceived} })
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s1.id, "epoch-1"))
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s2.id, "epoch-1"))
 
-	publish(t, publisher, newEnvelope("agent", contracts.LegacyAgentSubject(s1.id), "for one"))
-	ownFrame := one.collect(t, 1, 10*time.Second)[0]
+	publishUntilAcknowledged(t, publisher, end, newEnvelope("agent", contracts.LegacyAgentSubject(s1.id), "for one"))
+	ownFrame := one.collect(t, 1, testwait.Remaining(t, deadlineSpare))[0]
 	awaitAcked(t, consumers, s1.id, ownFrame.seq)
 	held := newEnvelope("agent", contracts.LegacyAgentSubject(s2.id), "for two")
-	publish(t, publisher, held)
-	heldFrame := two.collect(t, 1, 10*time.Second)[0]
+	publishUntilAcknowledged(t, publisher, end, held)
+	heldFrame := two.collect(t, 1, testwait.Remaining(t, deadlineSpare))[0]
 	requireFrames(t, []relayedFrame{heldFrame}, held)
 
 	// Each frame's reply subject is the listener's inbox, the session the frame went to and a
@@ -282,8 +325,10 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	// under a grant admitting every _INBOX. subject it reaches the relay as s2's own done and the
 	// frame is acknowledged away, which this wait names as soon as it sees it.
 	one.reply(heldFrame, relayReplyDone)
-	deadline := time.Now().Add(5 * time.Second)
-	for !slices.Contains(s1.refusals(), heldFrame.msg.Reply) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the server to refuse s1's done on s2's reply subject "+heldFrame.msg.Reply, func() ([]string, bool) {
+		if refused := s1.refusals(); slices.Contains(refused, heldFrame.msg.Reply) {
+			return refused, true
+		}
 		info, err := consumers.Info(t.Context(), s2.id)
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", s2.id, err)
@@ -292,20 +337,20 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 			t.Fatalf("s1's done on s2's reply subject %s acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
 				heldFrame.msg.Reply, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server never refused s1's done on s2's reply subject %s; it refused %v", heldFrame.msg.Reply, s1.refusals())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return s1.refusals(), false
+	})
 	// Second forgery: s1's done on its own reply prefix, which its grant admits, carrying s2's
 	// frame token. The relay refuses it and says so; a relay that took it would acknowledge s2's
 	// frame away, which this wait names as soon as it sees it.
 	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
 	refusedLine := []string{`"msg":"` + relayRefusedReplyLine + `"`, `"session_id":"` + s2.id + `"`, `"reply_session_id":"` + s1.id + `"`}
-	deadline = time.Now().Add(10 * time.Second)
-	for !slices.ContainsFunc(strings.Split(listener.Output.String(), "\n"), func(line string) bool {
-		return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
-	}) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the listener to log that it refused s1's done on "+forged, func() (string, bool) {
+		lines := strings.Split(listener.Output.String(), "\n")
+		if slices.ContainsFunc(lines, func(line string) bool {
+			return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
+		}) {
+			return "the refusal line", true
+		}
 		info, err := consumers.Info(t.Context(), s2.id)
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", s2.id, err)
@@ -314,17 +359,14 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 			t.Fatalf("s1's done on %s, its own prefix carrying s2's frame token, acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
 				forged, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener never logged that it refused s1's done on %s", forged)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("no line with %v in the listener's %d lines of output", refusedLine, len(lines)), false
+	})
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
 	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
 	// frame it never wrote, and s2's own done, the control, acknowledges it.
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s2.id, "epoch-2"))
-	again := two.collect(t, 1, 10*time.Second)[0]
+	again := two.collect(t, 1, testwait.Remaining(t, deadlineSpare))[0]
 	requireFrames(t, []relayedFrame{again}, held)
 	two.reply(again, relayReplyDone)
 	awaitAcked(t, consumers, s2.id, heldFrame.seq)
