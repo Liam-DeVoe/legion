@@ -70,7 +70,6 @@ Each step records one document of the root issue:
 
 | Step | Document |
 | --- | --- |
-| `decisions` | the decisions document (`decisions.md`) |
 | `criteria` | the Verification document (`verification.md`) |
 | `spec` | the primary document |
 
@@ -87,8 +86,7 @@ For each gated step, once every child is filed:
    told it is a spec, for each factual claim. `wait` for each, resolve every finding, and check
    each unverified claim with a command or take it out.
 4. Request approval only once the person has agreed to every point; a new point gets its own
-   decision block first. `--include-verification` covers `spec` and `criteria` in one request;
-   `decisions` takes its own (`--artifact decisions.md`):
+   decision block first. `--include-verification` covers `spec` and `criteria` in one request:
 
    ```bash
    dispatch request-approval --issue <root> --include-verification --summary '<what they approve> Reviews: <gap result>, <claim result>; <what they do not show>.'
@@ -114,9 +112,11 @@ For each gated step, once every child is filed:
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step, with no wake. Two keep it:
-a version whose only change is a person's answer to a decision block, and one equal to the approved
-text (an accidental edit undone exactly).
+An approval is pinned to its version: any new version closes that step, with no wake. Three keep it:
+a version whose only change is the approver's own answer to a decision block, given after the
+approval at a browser or under a credential with the approve scope; one equal to the approved text
+(an accidental edit undone exactly) with no decision block in it decided since; and, after a close
+and a reopen, the approved text with only the questions the close withdrew open again.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it

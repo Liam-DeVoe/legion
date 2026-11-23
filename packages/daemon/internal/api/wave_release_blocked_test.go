@@ -150,8 +150,8 @@ func backlogChild(key string, waits ...string) dispatch.Issue {
 func seedMirrorRow(t *testing.T, h *harness, key, status string) {
 	t.Helper()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: key, Project: testDispatchProject, Status: status, Seq: 1})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}
@@ -658,10 +658,12 @@ func TestWaveReleaseDoesNotRecordAChildFromAWriteALaterEventOvertook(t *testing.
 	h, statuses := releaseHarness(t, true)
 	child := "LEGION-209"
 	statuses.issues[child] = backlogChild(child)
-	// The person's backlog, one event after the release's write (sequence 8), already applied:
-	// the mirror holds it, and the workflow recorded nothing for a child in backlog.
+	// The person's backlog, one event after the release's write (sequence 8), already applied: the
+	// copy holds it as an issue fact the daemon applied (record.DispatchReading.Applied, as
+	// blockers.Mirror writes an event), and the workflow recorded nothing for a child in backlog.
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{Key: child, Project: testDispatchProject, Status: "backlog", Seq: 9})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: child, Project: testDispatchProject, Seq: 9,
+			Status: record.Carry("backlog"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil), Applied: true})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", child, err)
 	}

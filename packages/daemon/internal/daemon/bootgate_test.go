@@ -151,8 +151,16 @@ func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
 			env:  func(string, string) map[string]string { return map[string]string{} },
 			want: func(string, string) string { return manifestAt(filepath.Join(passwdHome, ".omp")) },
 		},
-		// Oh My Pi's config root is PI_CONFIG_DIR under HOME when it is set, and its XDG data root
-		// still wins when that exists (getBaseConfigRoot, DirResolver's constructor).
+		// Oh My Pi's config root is OMP_CONFIG_ROOT when it names an absolute directory, else
+		// PI_CONFIG_DIR under HOME when that is set, and its XDG data root still wins when that
+		// exists (getConfigRootOverride, getBaseConfigRoot, DirResolver's constructor).
+		{
+			name: "an absolute OMP_CONFIG_ROOT names the config root, over PI_CONFIG_DIR",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_CONFIG_ROOT": filepath.Join(home, "omp-root"), "PI_CONFIG_DIR": ".omp-alt"}
+			},
+			want: func(home, _ string) string { return manifestAt(filepath.Join(home, "omp-root")) },
+		},
 		{
 			name: "PI_CONFIG_DIR names the config root under HOME",
 			env: func(home, xdg string) map[string]string {
@@ -269,7 +277,11 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 }
 
 // fakeOmp is an `omp` that answers the load probe by a plan, one step per attempt (the last step
-// repeats), and records each attempt's argv, environment, and the probe file it was handed.
+// repeats), and records each attempt's argv, environment, and the probe file it was handed. Every
+// yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
+// missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
+// compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
+// release.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -303,6 +315,9 @@ legion="LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$installed/di
 with_envoy="LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$envoy/dist/envoy.js?mtime=1\n"
 case "$step" in
 yes) printf "$legion$with_envoy" >&2; exit 0 ;;
+# A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
+# second or two, and far inside the rig's.
+yes-slowly) sleep 2; printf "$legion$with_envoy" >&2; exit 0 ;;
 yes-then-linger) printf "$legion$with_envoy" >&2; sleep 30 & echo $! >"$dir/lingering.pid"; exit 0 ;;
 yes-elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/elsewhere/dist/legion.js?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 yes-unowned) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/unowned/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -318,7 +333,8 @@ silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
 hang) exec sleep 30 ;;
-no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 30 ;;
+# Answers, then hangs past the rig's answerBudget, so the budget cuts it only after the answer.
+no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 120 ;;
 esac
 `
 	path := filepath.Join(dir, "omp")
@@ -360,9 +376,10 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 // gateUnder is a gate over a pane environment whose HOME holds a pi-legion manifest declaring
 // legion (raw JSON) and a pi-envoy manifest beside it, each installed as `omp plugin install`
 // installs it — the profile's package directory a link to the unpacked plugin — run through f with
-// f's launch prefix, and a log that records what it said. Its attempt budget is long enough for the
-// fake to answer on a loaded box — a budget that expires before the fake has counted its attempt
-// would shift its plan — and short enough that a hang costs little.
+// f's launch prefix, and a log that records what it said. Its attempt budget is answerBudget, the
+// image probe rig's, so an attempt that answers races no clock: one that answers and then hangs
+// is cut only after its answer. A case whose attempts hang before they answer anything takes
+// hangBudget (hangsUnder).
 func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
@@ -382,7 +399,7 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 		workDir:    t.TempDir(),
 		invocation: f.path,
 		prefix:     []string{f.prefix},
-		timeout:    1500 * time.Millisecond,
+		timeout:    answerBudget,
 		retry:      bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
 		contract:   3,
 		log:        slog.New(slog.NewTextHandler(&logged, nil)),
@@ -792,12 +809,14 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 }
 
 // Oh My Pi dying after it loaded the plugin, with an exit of its own or by a signal (the kernel's
-// out-of-memory kill), or a probe the budget cut off before it answered, says nothing about the
-// plugin: the gate waits it out and asks again.
+// out-of-memory kill), says nothing about the plugin: the gate waits it out and asks again, as it
+// does a probe the budget cut off before it answered (TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime).
+// A pass slower than a second or two passes on the first attempt that answers, as it does on a
+// loaded machine.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
-	for _, step := range []string{"yes-then-die", "yes-then-killed", "hang"} {
+	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
-			f := newFakeOmp(t, step, step, "yes")
+			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
 
 			if err := gate.verify(context.Background()); err != nil {
@@ -810,6 +829,31 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 				t.Errorf("the gate logged %d transient failures, want 2:\n%s", got, logged.String())
 			}
 		})
+	}
+}
+
+// A probe the budget cuts off every time is asked again until the retry budget ends, and the
+// refusal then names that budget and the cut. The attempts are the gate's count, from its refusal
+// and its transient lines: the fake's own count can fall short of it, as an attempt cut off before
+// the fake wrote its count leaves none, and it can never pass it.
+func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
+	plan := []string{"hang"}
+	f := newFakeOmp(t, plan...)
+	gate, logged := gateUnder(t, f, contractCurrent)
+	hangsUnder(&gate, plan, 3)
+
+	err := gate.verify(context.Background())
+
+	for _, want := range []string{"never completed within its retry budget (3 attempts)", "timed out after " + hangBudget.String()} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to say %q", err, want)
+		}
+	}
+	if n := f.attempts(t); n > 3 {
+		t.Errorf("Oh My Pi ran %d times, more than the 3 attempts of the retry budget", n)
+	}
+	if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
+		t.Errorf("the gate logged %d transient failures, want 2 before it gave up:\n%s", got, logged.String())
 	}
 }
 
@@ -991,7 +1035,7 @@ esac
 func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
 	// The live deployment's shape, with a placeholder person, as an operator writes it: the
 	// project, the lane, the credential the gateway bills and the person who owns the spend.
-	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
+	const operator = "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"
 	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
 	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
 	if err != nil {
