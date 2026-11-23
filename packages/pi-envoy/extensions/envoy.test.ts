@@ -6504,7 +6504,12 @@ console.log(JSON.stringify(args));
           },
         },
       ]);
-    }, 30_000);
+      // A hang guard: what can hang is a gated call whose review never answers. Its worst reading
+      // is 5 205.66 ms, in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143 busy
+      // loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), so this row's
+      // 30_000 from the base is raised to 60_000, 11.5 times that.
+    }, 60_000);
     /** Every AskGate decision record the session published, read off the Dispatch write itself. */
     const published: Array<Record<string, unknown>> = [];
     /**
@@ -7037,7 +7042,12 @@ console.log(JSON.stringify(args));
       } finally {
         rmSync(checkout, { recursive: true, force: true });
       }
-    }, 30_000);
+      // A hang guard: what can hang is a gated call whose review never answers. Its worst reading
+      // is 5 798.43 ms, in envoy.test.ts run whole at the 96 rung in the Job
+      // infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143 busy
+      // loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), so this row's
+      // 30_000 from the base is raised to 60_000, 10.3 times that.
+    }, 60_000);
 
     test("(b) with askgate.enabled false the gate does not bind: the dispatch ask runs and no model is asked", async () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
@@ -8105,11 +8115,12 @@ console.log(JSON.stringify(args));
       await stop?.();
     }
     // A bound on work, not a hang guard: the start aside, every wait above ends by its own count of
-    // ticks. Its worst reading is 9 084.64 ms, in envoy.test.ts run whole at the 96 rung in the Job
-    // infra-1580-krows-wf96-xshh4 of the cluster's `builds` namespace, two CPUs and 8 GiB (134 busy
-    // loops, at which row A's 5 runs took 34.0 s against the calibration's 31.2 s), so this row's
-    // 30_000 from the base is raised to 60_000, 6.6 times that.
-  }, 60_000);
+    // ticks. Its worst reading is 13 009.24 ms, in envoy.test.ts run whole at the 96 rung in the
+    // Job infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143
+    // busy loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), and
+    // 9 084.64 ms in the Job infra-1580-krows-wf96-xshh4 (134 busy loops, row A 34.0 s). This
+    // row's 30_000 from the base is raised to 90_000, 6.9 times the worst.
+  }, 90_000);
 
   test("a pass that opens many subjects over a connection that answers none waits one bound", async () => {
     // The bound belongs to the connection, not to the open. A reconcile pass opens the agent
