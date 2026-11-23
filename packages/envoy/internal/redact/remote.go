@@ -601,8 +601,9 @@ func separatorReference(ref string) string {
 			return string(rune(v))
 		}
 		// A reference of a full-width separator (&#xFF0F;, &#65295;) is that separator to a reader
-		// of the page too.
-		if err == nil && isFullWidth(rune(v)) && strings.IndexByte(separators, byte(v-0xFEE0)) >= 0 {
+		// of the page too. The range is read while v is still a uint64, so only a full-width value
+		// is narrowed, and its narrowed form is ASCII.
+		if err == nil && 0xFF01 <= v && v <= 0xFF5E && strings.IndexByte(separators, byte(v-0xFEE0)) >= 0 {
 			return string(rune(v - 0xFEE0))
 		}
 		return ref

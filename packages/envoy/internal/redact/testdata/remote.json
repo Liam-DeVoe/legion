@@ -1731,6 +1731,102 @@
       "readable": true,
       "printed": "\"Ｑ＆Ａ &#xFF01; &#65311; done\"",
       "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-bounds-hex",
+      "category": "html-reference-full-width",
+      "field": "&#xFF00; &#xFF01; &#xFF5E; &#xFF5F; &#xFFFFFFFF; &#x10000FF0F; stay as they are",
+      "readable": true,
+      "printed": "&#xFF00; &#xFF01; &#xFF5E; &#xFF5F; &#xFFFFFFFF; &#x10000FF0F; stay as they are",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-bounds-hex-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"&#xFF00; &#xFF01; &#xFF5E; &#xFF5F; &#xFFFFFFFF; &#x10000FF0F; stay as they are\"",
+      "readable": true,
+      "printed": "\"&#xFF00; &#xFF01; &#xFF5E; &#xFF5F; &#xFFFFFFFF; &#x10000FF0F; stay as they are\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-bounds-decimal",
+      "category": "html-reference-full-width",
+      "field": "&#65280; &#65281; &#65374; &#65375; &#4294967295; &#4295032591; stay as they are",
+      "readable": true,
+      "printed": "&#65280; &#65281; &#65374; &#65375; &#4294967295; &#4295032591; stay as they are",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-bounds-decimal-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"&#65280; &#65281; &#65374; &#65375; &#4294967295; &#4295032591; stay as they are\"",
+      "readable": true,
+      "printed": "\"&#65280; &#65281; &#65374; &#65375; &#4294967295; &#4295032591; stay as they are\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-wrapped-hex",
+      "category": "html-reference-full-width",
+      "field": "https&#xFFFFFF1A;&#xFFFFFF0F;&#xFFFFFF0F;issuer.example&#xFFFFFF0F;path&#xFFFFFF1F;access_token&#xFFFFFF1D;value",
+      "readable": true,
+      "printed": "https&#xFFFFFF1A;&#xFFFFFF0F;&#xFFFFFF0F;issuer.example&#xFFFFFF0F;path&#xFFFFFF1F;access_token&#xFFFFFF1D;value",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-wrapped-hex-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#xFFFFFF1A;&#xFFFFFF0F;&#xFFFFFF0F;issuer.example&#xFFFFFF0F;path&#xFFFFFF1F;access_token&#xFFFFFF1D;value\"",
+      "readable": true,
+      "printed": "\"https&#xFFFFFF1A;&#xFFFFFF0F;&#xFFFFFF0F;issuer.example&#xFFFFFF0F;path&#xFFFFFF1F;access_token&#xFFFFFF1D;value\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-wrapped-decimal",
+      "category": "html-reference-full-width",
+      "field": "https&#4294967066;&#4294967055;&#4294967055;issuer.example&#4294967055;path&#4294967071;access_token&#4294967069;value",
+      "readable": true,
+      "printed": "https&#4294967066;&#4294967055;&#4294967055;issuer.example&#4294967055;path&#4294967071;access_token&#4294967069;value",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-wrapped-decimal-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#4294967066;&#4294967055;&#4294967055;issuer.example&#4294967055;path&#4294967071;access_token&#4294967069;value\"",
+      "readable": true,
+      "printed": "\"https&#4294967066;&#4294967055;&#4294967055;issuer.example&#4294967055;path&#4294967071;access_token&#4294967069;value\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-beyond-32-bits-hex",
+      "category": "html-reference-full-width",
+      "field": "https&#x10000FF1A;&#x10000FF0F;&#x10000FF0F;issuer.example&#x10000FF0F;path&#x10000FF1F;access_token&#x10000FF1D;value",
+      "readable": true,
+      "printed": "https&#x10000FF1A;&#x10000FF0F;&#x10000FF0F;issuer.example&#x10000FF0F;path&#x10000FF1F;access_token&#x10000FF1D;value",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-beyond-32-bits-hex-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#x10000FF1A;&#x10000FF0F;&#x10000FF0F;issuer.example&#x10000FF0F;path&#x10000FF1F;access_token&#x10000FF1D;value\"",
+      "readable": true,
+      "printed": "\"https&#x10000FF1A;&#x10000FF0F;&#x10000FF0F;issuer.example&#x10000FF0F;path&#x10000FF1F;access_token&#x10000FF1D;value\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-beyond-32-bits-decimal",
+      "category": "html-reference-full-width",
+      "field": "https&#4295032602;&#4295032591;&#4295032591;issuer.example&#4295032591;path&#4295032607;access_token&#4295032605;value",
+      "readable": true,
+      "printed": "https&#4295032602;&#4295032591;&#4295032591;issuer.example&#4295032591;path&#4295032607;access_token&#4295032605;value",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-full-width-beyond-32-bits-decimal-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#4295032602;&#4295032591;&#4295032591;issuer.example&#4295032591;path&#4295032607;access_token&#4295032605;value\"",
+      "readable": true,
+      "printed": "\"https&#4295032602;&#4295032591;&#4295032591;issuer.example&#4295032591;path&#4295032607;access_token&#4295032605;value\"",
+      "secrets": []
     }
   ]
 }
