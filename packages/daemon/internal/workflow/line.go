@@ -130,8 +130,7 @@ func (w Walk) steps() []phase.Phase {
 // steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
 // which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
-	back := slices.Index(w.Line, to)
-	return back >= 0 && back < slices.Index(w.Line, from)
+	return phase.MovesBackOn(w.Line, from, to)
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done

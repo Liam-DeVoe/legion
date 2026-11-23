@@ -62,11 +62,16 @@ var All = []Phase{
 // names one package of this repository, internal/claim.
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
-// MovesBack says whether to is a workflow phase before from. Both must stand in Order: a phase
-// outside it is no part of the forward line, so nothing moves back into or out of it.
+// MovesBack says whether to is a workflow phase before from on Order (MovesBackOn).
 func MovesBack(from, to Phase) bool {
-	toIndex := slices.Index(Order, to)
-	return toIndex >= 0 && toIndex < slices.Index(Order, from)
+	return MovesBackOn(Order, from, to)
+}
+
+// MovesBackOn says whether to stands before from on line. Both must stand on it: a phase the line
+// does not hold is no part of it, so nothing moves back into or out of it.
+func MovesBackOn(line []Phase, from, to Phase) bool {
+	toIndex := slices.Index(line, to)
+	return toIndex >= 0 && toIndex < slices.Index(line, from)
 }
 
 // BackwardPairs is every move back of today's line, Order, each written "<from>-<to>": each
