@@ -61,10 +61,11 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 	for _, tc := range []struct {
 		name   string
 		steps  []string
+		last   phase.Phase // the phase of the plan's last step
 		review bool
 	}{
-		{name: "a plan with no reviewer step", steps: []string{"implementer", "tester"}, review: false},
-		{name: "control: a plan with a reviewer step", steps: []string{"implementer", "reviewer"}, review: true},
+		{name: "a plan with no reviewer step", steps: []string{"implementer", "tester"}, last: phase.Testing, review: false},
+		{name: "control: a plan with a reviewer step", steps: []string{"implementer", "reviewer"}, last: phase.Reviewing, review: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Run("the merger in merging", func(t *testing.T) {
@@ -96,11 +97,12 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 			})
 
 			// Past the review a conflict waits for the merger (cybermonklabs/legion#4979), so a merge
-			// forward lands in retro only where the implementer was asked before the review, while a
-			// required check had no green result, and its merge lands once the issue is in retro.
+			// forward lands in retro only where the implementer was asked in the plan's last step,
+			// while a required check had no green result, and its merge lands once the issue is in
+			// retro.
 			t.Run("a merger entering merging after the landing", func(t *testing.T) {
 				pr := settledGreen("lint")
-				pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Reviewing,
+				pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Role: claim.RoleImplementer, Phase: tc.last,
 					Why: record.ConflictCheckNotGreen, AskedAt: firstConflictRead}
 				pool := plannedConflictIssue(t, phase.Retro, pr, tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
