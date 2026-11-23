@@ -536,9 +536,8 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and complete_step, and the
-    // controller's operations: the text tools.test.ts pins, stop_task's, sign_off's and
-    // complete_step's by their terms and the rest exactly, so a change to the shared template
-    // cannot reach an Oh My Pi agent unnoticed.
+    // controller's operations. tools.test.ts pins stop_task's, sign_off's and complete_step's text
+    // by their terms, and the text after complete_step's exactly.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -555,7 +554,8 @@ export function createLegionTool(deps: {
         "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
         "is a step you do yourself, `acceptance` with no key is a fresh agent of the role acceptance, and the steps of one key run as one " +
         "agent in one claim and one session, as `implementer:a tester:a`); a task that names none runs the " +
-        "project's default steps. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
+        "project's default steps. A role of the plan is one a `plan_role` block defines: its id, `type`, `model` and text are the " +
+        "role's name, type, model and prompt. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
         "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
