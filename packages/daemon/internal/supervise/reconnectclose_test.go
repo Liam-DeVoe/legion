@@ -4,8 +4,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // The tester's red tests of test round 11 of dispatch://INFRA-2811, from the reviewer's probes
@@ -88,13 +86,15 @@ func TestACloseOverNoTaskAfterAnUnansweredHelloRetiresNothing(t *testing.T) {
 }
 
 // A reconnect hello whose decision fails on the store before it reads the view still leaves the
-// claim bounded: the reconnect deadline stands (or the view is asked), so a take awaiting its turn
-// over that connection is not left with no bound at all.
+// claim bounded by the reconnect deadline, counted from that hello: nothing runs out before it, and
+// at it the process is relaunched, charged nothing, and the take awaiting its turn is taken back
+// with the note of a cut turn, since that turn may have started while the view was cut.
 //
-// The negative control is the head this test was written at (b48764f6): reconnected disarms the
-// registration deadline first, the claim write fails before askView, the failed decision is
-// dropped, and the view stays cut with no deadline: twenty deadlines later the take still awaits
-// its turn, nothing charged and nothing taken back.
+// The negative control is the head this test was written at (b48764f6) and the head it was
+// changed at (9b493e61): reconnected disarms the registration deadline first, the claim write
+// fails before askView, the failed decision is dropped, and the view stays cut with no deadline,
+// so at the hello plus the reconnect bound nothing is relaunched and the take still awaits its
+// turn.
 func TestAHelloWhoseDecisionFailsOnTheStoreLeavesTheClaimBounded(t *testing.T) {
 	h := waitsHarness(t, currentPlugin)
 	h.withSecrets()
@@ -108,17 +108,26 @@ func TestAHelloWhoseDecisionFailsOnTheStoreLeavesTheClaimBounded(t *testing.T) {
 	err := h.m.Handle(h.ctx, StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true, AgentSecrets: testIdentity})
 	h.m.Wait()
 	h.store.fail("PutClaim", nil)
-	_, armed := h.dueOf(TimerRegistration)
-	h.m.mu.Lock()
-	view := h.m.connSeen
-	h.m.mu.Unlock()
-	if !armed && view != viewAsked && view != viewWhole {
-		t.Errorf("after the hello's failed decision (%v) the view is %d and no reconnect deadline is armed: nothing bounds take %d", err, view, number)
+	launches := func() int { return len(h.calls("Spawn")) + len(h.calls("Resume")) }
+	before := launches()
+	if _, armed := h.dueOf(TimerRegistration); !armed {
+		t.Errorf("after the hello's failed decision (%v) no reconnect deadline is armed: nothing bounds take %d", err, number)
 	}
-	h.advance(10 * deadline)
-	h.observe(runtime.Alive)
-	h.advance(10 * deadline)
-	if p := h.claim().Pending; p != nil && p.Number == number && p.awaitsTurn() && len(h.calls("Suspend")) == 0 && len(h.charges()) == 0 {
-		t.Errorf("twenty reconnect deadlines after the failed hello, take %d still awaits its turn with nothing charged, taken back or relaunched", number)
+
+	h.advance(deadline - time.Second)
+	if n := launches() - before; n != 0 {
+		t.Errorf("the claim was launched %d times before the hello plus the reconnect bound, want none", n)
 	}
+	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+		t.Fatalf("a second before the hello plus the reconnect bound the claim holds %+v, want take %d still awaiting its turn", p, number)
+	}
+
+	h.advance(time.Second)
+
+	if n := launches() - before; n != 1 {
+		t.Fatalf("at the hello plus the reconnect bound the claim was launched %d times, want once: nothing bounded take %d", n, number)
+	}
+	h.wantBudgets(Budgets{})
+	h.wantCharges()
+	h.wantTakenBackWithItsNote(number)
 }
