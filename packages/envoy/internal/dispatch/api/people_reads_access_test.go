@@ -334,6 +334,62 @@ func TestCIRepairPassesGoToAnOpenViewerOnly(t *testing.T) {
 	}
 }
 
+// TestACIPassCursorInAHiddenRepositoryReadsAsTheStartOfTheOrder: PRIV's issue names acme/priv,
+// so PRIV owns it (refs.RepositoryClause), and PUB's names acme/pub. One CI reconcile pass left its
+// cursor in each. carol and carol's token that lists PRIV, which see PRIV, read both cursors as the
+// passes left them. alice, alice's token that lists PRIV, carol's token that lists no project and
+// the shared token, open viewers that do not see PRIV, read the acme/priv pass's cursor as the zero
+// cursor - no repository, no page, no pull request, the start of the order - and the acme/pub
+// pass's as it was left, so neither the name of PRIV's repository nor the numbers of its pull
+// requests reach them, as the App-installation route answers that repository as not installed.
+//
+// Control: the route answering every cursor as stored (leaveOutHiddenCursors returning at once):
+// alice reads acme/priv in a cursor, and the test fails naming her.
+func TestACIPassCursorInAHiddenRepositoryReadsAsTheStartOfTheOrder(t *testing.T) {
+	seed := seedPrivateProject(t)
+	instance := seedServerProcess(t, seed.database, 0)
+	passes := map[string]int64{}
+	for index, owned := range []struct{ project, repository string }{{seedPrivate, "acme/priv"}, {seedPublic, "acme/pub"}} {
+		if _, err := seed.database.Pool.Exec(t.Context(), `update issues set repo = $2 where key = $1`,
+			seed.issue[owned.project], owned.repository); err != nil {
+			t.Fatalf("name %s on %s's issue: %v", owned.repository, owned.project, err)
+		}
+		id := endedCIPass(t, seed.database, instance, time.Duration(index+1)*time.Hour, "complete")
+		if _, err := seed.database.Pool.Exec(t.Context(), `update ci_reconcile_passes set cursor_repository = $2 where id = $1`,
+			id, owned.repository); err != nil {
+			t.Fatalf("leave pass %d in %s: %v", id, owned.repository, err)
+		}
+		passes[owned.repository] = id
+	}
+
+	const route = "/api/v1/ci-reconcile/passes"
+	const left = "21 23 true true"
+	for _, row := range []struct {
+		callers []privateCaller
+		priv    string
+	}{
+		{[]privateCaller{callerCarol, callerCarolPrivToken}, "acme/priv " + left},
+		{[]privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken}, " 0 0 false false"},
+	} {
+		want := map[int64]string{passes["acme/priv"]: row.priv, passes["acme/pub"]: "acme/pub " + left}
+		for _, caller := range row.callers {
+			response := seed.mustRequest(t, caller, http.MethodGet, route, nil, http.StatusOK)
+			got := map[int64]string{}
+			for _, pass := range decodeBody[[]ciPassView](t, response) {
+				if cursor := pass.Cursor; cursor != nil {
+					got[pass.ID] = fmt.Sprintf("%s %d %d %v %v", cursor.Repository, cursor.From, cursor.Number, cursor.Rest, cursor.Counted)
+				}
+			}
+			if !maps.Equal(got, want) {
+				t.Errorf("%s reads the passes' cursors %v, want %v", caller, got, want)
+			}
+			if hides := !strings.HasPrefix(row.priv, "acme/priv"); hides && strings.Contains(response.Body.String(), "acme/priv") {
+				t.Errorf("%s reads GET %s naming acme/priv, which it may not see: %s", caller, route, response.Body.String())
+			}
+		}
+	}
+}
+
 // TestASessionsLastActivityCountsOnlyWhatTheCallerSees: an agent row's last_activity is the newest
 // event of the session among the events the caller sees. session-both acts on PRIV and then, last,
 // on PUB: bob sees it through PRIV but sees none of PUB's events, so his row for it is its ask on

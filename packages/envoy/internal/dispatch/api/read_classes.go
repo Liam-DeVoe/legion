@@ -214,7 +214,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/priorities/{id}/history": reads("one priority's history, which belongs to no project, with the issues of projects it names", readProbe{"id": probePriority}, readclass.Deployment, readclass.Project),
 	"GET /api/v1/delivery/timeline":       reads("the delivery timeline of the pull requests whose issue the caller sees, with the runs and counts of them", nil, readclass.Project),
 	"GET /api/v1/delivery/measures":       reads("the delivery measures of the pull requests whose issue the caller sees, with the issues of projects they count", nil, readclass.Project),
-	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over repositories of many projects and naming no issue", nil, readclass.Deployment),
+	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over repositories of many projects and naming no issue, its cursor's repository held to the GitHub proxy's rule", nil, readclass.Deployment, readclass.Project),
 	"GET /api/v1/broadcasts":              reads("the deployment's broadcasts, each to sessions, with their replies", nil, readclass.Deployment, readclass.Agents, readclass.Project),
 	"GET /api/v1/broadcasts/{id}":         reads("one broadcast, to sessions, with its replies", readProbe{"id": probeBroadcast}, readclass.Deployment, readclass.Agents, readclass.Project),
 	"GET /api/v1/delivery/pipeline":       reads("the deployment's Pipeline page, read from its deploy repository's runs and the pull requests the timeline's rule shows the caller", nil, readclass.Deployment, readclass.Project),

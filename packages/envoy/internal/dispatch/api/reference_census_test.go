@@ -12,9 +12,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -145,9 +147,9 @@ var referenceDispositions = map[string]referenceDisposition{
 	"issue_links.target_key":                    {filteredReference, "the issue waited on, of any project: issueSummaryJoins and leaveOutHiddenIssueReferences in every issue answer; payloads by leaveOutHiddenReferences"},
 	"issue_role_holders.issue_key":              {ownColumn, "the issue whose roles the sessions hold (readIssueRoleHolders binds its project clause)"},
 	"issue_role_holders.session":                {sameOwnerColumn, "a session of the issue's own project: only that project's Legion daemon writes the set (putIssueRoleHolders), and its sessions act in that project"},
-	"legion_current.issue_key":                  {ownColumn, "an issue of the row's project, which the sampler records of its project alone"},
+	"legion_current.issue_key":                  {filteredReference, "an issue a project's daemon reported: the sampler records the project's own issues alone (legion.State's keepProject), and the board, which reads the column for its reader alone, leaves out every issue that reader does not see (leaveOutHiddenIssues), whatever a row recorded before then names"},
 	"legion_current.project":                    {ownColumn, "the board's project (legionProject reads it under the project clause)"},
-	"legion_observations.issue_key":             {ownColumn, "an issue of the row's project, which the sampler records of its project alone"},
+	"legion_observations.issue_key":             {filteredReference, "an issue a project's daemon reported, legion_current's history: no read answers a row of it but through legion_current, whose issue_key the board holds to its reader (leaveOutHiddenIssues)"},
 	"legion_observations.project":               {ownColumn, "the board's project (legionProject reads it under the project clause)"},
 	"legion_reads.project":                      {ownColumn, "the board's project (legionProject reads it under the project clause)"},
 	"legion_settings.project":                   {ownColumn, "the daemon setting's project (legionProject reads it under the project clause)"},
@@ -279,7 +281,8 @@ type crossReferences struct {
 // ask asked of its issue's assignee stores no asked_of), is handed to alice, whom that reader does
 // not see either. PUB's pull request is credited to PRIV's issue, as a mapping moved between the two
 // would leave it. PUB's comment mentions a role of PRIV too, and PRIV's repository is made PRIV's
-// default, so PRIV owns it.
+// default, so PRIV owns it. PUB's daemon reports PRIV's issue on PUB's board, and a CI reconcile
+// pass leaves its cursor in PRIV's repository.
 func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossReferences {
 	t.Helper()
 	seedPeople(t, fixture.database, hiddenPerson)
@@ -350,6 +353,28 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	if _, err := fixture.database.Pool.Exec(context.Background(), `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
 		values ('\x0c'::bytea, $1, convert_to('census-passkey', 'UTF8'), '\x02'::bytea, ''::bytea, 0, $2, $3)`, cross.publicPerson, seedPrivate, seedCarol); err != nil {
 		t.Fatalf("store a passkey enrolled through a link of %s: %v", seedPrivate, err)
+	}
+	// PUB's daemon reports PRIV's issue as a card of PUB's board, among its slots and its trees,
+	// and as the tree root of PUB's issue, as a daemon that serves both projects reported it before
+	// the sampler kept a project's record to its own issues (legion.State's keepProject).
+	at := time.Now().UTC().Add(-time.Minute)
+	if _, err := legion.RecordRead(context.Background(), fixture.database.Pool, seedPublic, at, 42, []legion.Observation{
+		{IssueKey: legion.AdmissionKey, Field: legion.FieldAdmission, Value: []byte(fmt.Sprintf(`{"cap": 2, "active": [%q, %q], "trees": [%q]}`,
+			fixture.public.issue, fixture.private.issue, fixture.private.issue))},
+		{IssueKey: fixture.public.issue, Field: legion.FieldPhase, Value: []byte(`"admitted"`)},
+		{IssueKey: fixture.public.issue, Field: legion.FieldSlot, Value: []byte(`0`)},
+		{IssueKey: fixture.public.issue, Field: legion.FieldTree, Value: []byte(fmt.Sprintf("%q", fixture.private.issue))},
+		{IssueKey: fixture.private.issue, Field: legion.FieldPhase, Value: []byte(`"implementing"`)},
+		{IssueKey: fixture.private.issue, Field: legion.FieldSlot, Value: []byte(`1`)},
+	}); err != nil {
+		t.Fatalf("record PUB's daemon reporting %s: %v", fixture.private.issue, err)
+	}
+	// A CI reconcile pass that left its cursor in PRIV's repository, which the pass after it takes
+	// the order up at.
+	pass := endedCIPass(t, fixture.database, seedServerProcess(t, fixture.database, 0), 2*time.Hour, "complete")
+	if _, err := fixture.database.Pool.Exec(context.Background(), `update ci_reconcile_passes set cursor_repository = $2 where id = $1`,
+		pass, cross.privateRepository); err != nil {
+		t.Fatalf("leave pass %d in %s: %v", pass, cross.privateRepository, err)
 	}
 	awaitBackgroundWrites(t, fixture.server)
 	return cross
@@ -681,6 +706,8 @@ func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
 		"/api/v1/priorities/" + public.priority + "/history",
 		"/api/v1/settings/project-default-assignees",
 		"/api/v1/delivery/timeline",
+		"/api/v1/projects/" + seedPublic + "/legion/board",
+		"/api/v1/ci-reconcile/passes",
 	}
 	// Both callers read the event log at a horizon proven above every seeded event, so a held
 	// horizon can neither shorten both reads alike nor make the two differ (awaitHorizonRead).

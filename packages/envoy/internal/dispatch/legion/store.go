@@ -97,6 +97,28 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string, viewer a
 	return settings, nil
 }
 
+// projectIssues answers which of keys Dispatch holds as issues of project: the record the sampler
+// keeps a read to (State.keepProject), since a daemon's answer names no issue's project. It reads
+// as the server, as the sampler does every row it writes, and reads nothing for no key.
+func projectIssues(ctx context.Context, pool *store.Pool, project string, keys []string) (map[string]bool, error) {
+	own := make(map[string]bool, len(keys))
+	if len(keys) == 0 {
+		return own, nil
+	}
+	rows, err := pool.Query(ctx, `select key from issues where project_key = $1 and key = any($2::text[])`, project, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read which issues the daemon reports are %s's: %w", project, err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which issues the daemon reports are %s's: %w", project, err)
+	}
+	for _, key := range held {
+		own[key] = true
+	}
+	return own, nil
+}
+
 // PutSettings sets the daemon a project is read from, and answers the row as it stands. created_by
 // is the actor that first set the project's setting: a later write changes the URL and the time
 // and keeps it.
