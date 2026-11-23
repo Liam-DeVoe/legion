@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -56,11 +57,14 @@ const standbyLogEvery = 30 * time.Second
 // lapse and has durableBindInterval to finish in. At that worst phase, with the standby's poll
 // just before the lapse, twenty runs replaced the holder 15.021 s to 15.041 s after its death, a
 // margin of 1.959 s at least (TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase). A
-// standby that only polled did not keep the bound there: its next poll came a whole interval after
-// the one before the lapse, and twenty runs of the same row took 17.014 s to 17.033 s, past the
-// bound by the take-over's own statements and JetStream calls. A reply lost with the standby's
-// connection costs the take-over the reconnect, nats.go's reconnect wait of about 1 s, which the
-// interval holds too (TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheStatedBound):
+// standby that only polls does not keep the bound there: its next poll comes a whole interval
+// after the one before the lapse, so its take-over starts just short of the bound and passes it
+// only by the take-over's own statements and JetStream calls, by milliseconds and not in every
+// run. With no lapse timer (lapse.Reset(left) removed), ten runs of the row took the durable over
+// 21.011 s to 21.019 s after the death, a known time past the bound (worstPhasePoll says why).
+// A reply lost with the standby's connection costs the take-over the reconnect, nats.go's
+// reconnect wait of about 1 s, which the interval holds too
+// (TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheStatedBound):
 // each of the take-over's JetStream calls ends at that connection's loss and is sent again on the
 // connection that came back at once (onConnection), rather than at its deadline. The holder checks
 // that the durable still delivers to it on the same interval it renews (heldDurable.check).
@@ -244,6 +248,10 @@ type heldDurable struct {
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
 	boundHook func()
+	// bindEvery, when not zero, is how often run polls in place of durableBindInterval. It is zero
+	// outside tests, where its only cost is one comparison when run starts; worstPhasePoll
+	// (intake_takeover_lost_test.go) says why a row sets it.
+	bindEvery time.Duration
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -286,7 +294,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	stopping, release := stopContext(ctx)
 	defer release()
 	defer d.stop(stopping)
-	binds := time.NewTicker(durableBindInterval)
+	binds := time.NewTicker(cmp.Or(d.bindEvery, durableBindInterval))
 	defer binds.Stop()
 	checks := time.NewTicker(intakeHoldRenew)
 	defer checks.Stop()

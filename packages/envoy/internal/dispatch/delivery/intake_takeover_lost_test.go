@@ -142,19 +142,33 @@ const worstPhaseLead = 10 * time.Millisecond
 // took the hold at once, which is the best phase.
 const worstPhaseAttempts = 3
 
+// worstPhasePoll is how often the worst-phase row's standby polls (heldDurable.bindEvery): three
+// durableBindIntervals. In production the standby polls every durableBindInterval, so without the
+// lapse timer its next try would start about 16.99 s after the death, 10 ms inside the 17 s bound,
+// and the take-over's own work then carried it past the bound by milliseconds and not in every run:
+// the timer is what gives the bound its margin, and this poll is there so that a missing timer
+// shows. While the lapse timer works it changes nothing the row measures: the poll before the lapse
+// still finds the hold live, the timer's attempt at the lapse takes the durable over, and every
+// later poll finds the standby delivering and does nothing. With no lapse timer the standby's next
+// try is its next poll, worstPhasePoll after the one before the lapse: 15 s + 6 s - 10 ms = 20.99 s
+// after the death, 3.99 s past the 17 s bound before the take-over has sent anything. The row's
+// start then falls 1.99 s after the renewal it reads (20 s - 10 ms less three polls), before the
+// renewal the holder dies after.
+const worstPhasePoll = 3 * durableBindInterval
+
 // A holder that dies is replaced within the bound held_durable.go states at the worst phase there
 // is, with no reply lost: the holder dies the instant after a renewal landed, so its hold lasts the
 // whole intakeHoldTTL from the death, and the standby's poll goes out just before the lapse, so it
 // is the last poll to find the hold live. The standby tries again at the lapse that poll read
-// (heldDurable.run). held_durable.go records what twenty runs of this row measured, and what they
-// measured before it did, when its next try was its next poll, a whole durableBindInterval after
-// this one, and every run passed the bound.
+// (heldDurable.run). held_durable.go records what twenty runs of this row measured, and what ten
+// measured with no lapse timer, when the standby's next try was its next poll, worstPhasePoll
+// after this one.
 //
 // The phase is forced rather than waited for. The holder renews every intakeHoldRenew from when it
-// took the hold, and the standby polls every durableBindInterval from when its run starts, so the
-// row reads one renewal off the hold's row, starts the standby's run (newTakeOverProcess builds it
-// unstarted) a whole number of intervals before the moment worstPhaseLead ahead of the lapse the
-// next renewal sets, waits for that renewal, and kills the holder as soon as the row shows it. The
+// took the hold, and the standby polls every worstPhasePoll from when its run starts, so the row
+// reads one renewal off the hold's row, starts the standby's run (newTakeOverProcess builds it
+// unstarted) a whole number of polls before the moment worstPhaseLead ahead of the lapse the next
+// renewal sets, waits for that renewal, and kills the holder as soon as the row shows it. The
 // standby's lease pool notes when each read of the hold went out (holdReads). An attempt misses
 // the worst phase when the holder died more than worstPhaseLead after the renewal, or when no read
 // went out within twice worstPhaseLead before the lapse with a later read taking the hold: a read
@@ -189,11 +203,12 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 		standbyLeases := &cuttableLeases{pool: standby.intake.leases.(*pgxpool.Pool)}
 		reads := &holdReads{intakeLeases: standbyLeases}
 		standby.intake.leases = reads
+		standby.intake.bindEvery = worstPhasePoll
 
 		renewed := awaitRenewal(t, ctx, pool, readHold(t, ctx, pool), lostReplyPoll)
 		start := renewed.lapse.Add(intakeHoldRenew - worstPhaseLead)
-		for time.Until(start) > durableBindInterval {
-			start = start.Add(-durableBindInterval)
+		for time.Until(start) > worstPhasePoll {
+			start = start.Add(-worstPhasePoll)
 		}
 		// Spun up to rather than slept to: a sleep wakes up to milliseconds late.
 		time.Sleep(time.Until(start) - 10*time.Millisecond)

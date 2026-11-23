@@ -48,6 +48,7 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	beforeRequestWait           func(loss <-chan struct{})
 	beforeCoreSendFlush         func()
 	afterCoreSendFlush          func()
 	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
@@ -348,6 +349,12 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
+	// beforeRequestWait, when not nil, runs on a Request's wait for its answer each time the wait
+	// is about to sleep, with the channel whose close is the loss the wait answers: the end of the
+	// life its window pinned (window.request). It is nil outside tests: a test sets it
+	// (WithBeforeRequestWait, export_test.go) to end that life only once the wait sleeps on a loss
+	// it has not yet seen. Its cost in production is one nil check on each turn of the wait.
+	beforeRequestWait func(loss <-chan struct{})
 	// beforeCoreSendFlush and afterCoreSendFlush, when not nil, run on the goroutine of a send of the
 	// core subscription (sendCore), right before the flush that waits for the server's answer and
 	// right after it returns. They are nil outside tests: a test sets them
@@ -651,6 +658,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		beforeRequestWait:           opts.beforeRequestWait,
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
