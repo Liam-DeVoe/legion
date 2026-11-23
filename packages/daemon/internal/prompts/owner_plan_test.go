@@ -156,10 +156,11 @@ func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
 // On a task whose `Steps:` line names no reviewer, nobody adjudicates a bot's review thread, so the
 // implementer's prompt gives it the duty, held here by its contract terms rather than its wording:
 // the paragraph of the composed implementer prompt that names that case and bot threads names the
-// retro among the completions it answers them before, `request_backward_move` to `implementing`
-// for a thread whose fix the retro cannot push, and the completion's `summary`, in which it names
-// each thread it declined to its architect. This shows the text is loaded, never that an
-// implementer follows it.
+// retro among the completions it answers them before, where the retro is the implementer's (its
+// step the task's last of the type implementation), `request_backward_move` to `implementing` for
+// a thread whose fix the retro cannot push, and the completion's `summary`, in which it names each
+// thread it declined to its architect. This shows the text is loaded, never that an implementer
+// follows it.
 func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -181,22 +182,23 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 	}
 }
 
-// A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
-// The daemon part states what to do, in two sentences: sign off or send back, and the head a
-// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
-// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
-// architect follows it.
+// A catch-up names each issue waiting in `accepting` whose acceptance is the architect's own (a
+// step `acceptance:owner`, or an issue with no plan rows), and the place of the architect's own
+// issue that is its own, a step or the retro; an acceptance a fresh agent works it names not. The
+// daemon part states what to do with each, and the head a parent's sign-off needs; the role part
+// points to it rather than saying it again, so the composed root prompt holds the parent's head rule
+// once. This shows the text is loaded, never that an architect follows it.
 func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "It also names the step of yours your own issue stands at, where it stands at one: do it as its `owner-step` notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "It also names the place of yours your own issue stands at, a step or the retro, where it stands at one, and Legion sends you that place's `owner-step` notice again: do it as that notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child whose merge its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+	if n := strings.Count(text, "carries the merges of every child whose merge its criteria need"); n != 1 {
 		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
@@ -267,25 +269,27 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 }
 
 // The two architect role parts name a step only where the issue's task holds it. An owner's plan
-// can leave out the planner, the tester, the reviewer and the owner's own acceptance, so each
-// sentence that named one of them as if every issue ran it now says where it runs and, where it
-// does not, who holds its duty: the order of the starts is the order of the steps of the issue's
-// plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names the phase an earlier step runs as; a failed step goes back to the task's
-// first step of the type implementation before it or to the earlier step its completion names. A
-// parent whose task does not end with an acceptance step gets no reading of its finished whole
-// from its owner, and each part says so in one sentence where it speaks of a
-// parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
-// the daemon's routes. The words the parts carried before are gone from both, and from the
-// architect's three daemon parts in go/, which Compose joins to them (architect-root.md or
-// architect.md, then architect-common.md): a retired phrase there reaches its reader as surely as
-// one in a role part. Each of the three is read by its name, so a part that is missing fails the
-// read rather than passing with nothing read. This shows the text is loaded, never that an owner
-// follows it.
+// can leave out the planner, the implementer, the tester, the reviewer and the owner's own
+// acceptance, so each sentence that named one of them as if every issue ran it now says where it
+// runs and, where it does not, who holds its duty: the order of the starts is the order of the steps
+// of the issue's plan; `accepting` and the sign-off are the owner's only where the task holds
+// `acceptance:owner`; the move back names the phase an earlier step runs as; a failed step goes back
+// to the task's first step of the type implementation before it or to the earlier step its
+// completion names, and with neither the task stops. Each part says, in one sentence where it speaks
+// of a parent and its children, that Legion holds a parent whose task does not end with an
+// acceptance step before its retro while issues beneath it still run (`retro-held`), so an owner
+// that wants to read a parent's finished whole gives it the step `acceptance:owner` as its last.
+// Each part gives `register_plan` and `stop_task` with the arguments of the daemon's routes. The
+// words the parts carried before are gone from both, and from the architect's three daemon parts in
+// go/, which Compose joins to them (architect-root.md or architect.md, then architect-common.md): a
+// retired phrase there reaches its reader as surely as one in a role part. Each of the three is read
+// by its name, so a part that is missing fails the read rather than passing with nothing read. This
+// shows the text is loaded, never that an owner follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
-	// A parent whose task does not end with an acceptance step gets no reading of its whole: Legion
-	// holds it before its retro (`retro-held`), so a parent whose work the owner wants to read is given the step. Held
-	// by the terms of the one clause that says so, in their order.
+	// A parent whose task does not end with an acceptance step can pass its last step while issues
+	// beneath it still run: Legion holds it before its retro (`retro-held`), so a parent whose
+	// finished whole the owner wants to read is given the step `acceptance:owner`. Held by the terms
+	// of the one clause that says so, in their order.
 	parentHeld := []string{"parent", "does not end with an acceptance step", "`retro-held`", "the step `acceptance:owner`"}
 	shared := []string{
 		"`register_plan` (`issue`, `artifactId`, `version`)",
