@@ -2497,11 +2497,11 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/mirror-ci-images.test.sh", [
         (f"{SCRIPTS}/mirror-ci-images.sh", "the script under test"),
-        (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:439 runs the gate over the registry a copy left"),
-        (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:141 symlinks in the grammar both scripts read a row with"),
-        (f"{SCRIPTS}/network-install.sh", "mirror-ci-images.test.sh:142 symlinks in the bound every crane call of the "
+        (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:491 runs the gate over the registry a copy left"),
+        (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:162 symlinks in the grammar both scripts read a row with"),
+        (f"{SCRIPTS}/network-install.sh", "mirror-ci-images.test.sh:163 symlinks in the bound every crane call of the "
                                           "script under test runs under"),
-        (".github/ci-images.yaml", "mirror-ci-images.test.sh:364-421 builds its ordering fixture from this repository's own rows"),
+        (".github/ci-images.yaml", "mirror-ci-images.test.sh:416-473 builds its ordering fixture from this repository's own rows"),
     ]),
     # The tool scripts, in the order the job runs them: the fetch helper every install goes
     # through, the filler that puts the bytes in the copy that helper reads, the gate that holds

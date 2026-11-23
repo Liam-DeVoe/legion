@@ -18,13 +18,19 @@ calls themselves. The job has no service and no container, so the runner pulls n
   A built row makes no call. A copied row the package holds makes one, `crane digest` of its tag;
   one the package lacks makes three, that read, `crane copy` and `crane digest` of what it copied.
   The library/golang row makes one more, `crane config` of its Go. Which rows the package lacks is
-  the package's state and not this tree's, so the limit counts the worst the tree allows, every
-  copied row copied: 15 × 3 × 245 s + 245 s = 11,270 s. The common run, which copies nothing, makes
-  16 calls, 3,920 s at their worst.
+  the package's state and not this tree's, so a row counts at the worst the tree allows, copied:
+  3 × 245 s = 735 s, and the library/golang row 4 × 245 s = 980 s. The script runs the rows 4 at a
+  time (PARALLEL in it, which says why 4), each row's calls one after another, and starts each row
+  as an earlier one ends, in row order. So the rows end by the time ceil(rows / 4) rows have run one
+  after another at the longest row's worst: ceil(15 / 4) × 980 s = 4 × 980 s = 3,920 s. (Rows k × 4
+  + 1 to (k + 1) × 4 each start by the time k × 4 rows have ended, which is by k × 980 s, and each
+  takes at most 980 s. The built row ends at once.)
 
-496 s + 11,270 s = 11,766 s, which 197 minutes (11,820 s) hold. The 25 minutes the job had end
-before even the common run's 3,920 s, so a run whose calls each waited out most of their attempts
-could be ended by GitHub's cancellation, which names nothing, before a later call failed by name.
+496 s + 3,920 s = 4,416 s, which 74 minutes (4,440 s) hold. With the rows one after another the
+same rows came to 15 × 735 s + 245 s = 11,270 s, and the limit to 197 minutes. The 25 minutes the
+job had before either end before even 2 × 980 s + 496 s, so a run whose calls each waited out
+most of their attempts could be ended by GitHub's cancellation, which names nothing, before a
+later call failed by name.
 
 The steps after the copy are no part of the sum, since no install follows them: the package mode
 of `.github/scripts/check-ci-images.sh` bounds each read it makes (30 s for each of its HTTP
