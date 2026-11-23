@@ -121,14 +121,14 @@ func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
 	}
 }
 
-// Each of Legion's own roles of a step is one of five, with the type of work it does.
+// Each of Legion's own roles of a step is one of five, with the type of work it does, on Oh My Pi.
 func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	want := map[string]RoleDef{
-		"planner":     {Name: "planner", Type: TypePlanning},
-		"implementer": {Name: "implementer", Type: TypeImplementation},
-		"tester":      {Name: "tester", Type: TypeTesting},
-		"reviewer":    {Name: "reviewer", Type: TypeReview},
-		"acceptance":  {Name: "acceptance", Type: TypeReview},
+		"planner":     {Name: "planner", Type: TypePlanning, Backend: "omp"},
+		"implementer": {Name: "implementer", Type: TypeImplementation, Backend: "omp"},
+		"tester":      {Name: "tester", Type: TypeTesting, Backend: "omp"},
+		"reviewer":    {Name: "reviewer", Type: TypeReview, Backend: "omp"},
+		"acceptance":  {Name: "acceptance", Type: TypeReview, Backend: "omp"},
 	}
 	roles := BuiltinRoles()
 	if !reflect.DeepEqual(roles, want) {

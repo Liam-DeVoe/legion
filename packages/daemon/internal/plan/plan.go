@@ -134,7 +134,8 @@ type PlanRole struct {
 }
 
 // planRoleBackend is the harness of every role a plan defines: a role of a plan runs on Oh My Pi
-// (runtime.BackendOmp's word), and no setting changes it.
+// (runtime.BackendOmp's word), and no setting changes it. It is also the harness BuiltinRoles
+// gives Legion's own roles, which the settings can change (config.Config.Deployment).
 const planRoleBackend = "omp"
 
 // Plan is one version of an owner's plan document as Legion reads it.
@@ -191,9 +192,12 @@ func RolesOf(p Plan, d Deployment) map[string]RoleDef {
 type Refusal struct{ Task, Reason string }
 
 // BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
-// the tester, the reviewer and acceptance, the owner's reading of the finished work. The
-// architect, the merger and the controller are no roles of a step. The answer is a fresh map, so a
-// caller that changes it leaves the next caller's answer whole.
+// the tester, the reviewer and acceptance, the owner's reading of the finished work. Each runs on
+// Oh My Pi, the harness of a role the settings put on no other (config.Config.Deployment gives
+// each the harness `worker_backends` names), so a deployment a caller builds of them alone, as the
+// API's and the workflow's defaults do, judges a key of a Legion role and a role of a plan as one
+// harness. The architect, the merger and the controller are no roles of a step. The answer is a
+// fresh map, so a caller that changes it leaves the next caller's answer whole.
 func BuiltinRoles() map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(builtinRoles))
 	for _, role := range builtinRoles {
@@ -205,11 +209,11 @@ func BuiltinRoles() map[string]RoleDef {
 // builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
 // task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{
-	{Name: "planner", Type: TypePlanning},
-	{Name: "implementer", Type: TypeImplementation},
-	{Name: "tester", Type: TypeTesting},
-	{Name: "reviewer", Type: TypeReview},
-	{Name: "acceptance", Type: TypeReview},
+	{Name: "planner", Type: TypePlanning, Backend: planRoleBackend},
+	{Name: "implementer", Type: TypeImplementation, Backend: planRoleBackend},
+	{Name: "tester", Type: TypeTesting, Backend: planRoleBackend},
+	{Name: "reviewer", Type: TypeReview, Backend: planRoleBackend},
+	{Name: "acceptance", Type: TypeReview, Backend: planRoleBackend},
 }
 
 // LegionNames is the one list of the names that no role of a plan takes, since Legion holds each
