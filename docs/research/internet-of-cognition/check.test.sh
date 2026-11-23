@@ -6237,10 +6237,11 @@ done
 # `def match(row):`. The case commits packages/daemon/internal/api/engine.py, that function,
 # pyproject.toml, the table [project.optional-dependencies], and lab.yaml, a list scenarios
 # whose item holds overlays, and writes the fixture's row f-our-1 as citing the three with the
-# symbol 'match, [project.optional-dependencies], scenarios[].overlays', a name and two key
-# paths written with brackets, then 'match(row)', then 'Engine::match', running --citations
-# over each: the first must pass citation-our-code; each other must fail it, naming the part
-# as not a symbol form the gate reads.
+# symbol 'match, [project.optional-dependencies], scenarios[].overlays', a name, a table head
+# (form 8; a key path of form 5 before round 50) and a key path written with brackets, then
+# 'match(row)', then 'Engine::match', running --citations over each: the first must pass
+# citation-our-code; each other must fail it, naming the part as not a symbol form the gate
+# reads.
 for form in honest call scope; do
     case "$form" in
     honest) symbol='match, [project.optional-dependencies], scenarios[].overlays' ;;
@@ -6265,7 +6266,7 @@ for form in honest call scope; do
         case_result "a symbol part Engine::match, in no form of the symbol grammar, fails --citations, named as no symbol form the gate reads" \
             "citation-our-code: f-our-1 cites the symbol part 'Engine::match', which is not a symbol form the gate reads \\(check\\.sh's header, the symbol grammar\\)" "$out"
         ;;
-    honest) honest_result "symbol parts $symbol, a name and two key paths written with brackets, pass citation-our-code" citation-our-code "$out" ;;
+    honest) honest_result "symbol parts $symbol, a name, a table head and a key path written with brackets, pass citation-our-code" citation-our-code "$out" ;;
     esac
 done
 
@@ -6521,6 +6522,84 @@ for form in honest paren bracket backslash; do
     *)
         case_result "a pattern $symbol cited in a file whose only name ending in _total is $name, which it does not match, fails --citations, naming the part" \
             "citation-our-code: f-our-1 cites the symbol $detail, which packages/daemon/internal/api/metrics\\.go does not hold" "$out"
+        ;;
+    esac
+done
+
+# 208. A part that begins with `[` and ends with `]` is a table head, and holds only on a line
+# that is that head, its inside read as a glob (the architect's ruling of round 50: `[tool.*]`
+# was a false pass). An author cites the tables under [tool] of a pyproject.toml as
+# `[tool.*]`; at aec374fe the part held `[`, so it was read as an extended regular
+# expression, a bracket expression that matches any line holding t, o, l, `.` or `*`, and it
+# passed in a file with no such head. The case commits pyproject.toml and writes the
+# fixture's row f-our-1 as citing it with the symbol '[tool.*]' (symbol_plant) over a file
+# holding the head [tool.ruff], then over one whose only head is [project], then over one
+# whose only such text is the dotted key tool.x, with no brackets, running --citations over
+# each: the first must pass citation-our-code; the other two must fail it, naming the part.
+for form in honest no-head dotted; do
+    case "$form" in
+    honest) text=$'[project]\nname = "x"\n\n[tool.ruff]\nline-length = 100\n' ;;
+    no-head) text=$'[project]\nname = "x"\n' ;;
+    dotted) text=$'tool.x = 1\n' ;;
+    esac
+    dir="$(symbol_plant "symbol-table-head-glob-$form" pyproject.toml '[tool.*]' pyproject.toml "$text")" &&
+        case "$form" in
+        honest) grep -qx '\[tool\.ruff\]' "$dir/repo/pyproject.toml" ;;
+        no-head) ! grep -q '^\[tool' "$dir/repo/pyproject.toml" ;;
+        dotted) ! grep -q '\[' "$dir/repo/pyproject.toml" && grep -qF 'tool.x' "$dir/repo/pyproject.toml" ;;
+        esac || {
+        printf 'FAIL the table head [tool.*] could not be planted in the fixture row f-our-1 over a %s pyproject.toml\n' "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "a table head [tool.*] cited in a pyproject.toml whose line [tool.ruff] is a head it covers passes citation-our-code" citation-our-code "$out" ;;
+    no-head)
+        case_result "a table head [tool.*] cited in a pyproject.toml whose only head is [project] fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol \\[tool\\.\\*\\], which pyproject\\.toml does not hold" "$out"
+        ;;
+    dotted)
+        case_result "a table head [tool.*] cited in a pyproject.toml whose only such text is tool.x, with no brackets, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol \\[tool\\.\\*\\], which pyproject\\.toml does not hold" "$out"
+        ;;
+    esac
+done
+
+# 209. A table head with no glob in it holds only on a line that is that head, after spaces or
+# tabs and before spaces, tabs and a comment, and never as text inside a line (the
+# architect's ruling of round 50). At aec374fe `[project]` was a key path of form 5, read as
+# text its file holds, so it passed in a file that writes `[project]` only in a comment. The
+# case commits pyproject.toml and writes the fixture's row f-our-1 as citing it with the
+# symbol '[project]' (symbol_plant) over a file holding the head [project], then the head
+# indented with a comment after it, then the head [projects] alone, then [project] only
+# inside the comment `# the [project] table is below`, running --citations over each: the
+# first two must pass citation-our-code; the other two must fail it, naming the part.
+for form in honest commented longer inline; do
+    case "$form" in
+    honest) text=$'[project]\nname = "x"\n' ;;
+    commented) text=$'  [project]  # metadata\nname = "x"\n' ;;
+    longer) text=$'[projects]\nname = "x"\n' ;;
+    inline) text=$'# the [project] table is below\n[tool.ruff]\nline-length = 100\n' ;;
+    esac
+    dir="$(symbol_plant "symbol-table-head-$form" pyproject.toml '[project]' pyproject.toml "$text")" &&
+        case "$form" in
+        honest | commented) grep -qE '^[[:space:]]*\[project\]' "$dir/repo/pyproject.toml" ;;
+        *) ! grep -qE '^[[:space:]]*\[project\]' "$dir/repo/pyproject.toml" ;;
+        esac || {
+        printf 'FAIL the table head [project] could not be planted in the fixture row f-our-1 over a %s pyproject.toml\n' "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "a table head [project] cited in a pyproject.toml whose line [project] is that head passes citation-our-code" citation-our-code "$out" ;;
+    commented) honest_result "a table head [project] cited in a pyproject.toml whose line is that head indented, with a comment after it, passes citation-our-code" citation-our-code "$out" ;;
+    longer)
+        case_result "a table head [project] cited in a pyproject.toml whose only head is [projects] fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol \\[project\\], which pyproject\\.toml does not hold" "$out"
+        ;;
+    inline)
+        case_result "a table head [project] cited in a pyproject.toml that writes it only inside a comment fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol \\[project\\], which pyproject\\.toml does not hold" "$out"
         ;;
     esac
 done
