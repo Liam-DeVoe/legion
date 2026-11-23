@@ -1,8 +1,11 @@
 package textcheck
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // Two texts an operator reads say what a role of the deployment takes. The deploy example says a
@@ -35,6 +38,35 @@ func TestTheOperatorTextsSayWhatARoleOfTheDeploymentTakes(t *testing.T) {
 		for _, phrase := range text.gone {
 			if strings.Contains(prose, phrase) {
 				t.Errorf("%s still says %q", text.path, phrase)
+			}
+		}
+	}
+}
+
+// Three texts an operator reads count the moves back a hook may name, and each count is the
+// loader's: config.readHookMoves takes a move from plan.MovesBackPairs alone, so the number is
+// that set's size, the pairs of a step of a role the deployment defines among them. A pair of
+// those is step-step, two equal phases, so no text says a move's two phases always differ.
+// Each text is read as prose (proseOf), so a comment's layout decides nothing.
+func TestTheOperatorTextsCountTheMovesBackAHookMayName(t *testing.T) {
+	count := fmt.Sprintf("any other of the %d moves back a task's line can make", len(plan.MovesBackPairs()))
+	for _, text := range []struct {
+		path string
+		want []string
+	}{
+		{path: "docs/site/src/content/docs/legion/concepts.md", want: []string{count}},
+		{path: "docs/site/src/content/docs/legion/running-legion.md", want: []string{count, "each written `<from>-<to>` of two workflow phases, which differ but in `step-step`"}},
+		{path: "deploy/kubernetes/daemon/legion.yaml.example", want: []string{count, "each written <from>-<to> of two workflow phases, which differ but in step-step"}},
+	} {
+		prose := proseOf(shippedText(t, text.path))
+		for _, phrase := range text.want {
+			if !strings.Contains(prose, phrase) {
+				t.Errorf("%s omits %q", text.path, phrase)
+			}
+		}
+		for _, gone := range []string{"of the 28 moves back", "two different workflow phases"} {
+			if strings.Contains(prose, gone) {
+				t.Errorf("%s still says %q", text.path, gone)
 			}
 		}
 	}

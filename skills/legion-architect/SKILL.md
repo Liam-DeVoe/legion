@@ -34,7 +34,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
    Run it again when a push-back or a review changes what the design is for.
 
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
-   A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+   A child: after step 4, for the part that stays.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says, red-team check first.
 
@@ -59,9 +59,9 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
   Legion holds a child whose blockers are not `done`.
-  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
+  Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
 
 - On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
