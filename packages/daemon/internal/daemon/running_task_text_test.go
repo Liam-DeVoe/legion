@@ -196,7 +196,9 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 	case <-time.After(liveSettle):
 	}
 	// The stored start task of the implementer's entry holds version 2's text (retext): the send of
-	// an owed entry sends it again. The held task's send reads the text apart (Deps.TaskText).
+	// an owed entry sends it again. This is where the check's second control fails: with retext
+	// taken out, this stored task still holds "Text one". The fresh session below gets "Text two"
+	// all the same, from the task its claim holds, which the send rewrites apart (Deps.TaskText).
 	if stored := r.entryTask(claim.RoleImplementer); !strings.Contains(stored, "\n"+two+"\n") || strings.Contains(stored, one) {
 		t.Fatalf("the implementer's stored start task after version 2 = %q, want it to hold %q and not %q", stored, two, one)
 	}
