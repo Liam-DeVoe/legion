@@ -10,8 +10,9 @@ import (
 // The labels of labels.json are the calibration of the judge (R13): JudgeCalibrationAnswers
 // answers of answer tasks, each labelled pass or fail against its task's facts by two agents of
 // different model families, each on its own, and then agreed between them with the discussion
-// that agreed it. The eval program puts each answer to the judge and prints how many of the
-// agreed labels the judge's verdict meets, against JudgeAgreementFloor.
+// that agreed it. The eval program puts each answer to the judge, rendered by RenderAnswer against
+// the seed, and prints how many of the agreed labels the judge's verdict meets, against
+// JudgeAgreementFloor.
 
 // The two labels an answer takes.
 const (
@@ -19,7 +20,9 @@ const (
 	LabelFail = "fail"
 )
 
-// Labels is labels.json: who labelled, and each labelled answer.
+// Labels is labels.json: who labelled, and each labelled answer. Each label is given to the answer
+// as the person reads it in the bar: rendered by RenderAnswer against the seed's store, as it
+// stands before any task, which is also what the judge reads it as.
 type Labels struct {
 	// Labellers are the two agents that labelled every answer, by the name each label gives, and
 	// the model family each runs on.
@@ -34,11 +37,13 @@ type Labeller struct {
 	Family string `json:"family"`
 }
 
-// LabelledAnswer is one answer of an answer task, its label and how the label was reached.
+// LabelledAnswer is one answer of an answer task, its label and how the label was reached. The
+// label is given to the answer as the person reads it, rendered by RenderAnswer against the seed's
+// store.
 type LabelledAnswer struct {
 	// Task is the task the answer answers, whose words and facts the judge reads it against.
 	Task string `json:"task"`
-	// Answer is the answer as the bar shows it.
+	// Answer is the raw answer, its markdown as the run wrote it, links and all.
 	Answer string `json:"answer"`
 	// Labels is each labeller's own label, by its name, with its reason, given before the two
 	// compared.

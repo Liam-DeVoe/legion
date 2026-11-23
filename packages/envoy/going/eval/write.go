@@ -348,13 +348,8 @@ func (w *seedWriter) writeLinks(ctx context.Context) error {
 				return fmt.Errorf("%s blocking %s: %w", link.From, link.To, err)
 			}
 		case LinkRelates:
-			comment := Comment{
-				ID:        "relates-" + link.From + "-" + link.To,
-				Owner:     link.From,
-				Author:    w.creator(),
-				Body:      fmt.Sprintf("Related to dispatch://%s.", link.To),
-				CreatedAt: at,
-			}
+			comment := relatesComment(link)
+			comment.Author, comment.CreatedAt = w.creator(), at
 			if err := w.writeComment(ctx, comment); err != nil {
 				return fmt.Errorf("%s relating to %s: %w", link.From, link.To, err)
 			}
@@ -363,6 +358,12 @@ func (w *seedWriter) writeLinks(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// relatesComment is the comment a relates link is written as, without its author and time: on the
+// one issue, linking the other.
+func relatesComment(link Link) Comment {
+	return Comment{ID: "relates-" + link.From + "-" + link.To, Owner: link.From, Body: fmt.Sprintf("Related to dispatch://%s.", link.To)}
 }
 
 // owner is where an item of the seed lives: its issue, or the project document a reference

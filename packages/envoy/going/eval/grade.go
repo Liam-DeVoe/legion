@@ -86,18 +86,19 @@ type StoredMessage struct {
 }
 
 // StoredDocument is one document or file: its owner (an issue's key, or a project's key with no
-// issue), its slug, whether it is an issue's spec, and its latest version's number and text.
+// issue), its slug, its name, whether it is an issue's spec, and its latest version's number and
+// text.
 type StoredDocument struct {
-	ID, Issue, Project, Slug string
-	Primary                  bool
-	Version                  int
-	Text                     string
+	ID, Issue, Project, Slug, Name string
+	Primary                        bool
+	Version                        int
+	Text                           string
 }
 
-// StoredAsk is one ask: the issue or document it is on, its state and its answer.
+// StoredAsk is one ask: the issue or document it is on, its question, its state and its answer.
 type StoredAsk struct {
-	ID, Issue, Artifact, State string
-	Answer                     *StoredAnswer
+	ID, Issue, Artifact, Question, State string
+	Answer                               *StoredAnswer
 }
 
 // StoredAnswer is an ask's answer: the options chosen and the words.
@@ -133,7 +134,7 @@ func ReadStore(ctx context.Context, q Querier) (*Store, error) {
 // readDocuments reads every document and file with its latest version.
 func (s *Store) readDocuments(ctx context.Context, q Querier) error {
 	rows, err := q.Query(ctx, `
-		select a.id::text, coalesce(a.issue_key, ''), coalesce(a.project_key, ''), a.slug, a.is_primary,
+		select a.id::text, coalesce(a.issue_key, ''), coalesce(a.project_key, ''), a.slug, a.name, a.is_primary,
 		  coalesce(v.number, 0), coalesce(v.markdown, convert_from(v.content, 'UTF8'), '')
 		from artifacts a
 		left join lateral (
@@ -145,7 +146,7 @@ func (s *Store) readDocuments(ctx context.Context, q Querier) error {
 	}
 	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (StoredDocument, error) {
 		var d StoredDocument
-		err := row.Scan(&d.ID, &d.Issue, &d.Project, &d.Slug, &d.Primary, &d.Version, &d.Text)
+		err := row.Scan(&d.ID, &d.Issue, &d.Project, &d.Slug, &d.Name, &d.Primary, &d.Version, &d.Text)
 		return d, err
 	})
 	if err != nil {
@@ -262,16 +263,16 @@ func (s *Store) readMessages(ctx context.Context, q Querier) error {
 	return nil
 }
 
-// readAsks reads every ask with its answer.
+// readAsks reads every ask with its question and its answer.
 func (s *Store) readAsks(ctx context.Context, q Querier) error {
-	rows, err := q.Query(ctx, `select id::text, coalesce(issue_key, ''), coalesce(artifact_id::text, ''), state, answer from asks`)
+	rows, err := q.Query(ctx, `select id::text, coalesce(issue_key, ''), coalesce(artifact_id::text, ''), question, state, answer from asks`)
 	if err != nil {
 		return fmt.Errorf("eval: read the asks: %w", err)
 	}
 	asks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (StoredAsk, error) {
 		var a StoredAsk
 		var answer []byte
-		if err := row.Scan(&a.ID, &a.Issue, &a.Artifact, &a.State, &answer); err != nil {
+		if err := row.Scan(&a.ID, &a.Issue, &a.Artifact, &a.Question, &a.State, &answer); err != nil {
 			return a, err
 		}
 		if len(answer) > 0 && string(answer) != "null" {

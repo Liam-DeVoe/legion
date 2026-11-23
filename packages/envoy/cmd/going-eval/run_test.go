@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"strings"
 	"testing"
@@ -97,5 +99,87 @@ func TestTheReportListsTheTasksThatReadTheReferenceGraph(t *testing.T) {
 	}
 	if strings.Contains(text, "close-issue") {
 		t.Errorf("the section names close-issue, none of whose tries read the graph:\n%s", text)
+	}
+}
+
+// TestATryTheJudgeReadsAgainCountsAndOneStillUnreadLeavesTheRunIncomplete: of two tries the judge
+// could not read during the run, one it reads at the run's end is graded by that reading and
+// counts as a pass, and one it still cannot read stays unjudged with the second error. The report
+// counts the unjudged try apart, by task, with the judge's error, gives no floor over its kind,
+// says in its RESULT that the run is incomplete, and does not meet the floors.
+func TestATryTheJudgeReadsAgainCountsAndOneStillUnreadLeavesTheRunIncomplete(t *testing.T) {
+	tasks := []eval.Task{
+		{ID: "answer-01", Kind: eval.KindAnswer, Words: "summarise", Grade: eval.Grade{Facts: []string{"A fact."}}},
+		{ID: "answer-02", Kind: eval.KindAnswer, Words: "summarise", Grade: eval.Grade{Facts: []string{"A fact."}}},
+	}
+	timedOut := "the judge's call ended time: the run went past 3m0s"
+	results := []tryResult{
+		{Task: "answer-01", Kind: eval.KindAnswer, Try: 1, Unjudged: timedOut, judged: "read on the second pass"},
+		{Task: "answer-02", Kind: eval.KindAnswer, Try: 1, Unjudged: timedOut, judged: "never read"},
+	}
+	read := func(_ context.Context, words, answer string, facts []string) (judgement, error) {
+		if answer == "never read" {
+			return judgement{}, errors.New("the judge answered no JSON object")
+		}
+		return judgement{Stated: []bool{true}, Why: []string{"it says it"}}, nil
+	}
+
+	if again := judgeAgain(context.Background(), read, tasks, results); len(again) != 2 {
+		t.Fatalf("judgeAgain read %v again; want both tries", again)
+	}
+	if passed := results[0]; !passed.Pass || passed.Unjudged != "" || passed.verdict() != "pass" {
+		t.Errorf("the try read on the second pass is %+v; want a pass, judged", passed)
+	}
+	if unread := results[1]; unread.Pass || unread.Unjudged != "the judge answered no JSON object" || unread.verdict() != "unjudged" {
+		t.Errorf("the try still unread is %+v; want it unjudged with the second error", unread)
+	}
+
+	var report strings.Builder
+	met := writeReport(&report, reportInput{
+		options: runOptions{tries: 1, parallel: 1}, all: tasks, tasks: tasks, results: results,
+		calibration: calibrationResult{answers: eval.JudgeCalibrationAnswers, agreed: eval.JudgeCalibrationAnswers},
+	})
+	text := report.String()
+	if met {
+		t.Errorf("the report with an unjudged try meets every floor:\n%s", text)
+	}
+	for _, held := range []string{
+		"| answer-01 |  |  | pass |  |",
+		"| answer-02 |  |  | unjudged | try 1: the judge could not read it: the judge answered no JSON object",
+		"| answer | 2 | 100.0% (1 of 1) | 75% not given: 1 unjudged |",
+		"## Unjudged tries",
+		"- answer-02 try 1: the judge answered no JSON object\n",
+		"RESULT: the run is incomplete: the judge could not read 1 of its tries",
+	} {
+		if !strings.Contains(text, held) {
+			t.Errorf("the report holds no %q:\n%s", held, text)
+		}
+	}
+	if strings.Contains(text, "pass^1 of answer") {
+		t.Errorf("the report gives a floor verdict over the kind with an unjudged try:\n%s", text)
+	}
+}
+
+// TestEachServerPacesItsShareOfTheTokenLimit: the servers that run at once share the proxy's limit,
+// each pacing its calls to the limit over --parallel, at least 1, and the report's header says so.
+func TestEachServerPacesItsShareOfTheTokenLimit(t *testing.T) {
+	if got := serverTokenLimit(1); got != tokenLimit {
+		t.Errorf("one server paces its calls to %d; want the whole %d", got, tokenLimit)
+	}
+	if got := serverTokenLimit(4); got != tokenLimit/4 {
+		t.Errorf("each of four servers paces its calls to %d; want %d", got, tokenLimit/4)
+	}
+	for parallel := 1; parallel <= 7; parallel++ {
+		if sum := parallel * serverTokenLimit(parallel); sum > tokenLimit {
+			t.Errorf("%d servers' shares add up to %d, over the proxy's %d", parallel, sum, tokenLimit)
+		}
+	}
+	if got := serverTokenLimit(2 * tokenLimit); got != 1 {
+		t.Errorf("a server among more than the limit's tokens paces its calls to %d; want 1", got)
+	}
+	var report strings.Builder
+	writeReport(&report, reportInput{options: runOptions{tries: 1, parallel: 4}})
+	if want := "through a limiter of 500000 tokens a minute; each of the 4 servers that run at once paces its own calls to 125000 of them."; !strings.Contains(report.String(), want) {
+		t.Errorf("the report's header holds no %q:\n%s", want, report.String())
 	}
 }

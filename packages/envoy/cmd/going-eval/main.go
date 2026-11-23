@@ -4,7 +4,7 @@
 //	go run ./cmd/going-eval seed --database-url <url> [--envoy-fixture-out <file>]
 //	go run ./cmd/going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>]
 //	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]
-//	go run ./cmd/going-eval calibrate [--judge-deployment <name>]
+//	go run ./cmd/going-eval calibrate [--judge-deployment <name>] [--print-rendered-labels]
 //
 // seed, which the browser harness runs to serve a Dispatch on the eval's seed with the real
 // models (DISPATCH_E2E_MODELS=real, packages/dispatch/e2e/harness-eval-seed.ts), migrates the
@@ -24,8 +24,12 @@
 // words, page, mode and level, answers each plan the run shows as the task's grade says, and
 // reads the run to its end. A change task is graded by the store it leaves (eval.GradeEnd), an
 // answer task by a judge model reading the answer against the task's facts, and every message
-// and comment of the person's by c13's rule (eval.CheckPersonWrites). The tries of one task run
-// before the next task starts, --parallel of them at once.
+// and comment of the person's by c13's rule (eval.CheckPersonWrites). The judge reads an answer as
+// the person reads it in the bar, with each link rendered as the bar's chip draws it from the
+// store the try left (eval.RenderAnswer); the check of the links it holds reads it as written. A
+// try the judge cannot read is unjudged, neither a pass nor a fail, and is put to the judge again
+// once at the run's end. The tries of one task run before the next task starts, --parallel of
+// them at once.
 //
 // The chat model is the one the server's own settings name, read from run's environment:
 // DISPATCH_AZURE_CHAT_ENDPOINT, DISPATCH_AZURE_CHAT_DEPLOYMENT, DISPATCH_AZURE_CHAT_API_VERSION,
@@ -33,20 +37,27 @@
 // DISPATCH_AZURE_CLIENT_ID, DISPATCH_AZURE_FEDERATED_TOKEN_FILE); no API key is read. The server
 // and its agent call it through an https proxy of the eval's on loopback, whose limiter holds
 // every chat call of the run, the judge's too, under 500,000 tokens a minute and counts what each
-// spent. The judge is --judge-deployment, on the same sign-in (by default the chat deployment).
-// Before the tries, run puts each calibration answer of going/eval's labels.json to the judge;
-// calibrate does that alone and writes the same judge section, to stand beside a run's report.
+// spent. Each server paces its own calls to its share of that limit, the limit over --parallel.
+// The judge is --judge-deployment, on the same sign-in (by default the chat deployment).
+// Before the tries, run puts each calibration answer of going/eval's labels.json to the judge,
+// rendered against the seed as it stands before any task; calibrate does that alone and writes
+// the same judge section, to stand beside a run's report. calibrate --print-rendered-labels calls
+// no model: it prints each calibration answer as the judge reads it, one JSON object a line,
+// {task, words, facts, rendered}.
 //
 // The report goes to stdout: each task's tries and why each failed one failed, pass^1 and pass^3
-// of each kind and of all tasks with the floors of going/eval and whether each is met, the
-// judge's agreement with the labels, what the tries did of their planted instructions, the
-// person's messages and comments the rule does not let stand, the most chat tokens of any minute,
-// and the tasks whose tries read the reference graph (GET /api/v1/references and an issue's and a
-// document's references), with how many tries of each did, to run again after a change to those
-// routes. Each failing try keeps its database, which its line names. --answers-out writes each
-// try as one JSON line, with its answer, the tools its runs called and how many of those calls
-// read the reference graph. run exits 0 when the report meets every floor, 1 when it misses one
-// or fails, and 2 on a usage error.
+// of each kind and of all tasks with the floors of going/eval and whether each is met, the tries
+// the judge could not read with its error, the judge's agreement with the labels, what the tries
+// did of their planted instructions, the person's messages and comments the rule does not let
+// stand, the most chat tokens of any minute, and the tasks whose tries read the reference graph
+// (GET /api/v1/references and an issue's and a document's references), with how many tries of
+// each did, to run again after a change to those routes. No floor is given over a kind that holds
+// an unjudged try, and the report's RESULT then says the run is incomplete. Each failing or
+// unjudged try keeps its database, which its line names. --answers-out writes each try as one
+// JSON line, with its answer, the tools its runs called and how many of those calls read the
+// reference graph, and a try the judge read again at the run's end once more. run exits 0 when
+// the report meets every floor, 1 when it misses one, is incomplete or fails, and 2 on a usage
+// error.
 package main
 
 import (
@@ -73,7 +84,7 @@ func main() {
 // usage is what the command prints for no subcommand or one it does not know.
 const usage = "usage: going-eval seed --database-url <url> [--envoy-fixture-out <file>]\n" +
 	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]\n" +
-	"       going-eval calibrate [--judge-deployment <name>]"
+	"       going-eval calibrate [--judge-deployment <name>] [--print-rendered-labels]"
 
 // run answers the exit status of the subcommand args name: 0 done, 1 refused or failed, 2 a usage
 // error. Every refusal goes to stderr.

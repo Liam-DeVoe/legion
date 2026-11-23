@@ -391,7 +391,7 @@ func (j judgement) pass() bool {
 // judgePrompt is the judge's system prompt; %s is the day the seed's facts are written for.
 const judgePrompt = `You grade an answer that the assistant of Dispatch, an issue tracker, gave a person. You are given the words the person typed, the answer, and numbered facts that a right answer states.
 
-For each fact, decide whether the answer states it. The answer may state it in other words, in a table or a list, or with more beside it. A fact the answer leaves out, gets wrong, contradicts or states only in part is not stated. A number, a name, an issue key, a time or a state must be the fact's own. Read only what the answer says, not what it might have meant.
+For each fact, decide whether the answer states it. The answer may state it in other words, in a table or a list, or with more beside it. A fact the answer leaves out, gets wrong, contradicts or states only in part is not stated. A number, a name, an issue key, a time or a state must be the fact's own. A time given to the minute with its zone states every time of a fact inside that minute, by truncation and not rounding: "08:59 UTC" states 08:59:00Z to 08:59:59Z, and not 08:58:31Z; a time given with another word, such as "by", "before" or "around", does not state a time "at" it. Read only what the answer says, not what it might have meant.
 
 The facts were written on %s, the day the data is about: "today" in a fact is that day, and an answer that names that day or that time states it. A week may be named by its ISO number (2026-W45) or by a day of it, such as its Monday (2026-11-02): both name the one week.
 

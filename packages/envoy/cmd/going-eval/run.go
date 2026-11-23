@@ -159,10 +159,17 @@ type tryResult struct {
 	Writes []string `json:"writes,omitempty"`
 	// Error is what kept the try from running or from being graded.
 	Error string `json:"error,omitempty"`
+	// Unjudged is the judge's error where the judge could not read the try's answer, during the
+	// run and again at its end (judgeAgain): the try is then neither a pass nor a fail. A try the
+	// judge read again at the run's end is written to --answers-out a second time, with its new
+	// reading.
+	Unjudged string `json:"unjudged,omitempty"`
+	// judged is the try's answer as the judge reads it (judgedAnswer), kept for a second reading.
+	judged string
 	// Timing is where the try's time went.
 	Timing tryTiming `json:"timing"`
-	// Database is the try's database where it is kept: a failing try's, and every try's with
-	// --keep-databases.
+	// Database is the try's database where it is kept: a failing or unjudged try's, and every
+	// try's with --keep-databases.
 	Database string `json:"database,omitempty"`
 	// Tools is each tool the try's runs called, by name, with how many times, a call_tool call
 	// counted under the tool it names; ReferenceReads is how many of those calls read the
@@ -186,11 +193,37 @@ func (t tryTiming) total() float64 {
 	return t.Copy + t.Boot + t.Run + t.Stop + t.Grade
 }
 
-// failure is why the try failed, as the report's one line says it.
+// verdict is the try's word in the report: pass, fail, or unjudged where the judge could not read
+// it.
+func (r tryResult) verdict() string {
+	switch {
+	case r.Pass:
+		return "pass"
+	case r.Unjudged != "":
+		return "unjudged"
+	}
+	return "fail"
+}
+
+// passes reports whether a graded try passes: it met no error, its store holds its task's end
+// state and no change the task does not allow (eval.Verdict), and an answer task's answer links
+// and shows what its task asks and states every fact, as the judge read it.
+func (r tryResult) passes(task eval.Task) bool {
+	pass := r.Error == "" && eval.Verdict{Missing: r.Missing, Unasked: r.Unasked}.Pass()
+	if task.Kind.Changes() {
+		return pass
+	}
+	return pass && len(r.MissingLinks) == 0 && len(r.MissingRows) == 0 && r.Unjudged == "" && judgement{Stated: r.Facts}.pass()
+}
+
+// failure is why the try failed, or is unjudged, as the report's one line says it.
 func (r tryResult) failure() string {
 	var why []string
 	if r.Error != "" {
 		why = append(why, "error: "+r.Error)
+	}
+	if r.Unjudged != "" {
+		why = append(why, "the judge could not read it: "+clipText(r.Unjudged))
 	}
 	if r.Database != "" && !r.Pass {
 		why = append(why, "its store is kept in the database "+r.Database)
@@ -296,7 +329,7 @@ func runEval(ctx context.Context, options runOptions, stdout, stderr io.Writer) 
 	}
 
 	fmt.Fprintln(stderr, "going-eval: putting the calibration answers to the judge")
-	calibration := calibrate(ctx, e.judge, all)
+	calibration := calibrate(ctx, e.judge, all, seed)
 
 	fmt.Fprintln(stderr, "going-eval: writing the seed")
 	if e.databases, err = newDatabases(ctx, options.databaseURL, seed); err != nil {
@@ -326,6 +359,10 @@ func runEval(ctx context.Context, options runOptions, stdout, stderr io.Writer) 
 			return false, ctx.Err()
 		}
 	}
+	e.judgeUnjudged(ctx, tasks, results)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	highest, calls := e.limits.highestMinute()
 	return writeReport(stdout, reportInput{
 		started: started, ended: time.Now(), options: options, chat: chat, all: all, tasks: tasks, results: results,
@@ -352,21 +389,54 @@ func (e *evalRun) runTask(ctx context.Context, task eval.Task) []tryResult {
 				result = e.runTry(ctx, task, try)
 			}
 			results[try-1] = result
-			verdict := "fail"
-			if result.Pass {
-				verdict = "pass"
-			}
-			fmt.Fprintf(e.stderr, "going-eval: %s try %d: %s (%.0fs: copy %.1fs, boot %.1fs, run %.1fs, stop %.1fs, grade %.1fs) %s\n", task.ID, try, verdict,
-				result.Timing.total(), result.Timing.Copy, result.Timing.Boot, result.Timing.Run, result.Timing.Stop, result.Timing.Grade, result.failure())
-			if e.answers != nil {
-				e.answersMu.Lock()
-				_ = e.answers.Encode(result)
-				e.answersMu.Unlock()
-			}
+			e.logTry(result)
 		}()
 	}
 	wg.Wait()
 	return results
+}
+
+// logTry writes a try's line to stderr, and the try to --answers-out where it names a file.
+func (e *evalRun) logTry(result tryResult) {
+	fmt.Fprintf(e.stderr, "going-eval: %s try %d: %s (%.0fs: copy %.1fs, boot %.1fs, run %.1fs, stop %.1fs, grade %.1fs) %s\n", result.Task, result.Try, result.verdict(),
+		result.Timing.total(), result.Timing.Copy, result.Timing.Boot, result.Timing.Run, result.Timing.Stop, result.Timing.Grade, result.failure())
+	if e.answers != nil {
+		e.answersMu.Lock()
+		_ = e.answers.Encode(result)
+		e.answersMu.Unlock()
+	}
+}
+
+// judgeUnjudged reads again, at the run's end, each try the judge could not read (judgeAgain),
+// and logs each such try again. One that now passes gives up the database and the files a try
+// that does not pass keeps, as a try that passed at once does.
+func (e *evalRun) judgeUnjudged(ctx context.Context, tasks []eval.Task, results []tryResult) {
+	if !slices.ContainsFunc(results, func(r tryResult) bool { return r.Unjudged != "" }) {
+		return
+	}
+	fmt.Fprintln(e.stderr, "going-eval: putting the tries the judge could not read to it again")
+	for _, i := range judgeAgain(ctx, e.judge.read, tasks, results) {
+		r := &results[i]
+		if r.Pass {
+			if r.Database != "" && !e.options.keepDatabases && e.databases.drop(context.WithoutCancel(ctx), r.Database) == nil {
+				r.Database = ""
+			}
+			_ = os.RemoveAll(e.tryDir(r.Task, r.Try))
+		}
+		e.logTry(*r)
+	}
+}
+
+// tryDir is the directory of the server's log and files of one try.
+func (e *evalRun) tryDir(task string, try int) string {
+	return filepath.Join(e.work, task+"-"+fmt.Sprint(try))
+}
+
+// serverTokenLimit is the chat tokens a minute each try's server paces its own calls to: its share
+// of tokenLimit, under which the proxy's limiter holds every call of the run, so the shares of the
+// parallel servers that run at once add up to that limit. It is at least 1.
+func serverTokenLimit(parallel int) int {
+	return max(1, tokenLimit/max(1, parallel))
 }
 
 // runTry runs one try of task on a copy of the seed, with a server, an agent and a fake Envoy of
@@ -385,7 +455,8 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 		return result
 	}
 	// A try that never ran is made again on a database of the same name, so its copy goes; a try
-	// that ran keeps its copy when it fails, or with --keep-databases, for its store to be read.
+	// that ran keeps its copy when it fails or is unjudged, or with --keep-databases, for its store
+	// to be read.
 	graded := false
 	defer func() {
 		if graded && (!result.Pass || e.options.keepDatabases) {
@@ -405,8 +476,8 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 	secret := make([]byte, 24)
 	_, _ = rand.Read(secret)
 	agentToken := hex.EncodeToString(secret)
-	dir := filepath.Join(e.work, task.ID+"-"+fmt.Sprint(try))
-	srv, err := startServer(ctx, e.binary, dir, e.databases.url(database), agentToken, e.chat, e.proxy, envoy.url(), tokenLimit)
+	dir := e.tryDir(task.ID, try)
+	srv, err := startServer(ctx, e.binary, dir, e.databases.url(database), agentToken, e.chat, e.proxy, envoy.url(), serverTokenLimit(e.options.parallel))
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -438,6 +509,8 @@ func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result t
 
 // grade grades a try from the store it left and the answer it gave, and records the calls of its
 // runs' tools (readCalls) before the store is dropped. serverURL is the try's server's address.
+// The judge reads an answer with its links rendered against the store the try left
+// (judgedAnswer); a try the judge cannot read is left unjudged (judgeTry).
 func (e *evalRun) grade(ctx context.Context, task eval.Task, database, serverURL string, result *tryResult) error {
 	conn, err := pgx.Connect(ctx, e.databases.url(database))
 	if err != nil {
@@ -457,31 +530,59 @@ func (e *evalRun) grade(ctx context.Context, task eval.Task, database, serverURL
 	if result.Writes, err = eval.CheckPersonWrites(ctx, conn, e.seed, task, e.baseline, after, evalPerson); err != nil {
 		return err
 	}
-	pass := verdict.Pass() && result.Error == ""
 	if !task.Kind.Changes() {
 		result.MissingLinks = eval.MissingLinks(task.Grade.Links, result.Outcome.Answer, result.Outcome.Blocks)
 		if task.Grade.Chart != nil {
 			result.MissingRows = eval.MissingChartRows(task.Grade.Chart.Rows, result.Outcome.Answer, result.Outcome.Blocks)
 		}
-		pass = pass && len(result.MissingLinks) == 0 && len(result.MissingRows) == 0
 		if strings.TrimSpace(result.Outcome.Answer) == "" && len(result.Outcome.Blocks) == 0 {
 			result.Facts = make([]bool, len(task.Grade.Facts))
 			result.Why = make([]string, len(task.Grade.Facts))
 			for i := range result.Why {
 				result.Why[i] = "the run answered nothing"
 			}
-			pass = false
 		} else {
-			reading, err := e.judge.read(ctx, task.Words, judgedAnswer(result.Outcome), task.Grade.Facts)
-			if err != nil {
-				return fmt.Errorf("the judge: %w", err)
-			}
-			result.Facts, result.Why = reading.Stated, reading.Why
-			pass = pass && reading.pass()
+			result.judged = judgedAnswer(result.Outcome, after)
+			judgeTry(ctx, e.judge.read, task, result)
 		}
 	}
-	result.Pass = pass
+	result.Pass = result.passes(task)
 	return nil
+}
+
+// readAnswer is a judge's reading of an answer, to the person's words, against facts (judge.read).
+type readAnswer func(ctx context.Context, words, answer string, facts []string) (judgement, error)
+
+// judgeTry has read read a graded try's answer as the judge reads it (judged) against its task's
+// facts: the try takes the reading, or, where read fails, the error as Unjudged, which leaves it
+// neither a pass nor a fail.
+func judgeTry(ctx context.Context, read readAnswer, task eval.Task, result *tryResult) {
+	reading, err := read(ctx, task.Words, result.judged, task.Grade.Facts)
+	if err != nil {
+		result.Unjudged = err.Error()
+		return
+	}
+	result.Unjudged = ""
+	result.Facts, result.Why = reading.Stated, reading.Why
+}
+
+// judgeAgain reads once more each try of results the judge could not read (Unjudged), against the
+// facts of its task of tasks, and grades it by that reading: it passes or fails as a try the judge
+// read at once does, and one the judge still cannot read stays unjudged, with the second error.
+// It answers the index of each try it read again.
+func judgeAgain(ctx context.Context, read readAnswer, tasks []eval.Task, results []tryResult) []int {
+	var again []int
+	for i := range results {
+		r := &results[i]
+		if r.Unjudged == "" {
+			continue
+		}
+		task := tasks[slices.IndexFunc(tasks, func(t eval.Task) bool { return t.ID == r.Task })]
+		judgeTry(ctx, read, task, r)
+		r.Pass = r.passes(task)
+		again = append(again, i)
+	}
+	return again
 }
 
 // referenceRoutes are the rows of the server's table that read the reference graph
@@ -559,11 +660,12 @@ func readCalls(ctx context.Context, conn *pgx.Conn, serverURL string) (map[strin
 	return tools, reads, nil
 }
 
-// judgedAnswer is an answer as the judge reads it: its prose, then each block it drew with the
-// rows the server filled it with.
-func judgedAnswer(outcome tryOutcome) string {
+// judgedAnswer is an answer as the judge reads it: its prose with each link rendered as the bar
+// draws it from items, the store the try left (eval.RenderAnswer), then each block it drew with
+// the rows the server filled it with.
+func judgedAnswer(outcome tryOutcome, items eval.Items) string {
 	var text strings.Builder
-	text.WriteString(outcome.Answer)
+	text.WriteString(eval.RenderAnswer(outcome.Answer, items))
 	for _, block := range outcome.Blocks {
 		var data struct {
 			Kind  string           `json:"kind"`
@@ -587,16 +689,16 @@ type calibrationResult struct {
 	disagreed []string
 }
 
-// calibrate puts each labelled answer of labels.json to the judge, against its task's facts.
-func calibrate(ctx context.Context, j *judge, tasks []eval.Task) calibrationResult {
-	labels, err := eval.LoadLabels(eval.Files, tasks)
+// calibrate puts each labelled answer of labels.json to the judge, rendered against the seed
+// (renderedLabels), against its task's facts.
+func calibrate(ctx context.Context, j *judge, tasks []eval.Task, seed *eval.Seed) calibrationResult {
+	answers, err := renderedLabels(tasks, seed)
 	if err != nil {
 		return calibrationResult{err: err}
 	}
-	result := calibrationResult{answers: len(labels.Answers)}
-	for i, answer := range labels.Answers {
-		task := tasks[slices.IndexFunc(tasks, func(t eval.Task) bool { return t.ID == answer.Task })]
-		reading, err := j.read(ctx, task.Words, answer.Answer, task.Grade.Facts)
+	result := calibrationResult{answers: len(answers)}
+	for i, answer := range answers {
+		reading, err := j.read(ctx, answer.Words, answer.Rendered, answer.Facts)
 		if err != nil {
 			return calibrationResult{err: fmt.Errorf("answer %d (%s): %w", i+1, answer.Task, err)}
 		}
@@ -604,11 +706,11 @@ func calibrate(ctx context.Context, j *judge, tasks []eval.Task) calibrationResu
 		if reading.pass() {
 			verdict = eval.LabelPass
 		}
-		if verdict == answer.Label {
+		if verdict == answer.label {
 			result.agreed++
 			continue
 		}
-		result.disagreed = append(result.disagreed, fmt.Sprintf("answer %d (%s): labelled %s, the judge read %s", i+1, answer.Task, answer.Label, verdict))
+		result.disagreed = append(result.disagreed, fmt.Sprintf("answer %d (%s): labelled %s, the judge read %s", i+1, answer.Task, answer.label, verdict))
 	}
 	return result
 }
@@ -640,15 +742,17 @@ func meets(ok bool) string {
 	return "MISSED"
 }
 
-// writeReport writes the report and answers whether it meets every floor.
+// writeReport writes the report and answers whether it meets every floor. A run with a try the
+// judge could not read (Unjudged) gives no floor over a kind that holds one, and meets none: its
+// RESULT says it is incomplete.
 func writeReport(w io.Writer, in reportInput) bool {
 	var missed []string
 	fmt.Fprintf(w, "# going-eval run, %s to %s\n\n", in.started.UTC().Format(time.RFC3339), in.ended.UTC().Format(time.RFC3339))
 	if in.options.source != "" {
 		fmt.Fprintf(w, "Source: %s.\n", in.options.source)
 	}
-	fmt.Fprintf(w, "Chat model: the deployment %s, through a limiter of %d tokens a minute. Judge: the deployment %s, on the same Azure sign-in.\n",
-		in.chat.Deployment, tokenLimit, in.options.judgeDeployment)
+	fmt.Fprintf(w, "Chat model: the deployment %s, through a limiter of %d tokens a minute; each of the %d servers that run at once paces its own calls to %d of them. Judge: the deployment %s, on the same Azure sign-in.\n",
+		in.chat.Deployment, tokenLimit, in.options.parallel, serverTokenLimit(in.options.parallel), in.options.judgeDeployment)
 	fmt.Fprintf(w, "Tasks: %d of the %d committed, %d tries each, one task at a time (%d tries of it at once). The person is %s.\n\n",
 		len(in.tasks), len(in.all), in.options.tries, in.options.parallel, evalPerson)
 	if len(in.all) < eval.LeastTasks {
@@ -664,17 +768,20 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	fmt.Fprintln(w, "## Tries")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| task | level | mode | tries | why a try failed |")
+	fmt.Fprintln(w, "| task | level | mode | tries | why a try failed or is unjudged |")
 	fmt.Fprintln(w, "| --- | --- | --- | --- | --- |")
+	var unjudged []string
 	for _, task := range in.tasks {
 		var marks, why []string
 		for _, r := range byTask[task.ID] {
+			marks = append(marks, r.verdict())
 			if r.Pass {
-				marks = append(marks, "pass")
 				continue
 			}
-			marks = append(marks, "fail")
 			why = append(why, fmt.Sprintf("try %d: %s", r.Try, strings.ReplaceAll(r.failure(), "|", "/")))
+			if r.Unjudged != "" {
+				unjudged = append(unjudged, fmt.Sprintf("%s try %d: %s", task.ID, r.Try, r.Unjudged))
+			}
 		}
 		fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", task.ID, task.Level, task.Mode, strings.Join(marks, " "), strings.Join(why, " <br> "))
 	}
@@ -682,18 +789,23 @@ func writeReport(w io.Writer, in reportInput) bool {
 
 	fmt.Fprintln(w, "## Pass rates")
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "pass^1 is the share of tries that pass; pass^%d the share of tasks that pass on every try.\n\n", in.options.tries)
+	fmt.Fprintf(w, "pass^1 is the share of the tries the judge could read that pass; pass^%d the share of tasks that pass on every try. No floor is given over tries the judge could not read.\n\n", in.options.tries)
 	fmt.Fprintf(w, "| kind | tasks | pass^1 | floor | pass^%d | floor |\n", in.options.tries)
 	fmt.Fprintln(w, "| --- | --- | --- | --- | --- | --- |")
-	count := func(tasks []eval.Task) (int, int, int, int) {
-		tries, passes, whole, all := 0, 0, 0, 0
+	count := func(tasks []eval.Task) (int, int, int, int, int) {
+		tries, passes, whole, all, open := 0, 0, 0, 0, 0
 		for _, task := range tasks {
 			every := len(byTask[task.ID]) > 0
 			for _, r := range byTask[task.ID] {
-				tries++
-				if r.Pass {
+				switch {
+				case r.Unjudged != "":
+					open++
+					every = false
+				case r.Pass:
+					tries++
 					passes++
-				} else {
+				default:
+					tries++
 					every = false
 				}
 			}
@@ -702,7 +814,15 @@ func writeReport(w io.Writer, in reportInput) bool {
 				whole++
 			}
 		}
-		return passes, tries, whole, all
+		return passes, tries, whole, all, open
+	}
+	// floor is the floor's cell: the floor and whether the rate meets it, or that it is not given
+	// over open unjudged tries.
+	floor := func(share float64, ok bool, open int) string {
+		if open > 0 {
+			return fmt.Sprintf("%.0f%% not given: %d unjudged", 100*share, open)
+		}
+		return fmt.Sprintf("%.0f%% %s", 100*share, meets(ok))
 	}
 	for _, kind := range eval.Kinds {
 		var of []eval.Task
@@ -714,24 +834,32 @@ func writeReport(w io.Writer, in reportInput) bool {
 		if len(of) == 0 {
 			continue
 		}
-		passes, tries, whole, all := count(of)
+		passes, tries, whole, all, open := count(of)
 		ok := tries > 0 && float64(passes)/float64(tries) >= eval.PassOneKindFloor
-		if !ok {
+		if !ok && open == 0 {
 			missed = append(missed, fmt.Sprintf("pass^1 of %s is %s, under %.0f%%", kind.Kind, rate(passes, tries), 100*eval.PassOneKindFloor))
 		}
-		fmt.Fprintf(w, "| %s | %d | %s | %.0f%% %s | %s | |\n", kind.Kind, len(of), rate(passes, tries), 100*eval.PassOneKindFloor, meets(ok), rate(whole, all))
+		fmt.Fprintf(w, "| %s | %d | %s | %s | %s | |\n", kind.Kind, len(of), rate(passes, tries), floor(eval.PassOneKindFloor, ok, open), rate(whole, all))
 	}
-	passes, tries, whole, all := count(in.tasks)
+	passes, tries, whole, all, open := count(in.tasks)
 	oneOK := tries > 0 && float64(passes)/float64(tries) >= eval.PassOneFloor
 	threeOK := all > 0 && float64(whole)/float64(all) >= eval.PassThreeFloor
-	if !oneOK {
+	if !oneOK && open == 0 {
 		missed = append(missed, fmt.Sprintf("pass^1 of all tasks is %s, under %.0f%%", rate(passes, tries), 100*eval.PassOneFloor))
 	}
-	if !threeOK {
+	if !threeOK && open == 0 {
 		missed = append(missed, fmt.Sprintf("pass^%d of all tasks is %s, under %.0f%%", in.options.tries, rate(whole, all), 100*eval.PassThreeFloor))
 	}
-	fmt.Fprintf(w, "| all | %d | %s | %.0f%% %s | %s | %.0f%% %s |\n\n", len(in.tasks), rate(passes, tries), 100*eval.PassOneFloor, meets(oneOK),
-		rate(whole, all), 100*eval.PassThreeFloor, meets(threeOK))
+	fmt.Fprintf(w, "| all | %d | %s | %s | %s | %s |\n\n", len(in.tasks), rate(passes, tries), floor(eval.PassOneFloor, oneOK, open),
+		rate(whole, all), floor(eval.PassThreeFloor, threeOK, open))
+
+	fmt.Fprintln(w, "## Unjudged tries")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Tries the judge could not read, during the run and again at its end, which count neither as a pass nor as a fail: %d.\n", len(unjudged))
+	for _, u := range unjudged {
+		fmt.Fprintf(w, "- %s\n", u)
+	}
+	fmt.Fprintln(w)
 
 	if problem := writeCalibration(w, in.options.judgeDeployment, in.calibration); problem != "" {
 		missed = append(missed, problem)
@@ -796,6 +924,14 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	if failedTries > 0 {
 		fmt.Fprintf(w, "%d tries met an error of the eval itself, and count as failed (their lines above say which).\n\n", failedTries)
+	}
+	if len(unjudged) > 0 {
+		result := fmt.Sprintf("RESULT: the run is incomplete: the judge could not read %d of its tries, and no floor is given over a kind that holds one", len(unjudged))
+		if len(missed) > 0 {
+			result += "; it misses: " + strings.Join(missed, "; ")
+		}
+		fmt.Fprintln(w, result+".")
+		return false
 	}
 	if len(missed) == 0 {
 		fmt.Fprintln(w, "RESULT: the run meets every floor of R13.")
