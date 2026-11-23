@@ -201,15 +201,27 @@ func (candidate MadePlan) newerThan(held *MadePlan) bool {
 	return candidate.Plan.ID > held.Plan.ID
 }
 
-// IssuesPlans answers, by issue, the plan of each run of each issue of keys with the moment its
-// node was made, oldest first in newerThan's order. An issue Legion never ran answers none. It
-// reads the `part_of` tuples into those issues (workflow_tuples_inbound, whose predicate the
-// literal to_kind implies) and joins each to its node row, so it costs their plans alone. The
-// metrics' fallback timeline reads the order of a task's steps from it.
+// IssuesPlans answers, by issue, each version of the plan of each run of each issue of keys, with
+// the moment that version's write made it, oldest first in newerThan's order. One run keeps one
+// plan node, whose made_at is its first write's, and a later version replaces the node's tasks
+// whole (planFact); every write of the tasks appends a value tuple of them, stamped with the
+// write's moment (putNode). So each version is read from its tuple, with its document version from
+// the tuple the same write appended, and the metrics' fallback timeline reads each mark by the
+// version in force at that mark, not the whole run by the newest. An issue Legion never ran answers
+// none. It reads the `part_of` tuples into those issues (workflow_tuples_inbound, whose predicate
+// the literal to_kind implies), joins each to its node row and the node's own tasks tuples, so it
+// costs their plans alone.
 func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]MadePlan, error) {
 	rows, err := q.Query(ctx, `
-		select t.to_id, n.id, n.attributes, n.made_at
+		select t.to_id, n.id,
+			n.attributes || coalesce(jsonb_build_object('`+AttributeTasks+`', v.to_id::jsonb), '{}'::jsonb)
+				|| coalesce(jsonb_build_object('`+AttributeVersion+`', w.to_id::bigint), '{}'::jsonb),
+			coalesce(v.at, n.made_at)
 		from workflow_tuples t join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		left join workflow_tuples v on v.from_kind = n.kind and v.from_id = n.id and v.kind = '`+AttributeTasks+`'
+			and v.to_kind = '`+KindValue+`' and v.asserted
+		left join workflow_tuples w on w.from_kind = n.kind and w.from_id = n.id and w.kind = '`+AttributeVersion+`'
+			and w.to_kind = '`+KindValue+`' and w.asserted and w.at = v.at
 		where t.to_kind = '`+KindIssue+`' and t.to_id = any($1) and t.kind = '`+RelationPartOf+`'
 			and t.from_kind = '`+KindPlan+`' and t.asserted
 	`, keys)

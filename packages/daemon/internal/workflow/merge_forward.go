@@ -125,12 +125,14 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     asked. On a task where a step follows the review or the acceptance, a move into that step
 //     asks nothing either: the conflict was decided by R0's reasons where it was confirmed, and
 //     the step goes on at the head as a tester or a reviewer after the implementer does.
-//   - At such a head, a move out of implementing into a phase after it on the task's line
-//     (Walk.MovesBack: a planning after the implementer too, a planning before it never) asks
-//     again what was asked in implementing, for the reason it was asked for
+//   - At such a head, a move into a phase after implementing on the task's line (Walk.MovesBack: a
+//     planning after the implementer too, a planning before it never), while the record's ask of
+//     that head is still the one made in implementing, asks again for the reason it was asked for
 //     (record.MergeForward.Why): an ask made there covers implementing alone, so an implementer
 //     that completes at that head without the merge leaves the next phase to ask, with its hold
-//     and its notice. A parent held before its retro is that next phase (holdBeforeRetro).
+//     and its notice. It is keyed on the ask, not on the phase the move left, so no phase after
+//     implementing starts at that head with the ask of implementing alone. A parent held before
+//     its retro is such a phase (holdBeforeRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
@@ -149,8 +151,8 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
 		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
-	case from == phase.Implementing && w.MovesBack(record.StandsAt(issue), phase.Implementing) &&
-		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
+	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
+		w.MovesBack(record.StandsAt(issue), phase.Implementing):
 		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
 	}
 	return nil

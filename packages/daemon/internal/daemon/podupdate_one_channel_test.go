@@ -150,10 +150,11 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	}
 }
 
-// The reviewer and the merger create no commit and push nothing (their role parts), so the ask a
-// pod round sends each of them tells it to push nothing, and asks it to commit nothing a subagent
-// made. A role that commits, the implementer here, is still told to push its commits and what its
-// subagents made.
+// The reviewer creates no commit and pushes nothing (its role part), so the ask a pod round sends
+// it tells it to push nothing, and asks it to commit nothing a subagent made. A role that commits
+// is still told to push its commits and what its subagents made: the implementer, and the merger,
+// which makes and pushes the merge of the base forward in merging (roles/merger.md), whose
+// unpushed merge commit the pod's replacement would lose.
 func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleReviewer), readyWorker(claim.RoleMerger))
@@ -169,7 +170,7 @@ func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 		told[ask.Role] = ask.Text
 	}
 	for _, role := range roles {
-		text, commits := told[role], role == claim.RoleImplementer
+		text, commits := told[role], role != claim.RoleReviewer
 		if text == "" {
 			t.Fatalf("the %s was asked nothing, want one ask", role)
 		}
