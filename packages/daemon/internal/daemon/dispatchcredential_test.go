@@ -411,7 +411,7 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	const lifetime = 40 * time.Second
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go-race job names its Postgres service")
 	}
 	rig := ciphertest.NewRig(t, ciphertest.WithAccessLifetime(lifetime))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))

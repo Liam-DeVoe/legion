@@ -64,12 +64,13 @@ const (
 )
 
 // newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
-// BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service there, and
-// a silent skip would let these tests stop running unnoticed.
+// BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go-race job, which runs internal/daemon,
+// names its Postgres service there, and a silent skip would let these tests stop running
+// unnoticed.
 func newBrokerRig(t *testing.T) *ciphertest.Rig {
 	t.Helper()
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go-race job names its Postgres service")
 	}
 	return ciphertest.NewRig(t)
 }
