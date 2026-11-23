@@ -163,9 +163,11 @@ func startsWork(request record.SuperviseRequest) bool {
 // The opening asks it before it writes the start of a claim the hold stopped (openHeldClaims),
 // with current the phase that start carries, "" for a claim that holds no phase. The outbox asks
 // it of each start that reaches a claim the hold holds, with the start's own phase
-// (internal/daemon's startOfAHeldClaim). It asks it again with current "" and with after the
-// claim's last start less one, for a start that waits while the claim's own start of the opening
-// goes first behind an operator's task (internal/daemon's openingGoesFirst).
+// (internal/daemon's startOfAHeldClaim). It asks it twice more with current "", for a start that
+// waits while the claim's own start of the opening goes first behind an operator's task: with after
+// 0 while the hold has stopped the claim (internal/daemon's openingGoesFirst), and with after the
+// claim's last start less one once that start has ended the hold (internal/daemon's
+// waitForOpeningInFlight).
 func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Phase, after int64) bool {
 	floor := max(actingStop(run, root), after)
 	for _, queued := range run.Queued {

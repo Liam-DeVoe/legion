@@ -87,10 +87,10 @@ func (m *Machine) workHoldWaits(ev Event) error {
 //     sends task when that turn ends. EndHold reports true. The outbox has a start with no
 //     opening's sentences wait while the claim's own start of the opening is queued, so that
 //     start ends the hold and its task, which builds the opening's sentences again at its later
-//     attempt, goes second (the outbox's openingGoesFirst, startOfAHeldClaim). Limit: where no
-//     such start of the opening is queued (the stop was made after the opening read the claim, or
-//     a newer stop or a newer run undid that start), a start with no opening's sentences ends the
-//     hold here, and its worker is never told that the hold stopped its turn, and is told the
+//     attempt, goes second (the outbox's openingGoesFirst, waitForOpeningInFlight). Limit: where
+//     no such start of the opening is queued (the stop was made after the opening read the claim,
+//     or a newer stop or a newer run undid that start), a start with no opening's sentences ends
+//     the hold here, and its worker is never told that the hold stopped its turn, and is told the
 //     gate's open message only where its issue's holder row still owes the opening then (the
 //     outbox's startNewsOf). Under `merge`, where the boot ended the hold, a start waits for the
 //     start of the opening only while the claim is stopped: a later start that records itself
@@ -394,7 +394,8 @@ func OpeningKeeps(pending *Delivery, generation uint64, entry int64, resend bool
 // It is the one statement of the rule, and four readers ask it: EndHold, OpeningKeeps, and the
 // daemon's openingGoesFirst and startNewsOf. openingGoesFirst has a start that carries no
 // opening's sentences wait while the claim's own start of the opening is queued, so that start
-// ends the hold and its task goes second. Where no such start is queued, the start that carries no
+// ends the hold, and the daemon's waitForOpeningInFlight keeps that wait until that start's task
+// is queued, so it goes second. Where no such start is queued, the start that carries no
 // opening's sentences ends the hold itself, and startNewsOf settles no opening as told for it: its
 // task follows the operator's task with no opening's sentences, so the opening stays owed to its
 // news.

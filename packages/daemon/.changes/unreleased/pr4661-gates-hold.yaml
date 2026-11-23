@@ -40,7 +40,8 @@ body: |-
   task that carries its news starts with the opening.
   A claim can keep a task that an operator gave it before the hold stopped it, where no turn took
   that task. The opening never retires that task: the daemon sends it first, then the opening's
-  task, and then the task of any phase start that came after the opening. Where no start of the
+  task, and then the task of a phase start that came after the opening, where the opening's start
+  carries no phase work or had already ended the hold. Where no start of the
   opening is queued for that claim, because its stop was made after the opening read it or a newer
   stop or run undid that start, a phase start ends the hold instead: the worker is not told that
   the hold stopped its turn, and is told the gate's open message only where its issue's holder was
