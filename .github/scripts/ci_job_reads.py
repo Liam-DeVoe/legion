@@ -559,7 +559,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1424 (path from goldenPath at :1413, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1426 (path from goldenPath at :1415, declared :39)")),
     f"{DAEMON}/internal/appauth/deployment_doc_test.go": reads(("docs/deployment.md", "internal/appauth/deployment_doc_test.go:30 (path from deploymentDoc at :20)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
@@ -576,7 +576,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1858")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1907")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -592,8 +592,8 @@ RULES = {
           for g in PACK_READS],
     ],
     f"{DAEMON}/internal/daemon/nats_permissions_test.go": reads(
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:79"),
-        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:80")),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:81"),
+        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:82")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/daemon/supervision_test.go": [
@@ -607,8 +607,8 @@ RULES = {
     f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:276 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:819-820")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:286 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:856-857")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
@@ -981,10 +981,10 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:880 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:913-938 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
+        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:938 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/testnats/nats_test.go:971-996 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :984 reads every .go file it finds, test files included (dockerDriverFiles, called at :899 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :892)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
@@ -3061,9 +3061,9 @@ GATES = [
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:23, legion-claim-core.test.ts:17, legion-phase-ops.test.ts:32"),
-        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1458-1463,1609-1620 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
-        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1458-1463,1609-1620 walks every .ts of it that is no test, as above"),
-        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1458-1463,1609-1620 walks every .ts of it that is no test, as above"),
+        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1682-1687,1833-1844 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
+        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1682-1687,1833-1844 walks every .ts of it that is no test, as above"),
+        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1682-1687,1833-1844 walks every .ts of it that is no test, as above"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,33-36,53-54 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
@@ -3103,7 +3103,7 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
         ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,319 and legion-role-claim.test.ts:14,100 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1072"),
-        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:343 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:350 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :30) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-48 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
@@ -3114,21 +3114,21 @@ GATES = [
         # envoy-client's sources, and cipher-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1445,4083, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
+        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1453,4091, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
         (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:969 (PLUGIN_REPORT :854)"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :229-233 reads the roots at :219-227; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :236-240 reads the roots at :226-234; scripts/skill-scenarios/rig.test.ts:1127,1370; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
-        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:229-233 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :222"),
-        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :221"),
-        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :223"),
-        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :224"),
-        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :225"),
-        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :226"),
+        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:236-240 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :229"),
+        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :228"),
+        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :230"),
+        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :231"),
+        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :232"),
+        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :233"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
