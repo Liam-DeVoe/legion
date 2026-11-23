@@ -18,14 +18,14 @@ name: CI caches
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 # of its module files too, for the reason its job gives): go-notices (lint's notices step),
 # go-daemon (typecheck, daemon-go, plugin-pack, pi-legion and daemon-live, the pane-drivers,
-# tmux-scripts, session-scripts and nats-callout-sessions parts of
-# .github/workflows/ci-job-agent-harness.yaml, and the legion_build job of release.yaml), go-envoy
+# tmux-scripts, session-scripts and nats-callout-sessions legs of ci.yaml's agent-harness job
+# (.github/actions/agent-harness), and the legion_build job of release.yaml), go-envoy
 # (envoy-go-checks, envoy-go-race-docs,
 # envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall, the
-# session-settings and plugin-smokes parts of ci-job-agent-harness.yaml, and the embedder job of
+# session-settings and plugin-smokes legs of agent-harness, and the embedder job of
 # .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model, which
-# builds the API's test binary of that set, the nats-callout-sessions part of
-# ci-job-agent-harness.yaml, and the binaries, multiprocess and visual jobs of
+# builds the API's test binary of that set, the nats-callout-sessions leg of
+# agent-harness, and the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those four
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
 # build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and

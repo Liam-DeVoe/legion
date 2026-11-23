@@ -1,23 +1,25 @@
 // Stage 4b's tree on the kind rig (kind_tree_rig_live_test.go), which the kind job of ci.yaml runs:
 // the whole daemon drives an issue tree on the Agent Sandbox runtime, its roles real Oh My Pi
 // agents of the worker image under test in issue pods under gVisor, each pod's launcher dialling
-// the daemon's worker stream at advertise_host, the kind network's gateway. Three tests hold the
-// checkpoints, each on a rig of its own and run by a kind part of its own, since one rig running
-// all fourteen runs past the part budget. One subtest per checkpoint prints `CHECK <name>: PASS`,
-// and in each test the first that fails ends the test, since every checkpoint reads the state the
-// ones before it left.
+// the daemon's worker stream at advertise_host, the kind network's gateway. Five tests hold the
+// checkpoints, each on a rig of its own and run by a kind leg of its own, since one rig running
+// all fourteen runs past the kind chain's budget. One subtest per checkpoint prints
+// `CHECK <name>: PASS`, and in each test the first that fails ends the test, since every
+// checkpoint reads the state the ones before it left.
 //
 // The tree: tree 1 is seeded in planning, its architect and planner launched into its pod by the
 // boot; two children filed under it in Dispatch take the cap's other two slots, each in a pod and
 // on a disk of its own, while tree 2, a root set todo, waits in the line; child 1 closed and child
 // 2 parked free the slots, and tree 2 takes one. Tree 1's planner completes planning through the
 // `legion` tool, so its implementer starts in the same pod. TestStage4bSandboxTreeOnTheKindRigLive
-// drives that tree, then ends one role's generation and loses its pod, and last restarts the daemon
-// under `controller: daemon`. The daemon's other restarts start from the claims that tree holds at
-// the end of it, seeded (newStage4bRunningTree): two in TestStage4bDaemonRestartsOnTheKindRigLive
-// and one in TestStage4bStreamMoveOnTheKindRigLive. The model is the rig's stand-in, which answers
-// every turn with a WAITING line and the turns a checkpoint scripts with a call of the tool the
-// checkpoint names.
+// drives that tree, then ends one role's generation and loses its pod. The daemon's restarts start
+// from the claims that tree holds at the end of it, seeded (newStage4bRunningTree), one test each:
+// TestStage4bDaemonRestartsOnTheKindRigLive at the same addresses,
+// TestStage4bListenerAddressMoveOnTheKindRigLive at another address of the listener,
+// TestStage4bStreamMoveOnTheKindRigLive onto a moved worker stream, and
+// TestStage4bControllerRestartOnTheKindRigLive under `controller: daemon`. The model is the rig's
+// stand-in, which answers every turn with a WAITING line and the turns a checkpoint scripts with a
+// call of the tool the checkpoint names.
 //
 // What the devbox script this replaces also judged and this test does not: the checks that read a
 // production system (its preflight, the deployment's own pod block, the projected token's
@@ -89,13 +91,10 @@ type stage4bLive struct {
 }
 
 // TestStage4bSandboxTreeOnTheKindRigLive drives tree 1 and its children through the checkpoints of
-// the stage 4b proof up to one role's end and its pod's loss, each a subtest, and last restarts
-// the daemon under `controller: daemon`, which reads nothing of the tree. The daemon's other
-// restarts are TestStage4bDaemonRestartsOnTheKindRigLive's and
-// TestStage4bStreamMoveOnTheKindRigLive's, each on a rig of its own: one rig running all fourteen
-// checkpoints runs past the kind job's part budget. The controller's restart runs here because
-// this part has the room: in CI run 44808127763 the restarts' part ran it in 203 s and took 1,436
-// s of its 1,461, where this part's ten checkpoints took 1,044 s of part in run 44766893801.
+// the stage 4b proof up to one role's end and its pod's loss, each a subtest. The daemon's restarts
+// are the other tests', each on a rig of its own: one rig running all fourteen checkpoints runs
+// past the kind chain's budget, and with the controller's restart this test's leg took 21.8
+// minutes in CI runs 44816526076 to 44868985209, 3.2 of them that restart.
 func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	// A token lives seventeen minutes, so the daemon's refresh, which comes at least fifteen
 	// minutes before a lease's expiry, comes inside the run. A quiet pod is kept thirty minutes,
@@ -115,14 +114,19 @@ func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	r.checkpoint("kill-role-resume", r.killRoleResume)
 	r.checkpoint("fence", r.fence)
 	r.checkpoint("pod-shape", r.podShape)
-	r.checkpoint("controller", r.controllerCheck)
 }
 
 // TestStage4bDaemonRestartsOnTheKindRigLive restarts the daemon over a running tree at the same
-// addresses, then handing the pods another address of the listener.
+// addresses.
 func TestStage4bDaemonRestartsOnTheKindRigLive(t *testing.T) {
 	r := newStage4bRunningTree(t)
 	r.checkpoint("restart-mid-tree", r.restartMidTree)
+}
+
+// TestStage4bListenerAddressMoveOnTheKindRigLive restarts the daemon over a running tree, handing
+// the pods another address of the listener.
+func TestStage4bListenerAddressMoveOnTheKindRigLive(t *testing.T) {
+	r := newStage4bRunningTree(t)
 	r.checkpoint("address-moved-env-same-pod", r.addressMovedEnvSamePod)
 }
 
@@ -135,6 +139,13 @@ func TestStage4bStreamMoveOnTheKindRigLive(t *testing.T) {
 	r.checkpoint("pod-shape", r.podShape)
 }
 
+// TestStage4bControllerRestartOnTheKindRigLive restarts the daemon over a running tree under
+// `controller: daemon`, a restart that reads nothing of the tree.
+func TestStage4bControllerRestartOnTheKindRigLive(t *testing.T) {
+	r := newStage4bRunningTree(t)
+	r.checkpoint("controller", r.controllerCheck)
+}
+
 // newStage4bRunningTree brings up a rig and boots the daemon on the claims
 // TestStage4bSandboxTreeOnTheKindRigLive's tree holds when the daemon's restarts begin: tree 1 in
 // implementing, its architect, planner and implementer in its pod, and tree 2 promoted from the
@@ -143,7 +154,7 @@ func TestStage4bStreamMoveOnTheKindRigLive(t *testing.T) {
 // boot, as issue-independence files it, so admission's promotion starts its architect. The first
 // checkpoint of each test reads the live claims at once, so the four are waited for here.
 func newStage4bRunningTree(t *testing.T) *stage4bLive {
-	// A quiet pod is kept thirty minutes, past either test's -timeout: the seeded roles take no
+	// A quiet pod is kept thirty minutes, past each test's -timeout: the seeded roles take no
 	// turn, and the checkpoints read their pods for longer than the default ten minutes.
 	r := &stage4bLive{kindTreeRig: newKindTreeRig(t, kindTreeOptions{prefix: "SB", admissionCap: 3, idleMinutes: 30})}
 	r.tree1 = r.seedRoot("stage 4b tree 1", phase.Implementing, claim.RolePlanner, claim.RoleImplementer)

@@ -2003,6 +2003,15 @@ KIND_PARTS = {
     "runtime-pod-update": ("Run the Sandbox runtime's pod-update group", "30m", {
         KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update"],
     }),
+    "runtime-secrets": ("Run the Sandbox runtime's secrets group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/secrets"],
+    }),
+    "runtime-adopt": ("Run the Sandbox runtime's adopt group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/adopt"],
+    }),
+    "runtime-pod-update-fleet": ("Run the Sandbox runtime's pod-update-fleet group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update-fleet"],
+    }),
 }
 # The tree parts' tests: the daemon's whole-tree tests of internal/daemon, which boot the whole
 # daemon on the rig with Dispatch, the Envoy listener and natsd built from the checkout and real
@@ -2012,7 +2021,8 @@ KIND_PARTS = {
 # its own, beside KIND_PARTS': KIND_TREE_PARTS below.
 KIND_TREE_FILES = {
     "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
-                        ["TestStage4bDaemonRestartsOnTheKindRigLive", "TestStage4bSandboxTreeOnTheKindRigLive",
+                        ["TestStage4bControllerRestartOnTheKindRigLive", "TestStage4bDaemonRestartsOnTheKindRigLive",
+                         "TestStage4bListenerAddressMoveOnTheKindRigLive", "TestStage4bSandboxTreeOnTheKindRigLive",
                          "TestStage4bStreamMoveOnTheKindRigLive",
                          "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
 }
@@ -2039,6 +2049,12 @@ KIND_TREE_PARTS = {
     }),
     "tree-stage4b-move": ("Run Stage 4b's stream move test", "25m", {
         "internal/daemon": ["TestStage4bStreamMoveOnTheKindRigLive"],
+    }),
+    "tree-stage4b-controller": ("Run Stage 4b's controller restart test", "25m", {
+        "internal/daemon": ["TestStage4bControllerRestartOnTheKindRigLive"],
+    }),
+    "tree-stage4b-address": ("Run Stage 4b's listener address move test", "25m", {
+        "internal/daemon": ["TestStage4bListenerAddressMoveOnTheKindRigLive"],
     }),
 }
 KIND_JOB = "kind"

@@ -1342,7 +1342,7 @@ selects every job there. A dispatch of any other ref is a full run started by ha
 workflow run ci.yaml --ref <branch>`), and it reports under names of its own
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
-## The commit main pointed at before the push the bypass check read
+## The migration-base input
 
 The commit main pointed at before the push the bypass check read: envoy-go-checks compares
 every migration it holds with this run's tree, the range the push landed. A dispatch on
@@ -1874,46 +1874,68 @@ run here on each pull request and merge group whose paths select them, and the d
 step skips them by name (.github/scripts/ci_job_reads.py builds both steps' text). Not
 fail-open: their tests were in no job that `changes` failing runs.
 
-## The agent harness job and its parts
+## The agent-harness job and its legs
 
-The agent harness: parts that each drive real agents, answered by model stand-ins, for up to
-24 minutes. Its first part runs the five live proofs of the daemon's Go suite that
-.github/scripts/ci_job_reads.py's AGENT_HARNESS_TESTS names, which drive real Oh My Pi panes
-on the whole daemon; the daemon-go race step skips them by name (.github/scripts/ci_job_reads.py
-builds both steps' text). They were the drivers of five scripts under scripts/e2e, which no CI
-job ran. Its second part, tmux-scripts, runs three scripts under scripts/e2e that drive Oh My
-Pi and Claude Code panes on the daemon's own tmux server, each a step of its own, and the
-Claude Code backend's live proof of AGENT_HARNESS_TMUX_TESTS, which the race step skips too.
-Its third and fourth parts, session-settings and session-scripts, run three more scripts under
-scripts/e2e, each a step of its own, that drive Oh My Pi and Claude Code sessions through
-Dispatch, Envoy and a Chromium page. Its fifth, plugin-smokes, runs the four live scripts of the
-Oh My Pi plugin, each a step of its own, on Envoy and Dispatch stacks of their own.
-The merge queue runs the job, and a pull request only with the label `full-ci`, as
-#why-the-agent-harness-has-an-output-of-its-own says. Not fail-open: its tests were in no job
-that `changes` failing runs.
-
-## The kind rig job, its parts and the image it tests
-
-The kind rig: parts that each bring up a kind cluster on the runner with Agent Sandbox's
-controller and gVisor, a registry the node pulls from and the fake GitHub of
-packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it against the
-worker image of this commit. Its parts, each a job of the called file, run the tests
-.github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
-the rig's own measuring test in one, the share test in another, the burstable and controller
-sweep tests in a third, the Sandbox runtime's live test in five, one group of its checks each,
-each of those eight within about 24 minutes, and the whole-tree tests in four more, one each:
-tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
-tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
-runs past that budget, so three tests on rigs of their own hold them, each within it: CI run
-44808127763 measured the restart and move parts at 23.9 and 16.7 minutes, the first with the
-controller's check, which then moved to tree-stage4b (17.4 minutes without it in run 44766893801).
-The image under test is the worker-image job's on a pull request where that job built the
-head, handed down as `worker-image`, and otherwise the called file's image job builds it once
-per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls
-the copies that job lands of the rows its pins name. It carries `!cancelled()`, as
-tool-fallback does, so the two needs skipped hold nothing back. The merge queue runs the job,
-and a pull request only with the label `full-ci`, as #why-the-kind-rig-has-an-output-of-its-own
+The agent harness: legs that each drive real agents, answered by model stand-ins, each well
+inside its bound (means in CI runs 44816526076 to 44868985209: pane-drivers 10.3 minutes,
+plugin-smokes 11.7, session-scripts 9.8, tmux-scripts 8.6, session-settings 7.1,
+nats-callout-sessions 4.2). Each leg is named `agent-harness / <leg>` by an expression and keeps
+the timeout-minutes its part had. Its steps are .github/actions/agent-harness/install, a step of
+its own because its installs write the job's environment (LEGION_TEST_OMP, LEGION_TEST_CLAUDE,
+LEGION_TEST_CODEX), and .github/actions/agent-harness, which runs the leg's steps and says what
+each leg runs. pane-drivers runs the five live proofs of the daemon's Go suite that drive real Oh
+My Pi panes, and tmux-scripts the Claude Code backend's proof on tmux beside its three scripts;
+the go-daemon race step skips those six tests by name. Those two Go steps take the merge group's
+retry, and each leg's bound holds the rule's sum: pane-drivers' step took 551 s at most, and one
+run of each of its five tests is at most that again, so 9.2 + 9.2 + 3 minutes and 1.4 of set-up
+come to 23 of its 40; tmux-scripts' job took 9.4 minutes at most and its one test 116 s, so 14.3
+of its 45. Each "Install Playwright Chromium" keeps its 4-minute bound as `timeout 4m` around its
+command. The merge queue runs the job, a dispatched run with the input kind-and-agent-harness,
+and a pull request only with the label `full-ci`, as #why-the-agent-harness-has-an-output-of-its-own
 says. Not fail-open: its tests were in no job that `changes` failing runs.
+
+## The kind-image job
+
+Builds the worker image the kind legs test, once per run, as worker-image.yaml's build builds it
+(the same Dockerfile, context, BuildKit and main's layer cache, `cache-from:
+type=gha,scope=worker-image`), into a docker archive each kind leg downloads
+(.github/actions/kind/image). The kind job never runs on a pull request, so no run of it has a
+worker-image build of its head to take the image from. It needs ci-images because its buildx
+driver pulls BuildKit's row of .github/ci-images.yaml, and carries `!cancelled()`, as
+tool-fallback does, so a ci-images job that `changes` skipped holds nothing back. It is the
+`kind / image` part it was, named by its matrix, and reads the kind output.
+
+## The kind job and its legs
+
+The kind rig: legs that each bring up a kind cluster on the runner with Agent Sandbox's controller
+and gVisor, a registry the node pulls from and the fake GitHub of
+packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it against the image
+kind-image built. Each leg is named `kind / <leg>` by an expression and runs one test step of
+.github/actions/kind, which says what each leg runs; both go-daemon Go steps skip every one of
+those tests by name. Each leg's "Download the worker image the image job built" stays a step of
+this job with its own 10-minute bound: one download in CI run 44829535701 stalled for 38 minutes.
+The runtime legs take no retry (GO_TEST_RETRY=off), since a rerun of the root test would drop
+the group the leg's -run selects; they keep 40 minutes against a slowest attempt of 23.0. Every
+other leg takes it, with a timeout-minutes of at least its slowest set-up, its slowest test step,
+one run of its root tests at their slowest and 3 minutes, in CI runs 44816526076 to 44868985209:
+rig 22.0 (it keeps 25), shares 35.8 and burstable-and-sweep 38.3 (40), tree-claude 35.5 (36),
+tree-stage4b-move 35.9 (36), tree-stage4b without the controller's restart 38.6 (39) and
+tree-stage4b-restart without the listener's move 37.2 (38). The two new tree legs have no run of
+their own yet; from their parts' times, tree-stage4b-controller 36.8 (37) and tree-stage4b-address
+36.3 (37).
+
+The chain `changes` → `ci-images` → `kind-image` → the longest leg → `ci-ok` was 32.2 to 34.0
+minutes in those runs: 10.2 of it the jobs before and after the leg, 9.3 of that the image job,
+whose builder's removal (1.7 minutes on average) cleanup: false leaves to the runner's end, and
+22 to 23 the longest leg. So each leg whose mean passed 18 minutes is split: runtime-root into the
+root and secrets groups, runtime-roles into roles and adopt, runtime-pod-update into pod-update
+and pod-update-fleet (live_test.go's liveGroups, each group in one leg's -run), tree-stage4b's
+controller restart into a test of its own, which reads nothing of the tree, and
+tree-stage4b-restart's move of the listener's address into a test of its own, as the stream's move
+is. Each new leg repeats the set-up, the compile and the in-test rig, 6 to 10 minutes. The merge
+queue runs the job, and a dispatched run with the input kind-and-agent-harness; a pull request
+never does, as #why-the-kind-rig-has-an-output-of-its-own says. Not fail-open: its tests were in
+no job that `changes` failing runs.
 
 ## The private-names-port job, and the closure it took off the test filter
 
@@ -1926,7 +1948,7 @@ harnesses and the Bun suites of scripts/ that could not see it. Fail-open with t
 test, daemon-go and plugin-pack, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives, and as this step
 ran while it was one of the test job's.
 
-## What the docs job builds, and why it declares no timeout-minutes
+## The docs job
 
 Builds the documentation site (docs/site) on every pull request and merge group that could
 change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes
@@ -1987,7 +2009,7 @@ without it). tsc and
 bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's
 Vite build aliases its sources, so that spawn is the whole of what the build is for.
 
-## The browser suite job: its lanes, its one input, and why the matrix is in the called file
+## The browser suite job
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
@@ -2022,7 +2044,7 @@ report this job id gets.
 No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
 Each job of dispatch-browser.yaml carries its own limit.
 
-## Why the dispatch-browser job declares the scopes the called workflow needs
+## The dispatch-browser job's scopes
 
 The same rule as the docs job's: a caller that declares no `permissions:` hands the
 called workflow the default GITHUB_TOKEN permissions rather than this file's block.
@@ -2088,7 +2110,7 @@ they install helm, nats-server, the config reloader and the exporter with go ins
 versions the clustered hub runs, and render the vendored chart in gcp/testdata. The per-target
 compile runs in the lint job's notices step.
 
-## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
+## The text-checks job
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
 nine static source checks, which read the module's own source, and the two pure pins of
@@ -2391,7 +2413,7 @@ single refusal. The steps, and why those hosts, are in the called file.
 The worker image's pull-request build: worker-image.yaml builds the head and publishes its sha-
 tag only. Main's image builds are release.yaml's call of the same workflow.
 
-## Why the worker-image job grants every scope the called workflow declares
+## The worker-image job's scopes
 
 GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
 whatever their `if:`
@@ -2410,7 +2432,7 @@ job, this job has no `pull_request` term: it runs on a merge group too, so the i
 merged head's `container:` jobs pin — the shard and alone jobs of
 .github/workflows/dispatch-browser.yaml — is built from that head.
 
-## Why the browser-image job grants every scope the called workflow declares
+## The browser-image job's scopes
 
 GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
 whatever their `if:`: its workflow-level block (the build's packages: write, and the

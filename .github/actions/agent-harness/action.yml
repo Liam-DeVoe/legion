@@ -1,0 +1,256 @@
+name: Run one leg of the agent harness
+description: >-
+  The steps of a leg of ci.yaml's agent-harness job after .github/actions/agent-harness/install,
+  a step of its own before this action since each of its installs writes the job's environment
+  (LEGION_TEST_OMP, LEGION_TEST_CLAUDE, LEGION_TEST_CODEX), which these steps read. Each leg
+  drives real agents, each answered by a model stand-in of the test's own, installs what its own
+  tests use and nothing more, and uploads its tests' logs when it fails. Every leg runs on the
+  job's pgvector PostgreSQL (LEGION_TEST_PG_DSN), and nothing of any leg starts a container but
+  the NATS test image the Go tests' broker starts, reads a model key or reaches GitHub.
+
+  pane-drivers runs the five live proofs of internal/daemon that drive real Oh My Pi panes, each
+  booting the whole daemon over the job's PostgreSQL and the package's test NATS server, packing
+  both plugins from this checkout and running each pane as a child process group of the test.
+  tmux-scripts runs three scripts of scripts/e2e that drive agents in the panes of the daemon's
+  own tmux server (stage2-tmux-supervision.sh, controller-start-tmux.sh,
+  clean-session-stop-tmux.sh) and the Claude Code backend's live proof of internal/daemon.
+  session-settings runs dispatch-session-settings.sh (Dispatch's live view switches an Oh My Pi
+  session's model and thinking level, on one Chromium page), and session-scripts
+  dispatch-user-turns.sh and envoy-session-delivery.sh (a person's turns from Dispatch's page,
+  and every Envoy event reaching an Oh My Pi and a Claude Code session once). plugin-smokes runs
+  the Oh My Pi plugin's four live scripts on Envoy and Dispatch stacks of their own, and
+  nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh in its two modes, the plugins'
+  code under stand-in hosts and then the pinned hosts themselves. Each script is itself the test
+  and prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <why>` per check; the steps after a
+  leg's first run whether or not an earlier one failed, so one failed proof hides no other's
+  result. go-daemon's race step skips the two Go steps' tests by name, so each runs once per run
+  of the router, here, through .github/scripts/go-test.sh.
+inputs:
+  leg:
+    description: The leg of ci.yaml's agent-harness job, the part of its check-run name after `agent-harness / `.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The daemon refuses to start without tmux, and dispatch-user-turns.sh and --real-hosts' Codex
+    # sessions run in tmux panes; stage 2's stale-hello check writes to the daemon's worker socket
+    # with socat, and envoy-session-delivery.sh's NATS proxies serve on a held socket with socat's
+    # ACCEPT-FD, which socat 1.8.0 added; each script makes and drops its databases with psql.
+    - name: Install the leg's apt packages
+      if: inputs.leg != 'pane-drivers' && inputs.leg != 'plugin-smokes'
+      shell: bash
+      env:
+        LEG: ${{ inputs.leg }}
+      run: |
+        case "$LEG" in
+          tmux-scripts | session-scripts) packages=(tmux socat postgresql-client) ;;
+          nats-callout-sessions) packages=(tmux postgresql-client) ;;
+          *) packages=(postgresql-client) ;;
+        esac
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+        if command -v tmux > /dev/null; then tmux -V; fi
+        if command -v socat > /dev/null; then socat -V | sed -n 2p; fi
+        psql --version
+
+    # The plugin packs, the claude-envoy build, the SPA build, the page drivers, the stacks and the
+    # model stand-ins run on Bun over the installed workspace.
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # The page the two Dispatch scripts drive is Playwright's own Chromium, resolved from
+    # packages/dispatch as the dispatch-browser jobs resolve it, with no apt, within the 4 minutes
+    # the step had of its own.
+    - name: Install Playwright Chromium
+      if: inputs.leg == 'session-settings' || inputs.leg == 'session-scripts'
+      shell: bash
+      working-directory: packages/dispatch
+      run: timeout 4m bunx playwright install chromium
+
+    # The Go tests compile internal/daemon's test binary; the scripts build `legion`, the Envoy
+    # listener, Dispatch and natsd. The two modules' go.mod files name one Go version.
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ (inputs.leg == 'session-settings' || inputs.leg == 'plugin-smokes' || inputs.leg == 'nats-callout-sessions') && 'packages/envoy/go.mod' || 'packages/daemon/go.mod' }}
+        cache: false
+
+    # go-envoy-test, restored only, for the reason
+    # .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test gives:
+    # dev-stack.sh builds the Dispatch server, the broker and its commands beside the listener and
+    # natsd, and only that family's entry holds their packages.
+    - if: inputs.leg == 'nats-callout-sessions'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+
+    # go-envoy: the scripts build the Envoy listener, Dispatch and natsd, all of packages/envoy,
+    # as envoy-session-stall's stacks do.
+    - if: inputs.leg == 'session-settings' || inputs.leg == 'plugin-smokes'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
+    # go-daemon, shared with typecheck, go-daemon, plugin-pack, daemon-live and pi-legion: the Go
+    # tests compile internal/daemon's test binary, and the scripts build ./cmd/legion. After
+    # nats-callout-sessions' go-envoy-test restore, the two entries hold the same module versions
+    # in ~/go/pkg/mod, read-only there, so this second extraction refuses those files ("Cannot
+    # open: File exists"), keeps the copies the first one wrote, extracts every other file, and
+    # ends in the action's "Failed to restore" warning.
+    - if: inputs.leg == 'pane-drivers' || inputs.leg == 'tmux-scripts' || inputs.leg == 'session-scripts' || inputs.leg == 'nats-callout-sessions'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+    # The package's test broker, which the Go tests' daemons run on, starts testnats.Image (the
+    # hub's 2.15.1), pulled first for the reason the action gives.
+    - name: Pull the NATS test container image
+      if: inputs.leg == 'pane-drivers' || inputs.leg == 'tmux-scripts'
+      uses: ./.github/actions/pull-test-images
+      with:
+        consts: |
+          packages/daemon/internal/testnats/nats.go Image
+
+    - if: inputs.leg == 'pane-drivers' || inputs.leg == 'tmux-scripts'
+      uses: ./.github/actions/install-gotestsum
+
+    # The five tests, by name. A failed test's logs go to a directory named for it under
+    # LEGION_TEST_DAEMON_LOG_DIR. The runner VM is discarded after the job, so testcontainers'
+    # Ryuk reaper has nothing to clean up, and its image would be one more registry pull.
+    - name: Run the pane drivers on the pinned Oh My Pi
+      if: inputs.leg == 'pane-drivers'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+        LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/agent-harness-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile agent-harness-pane-drivers-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestLateCompletionsThroughTheRealLegionToolLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive)$'
+
+    # Each script's own variable names its evidence directory, set on the command line.
+    - name: Stage 2's supervision on tmux
+      if: inputs.leg == 'tmux-scripts'
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: bash scripts/e2e/stage2-tmux-supervision.sh
+
+    - name: The operator-launched controller on tmux
+      if: ${{ !cancelled() && inputs.leg == 'tmux-scripts' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: CONTROLLER_START_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/controller-start" bash scripts/e2e/controller-start-tmux.sh
+
+    - name: The daemon's clean stop of a dead role's session
+      if: ${{ !cancelled() && inputs.leg == 'tmux-scripts' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: CLEAN_SESSION_STOP_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/clean-session-stop" bash scripts/e2e/clean-session-stop-tmux.sh
+
+    - name: Run the Claude Code backend's proof on tmux
+      if: ${{ !cancelled() && inputs.leg == 'tmux-scripts' }}
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+        LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/agent-harness-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile agent-harness-tmux-scripts-test.json --packages ./internal/daemon/ -- -count=1 -timeout 15m -run '^(TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive)$'
+
+    - name: The live view's model and thinking switch
+      if: inputs.leg == 'session-settings'
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: SESSION_SETTINGS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-settings" bash scripts/e2e/dispatch-session-settings.sh
+
+    - name: A person's direct turns from Dispatch's page
+      if: inputs.leg == 'session-scripts'
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: DISPATCH_USER_TURNS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/user-turns" bash scripts/e2e/dispatch-user-turns.sh
+
+    - name: Every Envoy event reaches both sessions once
+      if: ${{ !cancelled() && inputs.leg == 'session-scripts' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery" bash scripts/e2e/envoy-session-delivery.sh
+
+    - name: A message to a role reaches the session that claimed it
+      if: inputs.leg == 'plugin-smokes'
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-delivery" bash packages/pi-envoy/scripts/smoke-delivery.sh
+
+    - name: A targeted Dispatch message mid-turn gets a correlated reply
+      if: ${{ !cancelled() && inputs.leg == 'plugin-smokes' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-btw" bash packages/pi-envoy/scripts/smoke-btw.sh
+
+    - name: A wedged or removed registration keeps the pane listed
+      if: ${{ !cancelled() && inputs.leg == 'plugin-smokes' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-registration-stall" bash packages/pi-envoy/scripts/smoke-registration-stall.sh
+
+    - name: A person's answer and message reach the session
+      if: ${{ !cancelled() && inputs.leg == 'plugin-smokes' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/omp-roundtrip" bash packages/dispatch/e2e/acceptance/omp-roundtrip.sh
+
+    - name: Each session's broker token admits it to its own channel alone
+      if: inputs.leg == 'nats-callout-sessions'
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions" bash scripts/e2e/nats-callout-sessions.sh
+
+    # The same proof on the hosts themselves: the pinned Oh My Pi, Claude Code and Codex CLI with
+    # this checkout's plugins, each calling the script's own model stand-in.
+    - name: Each real host's plugin joins its own channel with its broker token
+      if: ${{ !cancelled() && inputs.leg == 'nats-callout-sessions' }}
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions-real-hosts" bash scripts/e2e/nats-callout-sessions.sh --real-hosts
+
+    - if: always() && (inputs.leg == 'pane-drivers' || inputs.leg == 'tmux-scripts')
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: agent-harness-${{ inputs.leg }}-test
+
+    # A failed step's evidence: each script's directory under agent-harness-logs, the Go tests'
+    # daemon, Dispatch and pane logs there, and stage 2's work directory, which that script keeps
+    # on a failure. The name carries no run attempt and the upload overwrites.
+    - name: Upload the leg's logs
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: agent-harness-${{ inputs.leg }}-logs
+        path: |
+          ${{ runner.temp }}/agent-harness-logs
+          /tmp/legion-e2e2.*
+        overwrite: true

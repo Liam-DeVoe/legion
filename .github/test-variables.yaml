@@ -125,13 +125,12 @@ variables:
     jobs: [go-daemon]
     why: Turns on the drain test's time bound, which go-daemon measures.
   LEGION_TEST_KIND_IMAGE:
-    class: set
-    jobs: [kind]
-    why: The worker image the kind rig loads, which the kind job builds or takes from worker-image.
+    class: prerequisite
+    why: A worker image by digest that a person hands the kind rig in place of an archive; no job sets it, since the kind job loads the archive kind-image builds, and the rig's testprereq.Require fails on GitHub Actions when neither this nor LEGION_TEST_KIND_IMAGE_ARCHIVE is set.
   LEGION_TEST_KIND_IMAGE_ARCHIVE:
     class: set
     jobs: [kind]
-    why: The archive of that worker image the kind rig loads into its node.
+    why: The archive of the worker image the kind-image job builds, which the kind rig loads into its node.
   LEGION_TEST_KIND_NPM_TARBALLS:
     class: set
     jobs: [kind]

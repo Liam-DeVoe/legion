@@ -1,0 +1,281 @@
+name: Run one leg's tests on the kind rig
+description: >-
+  The steps of a leg of ci.yaml's kind job after the worker image's download: the leg's tests by
+  name, each on a kind rig it brings up on the runner with Agent Sandbox's controller and gVisor, a
+  registry the node pulls from and the fake GitHub of packages/daemon/internal/fakegithub, which
+  the cluster's pods reach as github.com and api.github.com through a CoreDNS rule. Every pin of
+  the rig is scripts/e2e/lib/kind-sandbox.sh's: kind built with `go install`, the node, registry,
+  busybox, NFS server and PostgreSQL images by the digests of their .github/ci-images.yaml rows,
+  Agent Sandbox's vendored manifest and gVisor's dated release. The image under test is the
+  archive the kind-image job built (internal/kindtest's ImageArchiveEnv).
+
+  `leg` chooses the one test step that runs, each a step below of its own with its -run, so a
+  reader of the file sees which tests each leg runs: rig the rig's measuring test; shares the
+  share test; burstable-and-sweep the burstable pod and controller sweep tests; runtime-<group>
+  one group of TestStage4aSandboxRuntimeLive (live_test.go's liveGroups), each group in exactly
+  one leg's -run; and tree-claude, tree-stage4b, tree-stage4b-restart, tree-stage4b-address,
+  tree-stage4b-move and tree-stage4b-controller one whole-tree test of internal/daemon each. Both
+  of go-daemon's Go steps skip every one of these tests by name, so each runs once per run of the
+  router, here. Each step runs through .github/scripts/go-test.sh, whose retry reruns a failed
+  root test once on a merge group; the runtime legs turn it off (GO_TEST_RETRY=off), since a rerun
+  of the root test would drop the group the leg's -run selects and run every group. A failed test
+  leaves the cluster's pods, Sandboxes, events, logs, the Agent Sandbox controller's log, the fake
+  GitHub's requests and the test's own logs under kind-logs, which the last step uploads.
+inputs:
+  leg:
+    description: The leg of ci.yaml's kind job, the part of its check-run name after `kind / `.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The rig holds the worker image, several gigabytes, in Docker, in the registry and in the
+    # node's containerd while it loads it (internal/kindtest drops Docker's copies once the
+    # registry has them), so the runner image's Android SDK, .NET, Haskell and CodeQL toolchains,
+    # which no step here uses, go first; `df -h` before and after says what that gave, and the
+    # rig's measuring test logs it again before the rig and with the rig up. What the rig runs
+    # beside Go and git is the runner image's own, and nothing installs it: Docker, kubectl, zstd
+    # (gVisor's release is a .tar.zstd), curl, GNU tar and sha512sum, as actions/runner-images'
+    # Ubuntu2404-Readme.md lists them; the rig builds kind itself with `go install`.
+    # internal/kindtest fails naming any of them it cannot find on PATH.
+    - name: Free the runner's disk of toolchains the rig does not use
+      shell: bash
+      run: |
+        df -h /
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h /
+
+    # A runtime group's setup packs this checkout's pi-envoy and pi-legion through
+    # scripts/e2e/lib/pack-plugin.sh, which builds each bundle over the installed workspace.
+    - name: Setup Bun
+      if: startsWith(inputs.leg, 'runtime-')
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      if: startsWith(inputs.leg, 'runtime-')
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # Each test builds its package's test binary; the rig's library builds kind with `go install`,
+    # which reads only kind's own module; a runtime group's setup builds the checkout's
+    # agent-secrets in packages/envoy; and the tree rig (kind_tree_rig_live_test.go) builds the
+    # `legion` every pod's launcher and the fence's worker-shim are, and Dispatch, the Envoy
+    # listener and natsd from packages/envoy.
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    - uses: ./.github/actions/install-gotestsum
+
+    # The two tarballs the implementer's install fetches by the Claude Code pin's lock, its main
+    # package and linux-x64's, which the rig's npm stand-in serves to the pods, so no pod reaches
+    # the registry. The test holds each to the lock's integrity before it serves it.
+    - name: Fetch the pinned Claude Code tarballs the rig's npm stand-in serves
+      if: inputs.leg == 'tree-claude'
+      shell: bash
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/npm-tarballs"
+        mkdir -p "$dir"
+        jq -r '.packages["node_modules/@anthropic-ai/claude-code", "node_modules/@anthropic-ai/claude-code-linux-x64"].resolved' \
+          packages/daemon/docker/claude-code/package-lock.json |
+          while read -r url; do curl -fsSL --retry 3 --output "$dir/${url##*/}" "$url"; done
+        ls -l "$dir"
+
+    # The rig's measuring test times each piece of the rig by name, then runs a Burstable Sandbox
+    # under gVisor that clones a private repository from the fake GitHub and a gVisor pod that
+    # mounts an NFS share of a server in the cluster, and logs `df -h` before the rig and with it
+    # up. -timeout 15m is more than half again over the 397 s it took in CI run 44635427552.
+    - name: Run the rig's measuring test
+      if: inputs.leg == 'rig'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-rig-test.json --packages ./internal/kindtest/ -- -count=1 -timeout 15m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub)$'
+
+    # internal/daemon's share test launches an issue pod that mounts NFS shares through the Sandbox
+    # runtime the daemon builds from a legion.yaml, and probes the image against broken shares.
+    - name: Run the share test
+      if: inputs.leg == 'shares'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-shares-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestShareVolumesMountInAnIssuePodLive)$'
+
+    # internal/daemon's two other live tests, which launch issue pods and a project controller
+    # the same way, with small explicit reservations.
+    - name: Run the burstable pod and controller sweep tests
+      if: inputs.leg == 'burstable-and-sweep'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-burstable-and-sweep-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive|TestTheControllerOrphanSweepLive)$'
+
+    # The Sandbox runtime's live test, one group of its checks a leg by -run alone, against a
+    # restricted identity of the cluster's own, PostgreSQL in the cluster and this repository's
+    # own broker in the test process. Each group brings up a rig of its own and redoes first what
+    # its checks need of the state another group's checks leave, so no leg depends on another.
+    - name: Run the Sandbox runtime's root group
+      if: inputs.leg == 'runtime-root'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-root-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^root$'
+
+    - name: Run the Sandbox runtime's secrets group
+      if: inputs.leg == 'runtime-secrets'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-secrets-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^secrets$'
+
+    - name: Run the Sandbox runtime's roles group
+      if: inputs.leg == 'runtime-roles'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-roles-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^roles$'
+
+    - name: Run the Sandbox runtime's adopt group
+      if: inputs.leg == 'runtime-adopt'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-adopt-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^adopt$'
+
+    - name: Run the Sandbox runtime's image group
+      if: inputs.leg == 'runtime-image'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-image-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^image$'
+
+    - name: Run the Sandbox runtime's issues group
+      if: inputs.leg == 'runtime-issues'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-issues-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^issues$'
+
+    - name: Run the Sandbox runtime's pod-update group
+      if: inputs.leg == 'runtime-pod-update'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-pod-update-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^pod-update$'
+
+    - name: Run the Sandbox runtime's pod-update-fleet group
+      if: inputs.leg == 'runtime-pod-update-fleet'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        GO_TEST_RETRY: "off"
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-pod-update-fleet-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^pod-update-fleet$'
+
+    # The whole-tree tests of internal/daemon, which boot the whole daemon on the rig with real
+    # agents in issue pods: the Claude Code backend's, three checks over one issue pod, and
+    # Stage 4b's tree, whose fourteen checkpoints five tests hold, each on a rig of its own
+    # (stage4b_kind_live_test.go says which). -timeout is more than half again over each test's
+    # time, its rig included.
+    - name: Run the Claude Code backend's tree test
+      if: inputs.leg == 'tree-claude'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        LEGION_TEST_KIND_NPM_TARBALLS: ${{ runner.temp }}/npm-tarballs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-claude-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$'
+
+    - name: Run Stage 4b's tree test
+      if: inputs.leg == 'tree-stage4b'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$'
+
+    - name: Run Stage 4b's restart test
+      if: inputs.leg == 'tree-stage4b-restart'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-restart-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$'
+
+    - name: Run Stage 4b's listener address move test
+      if: inputs.leg == 'tree-stage4b-address'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-address-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bListenerAddressMoveOnTheKindRigLive)$'
+
+    - name: Run Stage 4b's stream move test
+      if: inputs.leg == 'tree-stage4b-move'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-move-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bStreamMoveOnTheKindRigLive)$'
+
+    - name: Run Stage 4b's controller restart test
+      if: inputs.leg == 'tree-stage4b-controller'
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-controller-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bControllerRestartOnTheKindRigLive)$'
+
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: kind-${{ inputs.leg }}-test
+
+    # A failed test's state, in a directory of the test's own: the cluster's nodes, pods, the
+    # legion namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS
+    # and PostgreSQL servers', every event, the Agent Sandbox controller's log, the fake GitHub's
+    # requests, and for a runtime group the runtime's own log beside them. The name carries no run
+    # attempt and the upload overwrites, so a re-run's state replaces the failed attempt's.
+    - name: Upload the rig's state at the failure
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: kind-${{ inputs.leg }}-logs
+        path: ${{ runner.temp }}/kind-logs
+        overwrite: true

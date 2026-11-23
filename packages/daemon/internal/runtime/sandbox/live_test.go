@@ -4,12 +4,11 @@
 // api.github.com — through a restricted identity of the cluster's own, the legion-daemon
 // ServiceAccount under the grants docs/kubernetes.md ("RBAC the Go daemon needs") gives the
 // daemon (liveIdentity), with the rig's admin kubeconfig only for what an operator does beside it:
-// exec, PVC reads, a ConfigMap's patch. The kind job of ci.yaml runs it
-// (.github/workflows/ci-job-kind.yaml), one group of its checks in each of four parts, and
-// newKindLiveEnv sets up everything it runs on.
+// exec, PVC reads, a ConfigMap's patch. ci.yaml's kind job runs it (.github/actions/kind), one
+// group of its checks in each of eight legs, and newKindLiveEnv sets up everything it runs on.
 //
 // The checks run in groups (liveGroups), each group a run of its own on a kind rig of its own, so a
-// part of the kind job runs one group by -run alone ('^TestStage4aSandboxRuntimeLive$/^<group>$').
+// leg of the kind job runs one group by -run alone ('^TestStage4aSandboxRuntimeLive$/^<group>$').
 // Each check runs as a subtest of its group's, by its own name, prints what it observed, each line
 // naming the identity that observed it, and then `CHECK <name>: PASS`. The first check of a group
 // that does not hold prints `CHECK <name>: FAIL: <why>` and ends its group, since a later check of
@@ -91,7 +90,7 @@ type liveCheck struct {
 }
 
 // liveGroup is a group of the harness's checks, a run of its own on a kind rig of its own: its
-// name, which the subtest that runs it carries and a part of the kind job selects with -run; setup,
+// name, which the subtest that runs it carries and a leg of the kind job selects with -run; setup,
 // what the group redoes first of the state a check of another group leaves its checks, or nil
 // where they need none; and its checks, in the order they run.
 type liveGroup struct {
@@ -100,8 +99,8 @@ type liveGroup struct {
 	checks []liveCheck
 }
 
-// liveGroups are the harness's checks, in groups that each stay within a part of the kind job
-// (.github/scripts/ci_job_reads.py's KIND_PARTS names the part that runs each). A check that reads
+// liveGroups are the harness's checks, in groups that each stay within a leg of the kind job
+// (.github/actions/kind names the leg that runs each, one group a leg). A check that reads
 // state an earlier check left, and puts back no claim of it itself, is in that check's group:
 // secrets-automatic-grant, secrets-cross-pod-negative, secrets-copied-token-negative and
 // secrets-self-enroll-negative start from the root and the worker secrets-two-roles-enrolled runs
@@ -111,12 +110,14 @@ type liveGroup struct {
 // launch makes. Every other check puts each claim it starts from where it needs it itself
 // (ensureRunning, ensureSuspended), or launches one no check before it in its group launched. A
 // group that does not hold root-ready redoes first what root-ready leaves every later launch on
-// the run's repository (cacheRunRepository), and roles, whose checks start from the run's first
-// issue, what root-ready and worker-shares-issue-pod leave them too (runFirstIssue).
+// the run's repository (cacheRunRepository), and roles and adopt, whose checks start from the
+// run's first issue, what root-ready and worker-shares-issue-pod leave them too (runFirstIssue).
+// Each new group repeats the rig, about six to ten minutes, so a group is split only where its
+// leg ran past the kind chain's budget: root, roles and pod-update each ran 19 to 21 minutes in
+// CI runs 44816526076 to 44868985209, and secrets, adopt and pod-update-fleet left them.
 var liveGroups = []liveGroup{
 	// root: the run's first issue pod — its launch, which makes the run's repository's cache, the
-	// pod and the worker beside it, their enrollments with the broker, another issue's enrollment
-	// across a replacement of its pod — and the cache.
+	// pod and the worker beside it — and the cache.
 	{name: "root", checks: []liveCheck{
 		{"root-ready", (*liveRig).checkRootReady, nil},
 		{"gvisor", (*liveRig).checkGVisor, nil},
@@ -127,6 +128,13 @@ var liveGroups = []liveGroup{
 		{"setup-negative", (*liveRig).checkSetupNegative, nil},
 		{"adopt-working-copy", (*liveRig).checkAdoptWorkingCopy, nil},
 		{"worker-shares-issue-pod", (*liveRig).checkWorkerSharesIssuePod, nil},
+		{"repository-cache", (*liveRig).checkRepositoryCache, nil},
+		{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
+		{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
+	}},
+	// secrets: a root and a worker of one issue pod and their enrollments with the broker, and
+	// another issue's enrollment across a replacement of its pod.
+	{name: "secrets", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"secrets-two-roles-enrolled", (*liveRig).checkSecretsTwoRolesEnrolled, secretsBlocked},
 		{"secrets-automatic-grant", (*liveRig).checkSecretsAutomaticGrant, secretsBlocked},
 		{"secrets-cross-pod-negative", (*liveRig).checkSecretsCrossPodNegative, secretsBlocked},
@@ -134,14 +142,9 @@ var liveGroups = []liveGroup{
 		{"secrets-self-enroll-negative", (*liveRig).checkSecretsSelfEnrollNegative, secretsBlocked},
 		{"secrets-approval-ask", (*liveRig).checkSecretsApprovalAsk, secretsBlocked},
 		{"secrets-old-uid-and-revocation", (*liveRig).checkSecretsOldUIDAndRevocation, secretsBlocked},
-		{"repository-cache", (*liveRig).checkRepositoryCache, nil},
-		{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
-		{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
 	}},
 	// roles: the roles of that issue's pod — a stop, isolation, a resume, a plugin install, a
-	// refused resume, a kill and its stale incarnation, a respawn before a hello — a second tree's
-	// two issues, the re-adoption of every live claim by a fresh runtime, the orphan sweep and the
-	// issue's cleanup.
+	// refused resume, a kill and its stale incarnation.
 	{name: "roles", setup: (*liveRig).runFirstIssue, checks: []liveCheck{
 		{"suspend", (*liveRig).checkSuspend, nil},
 		{"role-isolation", (*liveRig).checkRoleIsolation, nil},
@@ -150,6 +153,10 @@ var liveGroups = []liveGroup{
 		{"same-agent-negative", (*liveRig).checkSameAgentNegative, nil},
 		{"kill-role-init", (*liveRig).checkKillRoleInit, nil},
 		{"stale-incarnation", (*liveRig).checkStaleIncarnation, nil},
+	}},
+	// adopt: a respawn before a hello in that issue's pod, a second tree's two issues, the
+	// re-adoption of every live claim by a fresh runtime, the orphan sweep and the issue's cleanup.
+	{name: "adopt", setup: (*liveRig).runFirstIssue, checks: []liveCheck{
 		{"respawn-before-register", (*liveRig).checkRespawnBeforeRegister, nil},
 		{"independent-provision", (*liveRig).checkIndependentProvision, nil},
 		{"re-adopt", (*liveRig).checkReAdopt, nil},
@@ -173,10 +180,12 @@ var liveGroups = []liveGroup{
 		{"postgres-resume", (*liveRig).checkPostgresResume, nil},
 		{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
 	}},
-	// pod-update: the update round over one drifted issue pod, and over two issues' pods a change
-	// drifts at once.
+	// pod-update: the update round over one drifted issue pod.
 	{name: "pod-update", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"pod-update", (*liveRig).checkPodUpdate, nil},
+	}},
+	// pod-update-fleet: the update round over two issues' pods a change drifts at once.
+	{name: "pod-update-fleet", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
 	}},
 }
@@ -1729,8 +1738,9 @@ func (r *liveRig) cacheRunRepository() error {
 }
 
 // runFirstIssue is what root-ready and worker-shares-issue-pod leave the checks of the run's first
-// issue after them, which the roles group redoes first: cacheRunRepository's, then the root running,
-// whose launch makes the run's repository's cache, and the worker running beside it in its pod.
+// issue after them, which the roles and adopt groups redo first: cacheRunRepository's, then the
+// root running, whose launch makes the run's repository's cache, and the worker running beside it
+// in its pod.
 func (r *liveRig) runFirstIssue() error {
 	if err := r.cacheRunRepository(); err != nil {
 		return err

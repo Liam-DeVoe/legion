@@ -1,0 +1,26 @@
+name: Install what an agent-harness leg's agents run
+description: >-
+  The first step of each leg of ci.yaml's agent-harness job, a step of its own before
+  .github/actions/agent-harness because each install here writes the job's environment, which the
+  steps of that action read: Bun at .bun-version, which the Claude Code and Codex installs and
+  every later step run on; jj, the one the worker image ships, which the daemon resolves at boot
+  and refuses to start without, and which leaves the mise install-omp installs the pin through; Oh
+  My Pi at .omp-pin (LEGION_TEST_OMP), which every leg's agents run and each test refuses on GitHub
+  Actions without; Claude Code at .claude-code-pin (LEGION_TEST_CLAUDE) for the legs that run a
+  Claude Code session (tmux-scripts, session-scripts, nats-callout-sessions); and the Codex CLI at
+  .codex-pin (LEGION_TEST_CODEX) for nats-callout-sessions' --real-hosts, the installs the
+  claude-envoy leg of the pi job runs.
+inputs:
+  leg:
+    description: The leg of ci.yaml's agent-harness job.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-bun
+    - uses: ./.github/actions/install-jj
+    - uses: ./.github/actions/install-omp
+    - if: inputs.leg == 'tmux-scripts' || inputs.leg == 'session-scripts' || inputs.leg == 'nats-callout-sessions'
+      uses: ./.github/actions/install-claude-code
+    - if: inputs.leg == 'nats-callout-sessions'
+      uses: ./.github/actions/install-codex

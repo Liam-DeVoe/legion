@@ -1,0 +1,67 @@
+name: Build the worker image the kind legs test
+description: >-
+  The steps of ci.yaml's kind-image job: packages/daemon/docker/worker.Dockerfile built once per
+  run as worker-image.yaml's build builds it, from the same context, BuildKit and layer cache
+  scope (cache-from: type=gha,scope=worker-image, main's cache, read and never written here),
+  publishing nothing: the image goes into a docker archive, which each leg of the kind job
+  downloads as the artifact kind-image-worker-image. The kind job runs on a merge group and on a
+  dispatched run with the kind-and-agent-harness input, never on a pull request, so no run of it
+  has a worker-image build of its own head to take the image from. The kind filter of
+  .github/ci-areas.yaml names every file the build reads.
+runs:
+  using: composite
+  steps:
+    # worker-image.yaml's builder: provenance-add-gha=false keeps the run's event out of every
+    # predicate, and image= is the driver's own BuildKit, ghcr.io/cybermonklabs/legion/ci's copy
+    # of moby/buildkit:buildx-stable-1 (.github/ci-images.yaml), which is why kind-image needs
+    # ci-images. cleanup: false leaves the builder and its state on the runner, which is discarded
+    # after the job: its removal took 103 s on average and up to 174 s of the image job's time in
+    # CI runs 44816526076 to 44868985209, all of it on the kind chain.
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        cleanup: false
+        driver-opts: |
+          provenance-add-gha=false
+          image=ghcr.io/cybermonklabs/legion/ci@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+    # worker-image.yaml's build of the same Dockerfile and context, reading main's layer cache
+    # under the same scope and writing none, with the version label and the plugin versions left
+    # to their pull-request defaults. The two env names keep the run's event out of the metadata
+    # the action logs, as that build's comment says. LEGION_PROBE_SKIP_TLS has the build's final
+    # probe run no TLS check, which reaches public sites: the kind tests' pods meet the rig's
+    # stand-ins for them (worker.Dockerfile's ARG).
+    - name: Build the worker image into a docker archive
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      env:
+        BUILDX_METADATA_PROVENANCE: disabled
+        DOCKER_BUILD_SUMMARY: "false"
+      with:
+        context: .
+        file: packages/daemon/docker/worker.Dockerfile
+        platforms: linux/amd64
+        provenance: false
+        push: false
+        outputs: type=docker,dest=${{ runner.temp }}/worker-image.tar
+        tags: legion-worker:kind
+        cache-from: type=gha,scope=worker-image
+        build-args: |
+          LEGION_REVISION=${{ github.sha }}
+          LEGION_PROBE_SKIP_TLS=1
+        secrets: |
+          github_token=${{ github.token }}
+
+    # Layers a docker archive holds are compressed already, so the artifact stores them as they
+    # are. A day is long enough for a re-run of the leg that reads it. The name holds no run
+    # attempt and the upload overwrites: `gh run rerun --job <leg>` starts the leg's attempt
+    # without this job, and a download by name reads the run's artifacts of every attempt, so the
+    # leg finds the image the first attempt built; a re-run of this job uploads the same commit's
+    # image under the same name.
+    - name: Upload the worker image
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: kind-image-worker-image
+        path: ${{ runner.temp }}/worker-image.tar
+        compression-level: 0
+        retention-days: 1
+        if-no-files-found: error
+        overwrite: true
