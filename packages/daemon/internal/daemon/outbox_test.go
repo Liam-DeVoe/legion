@@ -232,7 +232,7 @@ func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string,
 	return name, nil
 }
 func (noArtifacts) PlanDocument(context.Context, string, int) (dispatch.DocumentVersion, error) {
-	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "artifact not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 

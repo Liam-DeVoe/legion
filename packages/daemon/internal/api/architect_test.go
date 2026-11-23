@@ -120,7 +120,7 @@ func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, vers
 	}
 	document, ok := r.plans[planVersion(artifactID, version)]
 	if !ok {
-		return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "version not found"}
+		return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "version not found"}
 	}
 	return document, nil
 }
