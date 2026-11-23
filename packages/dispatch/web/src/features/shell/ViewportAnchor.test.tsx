@@ -1320,6 +1320,13 @@ function rowOf(id: string): HTMLElement {
   return row;
 }
 
+/** The control drawn inside the row `id` of the list. */
+function controlOf(id: string): HTMLButtonElement {
+  const control = rowOf(id).querySelector("button");
+  if (control === null) throw new Error(`${id} button missing`);
+  return control;
+}
+
 // A host keeps a row's place itself while a control of its own outside the list holds the focus,
 // as Details' history keeps the entry next to Load older while the older page is read: no act of
 // the reader's names a place then. The commit the page lands in draws rows under the kept row and
@@ -1360,9 +1367,8 @@ test("a host keeps no row while the reader's focus is in one, and the focus movi
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("scroller missing");
     scroller.scrollTop = 100;
-    const focused = rowOf("r4").querySelector("button");
-    const other = rowOf("r6").querySelector("button");
-    if (focused === null || other === null) throw new Error("a row's button missing");
+    const focused = controlOf("r4");
+    const other = controlOf("r6");
     focused.focus();
     anchor.current?.keepRow(rowOf("r8"));
     expect(chosen()).toEqual({ id: "r4", via: "focus" });
@@ -1391,8 +1397,7 @@ test("a host's keep leaves the place of the reader's focused control, which a cu
   heights = { r3: 1000 };
   const box = drawInBox(ids(40));
   try {
-    const focused = rowOf("r3").querySelector("button");
-    if (focused === null) throw new Error("r3 button missing");
+    const focused = controlOf("r3");
     focused.focus();
     // The reader scrolls to the control: r3 runs from 200 to 1,200 px down the content, and its
     // control stands at its foot.
@@ -1418,21 +1423,20 @@ test("a host's keep leaves the place of the reader's focused control, which a cu
 });
 
 // A host scrolls its box to an element an address names, inside a long row whose head is above
-// the view, and keeps that element's own place (`keepRow`'s `at`), with no focus on it: as the
-// history lands a short reply under a long root turn drawn whole. The row's own content above the
-// element is then cut by a commit of its own, which the anchor sees only as its content resized:
-// that moves the element up by the cut and leaves the row's top where it was. Kept at the row's
-// top, the element went up by the cut, out of the view; kept at its own, it stays where the host
-// put it, and the row's top moves down by the cut instead. A host that names no element keeps the
-// row's top, as the cases above show ("a row a host keeps holds its place across a commit that
-// adds rows below it and shrinks a row above it", "a box the browser pulls back to its end keeps
-// the row a host keeps, at the offset the pull-back left").
+// the view, and keeps that element's own place (`keepRow`'s `element`), with no focus on it: as
+// the history lands a short reply under a long root turn drawn whole. The row's own content above
+// the element is then cut by a commit of its own, which the anchor sees only as its content
+// resized: that moves the element up by the cut and leaves the row's top where it was. Kept at
+// the row's top, the element went up by the cut, out of the view; kept at its own, it stays where
+// the host put it, and the row's top moves down by the cut instead. A host that names no element
+// keeps the row's top, as the cases show ("a row a host keeps holds its place across a commit
+// that adds rows below it and shrinks a row above it", "a box the browser pulls back to its end
+// keeps the row a host keeps, at the offset the pull-back left").
 test("an element a host keeps inside a row keeps its own place when the row's own content above it shrinks", () => {
   heights = { r3: 1000 };
   const box = drawInBox(ids(40), { ownsScrollAnchoring: true });
   try {
-    const element = rowOf("r3").querySelector("button");
-    if (element === null) throw new Error("r3 button missing");
+    const element = controlOf("r3");
     // The host scrolls the box to the element: r3 runs from 200 to 1,200 px down the content, and
     // the element stands at its foot.
     box.scroller.scrollTop = 1000;
@@ -1461,6 +1465,58 @@ test("an element a host keeps inside a row keeps its own place when the row's ow
     box.unmount();
   }
 });
+
+// The element a host keeps inside a row holds the place only until something else names it: a
+// press of the reader's inside the list lets it go, as it lets a focused control go
+// (`readerPressed`); the element leaving the row lets it go; and an act of the reader's records
+// the reader's own place instead: the hand moving onto the row, or the focus moving onto the
+// element, which then keeps the place only while it holds the focus, as any focused control
+// does. The row's top is kept from then on, so a cut of the row's own content above the element
+// moves the element up by the cut and leaves the row where it was. An element still kept after
+// any of these held the place, and the cut moved the row down by 800 px instead.
+for (const { letGo, once } of [
+  {
+    letGo: () => fireEvent.keyDown(rowOf("r20")),
+    once: "the reader presses a key inside the list",
+  },
+  { letGo: () => rowOf("r4").append(controlOf("r3")), once: "the element leaves the row" },
+  {
+    letGo: () => fireEvent.pointerMove(rowOf("r3"), { clientX: 20, clientY: 100 }),
+    once: "the reader's hand moves onto the row",
+  },
+  {
+    letGo: () => {
+      controlOf("r3").focus();
+      controlOf("r3").blur();
+    },
+    once: "the reader's focus moves onto the element and leaves the list",
+  },
+]) {
+  test(`an element a host keeps inside a row is let go once ${once}, and the row's own top is kept`, () => {
+    heights = { r3: 1000 };
+    const box = drawInBox(ids(40), { ownsScrollAnchoring: true });
+    try {
+      // As in the case above: r3 runs from 200 to 1,200 px down the content, and the host keeps
+      // the control at its foot.
+      box.scroller.scrollTop = 1000;
+      box.settle();
+      anchor.current?.keepRow(rowOf("r3"), controlOf("r3"));
+      expect(controlTop("r3")).toBe(180);
+      letGo();
+
+      // r3 is cut to 200 px, which raises the control by 800 px.
+      heights = { r3: 200 };
+      box.settle();
+      expect(
+        viewportTop("r3"),
+        `once ${once}, the element the host kept still held the place`
+      ).toBe(-800);
+      expect(box.scroller.scrollTop).toBe(1000);
+    } finally {
+      box.unmount();
+    }
+  });
+}
 
 // The host letting its place go: the next commit holds the row nearest the middle of the view,
 // or, at the top, nothing, and the box gets its own scroll anchoring back. A place the reader's

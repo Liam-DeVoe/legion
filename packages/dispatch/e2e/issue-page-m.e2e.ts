@@ -1535,6 +1535,13 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
   }
 });
 
+/** The words of a long agents' turn: `parts` paragraphs, each one sentence of the agents' work
+ *  six times over. */
+function longTurnBody(parts: number): string {
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  return Array.from({ length: parts }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n");
+}
+
 // The reader's place in the history (`IssueHistory.tsx`'s `ViewportAnchor`) when a turn above it
 // shrinks by more than the history holds below Details' view. A turn in view, wholly or in part,
 // keeps its whole length, and is cut to six lines once it lies wholly outside the view
@@ -1563,12 +1570,7 @@ test("the reader's place in the history holds when a turn above it is cut by mor
   }
   const seventeenth = older[17];
   if (seventeenth === undefined) throw new Error("the seed made no seventeenth older turn");
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  const longTurn = await createMessage(
-    issue.key,
-    { body: Array.from({ length: 40 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
-    attentionSession
-  );
+  const longTurn = await createMessage(issue.key, { body: longTurnBody(40) }, attentionSession);
   for (let index = 0; index < 12; index += 1) {
     await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
   }
@@ -1699,12 +1701,7 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
   for (let index = 0; index < 130; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
   }
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  const long = await createMessage(
-    issue.key,
-    { body: Array.from({ length: 40 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
-    attentionSession
-  );
+  const long = await createMessage(issue.key, { body: longTurnBody(40) }, attentionSession);
   for (let index = 0; index < 30; index += 1) {
     await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
   }
@@ -1788,12 +1785,7 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
   test.setTimeout(240_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "A long turn to open" });
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  const long = await createMessage(
-    issue.key,
-    { body: Array.from({ length: 12 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
-    attentionSession
-  );
+  const long = await createMessage(issue.key, { body: longTurnBody(12) }, attentionSession);
   // Newer turns above it, so the history scrolls and the long turn starts below the first screen.
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
@@ -4085,12 +4077,7 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
   for (let index = 0; index < 60; index += 1) {
     await createMessage(issue.key, { body: `Older note ${index}` }, attentionSession);
   }
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  const root = await createComment(
-    issue.key,
-    { body: Array.from({ length: 15 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
-    attentionSession
-  );
+  const root = await createComment(issue.key, { body: longTurnBody(15) }, attentionSession);
   const reply = await createComment(
     issue.key,
     { body: "A short reply under the long turn.", reply_to: root.id },
@@ -4119,12 +4106,10 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
         .toBeLessThan(400);
       await nextFrames(page);
       const view = await historyViewport(page);
-      const at = await marked.boundingBox();
-      const top = Math.round(at?.y ?? Number.NaN);
-      const bottom = Math.round((at?.y ?? Number.NaN) + (at?.height ?? 0));
-      if (!(top >= Math.round(view.top) - 1 && bottom <= Math.round(view.bottom) + 1)) {
+      const at = await boxOf(marked, "the reply");
+      if (!wholly(at, { bottom: view.bottom + 1, top: view.top - 1 })) {
         outOfView.push(
-          `at ${size.width} px the reply stood from ${top} to ${bottom} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
+          `at ${size.width} px the reply stood from ${Math.round(at.y)} to ${Math.round(at.y + at.height)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
         );
       }
     } finally {

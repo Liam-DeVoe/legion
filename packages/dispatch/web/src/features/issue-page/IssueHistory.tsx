@@ -290,12 +290,12 @@ export function IssueHistory({
   // lands it. An entry taller than Details' view lands at the top of that view, so its head is
   // read first; a shorter one in the middle of it. The history's anchor keeps the landed entry
   // where this scroll left it, from the landing on: its own place, inside the row of the history
-  // it stands in (`keepRow`'s `at`). A change of height in the same frame, whether the scroll's
-  // event is read before it or after it, then moves Details by as much rather than moving the
-  // entry, until the reader's next act names their place. That holds for a change inside the
-  // row too: the root turn above a reply, drawn whole as the scroll lands, is cut in the
-  // microtask after the scroll (`CutWords`), which moves the reply up by the cut and leaves the
-  // row's top where it was. The place the reader's hand was on before the landing is often
+  // it stands in (`keepRow`'s `element`). A change of height in the same frame, whether the
+  // scroll's event is read before it or after it, then moves Details by as much rather than
+  // moving the entry, until the reader's next act names their place. That holds for a change
+  // inside the row too: the root turn above a reply, drawn whole as the scroll lands, is cut in
+  // the microtask after the scroll (`CutWords`), which moves the reply up by the cut and leaves
+  // the row's top where it was. The place the reader's hand was on before the landing is often
   // wholly outside the view after it, and is no place they can see (`rowToKeep`).
   const landed = useRef<string | undefined>(undefined);
   // The history's anchor, which keeps the reader's place in Details (`ViewportAnchor` below).
