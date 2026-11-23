@@ -172,7 +172,7 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	// A whole lease with no renewal, as the run's lease stands once that long has passed.
 	ageRequestKeyLease(t, rig.database, "alice", "long-run", contracts.IdempotencyLease+time.Second)
 	renewal := start.Add(keyedLeaseRenewal)
-	awaitArmedAt(t, fake, "the run's lease renewal", renewal)
+	fake.AwaitArmedAt(t, "the run's lease renewal", renewal)
 	fake.Set(renewal)
 	testwait.Eventually(t, "the running handler to renew its key's lease", func() bool {
 		return requestKeyLeased(t, rig.database, "alice", "long-run")
@@ -236,7 +236,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 		rig.handler.ServeHTTP(response, request)
 	}()
 	testwait.Receive(t, "the run to start", running)
-	awaitArmedAt(t, fake, "the run's bound, keyedHandlerLimit from its start", start.Add(keyedHandlerLimit))
+	fake.AwaitArmedAt(t, "the run's bound, keyedHandlerLimit from its start", start.Add(keyedHandlerLimit))
 	cancel()
 	proceedOnce()
 	testwait.Receive(t, "the run whose client went away to answer", served)
@@ -529,15 +529,15 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 	go func() { answered <- rig.send(t, "a", nil, "alice", "overrun") }()
 	testwait.Receive(t, "the first run to start", running)
 	bound := start.Add(keyedHandlerLimit)
-	awaitArmedAt(t, fake, "the run's bound", bound)
+	fake.AwaitArmedAt(t, "the run's bound", bound)
 	// Every renewal the run is owed before its bound, each waited for once it has run and armed the
 	// next, so none is still under way when the bound comes.
 	renewal := start.Add(keyedLeaseRenewal)
 	for ; renewal.Before(bound); renewal = renewal.Add(keyedLeaseRenewal) {
-		awaitArmedAt(t, fake, "the run's next lease renewal", renewal)
+		fake.AwaitArmedAt(t, "the run's next lease renewal", renewal)
 		fake.Set(renewal)
 	}
-	awaitArmedAt(t, fake, "the run's renewal due at or past its bound", renewal)
+	fake.AwaitArmedAt(t, "the run's renewal due at or past its bound", renewal)
 	fake.Set(bound)
 	testwait.Receive(t, "the run's bound to end its context", bounded)
 	// The renewals end with the run's bound. The renewal due with it may still run: the loop's
@@ -595,7 +595,7 @@ func TestALeaseRenewalThatWaitsLeavesTheNextAtItsFixedRate(t *testing.T) {
 	go func() { answered <- rig.send(t, "a", nil, "alice", "fixed-rate") }()
 	testwait.Receive(t, "the run to start", running)
 	first := start.Add(keyedLeaseRenewal)
-	awaitArmedAt(t, fake, "the run's first lease renewal", first)
+	fake.AwaitArmedAt(t, "the run's first lease renewal", first)
 
 	ctx := context.Background()
 	locker, err := rig.database.Pool.Begin(ctx)
@@ -667,7 +667,7 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 	}()
 	waitForDatabaseLocks(t, holder, 1)
 	bound := start.Add(keyedHandlerLimit)
-	awaitArmedAt(t, fake, "the close's run bound", bound)
+	fake.AwaitArmedAt(t, "the close's run bound", bound)
 	fake.Set(bound)
 	// The owner lock is still held, so a close the bound did not end never answers.
 	if response := testwait.Receive(t, "the close held on the issue's owner lock to end at its run's bound", answered); response.Code < http.StatusInternalServerError {
@@ -749,7 +749,7 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	release()
 	waitForDatabaseLocks(t, holder, 1)
 	bound := start.Add(keyedHandlerLimit)
-	awaitArmedAt(t, fake, "the close's run bound", bound)
+	fake.AwaitArmedAt(t, "the close's run bound", bound)
 	fake.Set(bound)
 	// The owner lock is still held, so a sweep the bound did not end never lets the close answer.
 	if response := testwait.Receive(t, "the close whose sweep is held on the issue's owner lock to answer at its run's bound", answered); response.Code != http.StatusOK {

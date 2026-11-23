@@ -488,7 +488,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	answered := checkOnTheSide(srv, context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
 	awaitLockWait(t, database, "search_term_stats")
 	allowanceEnds := checkStart.Add(cmp.Or(srv.suggestionTimeout, relatedCheckAllowance))
-	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds.Add(-time.Millisecond))
 	testwait.Quiet(t, "the check answering while the lock it reads behind is held, a moment short of its allowance", answered,
 		time.Second, "a keyword stage that gave up on a bound of its own answers at once once that bound passes, and the "+
@@ -535,7 +535,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 	// The check's own allowance, read from the fake as the deadline it armed, and the move that
 	// reaches it: no real time decides whether the check ran out of its allowance.
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
-	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
 	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
@@ -655,7 +655,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	// The edit's one allowance, read from the fake as the deadline it armed, and the move that
 	// reaches it: no real time decides whether the blocks' checks ran out of it.
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
-	awaitArmedAt(t, clock, "the edit's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the edit's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
 	checks := testwait.Receive(t, "the blocks' checks once the edit's allowance ran out", done)
 	if err := lockTx.Rollback(context.Background()); err != nil {
@@ -727,13 +727,13 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// The check's own allowance, read from the fake as the deadline it armed, and the move that
 	// reaches it: no real time decides whether the check ran out of its allowance.
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
-	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
 	// The record's first attempt is bounded on the same fake from the moment the check gave up
 	// (recordClock): its insert waits on the lock until the move to that bound ends it, and the
 	// check answers after its record.
 	recordEnds := allowanceEnds.Add(relatedRecordTimeout)
-	awaitArmedAt(t, clock, "the record's first attempt's bound", recordEnds)
+	clock.AwaitArmedAt(t, "the record's first attempt's bound", recordEnds)
 	testwait.Eventually(t, "the record's first insert to wait on the lock", func() bool {
 		return relatedInsertWaiting(t, database, databaseNow(t, database.Pool))
 	})
@@ -824,10 +824,10 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	// The check's own allowance, read from the fake as the deadline it armed, and the move that
 	// reaches it: no real time decides whether the check ran out of its allowance.
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
-	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
 	recordEnds := allowanceEnds.Add(relatedRecordTimeout)
-	awaitArmedAt(t, clock, "the record's first attempt's bound", recordEnds)
+	clock.AwaitArmedAt(t, "the record's first attempt's bound", recordEnds)
 	clock.Set(recordEnds)
 	testwait.Receive(t, "the check's answer once its allowance and its record's bound ran out", answered)
 	if got := srv.relatedRecordRetrying.Load(); got != 1 {

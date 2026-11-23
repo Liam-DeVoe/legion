@@ -903,7 +903,7 @@ func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
 	client := rig.dial(t, asUser("alice"))
 	// The socket arms its age from the upgrade; a socket that closed before its age would arm
 	// another deadline or none.
-	awaitArmedAt(t, fake, "the socket's age", expiry)
+	fake.AwaitArmedAt(t, "the socket's age", expiry)
 	if !client.open() {
 		t.Fatalf("the socket closed before the server's clock reached its age: %v", client.err)
 	}
@@ -1063,11 +1063,11 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 
 	// The writer arms its first heartbeat as it starts, and each later one once the one before it
 	// is written (clock.Ticker), so the row moves on only once the next heartbeat is armed too.
-	awaitArmedAt(t, deadlines, "the socket's first heartbeat", deadlines.Now().Add(heartbeat))
+	deadlines.AwaitArmedAt(t, "the socket's first heartbeat", deadlines.Now().Add(heartbeat))
 	for range 4 {
 		deadlines.Advance(heartbeat)
-		awaitArmedAt(t, deadlines, "the read deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
-		awaitArmedAt(t, deadlines, "the heartbeat after the one the move brought", deadlines.Now().Add(heartbeat))
+		deadlines.AwaitArmedAt(t, "the read deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
+		deadlines.AwaitArmedAt(t, "the heartbeat after the one the move brought", deadlines.Now().Add(heartbeat))
 	}
 	if got := pings.Load(); got != 4 {
 		t.Fatalf("the socket sent %d pings over four heartbeats of its clock, want one each", got)
@@ -1149,7 +1149,7 @@ func TestALiveSocketArmsItsNextHeartbeatOnceItsPingAndFrameAreWritten(t *testing
 	page := rig.open(t, gws.DefaultDialer, asUser("alice")).read()
 	server := testwait.Receive(t, "the server's side of the socket's connection", accepted)
 	t.Cleanup(server.release)
-	awaitArmedAt(t, pings, "the socket's first heartbeat", start.Add(heartbeat))
+	pings.AwaitArmedAt(t, "the socket's first heartbeat", start.Add(heartbeat))
 
 	server.stepping.Store(true)
 	pings.Set(start.Add(heartbeat))
@@ -1168,7 +1168,7 @@ func TestALiveSocketArmsItsNextHeartbeatOnceItsPingAndFrameAreWritten(t *testing
 		server.through <- struct{}{}
 	}
 	server.stepping.Store(false)
-	awaitArmedAt(t, pings, "the heartbeat after the one written", start.Add(2*heartbeat))
+	pings.AwaitArmedAt(t, "the heartbeat after the one written", start.Add(2*heartbeat))
 	if data := page.take(t, "the heartbeat frame"); string(data) != `{"type":"heartbeat"}` {
 		t.Errorf("the page read %s at the heartbeat, want {\"type\":\"heartbeat\"}", data)
 	}

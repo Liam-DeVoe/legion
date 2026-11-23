@@ -147,11 +147,11 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 	t.Helper()
 	at := first
 	for range n {
-		awaitArmedAt(t, fake, "the socket's heartbeat", at)
+		fake.AwaitArmedAt(t, "the socket's heartbeat", at)
 		fake.Set(at)
 		at = at.Add(every)
 	}
-	awaitArmedAt(t, fake, "the socket's heartbeat after the ones the row moved through", at)
+	fake.AwaitArmedAt(t, "the socket's heartbeat after the ones the row moved through", at)
 	return at
 }
 

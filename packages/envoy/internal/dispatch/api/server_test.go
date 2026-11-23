@@ -451,20 +451,6 @@ func directServer(deps Deps) *server {
 	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
 }
 
-// awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
-// what and the deadlines it last saw when none ever is. It looks for the one deadline rather than a
-// count, since the server's other timers on the same fake may be pending beside it.
-func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
-	t.Helper()
-	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() (string, bool) {
-		now, armed := fake.Now(), fake.Armed()
-		if len(armed) == 0 {
-			return fmt.Sprintf("no timer armed, the fake at %s", now.Format(time.RFC3339Nano)), false
-		}
-		return fmt.Sprintf("%d timers armed, due at %v, the fake at %s", len(armed), armed, now.Format(time.RFC3339Nano)), slices.ContainsFunc(armed, at.Equal)
-	})
-}
-
 // documentSettleReach is how far ahead of a document service's fake clock (docs.Deps.Clock) a
 // deadline may stand for awaitSettledOn to move the clock to it, as time passing would. The
 // service arms a room's settlement its settle delay ahead - 20 ms for newTestServer's and the

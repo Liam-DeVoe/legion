@@ -2418,7 +2418,7 @@ func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T
 	inside := hubPR(2, clock.Now().Add(-time.Hour))
 	inside.Title = "feat: change 2, renamed"
 	upsertPR(t, rig.database, inside)
-	awaitArmedAt(t, clock.Fake, "the recompute the change inside the window left due", read)
+	clock.Fake.AwaitArmedAt(t, "the recompute the change inside the window left due", read)
 	start := rig.mark()
 	clock.Set(read)
 	rig.waitFor(t, start, "the recompute of the change inside the window to end", func(note deliveryHubNote) bool {
@@ -2447,7 +2447,7 @@ func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T
 			merged, dirty, cause)
 	}
 	again := clock.Now().Add(viewQuiet)
-	awaitArmedAt(t, clock.Fake, "the recompute the change to acme/widgets#1 left due", again)
+	clock.Fake.AwaitArmedAt(t, "the recompute the change to acme/widgets#1 left due", again)
 	start = rig.mark()
 	clock.Set(again)
 	rig.waitFor(t, start, "the recompute of the change to acme/widgets#1 to end", func(note deliveryHubNote) bool {

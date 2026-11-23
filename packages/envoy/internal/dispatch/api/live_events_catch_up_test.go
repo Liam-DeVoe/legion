@@ -200,7 +200,7 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	t.Cleanup(func() {
 		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
 	})
-	awaitArmedAt(t, fake, "the failed subscription's retry", retry)
+	fake.AwaitArmedAt(t, "the failed subscription's retry", retry)
 	if queued := len(stream.frames); queued != 0 {
 		t.Fatalf("the subscription whose read failed sent %d frames before its retry", queued)
 	}

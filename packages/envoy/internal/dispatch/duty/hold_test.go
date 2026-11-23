@@ -369,15 +369,6 @@ func (u *unansweredRenewal) renewals() []time.Time {
 	return slices.Clone(u.sent)
 }
 
-// awaitArmedAt waits until fake has a timer armed at at.
-func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
-	t.Helper()
-	testwait.Until(t, what+" to be armed at "+at.Format(time.TimeOnly), func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, at.Equal)
-	})
-}
-
 // A renewal that draws no answer is given up at its own bound, Renew after it was sent, and the
 // renewal after it is sent at once, as the ticker before the hold's clock sent the tick that fell
 // while the renewal waited, not one Renew later. With the delivery intake's hold (TTL 15 s, Renew
@@ -401,14 +392,14 @@ func TestAHoldRenewsAgainAtOnceAfterARenewalDrawsNoAnswer(t *testing.T) {
 		})
 	}
 
-	awaitArmedAt(t, fake, "the first renewal", at(opts.Renew))
+	fake.AwaitArmedAt(t, "the first renewal", at(opts.Renew))
 	fake.Set(at(opts.Renew))
 	awaitDeadline("the first renewal to move the loss deadline to 18 s", at(opts.Renew+opts.TTL-opts.Margin))
 
-	awaitArmedAt(t, fake, "the second renewal", at(2*opts.Renew))
+	fake.AwaitArmedAt(t, "the second renewal", at(2*opts.Renew))
 	fake.Set(at(2 * opts.Renew))
 	testwait.Receive(t, "the second renewal, the one left unanswered, to reach the database", db.left)
-	awaitArmedAt(t, fake, "the unanswered renewal's own bound, Renew after it was sent", at(3*opts.Renew))
+	fake.AwaitArmedAt(t, "the unanswered renewal's own bound, Renew after it was sent", at(3*opts.Renew))
 	fake.Set(at(3 * opts.Renew))
 
 	awaitDeadline("the renewal after the unanswered one to move the loss deadline to 28 s", at(3*opts.Renew+opts.TTL-opts.Margin))

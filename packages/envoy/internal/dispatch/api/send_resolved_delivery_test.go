@@ -92,7 +92,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				// The window is armed before the request is written (envoy.Client.do), so it is
 				// pending once the listener holds the send, CallWindow from the clock's start.
 				testwait.Receive(t, "the late listener to hold the send", holding)
-				awaitArmedAt(t, clock, "the send's window", clock.Now().Add(envoy.CallWindow))
+				clock.AwaitArmedAt(t, "the send's window", clock.Now().Add(envoy.CallWindow))
 				clock.Advance(envoy.CallWindow)
 			}
 			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)

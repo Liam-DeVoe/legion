@@ -315,7 +315,7 @@ func suggestionsBehindLock(
 	// The allowance the check armed on the fake, and the move that reaches it: what ends the call
 	// is the deadline the code set, read from the clock it set it on, and never real time.
 	allowanceEnds := checkStart.Add(relatedCheckAllowance)
-	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
 	return testwait.Receive(t, "the related-item check's answer once its allowance ended", answered)
 }

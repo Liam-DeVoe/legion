@@ -118,7 +118,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 		t.Helper()
 		watched := source.Watches(plannerSessionID)
 		at := fake.Now().Add(agentStreamWatchInterval)
-		awaitArmedAt(t, fake, "the view's next re-arm", at)
+		fake.AwaitArmedAt(t, "the view's next re-arm", at)
 		fake.Set(at)
 		testwait.Eventually(t, "the re-arm's watch of the session", func() bool { return source.Watches(plannerSessionID) > watched })
 	}
@@ -619,7 +619,7 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 			retry := fake.Now().Add(agentStreamRetry)
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 			t.Cleanup(func() { testwait.Returns(t, "the agent subscription's goroutine to return once stopped", running.stop) })
-			awaitArmedAt(t, fake, "the failed view's retry", retry)
+			fake.AwaitArmedAt(t, "the failed view's retry", retry)
 			// The view waits its retry with the session's frames already let go and nothing sent.
 			if got := source.Viewers(plannerSessionID); got != 0 {
 				t.Fatalf("the failed view holds %d subscriptions to the session's frames while it waits its retry, want 0", got)

@@ -237,6 +237,20 @@ func TestAwaitArmedReturnsThePendingDeadlines(t *testing.T) {
 	}
 }
 
+// AwaitArmedAt returns once a timer due at the one deadline it names is pending, whatever else is
+// pending beside it: here a timer due earlier, and the one it waits for, armed on a goroutine of
+// its own.
+func TestAwaitArmedAtWaitsForItsOneDeadline(t *testing.T) {
+	c := clocktest.New(epoch)
+	c.AfterFunc(time.Minute, func() {})
+	go c.AfterFunc(2*time.Minute, func() {})
+
+	c.AwaitArmedAt(t, "the timer armed on a goroutine of its own", epoch.Add(2*time.Minute))
+	if armed, want := c.Armed(), []time.Time{epoch.Add(time.Minute), epoch.Add(2 * time.Minute)}; !slices.Equal(armed, want) {
+		t.Fatalf("armed once AwaitArmedAt returned: %v, want %v", armed, want)
+	}
+}
+
 // SetWhen asks its question of the fake's present and every pending deadline, in order, and moves
 // only when the answer says to, then as Set does. A timer the code arms while the question is
 // asked is armed after it, from the moment the move reached (here, a move that fires nothing, the

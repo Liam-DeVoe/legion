@@ -36,9 +36,9 @@
 //
 // Armed is the deadlines pending on the fake, in order: every timer armed and neither fired nor
 // stopped, a Sleep in progress and a deadline context not yet ended among them. AwaitArmed waits for
-// them through testwait, as clockwork's BlockUntilContext does, so a test moves the fake past a
-// deadline only once the code has armed it, and a failure names what the test expected and the
-// deadlines it saw.
+// a count of them and AwaitArmedAt for one deadline among them, through testwait, as clockwork's
+// BlockUntilContext does, so a test moves the fake past a deadline only once the code has armed it,
+// and a failure names what the test expected, the deadlines it saw and the fake's moment.
 //
 // SetWhen reads the fake's present and its pending deadlines, asks a question of them and makes
 // the move the answer names, under one hold of the fake's lock. A test that reads Armed and then
@@ -103,13 +103,14 @@ func (c *Fake) Now() time.Time {
 }
 
 // StepWall steps the wall clock that Now reads by d, forward or back, as an operator or NTP steps
-// a machine's clock, and fires no timer. The timers, Armed, AwaitArmed, Advance, Set and SetWhen
-// stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the wall clock
-// does. What a channel timer sends carries the steps, as what Go's sends does: Go sends the moment
-// a timer fell due read on the wall clock as it sends (time.sendTime, Now less the lateness), so a
-// channel timer here sends its deadline plus every step made; one armed for a moment the fake has
-// already reached sends the moment it was armed plus every step. A fake that never steps is a fake
-// whose Now is its moment, and whose channel timers send their deadlines, or their arm moments.
+// a machine's clock, and fires no timer. The timers, Armed, AwaitArmed, AwaitArmedAt, Advance, Set
+// and SetWhen stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the
+// wall clock does. What a channel timer sends carries the steps, as what Go's sends does: Go sends
+// the moment a timer fell due read on the wall clock as it sends (time.sendTime, Now less the
+// lateness), so a channel timer here sends its deadline plus every step made; one armed for a
+// moment the fake has already reached sends the moment it was armed plus every step. A fake that
+// never steps is a fake whose Now is its moment, and whose channel timers send their deadlines, or
+// their arm moments.
 //
 // What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
 // beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
@@ -344,26 +345,45 @@ func (c *Fake) armedLocked() []time.Time {
 }
 
 // AwaitArmed waits until at least n timers are pending on the fake and returns their deadlines,
-// earliest first. what names what the test waits to see armed; a failure prints it with what the
-// last try read: no timer armed, or how many of the n were and their deadlines, and the fake's
-// moment then.
+// earliest first. what names what the test waits to see armed; a failure prints it with n and what
+// the last try read (armedReading).
 func (c *Fake) AwaitArmed(t testing.TB, what string, n int) []time.Time {
 	t.Helper()
 	var armed []time.Time
 	testwait.Until(t, fmt.Sprintf("%s (at least %d timers armed on the fake clock)", what, n), func() (string, bool) {
-		c.mu.Lock()
-		now, pending := c.nowLocked(), c.armedLocked()
-		c.mu.Unlock()
-		if len(pending) >= n {
-			armed = pending
-			return fmt.Sprintf("%d timers armed, due at %v", len(pending), pending), true
+		pending, reading := c.armedReading()
+		if len(pending) < n {
+			return reading, false
 		}
-		if len(pending) == 0 {
-			return fmt.Sprintf("no timer armed, the fake at %v", now), false
-		}
-		return fmt.Sprintf("%d of the %d timers armed, due at %v, the fake at %v", len(pending), n, pending, now), false
+		armed = pending
+		return reading, true
 	})
 	return armed
+}
+
+// AwaitArmedAt waits until a timer due at at is pending on the fake. It looks for the one deadline
+// rather than a count, since the code's other timers on the fake may be pending beside it. what
+// names what the test waits to see armed; a failure prints it with at and what the last try read
+// (armedReading).
+func (c *Fake) AwaitArmedAt(t testing.TB, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() (string, bool) {
+		armed, reading := c.armedReading()
+		return reading, slices.ContainsFunc(armed, at.Equal)
+	})
+}
+
+// armedReading is one reading of what is armed, for the waits on it: the deadline of every pending
+// timer, earliest first, and what a wait that gives up prints of them, read under one hold of the
+// lock: no timer armed, or how many are and their deadlines, and the fake's moment then.
+func (c *Fake) armedReading() ([]time.Time, string) {
+	c.mu.Lock()
+	now, armed := c.nowLocked(), c.armedLocked()
+	c.mu.Unlock()
+	if len(armed) == 0 {
+		return armed, fmt.Sprintf("no timer armed, the fake at %v", now)
+	}
+	return armed, fmt.Sprintf("%d timers armed, due at %v, the fake at %v", len(armed), armed, now)
 }
 
 func (c *Fake) After(d time.Duration) <-chan time.Time { return c.NewTimer(d).C() }

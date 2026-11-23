@@ -138,7 +138,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 		defer close(done)
 		runMaintenanceSweepOn(ctx, fake, rig.database.Pool, time.Minute, leases, nil)
 	}()
-	awaitArmedAt(t, fake, "the maintenance loop's first tick", first)
+	fake.AwaitArmedAt(t, "the maintenance loop's first tick", first)
 	fake.Set(first)
 	testwait.Until(t, "a pass of the maintenance loop", func() (string, bool) {
 		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0

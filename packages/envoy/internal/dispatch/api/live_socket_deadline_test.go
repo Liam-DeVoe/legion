@@ -80,11 +80,11 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		deadlines := newHeldFiring(t)
 		rig := newCountedRig(t, deadlines)
 		socket := rig.openCounted(t)
-		awaitArmedAt(t, deadlines.Fake, "the pong deadline the upgrade armed", pongBy)
+		deadlines.Fake.AwaitArmedAt(t, "the pong deadline the upgrade armed", pongBy)
 		joinMove := deadlines.fireHeld(t, pongBy)
 
 		socket.sendOverTheLimit(t)
-		awaitArmedAt(t, deadlines.Fake, "the drain's own deadline, liveSocketCloseWait on", pongBy.Add(liveSocketCloseWait))
+		deadlines.Fake.AwaitArmedAt(t, "the drain's own deadline, liveSocketCloseWait on", pongBy.Add(liveSocketCloseWait))
 		socket.drainReading(t)
 		deadlines.let()
 		joinMove(t)
@@ -95,7 +95,7 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		deadlines := newHeldFiring(t)
 		rig := newCountedRig(t, deadlines)
 		client := rig.openCounted(t).client
-		awaitArmedAt(t, deadlines.Fake, "the pong deadline the upgrade armed", pongBy)
+		deadlines.Fake.AwaitArmedAt(t, "the pong deadline the upgrade armed", pongBy)
 		joinMove := deadlines.fireHeld(t, pongBy)
 
 		// The pong's write ends where the shared wait gives up (none under -timeout 0).
@@ -103,7 +103,7 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		if err := client.conn.WriteControl(gws.PongMessage, nil, writeBy); err != nil {
 			t.Fatalf("send a pong: %v", err)
 		}
-		awaitArmedAt(t, deadlines.Fake, "the pong deadline the page's pong armed, two heartbeats on", pongBy.Add(2*drainHeartbeat))
+		deadlines.Fake.AwaitArmedAt(t, "the pong deadline the page's pong armed, two heartbeats on", pongBy.Add(2*drainHeartbeat))
 		deadlines.let()
 		joinMove(t)
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe"})

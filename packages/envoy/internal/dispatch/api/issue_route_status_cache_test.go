@@ -270,7 +270,7 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	started := clock.Now()
 	answer := make(chan routeRoster, 1)
 	go func() { answer <- readRoster(t, served, context.Background()) }()
-	awaitArmedAt(t, clock, "the fetch's bound", started.Add(routeRosterTimeout))
+	clock.AwaitArmedAt(t, "the fetch's bound", started.Add(routeRosterTimeout))
 	// The bound is armed before the fetch's request leaves, so the clock moves only once that
 	// request has reached the listener: moved sooner, it ends the fetch before the call is made.
 	awaitCalls(t, calls, 1)

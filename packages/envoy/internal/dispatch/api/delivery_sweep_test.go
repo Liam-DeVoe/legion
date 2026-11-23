@@ -259,7 +259,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			// took, so it settles nothing and sends nothing more.
 			listener.release()
 			backoff := start.Add(takeoverFirstBackoff)
-			awaitArmedAt(t, clock, "the dead sender's backoff after its held send's late 503", backoff)
+			clock.AwaitArmedAt(t, "the dead sender's backoff after its held send's late 503", backoff)
 			clock.Set(backoff)
 			// The dead sender is the write's keyed handler or the broadcast's delivery, both the
 			// server's detached work, or a comment's lane on the mention sender, which this stops:
@@ -449,7 +449,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	}()
 	// The loop's first pass is one interval after its start, on the clock the test moves.
 	first := start.Add(MaintenanceSweepInterval)
-	awaitArmedAt(t, ticks, "the maintenance loop's first tick", first)
+	ticks.AwaitArmedAt(t, "the maintenance loop's first tick", first)
 	ticks.Set(first)
 	testwait.Eventually(t, "the maintenance loop's pass to send the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()

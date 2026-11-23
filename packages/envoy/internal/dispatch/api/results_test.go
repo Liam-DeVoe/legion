@@ -3680,7 +3680,7 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		held <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
 	}()
 	deadline := clock.Now().Add(ciReadDeadline)
-	awaitArmedAt(t, clock, "the check-runs read's deadline", deadline)
+	clock.AwaitArmedAt(t, "the check-runs read's deadline", deadline)
 	testwait.Eventually(t, "GitHub to hold the check-runs read", func() bool { return fake.reads(headCommit) > asked })
 	clock.Set(deadline)
 	response := testwait.Receive(t, "the held read's answer once its deadline passed", held)

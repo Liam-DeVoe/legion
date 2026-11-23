@@ -316,7 +316,7 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 		runMaintenanceSweepOn(ctx, ticks, rig.database.Pool, MaintenanceSweepInterval, leases, nil)
 	})
 	first := ticks.Now().Add(MaintenanceSweepInterval)
-	awaitArmedAt(t, ticks, "the maintenance loop's first tick", first)
+	ticks.AwaitArmedAt(t, "the maintenance loop's first tick", first)
 	ticks.Set(first)
 	testwait.Until(t, "the abandoned run ended by a maintenance pass", func() (string, bool) {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)

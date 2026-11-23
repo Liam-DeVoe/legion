@@ -192,7 +192,7 @@ func TestAFrameOverTheReadLimitIsDrainedPastThePongDeadline(t *testing.T) {
 	pongBy, drainBy := drainStart.Add(2*drainHeartbeat), drainStart.Add(liveSocketCloseWait)
 	rig := newCountedRig(t, deadlines)
 	socket := rig.openCounted(t)
-	awaitArmedAt(t, deadlines, "the pong deadline the upgrade armed", pongBy)
+	deadlines.AwaitArmedAt(t, "the pong deadline the upgrade armed", pongBy)
 	socket.sendOverTheLimit(t)
 
 	socket.drainReading(t)
@@ -228,7 +228,7 @@ func TestAFrameOverTheReadLimitIsDrainedPastAPongDeadlineThatPassedBeforeTheDrai
 	writer.holdNext()
 	socket := rig.openCounted(t)
 	writer.waitHeld(t)
-	awaitArmedAt(t, deadlines, "the pong deadline the upgrade armed", pongBy)
+	deadlines.AwaitArmedAt(t, "the pong deadline the upgrade armed", pongBy)
 	socket.sendOverTheLimit(t)
 
 	deadlines.Set(pongBy)

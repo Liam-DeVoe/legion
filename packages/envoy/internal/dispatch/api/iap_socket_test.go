@@ -228,7 +228,7 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
 			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
-			awaitArmedAt(t, fake, "the socket's first heartbeat", first)
+			fake.AwaitArmedAt(t, "the socket's first heartbeat", first)
 			fake.Set(first)
 			if closed := socket.closeError(t); closed.Code != gws.ClosePolicyViolation {
 				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
@@ -380,7 +380,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 			// whileCallerResolves re-arms the heartbeat as it takes this one, and stops it once the
 			// check has refused, so no later heartbeat checks the socket.
 			first := opened.Add(heartbeat)
-			awaitArmedAt(t, fake, "the document socket's first heartbeat", first)
+			fake.AwaitArmedAt(t, "the document socket's first heartbeat", first)
 			fake.Set(first)
 			testwait.Receive(t, fmt.Sprintf("the document socket whose upgrade's assertion expired, %s, to close", change.name), peer.connection().Ended)
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
