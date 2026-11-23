@@ -172,3 +172,31 @@ func TestAPullRequestTheRecordLetGoIsNotRecordedAgain(t *testing.T) {
 		gaveBranches(t, pool, root.Key, root.Generation, []string{"z"}, map[string]string{"z": "legion/LEGION-208.z"})
 	})
 }
+
+// A task that started before tasks had branches of their own holds the issue's branch whatever it
+// does since, a stop among them, beside tasks a later version added: x, stopped at its
+// implementer's step with no branch on its row, keeps #42 on legion/LEGION-208, as the record
+// reads a pull request's task (record.PullRequest.Task) and as the workflow records a reopen of it.
+// It holds behaviour the rule keeps: a stop of a task that started is told from a stop before its
+// first step by the place it stands at, which each read of a pull request's task carries.
+//
+// The fault: x, stopped, read as a task that has not started, so its pull request is no task's.
+// The control: the read of a pull request's task without the task's place (#42 is no task's).
+func TestATaskThatStartedOnTheIssuesBranchKeepsItsPullRequestThroughAStop(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := tasksRoot(t, pool)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "x", steps: []string{"implementer:x"}, agents: []claim.Agent{"impl-x"}, state: record.TaskStopped, place: atStep(1)},
+		planTask{id: "y", steps: []string{"tester:y"}, agents: []claim.Agent{"test-y"}, needs: []string{"x"}, state: record.TaskWaiting})
+	openPR(t, pool, root.Key, 42, "legion/LEGION-208")
+	if pr := pullRequestOfTask(t, pool, root.Key, "x"); pr.Number != 42 {
+		t.Fatalf("the pull request of x = #%d, want #42 on the issue's branch", pr.Number)
+	}
+
+	mustSpend(t, "the reopen of #42", applyFacts(t, pool, engine)("reopened-42",
+		openedOn(42, "legion/LEGION-208", time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC), true)))
+	if pr := pullRequestOfTask(t, pool, root.Key, "x"); pr.Number != 42 || pr.State != record.PullRequestOpen {
+		t.Fatalf("the pull request of x after the reopen of #42 = #%d %s, want #42 open", pr.Number, pr.State)
+	}
+}
