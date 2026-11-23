@@ -184,9 +184,20 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. A move to `step` goes to the one earlier step that runs as `step`; with two, `return_to` names the one, by its place in the task. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
+});
+
+// Both hosts read this description, and Claude Code's tool offers the phase operations alone
+// (PHASE_OPS): no architect runs on Claude Code (the daemon's config refuses
+// `worker_backends.architect: claude`). So where it names sign_off it says whose operation that is.
+test("the description names sign_off as the architect's own operation, which no Claude Code session runs", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  expect(description).toContain(
+    "since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; "
+  );
+  expect(description).not.toContain("since an architect accepts with sign_off; ");
 });
 
 // The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
@@ -537,7 +548,7 @@ test("the description names the retro's rating fields, its scale, its skill and 
   }
 });
 
-// Contract 211: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
 // wire as the daemon's `returnTo`; a completion that names none sends none.
 test("a tester's fail sends return_to as returnTo", async () => {
   const tester = { ...implementer, role: "tester" as const };
@@ -568,16 +579,19 @@ test("a tester's fail sends return_to as returnTo", async () => {
 });
 
 // The description is where the tester reads what its fail may carry and what the daemon refuses.
+// The refusal limits a completion alone (api's returnToRefusal): request_backward_move takes its
+// own `return_to`, so no sentence says that only a completion names one.
 test("the description tells the tester its fail may name the step its task returns to", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   for (const words of [
     "`return_to`, the place of a step of the task its issue runs, 1 for its first",
-    "RETURN_TO_NEEDS_FAIL",
+    "A completion names it only with the verdict fail (RETURN_TO_NEEDS_FAIL).",
     "INVALID_RETURN_TO",
     "RETURN_REFUSED",
   ]) {
     expect(description).toContain(words);
   }
+  expect(description).not.toContain("Only a completion with the verdict fail names it");
 });
 
 /** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */
@@ -781,10 +795,10 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   expect(root.routes).toEqual([]);
 });
 
-// A refusal that named only the field refused left the agent to guess the call again: an
-// architect sent park_child a `reason` and a worker sent ready_for_update an `issue`, and each was
-// told no more than that the field is refused. A refusal names, once after every field it refuses,
-// the fields the operation takes.
+// A refusal that named only the field refused left the agent to guess the call again. An
+// architect sent a `reason` to an operation that took only `issue`, and a worker sent
+// ready_for_update an `issue`. Each was told no more than that the field is refused. A refusal
+// names, once after every field it refuses, the fields the operation takes.
 test("a field an op does not take is refused naming the fields the op takes", async () => {
   const { ops, routes } = runtime();
   const refusals = [

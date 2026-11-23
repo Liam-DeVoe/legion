@@ -27,7 +27,8 @@ import (
 // that entry's task (reviewedCommitStays), which reads the row, never the task.
 //
 // It is one of the two places the sentences enter a task, and its two callers are the places every
-// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow),
+// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow,
+// through RoundTask, which the daemon's start of a role queued for news alone reads too),
 // and the raise of an entry, which stores its task through it (enter). The other is the claim's
 // send of a task no such queue named (supervise's Delivery.message), which names `none` for both.
 // So the reviewer reads the difference from the commit to the head, or the whole change for
@@ -63,10 +64,11 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 	return task + reviewround.Sentences(row.ReviewedHead, entry)
 }
 
-// namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
+// NamesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
 // reviewer's, and a role the deployment defines, whose review step names its commit. So a stored
-// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), and the queue names
-// the others (queuedRow).
-func namesTheRound(role claim.Role) bool {
+// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), the queue names
+// the others (queuedRow), and the daemon's start executor names such a start queued for news alone
+// (its newsForStart).
+func NamesTheRound(role claim.Role) bool {
 	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
 }

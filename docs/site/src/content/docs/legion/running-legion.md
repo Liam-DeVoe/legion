@@ -28,9 +28,20 @@ in your cluster, from one published worker image, and every agent of that issue 
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
+Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
+Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
 its default branch as GitHub names it, when it first records the issue, and keeps both: a later
 change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
+A change that sends no event of the issue, as a move of the project's default repository does,
+and that lands between that read and the record, is such a later change, said on the issue at
+its next event or the next boot's listing. A change of the issue's own repository sends an event,
+and once the daemon has applied that event, no listing read before it records the issue: when the
+daemon applies the edit's event before it records the issue, the edit is applied, and the issue is
+recorded where Dispatch resolves it at that event or later. The daemon prepares an event, GitHub's
+answers for its repository included, before it applies it, so a listing read before the edit can
+still record the issue while the edit's event is being prepared. Then the issue is recorded on the
+repository that listing showed, and the edit is a later change, said on the issue when its event
+applies.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
@@ -145,8 +156,9 @@ runtime starts, which covers what arrived while the daemon was down, and a start
 GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
 ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
-for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
-the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+for, a push to the head of an issue in `implementing`, `testing`, `reviewing`, `accepting`, `retro`
+or `merging` asks for, and a push to the base asks for each issue standing in one of those phases
+but `implementing`; after a ladder whose five
 reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
 state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
 answers a state, the head moves or the pull request is no longer open, each
@@ -156,7 +168,7 @@ out of the merge queue. Nothing else runs on a timer, and it reads one issue's o
 rather than a listing of every open one. A read that finds the head
 conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
 for the checks the base requires and whether it requires a current branch, since that decides
-whether the conflict needs the implementer's merge forward now. It reads no check run and no
+whether the conflict needs a merge forward now. It reads no check run and no
 commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
 that head's check runs and commit statuses, which is also where it reads whether a required check
 is green on a conflicting head. Dispatch's CI reconcile reads the
@@ -170,11 +182,12 @@ lost, or that still waits behind the daemon's GitHub consumer, leaves the record
 the next of them:
 
 - **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
-  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
-  the repository itself (not a fork's) that the daemon does not record open is applied as its
-  opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to its task's next step.
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch that the
+  daemon does not record open is applied as its opened webhook would be. This holds only for the
+  repository itself, not a fork, and is a reopen when the record holds the same pull request. The
+  workflow records it in whatever phase the issue is. An implementing issue whose implementer
+  completed moves on to its task's next step, or toward its retro where that step is the task's
+  last.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
@@ -258,8 +271,8 @@ installations before it mints anything.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
-for the accounts the secret's `github-owners` tag lists, so an install by any other account
-gives nothing there.
+for the accounts the profile its command names lists, each an account of the secret's
+`github-owners` tag, so an install by any other account gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its
@@ -445,10 +458,11 @@ What each part is for:
   ```
 
   With `tester`, the merge hands the check's first look to the claim that works the tester's step,
-  in its session. Every other claim of a child is retired. A root's are suspended with the rest of
-  its tree for the linger, and retired when the linger ends. With `off`, no check opens at all: a
-  child's close retires every claim of the child and releases its pod, and a root's close
-  suspends every claim of its tree for the linger. The loader refuses any other value,
+  in its session, or to the tester in a fresh one where the task had no tester step. Every other
+  claim of a child is retired. A root's are suspended with the rest of its tree for the linger,
+  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
+  every claim of the child and releases its pod, and a root's close suspends every claim of its
+  tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -641,13 +655,18 @@ What each part is for:
   restarts onto a new IP. Beside it, `bind` is only where the daemon listens: it may be `0.0.0.0`,
   but not loopback, where no pod reaches it.
 - **`github_apps`**: each App takes exactly one of `private_key` (the PEM itself),
-  `private_key_command` (a command whose output is the PEM) or `private_key_secret`. The daemon
-  finds each App's installations itself; `installations` (owner to installation id) is optional.
+  `private_key_command` (a command whose output is the PEM), `private_key_secret` or
+  `token_command`. With `token_command` the daemon holds no key and runs the command for each
+  lease it needs. The daemon finds each App's installations itself. `installations` (owner to
+  installation id) is optional, and an App with `token_command` takes none, since the command's
+  release names each installation.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
+  merger merges until a person has approved the document of every step listed. A list that names
+  `spec` and not `criteria` lets a root's architect also register the root's Verification document
+  as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
+  the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
@@ -663,11 +682,15 @@ What each part is for:
   to, one or more of `implementer`, `tester`, `reviewer`, `planner`, `merger` and the roles of `roles` (`architect` is
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
-  name `moves`, the moves it counts, each written `<from>-<to>` with two different workflow phases
-  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or any other of the
-  42 pairs the daemon counts, such as `testing-reviewing` on a task whose reviewer step comes
-  before its tester step), or the word `any`, which is also what a hook that leaves the
-  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  name `moves`, the moves it counts, each written `<from>-<to>` of two workflow phases, which differ
+  but in `step-step` (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or
+  any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a task
+  whose reviewer step comes before its tester step), or the word `any`,
+  which is also what a hook that leaves the key out takes.
+  A pair that no line makes as a move back is refused, since the hook would never
+  fire: a move into `retro` or `merging`, which end every line, and a move from `implementing` to
+  `testing`, `reviewing` or `accepting`, whose steps come after the implementer's. A hook fires
+  when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
   hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
@@ -866,10 +889,11 @@ What each part is for:
   only the overlays every role names, so a deployment that turns fallback on for some roles alone
   records `capabilities.decided.model-fallback`. Only loading is per role: every role of a pod, and every pane
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
-  to a running deployment replaces every affected issue pod at the restart: each of its running
-  roles, named or not, loses its turn and resumes its session uncharged in a new pod, and the old
-  pod's disk goes with it, unpushed work included, unless the disk is a kept volume (a pod with no
-  role running is replaced at the first launch into it). Add it when no role of an affected issue
+  to a running deployment opens an update round on every affected issue pod after the restart.
+  The round asks each of its roles, named or not, to push its work and answer `ready_for_update`,
+  and then replaces the pod. Each role resumes its session uncharged in the new pod. The old pod's
+  disk goes with it, with any work not pushed, unless the disk is a kept volume. A pod with no
+  role running is replaced at the first launch into it. Add it when no role of an affected issue
   is mid-turn and every role has pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
@@ -932,6 +956,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
@@ -969,8 +995,9 @@ answer. A pre-registration states seven things.
    judged on: the share of issues merged with no fix by a person, say, or the median hours from
    an issue's start to its merge. Say how it is computed and which records it is read from. List
    secondary measures if you want them, and let none of them decide the experiment. Say which
-   roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
-   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   roles the arms reach (`roles`), and check that no reached role decides the outcome: where the
+   task has those steps, a merge waits on the reviewer's approval and the architect's sign-off, and
+   the tester's fail sends
    work back, so where the arm reaches those roles a merge rate or a count of review rounds is
    partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
    roles out of `roles`, or choose an outcome no reached role decides.
@@ -1092,13 +1119,18 @@ To stand it up:
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
-`slow`, and the rest the example names): the daemon refuses to boot when an agent's role has no
-model, or its model's key does not work, rather than let it run silently on another model. Set
-every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
+`slow`, and the rest the example names).
+The daemon refuses to boot when an agent's role has no model, or its model's key does not work.
+`smol` and `slow` left unset take the `default` role's model, which the daemon accepts.
+Nothing refuses a missing `default`: an Oh My Pi session whose role names no model then starts,
+silently, on one of Oh My Pi's built-in models.
+Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
-same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched.
+same `apply.sh` command.
+Pods started after that use it; a running pod keeps its files until it is relaunched.
+A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under
+`modelRoles` applies to it.
 
 ## Check and start the daemon
 
@@ -1144,9 +1176,10 @@ with Go.
 
 ## Start the controller
 
-The controller runs in one of two places, as `controller` in `legion.yaml` says: on your own
-machine, in your terminal, which is the default (`controller: operator`), or in the cluster, as a
-pod the daemon launches and keeps running (`controller: daemon`).
+The controller runs in one of two ways, as `controller` in `legion.yaml` says.
+By default (`controller: operator`) it runs on your own machine, in your terminal.
+Under `controller: daemon` the daemon launches it and keeps it running: as a pod in the cluster,
+or as a pane under `runtime: tmux`.
 
 ### In the cluster
 
@@ -1246,11 +1279,16 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers and resolves the bot's threads and pushes, and
-   the bot runs again; the reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
-   threads must be closed before a merge, make that the repository's own rule (a ruleset's
-   "Require conversation resolution before merging").
+   image pin (an empty list is refused too).
+   A review bot's red is now CI like any other, and it moves no phase.
+   The daemon names it to the implementer, to the worker of the issue's phase and to the architect
+   that owns the issue.
+   Each decides whether to re-run it, wait for it or fix the code.
+   The implementer answers and resolves the bot's threads and pushes, and the bot runs again.
+   Where the task has a review step, the reviewer also answers each bot thread, and a finding it
+   cannot accept becomes its own.
+   Where the bot's threads must be closed before a merge, make that the repository's own rule (a
+   ruleset's "Require conversation resolution before merging").
 
    **After the first upgrade to the release where an issue's disk dies with its pod,** the
    `runtime.kubernetes` block must name a `session_store` that keeps sessions in a database, with
@@ -1288,8 +1326,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    drifted, so an update round asks each of its roles to push its work and answer, and the daemon
    replaces the pod once each has answered, or at the round's bound (`pod_update_grace_minutes`);
    each role then comes back on the new pod in its own session. The controller's pod, which no
-   round covers, takes the new image at its next launch, so to move the controller over now,
-   suspend and resume its claim:
+   round covers, takes the new image at its next launch. At a release that moves the daemon API
+   contract, the daemon moves its own controller (`controller: daemon`) for you where it knows a
+   plugin pair to install: it relaunches the controller at once onto the release's plugins, and
+   that relaunch replaces the controller's pod when the pod runs another image.
+   `legion config check` prints the gap that leaves it relaunching none. Otherwise, to move the
+   controller over now, suspend and resume its claim:
 
    ```sh
    legion claims list    --config legion.yaml --operator-token-file operator-token

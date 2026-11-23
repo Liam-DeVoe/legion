@@ -29,9 +29,10 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
-A step names one of Legion's roles in the table below, or a role this deployment defines: your launch lists both after your addressing ("The roles of this deployment"), each with the type of its step.
+A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
 A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
-A role of this deployment runs where its step stands in your plan, at the phase `step`, and reports pass or fail; it reads no pull request, so it may stand at any place too.
+A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+It reads no pull request, so it may stand at any place too.
 A role of the type implementation is the one exception: it stands before the `implementer` step, since Legion's retro is done by the implementer in this release.
 The table lists Legion's steps in the order of the default steps:
 
@@ -39,12 +40,14 @@ The table lists Legion's steps in the order of the default steps:
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required: it also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it, the implementer or a role of this deployment of that type where one stands before the implementer. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*); a step of a role of this deployment runs them only where its prompt file asks it to. |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). A step of a role of this deployment runs them only where its prompt file asks it to. |
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
-Without `acceptance:owner`, two of Legion's steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
+A reviewer step approves only once a pass stands for every `before_merge` check at the head.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name (`absent`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 
@@ -70,6 +73,11 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+
+## A root with no code of its own
+
+When every change lands through children, the root's implementer opens its pull request on an empty commit.
+Plan no code for the root, and create no child only to give it a commit.
 
 ## Reading how plans went
 
