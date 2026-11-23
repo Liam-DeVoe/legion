@@ -217,6 +217,8 @@ type StoreReport struct {
 	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
+	//
+	// kept for one release: decisions-documents-fn
 	Decisions *DecisionsCensus
 	// KeywordCutFirstBodies is how many comment.created versions of the keyword table keep their
 	// event's cut text although revision 1 of the comment's blocks proves the comment's own
@@ -330,6 +332,13 @@ func (r *StoreReport) Unpopulated() []string {
 // rows no backfill has marked yet is not that store: its kind checked no row while rows stand, and
 // it refuses. Where the caller says the corpus holds both releases (RequireBothReleases), an empty
 // population of a kind that reports two refuses as well (EmptyReleases).
+//
+// The count of unmarked rows (KindReport.Unmarked) refuses nothing of itself; a kind refuses for
+// such rows only where it checked no marked row beside them, as above. During a roll a pod of the
+// release before writes unmarked rows by design, and the block-index tick's catch-up marks them
+// (CatchUpOwedRows), so a census taken then counts them while nothing is wrong. Only the caller
+// knows that the release before has stopped and the backfill has ended, so the caller holds the
+// count to zero: c-census's driver reads every `unmarked_rows=` line at 0 after its backfill.
 //
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
 // on just such a database (R4 reads before the first migration), and the sizing refuses nothing
@@ -2250,6 +2259,7 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		// kept for one release: decisions-documents-fn
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)
 		}

@@ -119,6 +119,13 @@ func openAgentAsk(t *testing.T, server *dispatchProcess, issue, question string)
 // and the old one, who took no other part in the ask, holds neither. The test first moves a
 // second issue through this head, which is the expected result the base release's move is held
 // to.
+//
+// R2 names two more writes that move the person an ask waits on, and each the base release writes
+// beside this head is held to the same result: a hand-on of the ask to bob (putAskAskedOf) and a
+// move of its project's default assignee to bob (putProjectDefaultAssignee), each first written
+// through this head as its expected result. After either, bob holds the ask's delivered_to and its
+// participates_in, and alice, whom it waited on before and who took no other part in it, holds
+// neither.
 func TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation(t *testing.T) {
 	ctx := context.Background()
 	previous, current, database, head, databaseURL := startRoll(t, ctx)
@@ -147,6 +154,43 @@ func TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation
 			t.Fatalf("the %s moves %s to bob: %s", by, issue, answer)
 		}
 	}
+	handed := map[string]string{}
+	for _, by := range []string{"head", "base"} {
+		issue, _ := createCensusIssue(t, current, "MOVE", "An ask the "+by+" hands on", "# Spec\n\nThe spec.\n")
+		current.call(t, http.MethodPatch, "/api/v1/issues/"+issue, `{"assignee":"alice"}`, http.StatusOK)
+		ask := openAgentAsk(t, current, issue, "Hand it on, "+by+"?")
+		if !heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "alice") ||
+			!heldTuple(t, ctx, database, graphstore.KindPerson, "alice", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Fatalf("this head's ask %s on %s, assigned to alice, holds no delivered_to to alice or no participates_in from her", ask, issue)
+		}
+		handed[by] = ask
+		server := current
+		if by == "base" {
+			server = previous
+		}
+		if answer := server.send(t, http.MethodPut, "/api/v1/asks/"+ask+"/asked-of", `{"asked_of":"bob"}`, asUser(dispatchTestLogin)); answer.status != http.StatusOK {
+			t.Fatalf("the %s hands %s on to bob: %s", by, ask, answer)
+		}
+	}
+	defaulted := map[string]string{}
+	for by, project := range map[string]string{"head": "DFLTHEAD", "base": "DFLTBASE"} {
+		current.call(t, http.MethodPost, "/api/v1/projects", `{"key":"`+project+`","name":"A default the `+by+` moves","default_assignee":"alice"}`, http.StatusCreated)
+		issue, _ := createCensusIssue(t, current, project, "An ask on an issue nobody holds", "# Spec\n\nThe spec.\n")
+		current.call(t, http.MethodPatch, "/api/v1/issues/"+issue, `{"assignee":null}`, http.StatusOK)
+		ask := openAgentAsk(t, current, issue, "Whose is it, "+by+"?")
+		if !heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "alice") ||
+			!heldTuple(t, ctx, database, graphstore.KindPerson, "alice", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Fatalf("this head's ask %s on %s, whose project's default is alice, holds no delivered_to to alice or no participates_in from her", ask, issue)
+		}
+		defaulted[by] = ask
+		server := current
+		if by == "base" {
+			server = previous
+		}
+		if answer := server.send(t, http.MethodPut, "/api/v1/projects/"+project+"/default-assignee", `{"assignee":"bob"}`, asUser(dispatchTestLogin)); answer.status != http.StatusOK {
+			t.Fatalf("the %s moves %s's default to bob: %s", by, project, answer)
+		}
+	}
 	endRoll(t, previous, head, databaseURL)
 
 	deadline := time.Now().Add(rollCatchUpWait)
@@ -169,6 +213,42 @@ func TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation
 			t.Errorf("alice, who took no other part in the ask %s, still participates in it after the %s moved its issue to bob", ask, by)
 		}
 	}
+	deadline = time.Now().Add(rollCatchUpWait)
+	for time.Now().Before(deadline) &&
+		(!heldTuple(t, ctx, database, "ask", handed["base"], graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob") ||
+			!heldTuple(t, ctx, database, "ask", defaulted["base"], graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob")) {
+		time.Sleep(time.Second)
+	}
+	for _, by := range []string{"head", "base"} {
+		ask := handed[by]
+		if !heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob") {
+			t.Errorf("the ask %s the %s handed on to bob holds no delivered_to to bob %s after the roll ended and the backfill ran", ask, by, rollCatchUpWait)
+		}
+		if !heldTuple(t, ctx, database, graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Errorf("bob holds no participates_in into the ask %s the %s handed on to him", ask, by)
+		}
+		if heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "alice") {
+			t.Errorf("the ask %s the %s handed on from alice to bob still holds its delivered_to to alice", ask, by)
+		}
+		if heldTuple(t, ctx, database, graphstore.KindPerson, "alice", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Errorf("alice, who took no other part in the ask %s, still participates in it after the %s handed it on to bob", ask, by)
+		}
+	}
+	for _, by := range []string{"head", "base"} {
+		ask := defaulted[by]
+		if !heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob") {
+			t.Errorf("the ask %s whose project's default the %s moved to bob holds no delivered_to to bob %s after the roll ended and the backfill ran", ask, by, rollCatchUpWait)
+		}
+		if !heldTuple(t, ctx, database, graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Errorf("bob holds no participates_in into the ask %s whose project's default the %s moved to him", ask, by)
+		}
+		if heldTuple(t, ctx, database, "ask", ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, "alice") {
+			t.Errorf("the ask %s whose project's default the %s moved from alice to bob still holds its delivered_to to alice", ask, by)
+		}
+		if heldTuple(t, ctx, database, graphstore.KindPerson, "alice", graphstore.TupleParticipatesIn, "ask", ask) {
+			t.Errorf("alice, who took no other part in the ask %s, still participates in it after the %s moved its project's default to bob", ask, by)
+		}
+	}
 }
 
 // R5: "A mention is a tuple ... The mentions tuple runs from the comment, issue message or
@@ -182,6 +262,16 @@ func TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation
 // head names that person once the roll ends and the backfill has run: the comment holds the
 // mentions tuple to the person, the person the delivered_to from it, and the person takes part in
 // it - as the same comment written through this head holds at once, which the test writes first.
+//
+// The comment is one of the three things R5's mentions tuple runs from, and the base release
+// writes the other two beside this head too: an issue message naming the person, which once the
+// roll ends holds the mentions tuple, the delivered_to and the person's participation as the
+// comment does, and a document whose block names the person, which holds the mentions tuple out
+// of that block - a document's block delivers nothing and keeps nobody's participation, in this
+// head as in the base release. Each is first written through this head, which is the expected
+// result the base release's write is held to. The document writes the person's address as a
+// link's target: an upload renders a bare one with its email part linked (`person-[2@...]
+// (mailto:...)`), in either release, which then names nobody.
 func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 	ctx := context.Background()
 	previous, current, database, head, databaseURL := startRoll(t, ctx)
@@ -205,6 +295,25 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 		}
 		written[by] = comment.ID
 	}
+	messaged := map[string]string{}
+	documents := map[string]string{}
+	for _, by := range []string{"head", "base"} {
+		server := current
+		if by == "base" {
+			server = previous
+		}
+		answer := server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/messages",
+			`{"body":"Over to dispatch://person/`+named+` for the message, from the `+by+`."}`, asUser("bob"))
+		var message struct {
+			ID string `json:"id"`
+		}
+		if answer.status != http.StatusCreated || json.Unmarshal(answer.body, &message) != nil || message.ID == "" {
+			t.Fatalf("bob's issue message naming %s through the %s: %s", named, by, answer)
+		}
+		messaged[by] = message.ID
+		documents[by] = censusProjectDocument(t, server, "MENT", "notes-from-the-"+by+".md",
+			"# Notes\n\nOver to [the copy owner](dispatch://person/"+named+") for the notes, from the "+by+".\n")
+	}
 	endRoll(t, previous, head, databaseURL)
 
 	deadline := time.Now().Add(rollCatchUpWait)
@@ -224,4 +333,75 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 			t.Errorf("%s, whom the comment %s the %s wrote names, takes no part in it", named, comment, by)
 		}
 	}
+	deadline = time.Now().Add(rollCatchUpWait)
+	for time.Now().Before(deadline) &&
+		(!heldTuple(t, ctx, database, "message", messaged["base"], graphstore.TupleMentions, graphstore.KindPerson, named) ||
+			!heldTuple(t, ctx, database, graphstore.KindBlock, blockNaming(t, ctx, database, documents["base"], named), graphstore.TupleMentions, graphstore.KindPerson, named)) {
+		time.Sleep(time.Second)
+	}
+	for _, by := range []string{"head", "base"} {
+		message := messaged[by]
+		if !heldTuple(t, ctx, database, "message", message, graphstore.TupleMentions, graphstore.KindPerson, named) {
+			t.Errorf("the issue message %s the %s wrote naming dispatch://person/%s holds no mentions tuple to that person after the roll ended and the backfill ran", message, by, named)
+		}
+		if !heldTuple(t, ctx, database, "message", message, graphstore.TupleDeliveredTo, graphstore.KindPerson, named) {
+			t.Errorf("the issue message %s the %s wrote naming %s holds no delivered_to to that person", message, by, named)
+		}
+		if !heldTuple(t, ctx, database, graphstore.KindPerson, named, graphstore.TupleParticipatesIn, "message", message) {
+			t.Errorf("%s, whom the issue message %s the %s wrote names, takes no part in it", named, message, by)
+		}
+		block := blockNaming(t, ctx, database, documents[by], named)
+		if block == "" {
+			t.Errorf("the document %s the %s wrote naming dispatch://person/%s holds no block whose text names that person after the roll ended and the backfill ran", documents[by], by, named)
+			logDocumentBlocks(t, ctx, database, documents[by])
+			continue
+		}
+		if !heldTuple(t, ctx, database, graphstore.KindBlock, block, graphstore.TupleMentions, graphstore.KindPerson, named) {
+			t.Errorf("the block %s of the document %s the %s wrote naming dispatch://person/%s holds no mentions tuple to that person after the roll ended and the backfill ran", block, documents[by], by, named)
+			logDocumentBlocks(t, ctx, database, documents[by])
+		}
+	}
+}
+
+// blockNaming is the node address (refs' block address, <ref_key>#<block id>) of the block of the
+// document documentID whose stored text names login, and "" where the document holds none yet.
+func blockNaming(t *testing.T, ctx context.Context, database *pgx.Conn, documentID, login string) string {
+	t.Helper()
+	var block string
+	if err := database.QueryRow(ctx, `
+		select coalesce((
+			select a.ref_key || '#' || b.block_id from document_blocks b join artifacts a on a.id = b.artifact_id
+			where b.artifact_id = $1::uuid and strpos(b.excerpt, $2) > 0
+			order by b.block_id limit 1), '')
+	`, documentID, login).Scan(&block); err != nil {
+		t.Fatalf("read the block of document %s that names %s: %v", documentID, login, err)
+	}
+	return block
+}
+
+// logDocumentBlocks logs what the store holds of the document documentID's block index: its row
+// of document_block_versions, its artifact's kind, each of its document_blocks rows with the node
+// it names and the head of its excerpt, and every tuple out of a block of the document, so a test
+// that finds no block naming a person, or no mention out of one, shows what it read.
+func logDocumentBlocks(t *testing.T, ctx context.Context, database *pgx.Conn, documentID string) {
+	t.Helper()
+	var held string
+	if err := database.QueryRow(ctx, `
+		select coalesce((select a.kind || ' ' || a.ref_key from artifacts a where a.id = $1::uuid), 'no artifact')
+		    || ' | versions: ' || coalesce((select string_agg(coalesce(v.version::text, 'null') || ' store_version ' || coalesce(v.store_version::text, 'null')
+		                                                      || ' owed_at ' || coalesce(v.store_owed_at::text, 'none'), '; ')
+		                                    from document_block_versions v where v.artifact_id = $1::uuid), 'no row')
+		    || ' | blocks: ' || coalesce((select string_agg(b.block_id || ' ' || b.type || ' node ' || coalesce(b.node_kind || ':' || b.node_address, 'none')
+		                                                    || ' ' || left(b.excerpt, 100), '; ' order by b.block_id)
+		                                  from document_blocks b where b.artifact_id = $1::uuid), 'none')
+		    || ' | tuples: ' || coalesce((select string_agg(t.from_id || ' -' || t.kind || '-> ' || t.to_kind || ':' || t.to_id || ' @' || t.source_event
+		                                                    || case when t.asserted then '' else ' retracted' end, '; ' order by t.seq)
+		                                  from artifacts a join graph_tuples t on t.from_kind = 'block' and left(t.from_id, length(a.ref_key) + 1) = a.ref_key || '#'
+		                                  where a.id = $1::uuid), 'none')
+		    || ' | markdown versions: ' || (select count(*) from artifact_versions v where v.artifact_id = $1::uuid)::text
+	`, documentID).Scan(&held); err != nil {
+		t.Logf("read the block index of document %s: %v", documentID, err)
+		return
+	}
+	t.Logf("document %s: %s", documentID, held)
 }

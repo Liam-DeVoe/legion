@@ -257,6 +257,17 @@ func Restored(askID string, at time.Time, who model.Actor) Move {
 	return Move{what: "the restore of ask " + askID, candidates: `select $1::uuid`, args: []any{askID}, at: at, who: who}
 }
 
+// Narrowed is m held to those of its candidate asks of which test holds, a predicate over the asks
+// row named narrowed that binds no parameter of its own. Each of the move's two statements reads
+// it again (moveLock, moveHeld), so the second reads it once the first holds the rows. It is
+// graphcensus' move of who an ask waits on for a write an older build made, which no move of this
+// release's writer reached: held to the asks whose create the store holds the tuples of already,
+// and to those of them no later write of that build moves again (writeQueuedInboxEvents).
+func (m Move) Narrowed(test string) Move {
+	m.candidates = `select narrowed.id from asks narrowed where narrowed.id in (` + m.candidates + `) and (` + test + `)`
+	return m
+}
+
 // standing is whether the relation of kind from fromKind/fromID to toKind/toID stands: its newest
 // tuple asserts it (graphstore.CurrentTupleRead). Each end is SQL text of the statement it is
 // spliced into, the kinds this package's own constants.

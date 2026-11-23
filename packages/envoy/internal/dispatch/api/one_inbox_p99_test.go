@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,9 +53,13 @@ import (
 // for display trees on both, as the dashboard asks.
 //
 // Before any timing it runs `vacuum analyze` and then `explain (analyze)` on the one read of each
-// reader below, and fails on a sequential scan of comments or messages, the two tables the corpus
-// fills to scale; it prints the plan over asks and events, which bounds nothing, and sets no
-// planner setting. Then, alternating between the two processes one operation at a time,
+// reader below as the dashboard's request of it ran through this build's handler: the read's
+// statement prepared, and its execute explained with that request's own arguments under the
+// settings the read's transaction makes (meInboxSettings), so the plan is the generic plan every
+// execution of the read runs. It fails on a sequential scan of comments or messages, the two tables
+// the corpus fills to scale (the scan rule), and on any planner setting that steers that plan (the
+// hint rule, explainOneInboxRead); it prints the plan over asks and events, which bounds nothing.
+// Then, alternating between the two processes one operation at a time,
 // oneInboxReadings readings of each after one not counted, each the round trip on loopback, taken by
 // this test's client the same way against both:
 //
@@ -75,8 +82,8 @@ import (
 // of statements that does not grow from its move of one ask to its move of many.
 //
 // Every figure is printed on a line of its own under the prefix c-p99:. The read's and the writes'
-// p50 bounds, the scan rule, the row rules and the statement rule are what fail it, and, before
-// any of them, a table of write bounds that does not match the write paths
+// p50 bounds, the scan rule, the hint rule, the row rules and the statement rule are what fail it,
+// and, before any of them, a table of write bounds that does not match the write paths
 // (requireOneInboxWriteBoundsMatchPaths); every p95 and p99 is a reading of the pod and fails
 // nothing. It runs when LEGION_SCALE_TEST is 1, as a14 does: seeding two corpora and taking its
 // readings costs minutes, which no ordinary run pays.
@@ -87,6 +94,10 @@ const (
 	oneInboxReadBound = 2.0
 	// oneInboxAgentToken is the agent bearer newTestServer's server trusts (sharedAgentTokens).
 	oneInboxAgentToken = "agent-token"
+	// oneInboxOneRead is the one read as the dashboard asks for it (display trees beside it), which
+	// every reading of the read times (measureOneInboxRead) and the scan rule explains
+	// (explainOneInboxRead).
+	oneInboxOneRead = "/api/v1/me/inbox?state=inbox"
 )
 
 // oneInboxWriteBounds is R11's bound on each write path that holds to one, by the path's name in
@@ -138,14 +149,16 @@ var oneInboxReaders = []oneInboxReader{
 }
 
 // oneInboxHere is this build as c-p99 drives it: its handler in the process, over a store traced
-// for the statements a request marked countedRead runs (meInboxStatements), served on loopback,
-// which seeds the corpus and makes the counted moves; and, once the scan rule has passed, its own
-// process over the same database (bootOneInboxThisBuild), which every timed reading reads.
+// for the statements a request marked countedRead runs (meInboxStatements) and those of each
+// request of the one read the scan rule explains (oneInboxTracer), served on loopback, which seeds
+// the corpus and makes the counted moves; and, once the scan rule and the hint rule have passed,
+// its own process over the same database (bootOneInboxThisBuild), which every timed reading reads.
 type oneInboxHere struct {
 	side       *oneInboxSide
 	handler    http.Handler
 	traced     *store.Store
 	statements *meInboxStatements
+	reads      *oneInboxTracer
 }
 
 func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
@@ -162,9 +175,10 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	backfillOneInbox(t, this.database)
 	requireOneInboxHistoryInTheStore(t, this.database)
 	analyzeOneInbox(t, this)
-	// The scan rule, before anything is timed: a read whose plan scans a table the corpus fills to
-	// scale is no read a timing of it would say anything about.
-	explainOneInboxRead(t, this.database)
+	// The scan rule and the hint rule, before anything is timed: a read whose plan scans a table
+	// the corpus fills to scale, or whose plan a planner setting steers, is no read a timing of it
+	// would say anything about.
+	explainOneInboxRead(t, here)
 	this.server = bootOneInboxThisBuild(t, this.database)
 	settleOneInbox(t, this, oneInboxOwedWorkHere)
 	analyzeOneInbox(t, this)
@@ -236,7 +250,8 @@ func bootOneInboxHere(t *testing.T) *oneInboxHere {
 	t.Helper()
 	database := storetest.Open(t)
 	statements := &meInboxStatements{}
-	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	reads := &oneInboxTracer{meInboxStatements: statements}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, reads, nil)}
 	handler, _, _ := newTestServer(t, testServerOptions{
 		store:       traced,
 		identity:    headerIdentity(database),
@@ -245,7 +260,7 @@ func bootOneInboxHere(t *testing.T) *oneInboxHere {
 	})
 	return &oneInboxHere{
 		side:    &oneInboxSide{name: "this build", server: serveOnLoopback(t, handler, oneInboxAgentToken), database: database},
-		handler: handler, traced: traced, statements: statements,
+		handler: handler, traced: traced, statements: statements, reads: reads,
 	}
 }
 
@@ -341,84 +356,257 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 	}
 }
 
-// explainOneInboxRead runs `explain (analyze, buffers)` on the statement of the one read of each
-// reader, as the handler builds it for the dashboard's request (meInboxStatement: the inbox state,
-// display trees, the listener's stored roster) at the event log's horizon, with JIT off as the read
-// runs (meInboxNoJIT), in a transaction rolled back. It plans for the reader's own arguments, as the
-// scale test's plan of a page's own arguments does (explainDismissedScaleOneRead), where the read
-// runs the generic plan (meInboxGenericPlan). It prints each plan's times and its scans of asks and
-// events, which bound nothing, and fails, once every plan is printed, on a sequential scan of
-// comments or messages in any of them, printing the plan of each read that makes one.
-func explainOneInboxRead(t *testing.T, database *store.Store) {
+// explainOneInboxRead holds the one read of each reader to the scan rule and the hint rule. It sends
+// the dashboard's request of the read (oneInboxOneRead, display trees beside it) as the reader
+// through this build's handler, whose store keeps every statement that request runs
+// (oneInboxTracer), and explains the read's statement - the one meInboxStatement builds for that
+// request, which the request must have run once - as the request ran it: prepared, and its execute
+// explained with ANALYZE, with the request's own arguments, under the settings the read's own
+// transaction makes (meInboxSettings), in a transaction rolled back (explainDismissedScaleGeneric).
+// That is the generic plan, the plan every execution of the read runs (meInboxGenericPlan). It
+// prints each plan's times and its scans of asks and events, which bound nothing, and fails, once
+// every plan is printed, on either rule:
+//
+//   - the scan rule: a sequential scan of comments or messages, the two tables the corpus fills to
+//     scale, in the plan of any read, printing that plan;
+//   - the hint rule, that no planner setting steers the plan the scan rule reads, wherever it is
+//     made: the connection the plans are made on holds no planner setting its database, its role,
+//     its parameters or its session set (oneInboxHeldPlannerSettings); the request makes the planner
+//     settings meInboxSettings make, each before the read's statement, and no other, and carries no
+//     planner hint comment; and the read's generic plan made under none of meInboxSettings scans
+//     neither table where the plan under them does not, so no setting of theirs hides a scan.
+func explainOneInboxRead(t *testing.T, here *oneInboxHere) {
 	t.Helper()
-	horizon := eventHead(t, database)
-	var scans []string
-	var plans []string
-	for _, reader := range oneInboxReaders {
-		statement, args, err := meInboxStatement(model.Actor{Kind: "user", ID: model.CanonicalLogin(reader.login)}, horizon,
-			meInboxRequest{state: myRepliesStateInbox}, true, true, nil)
-		if err != nil {
-			t.Fatalf("build the one read of %s: %v", reader.shape, err)
-		}
-		raw := explainOneInbox(t, database, "json", statement, args)
-		var answered []struct {
-			Plan      json.RawMessage `json:"Plan"`
-			Planning  float64         `json:"Planning Time"`
-			Execution float64         `json:"Execution Time"`
-		}
-		if err := json.Unmarshal([]byte(raw), &answered); err != nil || len(answered) != 1 {
-			t.Fatalf("decode the plan of the one read of %s: %v\n%s", reader.shape, err, raw)
-		}
-		plan := answered[0].Plan
-		over := map[string]map[string]float64{"asks": {}, "events": {}}
-		for _, node := range explaintest.Nodes(t, plan) {
-			if read, held := over[node.Relation]; held {
-				read[node.String()] += cmp.Or(node.Loops, 1)
-			}
-		}
-		t.Logf("c-p99: plan of the one read of %s (%s): planning=%.2fms execution=%.2fms; over asks: %s; over events: %s",
-			reader.shape, reader.login, answered[0].Planning, answered[0].Execution,
-			oneInboxScansOver(over["asks"]), oneInboxScansOver(over["events"]))
-		scanned := false
-		for _, relation := range []string{"comments", "messages"} {
-			if explaintest.SeqScansRelation(t, plan, relation) {
-				scans = append(scans, fmt.Sprintf("the one read of %s (%s) scans %s sequentially", reader.shape, reader.login, relation))
-				scanned = true
-			}
-		}
-		if scanned {
-			plans = append(plans, fmt.Sprintf("the plan of the one read of %s:\n%s", reader.shape,
-				explainOneInbox(t, database, "text", statement, args)))
+	ctx := context.Background()
+	acquired, err := here.side.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plans of the one read: %v", err)
+	}
+	defer acquired.Release()
+	connection := acquired.Conn()
+	planner := oneInboxPlannerSettings(t, connection)
+	hints := oneInboxHeldPlannerSettings(t, connection)
+	var settings []string
+	for _, setting := range meInboxSettings {
+		if oneInboxSetsPlanner(setting, planner) {
+			settings = append(settings, setting)
 		}
 	}
+	var scans, plans []string
+	for _, reader := range oneInboxReaders {
+		read := fmt.Sprintf("the one read of %s (%s)", reader.shape, reader.login)
+		// The text alone: no argument of a request changes it (meInboxShape).
+		statement, _, err := meInboxStatement(model.Actor{Kind: "user", ID: model.CanonicalLogin(reader.login)}, 0,
+			meInboxRequest{state: myRepliesStateInbox}, true, true, nil)
+		if err != nil {
+			t.Fatalf("build %s: %v", read, err)
+		}
+		ran := here.reads.read(t, here.handler, reader.login)
+		at, runs := -1, 0
+		var made []string
+		for index, statementRan := range ran {
+			own := statementRan.sql == statement
+			if own {
+				at, runs = index, runs+1
+			}
+			if strings.Contains(statementRan.sql, "/*+") {
+				hints = append(hints, fmt.Sprintf("the request of %s carries a planner hint comment: %.300q", read, statementRan.sql))
+			}
+			switch {
+			case !oneInboxSetsPlanner(statementRan.sql, planner):
+			case own:
+				hints = append(hints, fmt.Sprintf("the statement of %s makes a planner setting of its own", read))
+			default:
+				made = append(made, statementRan.sql)
+				if at >= 0 {
+					hints = append(hints, fmt.Sprintf("the request of %s makes %q after the read's statement", read, statementRan.sql))
+				}
+			}
+		}
+		if runs != 1 {
+			t.Fatalf("the request GET %s of %s ran the statement meInboxStatement builds for it %d times, want once: the scan rule "+
+				"would explain a statement the read does not run", oneInboxOneRead, read, runs)
+		}
+		if !slices.Equal(made, settings) {
+			hints = append(hints, fmt.Sprintf("the request of %s makes the planner settings %q, where meInboxSettings make %q",
+				read, made, settings))
+		}
+		args := ran[at].args
+		plan, text := explainDismissedScaleGeneric(t, connection, read, statement, args, meInboxSettings...)
+		bare, bareText := explainDismissedScaleGeneric(t, connection, read+" under none of meInboxSettings", statement, args)
+		over := map[string]map[string]float64{"asks": {}, "events": {}}
+		for _, node := range explaintest.Nodes(t, plan) {
+			if scanned, held := over[node.Relation]; held {
+				scanned[node.String()] += cmp.Or(node.Loops, 1)
+			}
+		}
+		t.Logf("c-p99: plan of %s, its generic plan under meInboxSettings %q with its request's own arguments (the request made the "+
+			"planner settings %q): planning=%s execution=%s; over asks: %s; over events: %s",
+			read, meInboxSettings, made, oneInboxPlanTime(text, "Planning Time"), oneInboxPlanTime(text, "Execution Time"),
+			oneInboxScansOver(over["asks"]), oneInboxScansOver(over["events"]))
+		printed, printedBare := false, false
+		for _, relation := range []string{"comments", "messages"} {
+			switch {
+			case explaintest.SeqScansRelation(t, plan, relation):
+				scans = append(scans, fmt.Sprintf("%s scans %s sequentially under its generic plan", read, relation))
+				if !printed {
+					plans = append(plans, fmt.Sprintf("the generic plan of %s:\n%s", read, text))
+					printed = true
+				}
+			case explaintest.SeqScansRelation(t, bare, relation):
+				hints = append(hints, fmt.Sprintf("%s scans %s sequentially under its generic plan made under none of "+
+					"meInboxSettings and not under them: a setting of theirs hides the scan", read, relation))
+				if !printedBare {
+					plans = append(plans, fmt.Sprintf("the generic plan of %s under none of meInboxSettings:\n%s", read, bareText))
+					printedBare = true
+				}
+			}
+		}
+	}
+	var failures []string
 	if len(scans) > 0 {
-		t.Fatalf("scan rule: %s, a table the corpus fills to scale; no timing is taken over a read that scans one\n%s",
-			strings.Join(scans, "; "), strings.Join(plans, "\n"))
+		failures = append(failures, fmt.Sprintf("scan rule: %s, a table the corpus fills to scale; no timing is taken over a read "+
+			"that scans one", strings.Join(scans, "; ")))
+	}
+	if len(hints) > 0 {
+		failures = append(failures, fmt.Sprintf("hint rule: %s; no timing is taken over a read whose plan a planner setting steers",
+			strings.Join(hints, "; ")))
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%s\n%s", strings.Join(failures, "\n"), strings.Join(plans, "\n"))
 	}
 }
 
-// explainOneInbox answers `explain (analyze, buffers, format <format>)` of statement, the one read's,
-// run with JIT off as the read runs it (meInboxNoJIT), in a transaction rolled back.
-func explainOneInbox(t *testing.T, database *store.Store, format, statement string, args []any) string {
+// oneInboxKept marks the context of a request whose statements oneInboxTracer keeps: a request of
+// the one read the scan rule explains (oneInboxTracer.read), which meInboxStatements does not count.
+type oneInboxKept struct{}
+
+// oneInboxStatement is one statement a kept request ran, each statement of a batch on its own, with
+// the arguments it was sent with.
+type oneInboxStatement struct {
+	sql  string
+	args []any
+}
+
+// oneInboxTracer is the tracer of this build's traced store: meInboxStatements, which records what
+// a request marked countedRead runs, and beside it every statement of a request oneInboxKept marks,
+// so the scan rule explains the read's statement with the arguments its request sent and the hint
+// rule reads every setting that request made.
+type oneInboxTracer struct {
+	*meInboxStatements
+	mu   sync.Mutex
+	kept []oneInboxStatement
+}
+
+func (r *oneInboxTracer) keep(ctx context.Context, sql string, args []any) {
+	if ctx.Value(oneInboxKept{}) == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kept = append(r.kept, oneInboxStatement{sql: sql, args: args})
+}
+
+func (r *oneInboxTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.keep(ctx, data.SQL, data.Args)
+	return r.meInboxStatements.TraceQueryStart(ctx, conn, data)
+}
+
+func (r *oneInboxTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, queued := range data.Batch.QueuedQueries {
+		r.keep(ctx, queued.SQL, queued.Arguments)
+	}
+	return r.meInboxStatements.TraceBatchStart(ctx, conn, data)
+}
+
+// read sends the dashboard's request of the one read (oneInboxOneRead, display trees beside it) as
+// login through handler, on a context oneInboxKept marks, and answers every statement it ran.
+func (r *oneInboxTracer) read(t *testing.T, handler http.Handler, login string) []oneInboxStatement {
 	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
+	r.mu.Lock()
+	r.kept = nil
+	r.mu.Unlock()
+	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), oneInboxKept{}, true),
+		http.MethodGet, oneInboxOneRead, nil)
+	request.Header.Set(baselineIdentityHeader, login)
+	request.Header.Set(displayTreesHeader, "1")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET %s as %s through this build's handler: %d %s", oneInboxOneRead, login, response.Code, response.Body.String())
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.kept)
+}
+
+// oneInboxPlannerSettings is the name of every setting that steers the planner, as pg_settings files
+// them: its Query Tuning categories, which hold the planner's methods, its cost constants, the
+// genetic optimizer and its other options, JIT and the plan cache's mode among them.
+func oneInboxPlannerSettings(t *testing.T, connection *pgx.Conn) map[string]bool {
+	t.Helper()
+	rows, err := connection.Query(context.Background(), `select name from pg_settings where category like 'Query Tuning%'`)
 	if err != nil {
-		t.Fatalf("begin the explain: %v", err)
+		t.Fatalf("read the planner's settings: %v", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, meInboxNoJIT); err != nil {
-		t.Fatalf("%s before the explain of the one read: %v", meInboxNoJIT, err)
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(names) == 0 {
+		t.Fatalf("read the planner's settings: %d of them, %v", len(names), err)
 	}
-	rows, err := tx.Query(ctx, "explain (analyze, buffers, format "+format+") "+statement, args...)
+	planner := make(map[string]bool, len(names))
+	for _, name := range names {
+		planner[name] = true
+	}
+	return planner
+}
+
+// oneInboxHeldPlannerSettings names each planner setting connection holds other than as the server
+// was started with it (pg_settings' source: its default, its configuration file, its command line,
+// its environment or an override of its own): one its database, its role, the connection's
+// parameters or a statement of its session set, which would steer every plan made on it, the scan
+// rule's among them, and which neither the read's statement nor its settings name.
+func oneInboxHeldPlannerSettings(t *testing.T, connection *pgx.Conn) []string {
+	t.Helper()
+	rows, err := connection.Query(context.Background(), `
+		select format('the connection the plans are made on holds %s = %s, which its %s set', name, setting, source)
+		from pg_settings
+		where category like 'Query Tuning%'
+		  and source not in ('default', 'environment variable', 'configuration file', 'command line', 'override')
+		order by name
+	`)
 	if err != nil {
-		t.Fatalf("explain the one read: %v", err)
+		t.Fatalf("read the planner settings of the connection the plans are made on: %v", err)
 	}
-	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("explain the one read: %v", err)
+		t.Fatalf("read the planner settings of the connection the plans are made on: %v", err)
 	}
-	return strings.Join(lines, "\n")
+	return held
+}
+
+// oneInboxSettingNamed matches each setting a statement makes: `set`, `set local` or `set session`
+// <name> and `reset <name>` as the statement itself, and set_config('<name>', ...) anywhere in it.
+var oneInboxSettingNamed = regexp.MustCompile(`(?is)^\s*(?:set|reset)\s+(?:local\s+|session\s+)?([a-z_][a-z0-9_.]*)|set_config\s*\(\s*'([^']+)'`)
+
+// oneInboxSetsPlanner is whether statement makes a setting planner names.
+func oneInboxSetsPlanner(statement string, planner map[string]bool) bool {
+	for _, named := range oneInboxSettingNamed.FindAllStringSubmatch(statement, -1) {
+		if planner[strings.ToLower(named[1]+named[2])] {
+			return true
+		}
+	}
+	return false
+}
+
+// oneInboxPlanTime is what an analysed plan's text reports under label: "Planning Time" or
+// "Execution Time".
+func oneInboxPlanTime(text, label string) string {
+	for line := range strings.Lines(text) {
+		if value, found := strings.CutPrefix(strings.TrimSpace(line), label+": "); found {
+			return value
+		}
+	}
+	return "not reported"
 }
 
 // oneInboxScansOver prints the scans of one relation a plan makes, each with how many times it ran.
@@ -452,7 +640,7 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // The corpus does not change between readings, so that one answer proves what each would.
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
-	const one = "/api/v1/me/inbox?state=inbox"
+	const one = oneInboxOneRead
 	replaced := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox"}
 	for _, session := range reader.sessions {
 		replaced = append(replaced, "/api/v1/agents/"+session+"/messages")

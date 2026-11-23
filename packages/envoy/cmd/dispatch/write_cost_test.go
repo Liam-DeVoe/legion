@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -243,15 +244,22 @@ func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks
 // The tick is a loop of the server's own and no request, so it is measured where it commits: the
 // pass indexes each owed document in a transaction of its own, so the owed count falls once for
 // each document it finishes. The run holds the pass's own lease while it writes the batch's new
-// versions (costHoldBlockIndex), so no tick runs over a half-written batch; gives the lease
-// back; and reads the owed count every 5 ms. The reading is from the first document that tick
-// committed to the last, which is the tick's own indexing work with the wait before it left out.
-// Both arms are measured that way, each on its own server's own loop, so the one quantity is
-// compared with itself.
+// versions, so no tick runs over a half-written batch; gives the lease back; and reads the owed
+// count every 5 ms. The reading is from the first document that tick committed to the last, which
+// is the tick's own indexing work with the wait before it left out. Both arms are measured that
+// way, each on its own server's own loop, so the one quantity is compared with itself.
+//
+// The reference forms drain is the other loop that indexes these documents (costHoldBlockIndex),
+// so the run holds its lease from the first write of the batch until the tick has indexed the
+// last document: given back with the block index's, it would index part of the batch before the
+// tick or inside the reading, which would then be neither the tick's alone nor the batch it was
+// given. The tick's index of a document settles that document's row of the drain's queue
+// (refs.Replacement.SettlingForms), so the drain finds nothing of the batch once it runs again.
 func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 	t.Helper()
 	arm := corpus.arm
-	release := costHoldBlockIndex(t, arm)
+	defer costHoldLease(t, arm, docs.RefsFormsLease)()
+	release := costHoldLease(t, arm, docs.BlockIndexLease)
 	for index := range corpus.tick {
 		body := arm.server.documentUpload(t, corpus.issue, writeCostTickName(index),
 			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
@@ -771,13 +779,16 @@ const writeCostPrintedRows = 20
 
 // writeCostEditTuples is how many graph_tuples rows one edit of one block of the 1,999-block
 // document appends on this child's arm: the tuples of the changed block alone. They are the
-// changed item's new block's in_document, part_of, visibility and state = live, and the dropped
-// block's state = gone. It was measured on 2026-11-22 in Job infra-1149-i16-rows-clean-v5zz4 at
-// 772fb8e06f40, where the stated control, a part_of tuple for every block of the document (refs'
-// planBlockParents), appended 2,003 in Job infra-1149-i16-rows-control-qphjc. The count is what
-// decides that control, which a ratio of time may still pass: a part_of stated again for every
-// block appends thousands of rows where the changed block alone appends 5.
-const writeCostEditTuples = 5
+// changed item's new block's in_document, part_of, visibility, project and state = live, and the
+// dropped block's state = gone. The node store measured 5 on 2026-11-22 in Job
+// infra-1149-i16-rows-clean-v5zz4 at 772fb8e06f40, where the stated control, a part_of tuple for
+// every block of the document (refs' planBlockParents), appended 2,003 in Job
+// infra-1149-i16-rows-control-qphjc. The sixth is the project tuple of the edited block, which the
+// nodes branch (every node names its project) states for each node it writes, and which this
+// change carries to main. The count is what decides that control, which a ratio of time may still
+// pass: a part_of stated again for every block appends thousands of rows where the changed block
+// alone appends 6.
+const writeCostEditTuples = 6
 
 // writeCostEditRows is what one document's version is read to have written. rows holds, by
 // table, every row of the document that a later version may change or delete, keyed by what

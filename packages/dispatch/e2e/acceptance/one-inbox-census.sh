@@ -11,7 +11,10 @@
 # this build over the same database, which migrates those rows forward; runs
 # `envoy-dispatch backfill-graph-store`;
 # captures the rows again; seeds the second half through this build's API; runs
-# `envoy-dispatch census --store --both-releases`; compares the two captures; reads pg_proc and
+# `envoy-dispatch census --store --both-releases` and holds every kind it covers to zero
+# differences in both directions, the unmarked class of every kind that counts one to zero, and
+# the two narrowings the check names (no_project and session_authors) to the corpus's own count of
+# each; compares the two captures; reads pg_proc and
 # pg_trigger for the one-writer proof; greps the source for a reconcile - a writer that reads a
 # marked row - rather than for the backfill (C5); and injects a failure between the store write
 # and the projection write of each writer the census names, through
@@ -51,7 +54,9 @@ database_url="$DATABASE_URL"
 project="$PROJECT"
 token="$DISPATCH_TOKEN"
 unset DISPATCH_TOKEN
-workspace="${LEGION_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
+# The checkout this driver is part of, which it builds as this build and resolves BASELINE_SHA in:
+# the tree whose code the check measures, whatever checkout the caller's environment names.
+workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 baseline_sha="$BASELINE_SHA"
 : "${TMPDIR:?TMPDIR is required}"
 work_dir
@@ -318,6 +323,16 @@ expect() {
 
 mkdir -p "$work/home"
 
+# The corpus's own count of each narrowing the check names, which seed_half adds to as each write
+# that makes one of them lands, so the census's figure of each is held to what the run wrote and not
+# to what the census read. no_project: each direct message and each broadcast copy the person sends
+# is the root of a thread that names no project, which they take part in and keep no row of
+# (inboxwrite.Write.Project). session_authors: each reply a session writes - to its mention, to its
+# direct message and to its broadcast copy - is that session's part in a thread, which no row of
+# people holds.
+no_project_threads=0
+session_threads=0
+
 # seed_half HALF: the corpus arms one build writes. Each arm is written through the API of the
 # server now booted, so each is that build's own: the first half the release before's, the second
 # this build's. HALF names the arm's rows apart.
@@ -364,9 +379,11 @@ seed_half() {
     # The session may reply only to the delivery it took, so the run waits for the mention's
     # attempt to settle against it before the session answers (model.DeliveryTaken).
     if settled_attempt "comment_deliveries" "comment_id = '$comment'"; then
-      expect agent 201 POST "/api/v1/comments/$comment/reply" \
+      if expect agent 201 POST "/api/v1/comments/$comment/reply" \
         "{\"actor\":{\"kind\":\"session\",\"id\":\"census-$half\"},\"attempt\":1,\"target\":\"session:census-$half\",\"body\":\"A session's reply ($half).\"}" \
-        "$half: the session's reply to its mention" >/dev/null || true
+        "$half: the session's reply to its mention" >/dev/null; then
+        session_threads=$((session_threads + 1))
+      fi
     else
       fail "$half: the mention's attempt never settled, so the session had no delivery of its own to answer"
     fi
@@ -395,6 +412,7 @@ seed_half() {
   # earlier second than the mark.
   read_mark="$(jq -r '.created_at // empty' <<<"$dm_message" 2>/dev/null)" || true
   if [[ -n "${dm:-}" && "$dm" != null ]]; then
+    no_project_threads=$((no_project_threads + 1))
     agent_reply=""
     if settled_attempt "message_deliveries" "message_id = '$dm'"; then
       agent_reply="$(expect agent 201 POST "/api/v1/messages/$dm/reply" \
@@ -404,6 +422,7 @@ seed_half() {
       fail "$half: the direct message's attempt never settled, so the session had no delivery of its own to answer"
     fi
     if [[ -n "${agent_reply:-}" && "$agent_reply" != null ]]; then
+      session_threads=$((session_threads + 1))
       # The reply a person read by its id (user_agent_reply_read), and the dismissal of the Agent
       # thread's root (user_agent_thread_dismissed), which carries what the page drew of that row.
       expect "$census_person" 200 PUT "/api/v1/me/agents/census-$half/state" \
@@ -421,10 +440,13 @@ seed_half() {
   copy="$(jq -r --arg s "census-$half" '[.recipients[]? | select(.session_id == $s) | .message.id] | first // empty' \
     <<<"$broadcast" 2>/dev/null)" || true
   if [[ -n "${copy:-}" ]]; then
+    no_project_threads=$((no_project_threads + 1))
     if settled_attempt "message_deliveries" "message_id = '$copy'"; then
-      expect agent 201 POST "/api/v1/messages/$copy/reply" \
+      if expect agent 201 POST "/api/v1/messages/$copy/reply" \
         "{\"actor\":{\"kind\":\"session\",\"id\":\"census-$half\"},\"attempt\":1,\"body\":\"A session's reply to its broadcast copy ($half).\"}" \
-        "$half: the session's reply to its broadcast copy" >/dev/null || true
+        "$half: the session's reply to its broadcast copy" >/dev/null; then
+        session_threads=$((session_threads + 1))
+      fi
     else
       fail "$half: the broadcast copy's attempt never settled, so the session had no delivery of its own to answer"
     fi
@@ -590,7 +612,7 @@ done < <(grep -E '^census: store kind=|^census: store rows_checked=' "$work/cens
 # store does not state, and nothing the store states that no row projects.
 readonly agrees=' rows_without_a_(node|tuple)=0 (node|tuple)s_without_a_row=0 '
 for kind in user_threads user_threads_version user_agent_read user_agent_state user_agent_reply_read \
-  user_agent_thread_dismissed user_ask_snooze comment_deliveries message_deliveries \
+  user_agent_thread_dismissed user_ask_snooze comment_mentions comment_deliveries message_deliveries \
   published_destinations message comment_pointers comment block block_ref role page; do
   line="$(grep -m1 -E "^census: store kind=$kind (nodes|tuples)=" "$work/census.log" || true)"
   if [[ -z "$line" ]]; then
@@ -608,7 +630,57 @@ for kind in user_threads user_threads_version user_agent_read user_agent_state u
     pass "kind $kind agrees: $(sed 's/^census: store //' <<<"$line") | $(sed "s/^census: store kind=$kind //" <<<"$populations")"
   fi
 done
-sed -n 's/^census: store \(kind=[a-z_]* narrowing=\)/narrowing: \1/p' "$work/census.log"
+
+# The unmarked class: the rows a build of the release before wrote that no backfill has marked yet,
+# which each kind of the one inbox counts as a class of its own and never as a difference. The
+# census refuses nothing for that class (graphcensus's StoreReport.Refused): during a roll a pod of
+# the release before writes such rows by design, until the block-index tick's catch-up marks them
+# (graphcensus.CatchUpOwedRows), so only the caller knows when the class must be empty. This run
+# stopped the release before ahead of the backfill and wrote nothing through it since, so here the
+# class reads zero in every kind that counts it: each kind of the one inbox the check names must
+# print its class at zero, and so must every other kind that prints one.
+for kind in user_threads user_agent_read user_agent_state user_agent_reply_read user_agent_thread_dismissed \
+  user_ask_snooze comment_mentions comment_deliveries message_deliveries published_destinations message \
+  comment_pointers; do
+  line="$(grep -m1 -E "^census: store kind=$kind unmarked_rows=" "$work/census.log" || true)"
+  if [[ -z "$line" ]]; then
+    fail "the census printed no unmarked class for kind $kind, so a row the backfill left unmarked would be a silence"
+  elif [[ "$line" != *" unmarked_rows=0 "* ]]; then
+    fail "kind $kind holds rows the backfill left unmarked once it ended, which the census holds to no tuple: ${line#census: store }"
+  else
+    pass "kind $kind reads its unmarked class at zero once the backfill ended: ${line#census: store }"
+  fi
+done
+unmarked_classes="$(grep -cE '^census: store kind=[a-z_]+ unmarked_rows=' "$work/census.log" || true)"
+unmarked_left="$(grep -E '^census: store kind=[a-z_]+ unmarked_rows=' "$work/census.log" | grep -v ' unmarked_rows=0 ' || true)"
+if [[ -n "$unmarked_left" ]]; then
+  fail "the census reads rows the backfill left unmarked once it ended: $(sed 's/^census: store //; s/ (rows a writer .*//' <<<"$unmarked_left" | paste -sd ';' -)"
+else
+  pass "every one of the $unmarked_classes unmarked classes the census prints reads zero once the backfill ended"
+fi
+
+# The narrowings the check names: the tuples a projection does not hold by design, which the
+# census counts on a line of their own and leaves out of both comparisons. A figure is no proof
+# unless it is held to something: a narrowing whose test reached past its class would carry a
+# difference out of the comparison into its count, and the census would still read zero. So each
+# is held to the corpus's own count of it (no_project_threads and session_threads, which seed_half
+# counts), and a figure the census does not print fails as a silence.
+for narrowed in "no_project $no_project_threads" "session_authors $session_threads"; do
+  name="${narrowed%% *}" want="${narrowed#* }"
+  line="$(grep -m1 -E "^census: store kind=user_threads narrowing=$name count=" "$work/census.log" || true)"
+  count="$(sed -nE 's/^census: store kind=user_threads narrowing=[a-z_]+ count=([0-9,]+) .*/\1/p' <<<"$line" | tr -d ,)"
+  if [[ -z "$line" ]]; then
+    fail "the census printed no figure for the narrowing $name of user_threads, so it is a silence and not a figure"
+  elif [[ "$count" != "$want" ]]; then
+    fail "the narrowing $name of user_threads counts ${count:-no number}, and the corpus wrote $want of it: ${line#census: store }"
+  else
+    pass "the narrowing $name of user_threads counts the $want the corpus wrote: ${line#census: store }"
+  fi
+done
+# The other narrowings are figures of the corpus too, which the check's words do not name; each is
+# printed as the census read it.
+sed -n 's/^census: store \(kind=[a-z_]* narrowing=\)/narrowing: \1/p' "$work/census.log" |
+  grep -vE '^narrowing: kind=user_threads narrowing=(no_project|session_authors) ' || true
 
 # The capture: every row the release before wrote is still in its own table, by its key, once this
 # build had migrated it forward and the backfill had run over it.

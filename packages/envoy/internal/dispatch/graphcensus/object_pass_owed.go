@@ -44,7 +44,11 @@ import (
 // sender settled or its session accepted, where an attempt row of that item is owed. Its claims
 // append no event, so only a pass started for another reason reaches an attempt one moved. And
 // whatever the events are, it answers true while the queue of the events that build's outbox
-// recorded (events_published_owed) holds one: that record appends no event.
+// recorded (events_published_owed) holds one: that record appends no event. So it does while the
+// queue of that build's moves of who an ask waits on and its edits of a comment
+// (events_inbox_owed) holds one: the event it queues names no row the catch-up's other passes owe;
+// and while a document that build stated the blocks of without their identity mentions waits for
+// the block identity pass (blockIdentitiesOwed): its fence write appends no event.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that
@@ -101,8 +105,9 @@ var eventsOweObjectPass = `
 // rollOwedByEvents is eventsOweObjectPass's test of the inbox cache rows the events name that the
 // block-index tick's catch-up owes (rollPasses), each kind read by its own owed test, the pass's,
 // narrowed to the rows the arrays of named name, through the key or the index each kind's rows are
-// read by; and of the queue of the events an older build's outbox recorded, which no event names
-// (publishedDeliveriesQueued).
+// read by; and of the queues of the events an older build's outbox recorded, which no event names
+// (publishedDeliveriesQueued), and of the events of that build's writes that change no row's marker
+// (inboxEventsQueued), each read through its key.
 func rollOwedByEvents() string {
 	named := func(array, as string) string { return `any((select named.` + array + ` from named)::` + as + `[])` }
 	terms := []string{
@@ -119,6 +124,10 @@ func rollOwedByEvents() string {
 			` or d.message_id = ` + named("messaged", "uuid") + `))`,
 		// kept for one release: events-published-owed
 		`exists (select 1 ` + publishedDeliveriesQueued + `)`,
+		// kept for one release: events-inbox-owed
+		`exists (select 1 ` + inboxEventsQueued + `)`,
+		// kept for one release: block-identities-stated
+		`exists (select 1 ` + blockIdentitiesOwed + `)`,
 	}
 	for _, table := range readStateTables {
 		terms = append(terms, `exists (select 1 `+table.owed()+` and user_threads_login(r.login) = `+named("logins", "text")+`)`)

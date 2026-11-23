@@ -20,8 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The backfill of every kind the one inbox moves into the store but the identity mentions of a
-// text, which no row an older build wrote holds (refs.TargetOf), by the node store's contract (R9's
+// The backfill of every kind the one inbox moves into the store, by the node store's contract (R9's
 // view end): each pass walks only the rows its marker
 // test passes, which are the rows a build of the release before this one wrote during a roll or
 // before it; it dates each tuple by the row's own created_at, or by the moment of the mark the row
@@ -40,8 +39,14 @@ import (
 // (graphstore.AttemptNode, graphstore.AttemptFactsAsWritten), each session or role an older
 // build's outbox published a comment or a message to (as outbox's deliveredGraph states it), what
 // each comment, message, ask, answer and decline an older build wrote owed the threads it was
-// written in (inboxwrite.RecordOlder), and what each read-state row says (graphstore.ToPerson,
-// graphstore.FromPerson). Every batch takes the order the live writers take - the owner rows, then
+// written in (inboxwrite.RecordOlder), the identities a comment's or an issue message's text names,
+// as refs' item index states their mentions (refs.ItemIdentityMentions; that build stated none and
+// stored no row of a person's, refs.TargetOf, so the item's text is read for them), what each
+// read-state row says (graphstore.ToPerson, graphstore.FromPerson), and what each write of that
+// build that changes no
+// row's marker owes - a move of who an ask waits on, an edit of a comment - read off the queue of
+// its events (inboxEventsPass, backfill_inbox_events.go). Every batch takes the order the live
+// writers take - the owner rows, then
 // the project rows an ask's waiting person is read under, then the item rows and its block state,
 // then the item's own store writes, then a thread's user_threads rows in ascending login, then the
 // deliveries to them - so a live write of this release and a batch over one thread take turns.
@@ -199,7 +204,10 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 }
 
 // inboxPasses is the inbox backfill's passes in the order backfillInbox runs them, the order their
-// facts hang on each other.
+// facts hang on each other. The pass over the queue of an older build's events (inboxEventsPass)
+// follows the asks pass and the comment pointer pass, whose rows its moves and its edits are held
+// to. The block identity pass (blockIdentitiesPass) comes last: it states nothing, and marks the
+// documents whose blocks' identity mentions the block index owes.
 func inboxPasses() []inboxPass {
 	passes := []inboxPass{messagesPass(), commentPointersPass(), commentMentionsPass(), pastBoundRowsPass(pastBoundComments),
 		pastBoundRowsPass(pastBoundMessages)}
@@ -207,20 +215,23 @@ func inboxPasses() []inboxPass {
 		passes = append(passes, itemBlocksPass(kind), itemLinksPass(kind), itemCitationsPass(kind))
 	}
 	passes = append(passes, attemptsPass(commentAttempts), attemptsPass(messageAttempts), publishedDeliveriesPass(),
-		asksOwedPass(), declinesPass(), userThreadsPass())
+		asksOwedPass(), declinesPass(), inboxEventsPass(), userThreadsPass())
 	for _, table := range readStateTables {
 		passes = append(passes, readStatePass(table))
 	}
-	return passes
+	return append(passes, blockIdentitiesPass())
 }
 
 // inboxTables is every table the inbox backfill's passes read or write: the rows each pass walks,
 // with its item and block tables, the store's two tables, the log each row's event is read from,
-// the queue of the events an older build's outbox published (events_published_owed), and the owner
-// rows a batch takes and an ask's waiting person is read under.
+// the queues of the events an older build's outbox published (events_published_owed) and of the
+// events of its writes no row's marker records (events_inbox_owed), the owner rows a batch takes
+// and an ask's waiting person is read under, and a document's block index the block identity pass
+// reads.
 func inboxTables() []string {
 	tables := []string{"messages", "comments", "comment_mentions", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples",
-		"events", "events_published_owed", "issues", "artifacts", "projects"}
+		"events", "events_published_owed", "events_inbox_owed", "issues", "artifacts", "projects",
+		"document_block_versions", "document_blocks", "document_block_texts"}
 	for _, kind := range inboxItemKinds {
 		tables = append(tables, kind.blocks, kind.links, kind.state)
 	}
@@ -369,13 +380,15 @@ func writeRelations(ctx context.Context, tx pgx.Tx, tuples []graphstore.Tuple) e
 	return graphstore.ToPerson(ctx, tx, people)
 }
 
-// personTuples parts tuples into the mentions of a person, which graphstore.ToPerson alone
-// appends, and every other.
+// personTuples parts tuples into those of the three kinds graphstore.ToPerson alone appends - a
+// mentions or a delivered_to to a person, and a person's participates_in - and every other.
 func personTuples(tuples []graphstore.Tuple) (people, others []graphstore.Tuple) {
 	for _, tuple := range tuples {
-		if tuple.Kind == graphstore.TupleMentions && tuple.ToKind == graphstore.KindPerson {
+		switch {
+		case (tuple.Kind == graphstore.TupleMentions || tuple.Kind == graphstore.TupleDeliveredTo) && tuple.ToKind == graphstore.KindPerson,
+			tuple.Kind == graphstore.TupleParticipatesIn && tuple.FromKind == graphstore.KindPerson:
 			people = append(people, tuple)
-		} else {
+		default:
 			others = append(others, tuple)
 		}
 	}
@@ -414,6 +427,12 @@ func messagesPass() inboxPass {
 
 // writeMessages takes the owner rows of ids, then reads again and locks the messages rows of ids
 // still owed, and states them.
+//
+// What an issue message owed its thread (inboxwrite.RecordOlder) holds the identities its text
+// names (refs.ItemIdentityMentions, inboxwrite.Write.Names), read off its body against its node, as
+// writeCommentPointers reads a comment's: this release cites the text of a message on an issue, an
+// issue message or a session's reply to one, and of no other - a direct message, a session's reply
+// to one and a broadcast's copy name nobody (api's planPendingItem, whose cites is false for them).
 func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, error) {
 	if err := lockOwnersOf(ctx, tx, messageOwners, ids); err != nil {
 		return inboxWrote{}, err
@@ -421,7 +440,9 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 	rows, err := tx.Query(ctx, `
 		select m.id::text, coalesce(m.issue_key, ''), m.author, m.created_at, coalesce(m.target, ''),
 		       coalesce(m.in_reply_to::text, ''), coalesce(m.replies_to_block, ''),
-		       coalesce(m.broadcast_id::text, ''), `+messageEventOf("m")+`
+		       coalesce(m.broadcast_id::text, ''), `+messageEventOf("m")+`, coalesce(m.body, ''),
+		       coalesce((select n.visibility from graph_nodes n where n.kind = '`+graphstore.KindMessage+`' and n.id = m.id::text), ''),
+		       (select n.made_by from graph_nodes n where n.kind = '`+graphstore.KindMessage+`' and n.id = m.id::text)
 		`+messagesOwed+` and m.id = any($1::uuid[])
 		order by m.id
 		for no key update of m
@@ -430,23 +451,37 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 		return inboxWrote{}, fmt.Errorf("read the messages naming no node: %w", err)
 	}
 	type message struct {
-		row    graphstore.MessageRow
-		author model.Actor
-		at     time.Time
-		event  int64
+		row              graphstore.MessageRow
+		author           model.Actor
+		at               time.Time
+		event            int64
+		body, visibility string
+		maker            model.Actor
 	}
 	var read []message
 	for rows.Next() {
 		var held message
-		var author []byte
+		var author, maker []byte
 		if err := rows.Scan(&held.row.ID, &held.row.IssueKey, &author, &held.at, &held.row.Target,
-			&held.row.InReplyTo, &held.row.RepliesToBlock, &held.row.BroadcastID, &held.event); err != nil {
+			&held.row.InReplyTo, &held.row.RepliesToBlock, &held.row.BroadcastID, &held.event,
+			&held.body, &held.visibility, &maker); err != nil {
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read a message naming no node: %w", err)
 		}
 		if err := json.Unmarshal(author, &held.author); err != nil {
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read the author of message %s: %w", held.row.ID, err)
+		}
+		// The node's maker is decoded into an Actor of its own, so it shares no pointer with the
+		// author and keeps no member of the author's that made_by lacks.
+		held.maker = held.author
+		if maker != nil {
+			var made model.Actor
+			if err := json.Unmarshal(maker, &made); err != nil {
+				rows.Close()
+				return inboxWrote{}, fmt.Errorf("read the maker of message %s's node: %w", held.row.ID, err)
+			}
+			held.maker = made
 		}
 		read = append(read, held)
 	}
@@ -502,7 +537,13 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 		if held.row.IssueKey != "" {
 			issue = &held.row.IssueKey
 		}
-		owed, err := inboxwrite.RecordOlder(ctx, tx, inboxwrite.Message(held.row.ID, held.author, held.at, issue, ""), held.event)
+		written := inboxwrite.Message(held.row.ID, held.author, held.at, issue, "")
+		if issue != nil && held.row.BroadcastID == "" {
+			if identities, people := refs.ItemIdentityMentions(refs.ItemMessage, held.row.ID, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
+				written = written.Names(identities, people)
+			}
+		}
+		owed, err := inboxwrite.RecordOlder(ctx, tx, written, held.event)
 		if err != nil {
 			return inboxWrote{}, err
 		}
@@ -728,8 +769,12 @@ type RollRows struct {
 // reads here the queue the trigger of migration 20261122100122 fills (publishedDeliveriesQueued)
 // rather than the log: an older build's outbox adds the topics an event reached to its
 // published_destinations after the event commits, appending no event, so no read of the log after
-// the tick's cursor finds a publish that lands after the tick has read its event. Each pass reads
-// its rows through the index that holds the rows it owes
+// the tick's cursor finds a publish that lands after the tick has read its event. The pass over the
+// queue of an older build's events (inboxEventsPass) reads the queue migration 20261122100123
+// fills, here as in the backfill: a move of who an ask waits on and an edit of a comment change no
+// row's marker, so no pass over a marker reaches them, and the queue holds each such event until
+// the batch that states it deletes it, whichever of the backfill and the tick takes it first.
+// Each pass reads its rows through the index that holds the rows it owes
 // (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but two: the asks pass reads asks
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no
 // index predicate may hold, and the fallback copies pass reads the published copies whole, a copy
@@ -875,6 +920,18 @@ func InboxRowsOwed(ctx context.Context, q graphstore.Queryer) (map[string]int64,
 // writeCommentPointers reads again and locks the comments rows of ids still owed, and states them,
 // under the owner locks its caller holds. Each is stated under the event beside it in causes, and,
 // where causes is nil, under the event the log holds of it (commentEventOf).
+//
+// What each owed its thread (inboxwrite.RecordOlder) holds the identities its text names
+// (refs.ItemIdentityMentions, inboxwrite.Write.Names): the build that wrote it stated none of
+// their mentions and stored no row of a person's, so its body, as the comment holds it now, is the
+// one record of whom it names, read against the comment's node, its visibility and its maker, as
+// this release's write of the same text reads its own (api's planPendingItem, which every comment
+// write cites through). A session's or a role's mention it names as a delivery route the mention
+// pass states again from its comment_mentions row under the same event, which the repeat key keeps
+// once. The identities the store holds a mention of out of the node already are no standing here:
+// the mentions are stated under the comment's own event, which only this pass and the mention pass
+// state, and a mention a re-index of the text stated at the sentinel (refs.ReindexOwed) explains no
+// participation under that event (graphcensus' mentioned_alone).
 func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes []int64) (inboxWrote, error) {
 	event, args := commentEventOf("c"), []any{ids}
 	if causes != nil {
@@ -884,7 +941,7 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 	rows, err := tx.Query(ctx, `
 		select c.id::text, c.author, c.created_at, coalesce(c.reply_to::text, ''), coalesce(c.ask_id::text, ''),
 		       coalesce(c.answers::text, ''), coalesce(c.replies_to_block, ''), c.issue_key, c.artifact_id::text,
-		       `+event+`
+		       `+event+`, coalesce(c.body, ''), c.node_kind, c.node_address
 		`+commentPointersOwed+` and c.id = any($1::uuid[])
 		order by c.id
 		for no key update of c
@@ -899,13 +956,17 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 		pointers             graphstore.CommentPointers
 		issueKey, artifactID *string
 		event                int64
+		body, visibility     string
+		nodeKind, nodeID     string
+		maker                model.Actor
 	}
 	var read []comment
 	for rows.Next() {
 		var held comment
 		var author []byte
 		if err := rows.Scan(&held.id, &author, &held.at, &held.pointers.ReplyTo, &held.pointers.AskID,
-			&held.pointers.Answers, &held.pointers.RepliesToBlock, &held.issueKey, &held.artifactID, &held.event); err != nil {
+			&held.pointers.Answers, &held.pointers.RepliesToBlock, &held.issueKey, &held.artifactID, &held.event,
+			&held.body, &held.nodeKind, &held.nodeID); err != nil {
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read a comment whose pointers are no tuples: %w", err)
 		}
@@ -913,11 +974,47 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read the author of comment %s: %w", held.id, err)
 		}
+		held.maker = held.author
 		read = append(read, held)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return inboxWrote{}, fmt.Errorf("read the comments whose pointers are no tuples: %w", err)
+	}
+	// The visibility and the maker of each comment's node, which its mentions are read under
+	// (refs.ItemIdentityMentions), read in a statement of their own once the comments rows are
+	// held: graph_nodes is a step after the item rows in the writers' order.
+	if len(read) > 0 {
+		kinds, nodeIDs := make([]string, len(read)), make([]string, len(read))
+		for index, held := range read {
+			kinds[index], nodeIDs[index] = held.nodeKind, held.nodeID
+		}
+		nodes, err := tx.Query(ctx, `
+			select named.position::int, n.visibility, n.made_by
+			from unnest($1::text[], $2::text[]) with ordinality as named (kind, id, position)
+			join graph_nodes n on n.kind = named.kind and n.id = named.id
+		`, kinds, nodeIDs)
+		if err != nil {
+			return inboxWrote{}, fmt.Errorf("read the nodes of the comments whose pointers are no tuples: %w", err)
+		}
+		var position int
+		var visibility string
+		var maker []byte
+		if _, err := pgx.ForEachRow(nodes, []any{&position, &visibility, &maker}, func() error {
+			held := &read[position-1]
+			held.visibility = visibility
+			// The node's maker is decoded into an Actor of its own, so it shares no pointer with
+			// the author held.maker was set to and keeps no member of the author's that made_by
+			// lacks.
+			var made model.Actor
+			if err := json.Unmarshal(maker, &made); err != nil {
+				return err
+			}
+			held.maker = made
+			return nil
+		}); err != nil {
+			return inboxWrote{}, fmt.Errorf("read the nodes of the comments whose pointers are no tuples: %w", err)
+		}
 	}
 	var tuples []graphstore.Tuple
 	marked := make([]string, 0, len(read))
@@ -938,7 +1035,11 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 		if !slices.Contains(marked, held.id) {
 			continue
 		}
-		owed, err := inboxwrite.RecordOlder(ctx, tx, inboxwrite.Comment(held.id, held.author, held.at, held.issueKey, held.artifactID, ""), held.event)
+		written := inboxwrite.Comment(held.id, held.author, held.at, held.issueKey, held.artifactID, "")
+		if identities, people := refs.ItemIdentityMentions(refs.ItemComment, held.id, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
+			written = written.Names(identities, people)
+		}
+		owed, err := inboxwrite.RecordOlder(ctx, tx, written, held.event)
 		if err != nil {
 			return inboxWrote{}, err
 		}

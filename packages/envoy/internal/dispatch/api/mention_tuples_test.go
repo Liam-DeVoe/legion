@@ -30,10 +30,13 @@ const mentionedPerson = "person-1@example.com"
 // comment, under the attribute the comment supertag declares for it, and comment_mentions holds
 // what the tuples state, row for row. The reconciliation an older build makes of the same sources -
 // replaceRefs' delete scoped by the source, replaceBlockRefs' by the document - leaves every tuple
-// standing at its own moment, and indexing the unchanged text again neither repeats one nor dates
-// one again. The count beside each identity's list is the rows that list holds
-// (refs.BacklinkCounts). Last, a comment naming one session alone, which nothing else of the
-// comment reaches and whose mention fails, tells that session's own topic of it once.
+// standing at its own moment; each source it deletes for cites an issue as well, so each delete
+// removes that citation's row, as the older build's delete does, and the trigger every delete from
+// refs runs (refs_forms_owe_deleted) runs over a row. Indexing the unchanged text of each of those
+// sources again - both comments, the issue message and the spec - neither repeats one nor dates one
+// again. The count beside each identity's list is the rows that list holds (refs.BacklinkCounts).
+// Last, a comment naming one session alone, which nothing else of the comment reaches and whose
+// mention fails, tells that session's own topic of it once.
 func mentionsAreTuples(t *testing.T) {
 	ctx := context.Background()
 	listener, state := newMentionListener(t)
@@ -47,15 +50,23 @@ func mentionsAreTuples(t *testing.T) {
 	}
 	created := func(id string) int64 { return writeEventOf(t, database, "comment.created", id) }
 
-	person := post(map[string]any{"body": "Over to dispatch://person/" + mentionedPerson + " for the copy."})
-	session := post(map[string]any{"body": "Are you there?", "mentions": []map[string]any{{"target": "session:s1"}}})
+	// Each comment, the issue message and the spec the reconciliation below deletes for cites the
+	// issue too: refs and block_refs hold no row naming a person, a session or a role
+	// (refs.TargetOf), so a delete scoped by a source that cited nothing else would remove nothing.
+	cites := " It is for dispatch://" + issue.Key + "."
+	personBody := "Over to dispatch://person/" + mentionedPerson + " for the copy." + cites
+	person := post(map[string]any{"body": personBody})
+	sessionBody := "Are you there?" + cites
+	session := post(map[string]any{"body": sessionBody, "mentions": []map[string]any{{"target": "session:s1"}}})
 	role := post(map[string]any{"body": "Is the role held?", "mentions": []map[string]any{{"target": "role:unheld"}}})
 	forwarded := post(map[string]any{"body": "Can you review it?", "mentions": []map[string]any{{"target": "role:reviewer"}}})
 	nobody := post(map[string]any{"body": "Nobody is named here."})
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+person,
-		fmt.Sprintf("comment:%s > person:%s @%d", person, mentionedPerson, created(person)))
+		fmt.Sprintf("comment:%s > person:%s @%d", person, mentionedPerson, created(person)),
+		fmt.Sprintf("comment:%s > issue:%s @%d", person, issue.Key, created(person)))
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+session,
-		fmt.Sprintf("comment:%s > session:s1 @%d", session, created(session)))
+		fmt.Sprintf("comment:%s > session:s1 @%d", session, created(session)),
+		fmt.Sprintf("comment:%s > issue:%s @%d", session, issue.Key, created(session)))
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+role,
 		fmt.Sprintf("comment:%s > role:unheld @%d", role, created(role)))
 	forwardedAt := created(forwarded)
@@ -64,13 +75,15 @@ func mentionsAreTuples(t *testing.T) {
 		fmt.Sprintf("comment:%s > session:s1 @%d", forwarded, forwardedAt))
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+nobody)
 
-	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ask dispatch://person/" + mentionedPerson + " about the copy."}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ask dispatch://person/" + mentionedPerson + " about the copy." + cites}, "alice")
+	messageCreated := writeEventOf(t, database, "message.created", message.ID)
 	requireRelationTuples(t, database, graphstore.TupleMentions, "message:"+message.ID,
-		fmt.Sprintf("message:%s > person:%s @%d", message.ID, mentionedPerson, writeEventOf(t, database, "message.created", message.ID)))
+		fmt.Sprintf("message:%s > person:%s @%d", message.ID, mentionedPerson, messageCreated),
+		fmt.Sprintf("message:%s > issue:%s @%d", message.ID, issue.Key, messageCreated))
 	// A document names a person, a session and a role by a mention's link each, whose address its
 	// rendering keeps as written.
 	document := createInteractionIssue(t, handler, "MEND", "A spec that names a person", "Ask [@Person](dispatch://person/"+mentionedPerson+
-		") about the copy, and tell [@Agent](dispatch://agent/s1) and [@Reviewer](dispatch://role/reviewer).\n")
+		") about the copy, and tell [@Agent](dispatch://agent/s1) and [@Reviewer](dispatch://role/reviewer)."+cites+"\n")
 	// The spec's blocks are the block index's to write, which the reconciliation's tick runs.
 	reconcileBlockIndexPass(t, deps)
 	blocks, err := readStrings(ctx, database.Pool, `
@@ -135,25 +148,72 @@ func mentionsAreTuples(t *testing.T) {
 	// block_refs rows, and no mention tuple with them.
 	before := identityMentionTuples(t, database)
 	for _, source := range []struct{ kind, id string }{{"comment", person}, {"comment", session}, {"message", message.ID}} {
-		if _, err := database.Pool.Exec(ctx, `delete from refs where from_kind = $1 and from_id = $2`, source.kind, source.id); err != nil {
+		deleted, err := database.Pool.Exec(ctx, `delete from refs where from_kind = $1 and from_id = $2`, source.kind, source.id)
+		if err != nil {
 			t.Fatalf("delete the refs of %s %s as replaceRefs does: %v", source.kind, source.id, err)
 		}
+		if deleted.RowsAffected() == 0 {
+			t.Fatalf("the delete of the refs of %s %s as replaceRefs does removed no row: its citation of %s holds none, so the reconciliation reconciles nothing", source.kind, source.id, issue.Key)
+		}
 	}
-	if _, err := database.Pool.Exec(ctx, `delete from block_refs where artifact_id = $1::uuid`, document.PrimaryArtifactID); err != nil {
+	deleted, err := database.Pool.Exec(ctx, `delete from block_refs where artifact_id = $1::uuid`, document.PrimaryArtifactID)
+	if err != nil {
 		t.Fatalf("delete the block_refs of the spec as replaceBlockRefs does: %v", err)
+	}
+	if deleted.RowsAffected() == 0 {
+		t.Fatalf("the delete of the spec's block_refs as replaceBlockRefs does removed no row: its citation of %s holds none, so the reconciliation reconciles nothing", issue.Key)
 	}
 	if after := identityMentionTuples(t, database); !slices.Equal(after, before) {
 		t.Errorf("after an older build's reconciliation the identity mentions are\n  %v\nwant them standing as they were\n  %v", after, before)
 	}
-	// Indexing the unchanged text again neither repeats a tuple nor dates one again.
-	if edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+person, map[string]any{
-		"body": "Over to dispatch://person/" + mentionedPerson + " for the copy.",
-	}, "alice"); edited.Code != http.StatusOK {
-		t.Fatalf("edit the comment to its own text: status=%d body=%s", edited.Code, edited.Body.String())
+	// Indexing the unchanged text of each source again neither repeats a tuple nor dates one
+	// again, and each index puts back the citation the delete removed: each comment through its
+	// edit to its own text, the issue message through the re-index of the row the delete owed it
+	// (refs_forms_owe_deleted, drained by refs.ReindexOwed), and the spec through the block index
+	// of its latest version, owed it again as the forms drain owes it.
+	indexedAgain := func(what, citations string, args ...any) {
+		t.Helper()
+		var cited int
+		if err := database.Pool.QueryRow(ctx, citations, args...).Scan(&cited); err != nil {
+			t.Fatalf("count the citations of %s: %v", what, err)
+		}
+		if cited == 0 {
+			t.Fatalf("%s holds no citation of %s after it was indexed again, so it was not indexed", what, issue.Key)
+		}
+		if again := identityMentionTuples(t, database); !slices.Equal(again, before) {
+			t.Errorf("after %s was indexed again with its unchanged text the identity mentions are\n  %v\nwant\n  %v", what, again, before)
+		}
 	}
-	if again := identityMentionTuples(t, database); !slices.Equal(again, before) {
-		t.Errorf("after the unchanged text was indexed again the identity mentions are\n  %v\nwant\n  %v", again, before)
+	refsOf := `select count(*) from refs where from_kind = $1 and from_id = $2`
+	for _, comment := range []struct{ what, id, body string }{
+		{"the comment naming the person", person, personBody}, {"the comment naming the session", session, sessionBody},
+	} {
+		if edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.id, map[string]any{
+			"body": comment.body,
+		}, "alice"); edited.Code != http.StatusOK {
+			t.Fatalf("edit %s to its own text: status=%d body=%s", comment.what, edited.Code, edited.Body.String())
+		}
+		indexedAgain(comment.what, refsOf, graphstore.KindComment, comment.id)
 	}
+	owed, err := refs.ListOwed(ctx, database.Pool, refs.RefsFormsOwed, 100)
+	if err != nil {
+		t.Fatalf("list the texts the deletes owed an index: %v", err)
+	}
+	messageOwed := slices.IndexFunc(owed, func(row refs.Owed) bool { return row.Kind == graphstore.KindMessage && row.ID == message.ID })
+	if messageOwed < 0 {
+		t.Fatalf("the delete of the issue message's refs owed it no index: refs_forms_owed holds %+v", owed)
+	}
+	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed[messageOwed], deps.ServerURL); err != nil || !indexed {
+		t.Fatalf("index the issue message again = %v (%v), want it indexed", indexed, err)
+	}
+	indexedAgain("the issue message", refsOf, graphstore.KindMessage, message.ID)
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1::uuid`, document.PrimaryArtifactID); err != nil {
+		t.Fatalf("owe the spec a block index: %v", err)
+	}
+	if tick := reconcileBlockIndexPass(t, deps); tick.Documents == 0 {
+		t.Fatalf("the block index owed the spec indexed no document: %+v", tick)
+	}
+	indexedAgain("the spec", `select count(*) from block_refs where artifact_id = $1::uuid`, document.PrimaryArtifactID)
 
 	// The count beside each identity's list is the rows that list holds, for a person, a session and
 	// a role, each named from a comment and from a document block.

@@ -202,13 +202,15 @@ func committedOpenAPIPath() (string, error) {
 // build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
 // so a subcommand that parses, renders or writes a document holds it to the store's types rather
 // than to the file this binary embeds. It reports each failure on out under the subcommand's
-// label. The caller closes the returned store's pool.
+// label. The caller closes the returned store's pool. The install opens one of the pool's
+// transactions, so its context is marked for the pool's nested-acquire guard
+// (store.WithTransactionTracking), as every entry point of the pool's transactions marks its own.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
 	if !ok {
 		return nil, false
 	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
@@ -272,7 +274,7 @@ func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Write
 		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
 		return nil, false
 	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
@@ -331,7 +333,9 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 		return 1
 	}
 	defer database.Pool.Close()
-	report, err := graphcensus.Backfill(ctx, database, out)
+	// Each batch is one of the pool's transactions, marked for its nested-acquire guard as the
+	// decisions step marks the same batches under its boot and its tick.
+	report, err := graphcensus.Backfill(store.WithTransactionTracking(ctx), database, out)
 	if err != nil {
 		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
 		return 1

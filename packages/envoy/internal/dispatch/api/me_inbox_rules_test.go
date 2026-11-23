@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,9 +183,17 @@ func TestTheOneReadDropsANodeItsCallerMayNotSee(t *testing.T) {
 		if nodes := meInboxNodes(unread); !slices.Equal(nodes, []string{graphstore.KindComment + ":" + hiddenProjectComment}) {
 			t.Errorf("state=unread answers %v, want the project comment's thread alone of alice's two unread rows", nodes)
 		}
-		// One entry stands, so a page from offset 1 is past it: an offset taken before the
-		// predicate would land on a hidden row there.
+		// One entry stands, behind the three hidden tuples, which are newer than its own. So the
+		// first page of one answers it, and a page from offset 1 is past it: an offset or a limit
+		// taken before the predicate lands the first page on a hidden row, and the page from
+		// offset 1 on another.
+		first := readMeInboxAs(t, withHidden.handler, "alice", url.Values{"limit": {"1"}, "offset": {"0"}})
+		requireNoneHidden(t, "the first page", first)
+		if nodes := meInboxNodes(first); !slices.Equal(nodes, []string{graphstore.KindComment + ":" + hiddenProjectComment}) || first.Total != 1 {
+			t.Errorf("the first page of one answers %v of %d, want the project comment, of 1", nodes, first.Total)
+		}
 		paged := readMeInboxAs(t, withHidden.handler, "alice", url.Values{"limit": {"1"}, "offset": {"1"}})
+		requireNoneHidden(t, "the page from offset 1", paged)
 		if len(paged.Entries) != 0 || paged.Total != 1 {
 			t.Errorf("the page from offset 1 answers %v of %d, want no entry of the one", meInboxNodes(paged), paged.Total)
 		}
@@ -330,26 +340,79 @@ func TestOneInboxKeepsEverySubtractionRule(t *testing.T) {
 	}
 }
 
+// meInboxOwnWrites holds the rule that leaves the writer out of their own write. A write that
+// starts a thread has nobody in it yet, so its writer is among no people it could reach, and the
+// rule is read only where the writer is in the thread already. So beside her own comment, ask and
+// message, each a thread of its own, alice writes once more in a comment thread and in an issue
+// message thread that bob started and she replied in, each of which she takes part in from that
+// first reply: her second reply reaches every participant but her (inboxwrite.PlanRecord's
+// own-login clause). Her ask waits on her, as bob's ask on the same issue shows, and draws no
+// delivered_to tuple, since the person it waits on asked it (waitingOnTuples). Each write's
+// delivery tuples hold no tuple to her, the thread it is written in is no row of her unread list,
+// and the write stands in her read under its authorship tuple.
 func meInboxOwnWrites(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "OWN", "Alice's own writes")
 	comment := createThreadComment(t, handler, issue, map[string]any{"body": "Alice's own comment."}, "alice")
 	ask := createReferenceAPIAsk(t, handler, issue, "Alice's own question?")
 	message := createIssueMessage(t, handler, issue, map[string]any{"body": "Alice's own message."}, "alice")
+	bobsThread := createThreadComment(t, handler, issue, map[string]any{"body": "Bob starts a thread."}, "bob")
+	createThreadComment(t, handler, issue, map[string]any{"body": "Alice replies to him.", "reply_to": bobsThread.ID}, "alice")
+	reply := createThreadComment(t, handler, issue, map[string]any{"body": "Alice writes in it again.", "reply_to": bobsThread.ID}, "alice")
+	bobsMessage := createIssueMessage(t, handler, issue, map[string]any{"body": "Bob starts a conversation."}, "bob")
+	createIssueMessage(t, handler, issue, map[string]any{"body": "Alice answers him.", "in_reply_to": bobsMessage.ID}, "alice")
+	answer := createIssueMessage(t, handler, issue, map[string]any{"body": "Alice writes in it again.", "in_reply_to": bobsMessage.ID}, "alice")
+	bobsAsk := createPersonAsk(t, handler, issue, "bob", "Bob's question?")
+
+	// What makes each case read the rule: alice takes part in bob's two threads, and an ask of
+	// this issue waits on her.
+	taking, err := graphstore.CurrentOut(context.Background(), database.Pool, graphstore.KindPerson, "alice", []string{meInboxParticipates})
+	if err != nil {
+		t.Fatalf("read the threads alice takes part in: %v", err)
+	}
+	takesPart := make([]string, 0, len(taking))
+	for _, tuple := range taking {
+		takesPart = append(takesPart, tuple.ToKind+":"+tuple.ToID)
+	}
+	for _, thread := range []string{graphstore.KindComment + ":" + bobsThread.ID, graphstore.KindMessage + ":" + bobsMessage.ID} {
+		if !slices.Contains(takesPart, thread) {
+			t.Fatalf("alice takes part in %v, not in bob's thread %s, so her second reply there reads no rule", takesPart, thread)
+		}
+	}
+	if reached := meInboxDeliveredTo(t, database, graphstore.KindAsk, bobsAsk.ID); !slices.Contains(reached, graphstore.KindPerson+":alice") {
+		t.Fatalf("bob's ask on %s reached %v and not alice, so the asks of the issue do not wait on her", issue, reached)
+	}
+
 	unread := readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateUnread}})
 	walked := readMeInboxAs(t, handler, "alice", nil)
-	for _, own := range []struct{ kind, id string }{
-		{graphstore.KindComment, comment.ID}, {graphstore.KindAsk, ask.ID}, {graphstore.KindMessage, message.ID},
+	for _, own := range []struct {
+		what, kind, id string
+		// threadKind and threadID are the root of the thread the write is in, and others each
+		// person else in it whom the write reaches.
+		threadKind, threadID string
+		others               []string
+	}{
+		{"comment", graphstore.KindComment, comment.ID, graphstore.KindComment, comment.ID, nil},
+		{"ask, which waits on her", graphstore.KindAsk, ask.ID, graphstore.KindAsk, ask.ID, nil},
+		{"message", graphstore.KindMessage, message.ID, graphstore.KindMessage, message.ID, nil},
+		{"reply in bob's comment thread", graphstore.KindComment, reply.ID, graphstore.KindComment, bobsThread.ID, []string{"bob"}},
+		{"reply in bob's message thread", graphstore.KindMessage, answer.ID, graphstore.KindMessage, bobsMessage.ID, []string{"bob"}},
 	} {
-		if reached := meInboxDeliveredTo(t, database, own.kind, own.id); slices.Contains(reached, graphstore.KindPerson+":alice") {
-			t.Errorf("alice's own %s %s drew a delivery to her: %v", own.kind, own.id, reached)
+		reached := meInboxDeliveredTo(t, database, own.kind, own.id)
+		if slices.Contains(reached, graphstore.KindPerson+":alice") {
+			t.Errorf("alice's own %s %s drew a delivery to her: %v", own.what, own.id, reached)
 		}
-		if _, held := meInboxEntryOfNode(unread, own.kind, own.id); held {
-			t.Errorf("alice's own %s is in her unread list", own.kind)
+		for _, other := range own.others {
+			if !slices.Contains(reached, graphstore.KindPerson+":"+other) {
+				t.Errorf("alice's own %s %s reached %v, want %s, who takes part in it", own.what, own.id, reached, other)
+			}
+		}
+		if _, held := meInboxEntryOfNode(unread, own.threadKind, own.threadID); held {
+			t.Errorf("the thread of alice's own %s is in her unread list", own.what)
 		}
 		entry, held := meInboxEntryOfNode(walked, own.kind, own.id)
 		if !held || !slices.Contains(meInboxKinds(entry), meInboxAuthored+"/"+meInboxInbound) {
-			t.Errorf("alice's own %s stands in her read as %v, want it under its %s tuple", own.kind, meInboxKinds(entry), meInboxAuthored)
+			t.Errorf("alice's own %s stands in her read as %v, want it under its %s tuple", own.what, meInboxKinds(entry), meInboxAuthored)
 		}
 	}
 }
@@ -619,13 +682,23 @@ func meInboxDismissed(t *testing.T) {
 	}
 }
 
+// meInboxSnoozed holds that a snooze decides what the ask reads as and no delivery: the ask's
+// delivery to alice, whom it waits on, stands as its create appended it, and her ask row carries
+// the snooze.
 func meInboxSnoozed(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "SNOOZE", "A snoozed ask")
 	ask := createPersonAsk(t, handler, issue, "bob", "Snooze me?")
+	delivered := meInboxDeliveredTo(t, database, graphstore.KindAsk, ask.ID)
+	if !slices.Contains(delivered, graphstore.KindPerson+":alice") {
+		t.Fatalf("the ask reached %v, want alice, whom it waits on", delivered)
+	}
 	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	if snoozed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/asks/"+ask.ID+"/snooze", map[string]any{"snoozed_until": until}, "alice"); snoozed.Code/100 != 2 {
 		t.Fatalf("snooze: status=%d body=%s", snoozed.Code, snoozed.Body.String())
+	}
+	if after := meInboxDeliveredTo(t, database, graphstore.KindAsk, ask.ID); !slices.Equal(after, delivered) {
+		t.Errorf("after alice snoozed the ask it reaches %v, want %v as before: a snooze takes no delivery away", after, delivered)
 	}
 	entry, held := meInboxEntryOfNode(readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateInbox}}), graphstore.KindAsk, ask.ID)
 	if !held || entry.Ask == nil || entry.Ask.SnoozedUntil == nil {
@@ -636,8 +709,70 @@ func meInboxSnoozed(t *testing.T) {
 	}
 }
 
+// meInboxWalkUp is the delivery walk's statement (outbox's commentRecipientsQuery) as the pool
+// that runs it sees it, and in its one group the body of its walk up: the recursive CTE up, whose
+// rows are the comments the walk visits from each comment it was given, each beside that comment
+// (key).
+var meInboxWalkUp = regexp.MustCompile(`(?s)^\s*with recursive\s+up as \((.*?)\n\s*\),\s*roots as \(`)
+
+// meInboxWalkRuns records each run of the delivery walk on the pool it traces (Traced): the body
+// of its walk up and the arguments the run bound, for a statement sent on its own or in a batch.
+type meInboxWalkRuns struct {
+	mu   sync.Mutex
+	runs []meInboxWalkRun
+}
+
+type meInboxWalkRun struct {
+	up   string
+	args []any
+}
+
+func (w *meInboxWalkRuns) record(sql string, args []any) {
+	found := meInboxWalkUp.FindStringSubmatch(sql)
+	if found == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.runs = append(w.runs, meInboxWalkRun{up: found[1], args: slices.Clone(args)})
+}
+
+func (w *meInboxWalkRuns) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	w.record(data.SQL, data.Args)
+	return ctx
+}
+
+func (w *meInboxWalkRuns) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (w *meInboxWalkRuns) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, queued := range data.Batch.QueuedQueries {
+		w.record(queued.SQL, queued.Arguments)
+	}
+	return ctx
+}
+
+func (w *meInboxWalkRuns) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (w *meInboxWalkRuns) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// taken is every run recorded so far.
+func (w *meInboxWalkRuns) taken() []meInboxWalkRun {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.runs)
+}
+
+// meInboxWalkCycle holds the cycle guard: two comments whose reply_to point at each other, and
+// alice's reply under the first. The walk returns, alice's reply reaches both of the cycle's
+// authors, and no row is visited twice. That last is read off the walk itself, never off the
+// deliveries, which the store's repeat key keeps single whatever the walk visited: each run of the
+// walk the outbox made has its walk up run again, as the run wrote it and with the arguments it
+// bound, over the same seed. The walk reads the thread a reply is written under, so its run for
+// alice's reply walks up from the first comment, and each comment it visits is one row of that
+// walk, from each comment the run was given.
 func meInboxWalkCycle(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{})
+	walks := &meInboxWalkRuns{}
+	handler, database, deps := newTestServer(t, testServerOptions{tracer: walks})
 	issue := createTestIssue(t, handler, "CYCLE", "Two comments that reply to each other")
 	first := meInboxSessionComment(t, handler, issue, "s-first", "The first of a cycle.")
 	second := meInboxSessionComment(t, handler, issue, "s-second", "The second of a cycle.")
@@ -666,6 +801,34 @@ func meInboxWalkCycle(t *testing.T) {
 	}
 	if visits != 2 {
 		t.Errorf("alice's reply holds %d deliveries to sessions, want one to each of the cycle's two authors", visits)
+	}
+	runs := walks.taken()
+	walkedCycle := false
+	for _, run := range runs {
+		rows, err := readStrings(context.Background(), database.Pool, `with recursive up as (`+run.up+`
+			)
+			select key::text || ' > ' || id::text from up order by 1`, run.args...)
+		if err != nil {
+			t.Fatalf("run the delivery walk's walk up again with the arguments %v: %v", run.args, err)
+		}
+		visited := map[string]int{}
+		for _, row := range rows {
+			visited[row]++
+		}
+		var repeated []string
+		for _, row := range slices.Sorted(maps.Keys(visited)) {
+			if times := visited[row]; times > 1 {
+				repeated = append(repeated, fmt.Sprintf("%s %d times", row, times))
+			}
+		}
+		if len(repeated) > 0 {
+			t.Errorf("the delivery walk run with %v visits a row more than once (from > visited): %s; its walk up visits\n  %s",
+				run.args, strings.Join(repeated, ", "), strings.Join(rows, "\n  "))
+		}
+		walkedCycle = walkedCycle || (slices.Contains(rows, first+" > "+first) && slices.Contains(rows, first+" > "+second))
+	}
+	if !walkedCycle {
+		t.Fatalf("the outbox ran the delivery walk %d times, and none walked up from %s, the comment alice replied under, through both comments of the cycle", len(runs), first)
 	}
 }
 

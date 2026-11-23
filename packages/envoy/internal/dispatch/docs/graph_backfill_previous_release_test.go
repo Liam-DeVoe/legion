@@ -296,6 +296,15 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 				t.Fatalf("run RebuildAll's mark: %v", err)
 			}
 		}},
+		// The block identity pass marks a document whose blocks a build of a lower rule stated
+		// without the identity mentions they name (identities_stated false), so each run first
+		// makes the document one: a block naming dave, no mention of him, and the row false.
+		{"the block identity pass's mark", false, func(t *testing.T, database *store.Store, document string, rule int) {
+			owesBlockIdentities(t, database, document)
+			if _, err := database.Pool.Exec(ctx, graphcensus.BlockIdentitiesMarkStatement, []string{document}, rule); err != nil {
+				t.Fatalf("run the block identity pass's mark: %v", err)
+			}
+		}},
 	} {
 		t.Run(statement.name, func(t *testing.T) {
 			database, lower := blockIndexService(t)
@@ -393,8 +402,18 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // It was re-recorded once more when the digest came to fold each statement's whitespace and to
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes.
+//
+// Rule 2 is the rule of the release that states a block's mentions of the people, agents'
+// sessions and roles it names: its block identity pass marks owed each document a build of rule 1
+// stated the blocks of without them (graphcensus.BlockIdentitiesMarkStatement, migration
+// 20261122100124), a document no statement of rule 1 marks. That moves documents into what a pass
+// owes, so the rule is raised and rule 1's digest kept: a build of rule 1 lists such a mark only
+// where the store last stated the document below its version and clears none of it, so it neither
+// drains it at the version the document stands at nor reads it as its own, and the pass that
+// drains it is the one that states the mentions.
 var markingStatementDigests = map[int]string{
 	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
+	2: "be0f8b205fa030eca5a23925f859fc56257996760b1b14d22a47b294f39eed1a",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -423,7 +442,8 @@ type namedStatement struct{ name, sql string }
 // write's statements (refs.CommentWrite.Queue), the backfill's block selection
 // (graphcensus.BlockRowsStatement) and its read of a batch's rows again under the locks
 // (graphcensus.HeldBlockRowsStatement), the backfill's marks (graphcensus.BlockBatchMarkStatement,
-// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), the two marks of
+// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), the block identity
+// pass's mark (graphcensus.BlockIdentitiesMarkStatement), the two marks of
 // a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement), the condition under which a build
 // lists a marked document as owed (refs.OwedMarkListed), which the owed listing, its re-read under
 // the owner's lock and the backlog all read, and the revision fence that decides whether a pass
@@ -472,6 +492,7 @@ func markingStatements(t *testing.T) []namedStatement {
 		namedStatement{"graphcensus.BlockBatchMarkStatement", graphcensus.BlockBatchMarkStatement},
 		namedStatement{"graphcensus.StaleDocumentsStatement", graphcensus.StaleDocumentsStatement},
 		namedStatement{"graphcensus.StaleBatchMarkStatement", graphcensus.StaleBatchMarkStatement},
+		namedStatement{"graphcensus.BlockIdentitiesMarkStatement", graphcensus.BlockIdentitiesMarkStatement},
 		namedStatement{"docs.oweDocumentIndexStatement", oweDocumentIndexStatement},
 		namedStatement{"refs.RebuildMarkStatement", refs.RebuildMarkStatement},
 		namedStatement{"refs.OwedMarkListed", refs.OwedMarkListed("b", "$1::integer")},
@@ -569,6 +590,62 @@ func markableDocument(t *testing.T, database *store.Store, slug string) string {
 		t.Fatalf("write version 1 of %s: %v", slug, err)
 	}
 	return document
+}
+
+// owesBlockIdentities makes document one the block identity pass marks
+// (graphcensus.BlockIdentitiesMarkStatement): a block of it whose node the store holds, whose text
+// at the version the store stands at names dave and whose node mentions nobody, and its
+// document_block_versions row holding identities_stated false, as a build of a lower rule leaves a
+// document it stated. A document with no block takes one.
+func owesBlockIdentities(t *testing.T, database *store.Store, document string) {
+	t.Helper()
+	ctx := context.Background()
+	var refKey, block string
+	if err := database.Pool.QueryRow(ctx, `
+		select a.ref_key, coalesce((select b.block_id from document_blocks b
+		                            where b.artifact_id = a.id and b.node_kind is not null order by b.block_id limit 1), '')
+		from artifacts a where a.id = $1::uuid
+	`, document).Scan(&refKey, &block); err != nil {
+		t.Fatalf("read the blocks of %s: %v", document, err)
+	}
+	if block == "" {
+		block = "identities"
+		address := refKey + "#" + block
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+			Kind: graphstore.KindBlock, ID: address, Supertag: graphstore.KindBlock, Visibility: graphstore.VisibilityProject,
+			State: graphstore.StateLive, Project: "CORE", MadeAt: time.Now(), MadeBy: model.Actor{Kind: "user", ID: "alice"},
+			SourceEvent: graphstore.NoEvent,
+		}}, nil); err != nil {
+			t.Fatalf("state the block node of %s: %v", document, err)
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
+			values ($1::uuid, $2, $3, 'paragraph', '', 'A paragraph.', 1, now(), $4, $3)
+		`, document, block, address, graphstore.KindBlock); err != nil {
+			t.Fatalf("write the block of %s: %v", document, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_texts (artifact_id, block_id, version, text)
+		select $1::uuid, $2, coalesce(v.store_version, 1), 'Over to dispatch://person/dave@example.com.'
+		from document_block_versions v where v.artifact_id = $1::uuid
+		on conflict (artifact_id, block_id, version) do update set text = excluded.text
+	`, document, block); err != nil {
+		t.Fatalf("name dave in the block of %s: %v", document, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set identities_stated = false where artifact_id = $1::uuid
+	`, document); err != nil {
+		t.Fatalf("leave the identities of %s unstated: %v", document, err)
+	}
 }
 
 // setBlockRow sets document's document_block_versions row to stand at a version above its store,
