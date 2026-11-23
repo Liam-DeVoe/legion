@@ -229,8 +229,10 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 			}
 			base := projectTimelineBody(t, getBody(t, handler, "/api/v1/delivery/timeline?"+baseQuery.Encode()))
 			pages := projectTimelinePages(t, handler, fixture.Project, from, to, facets, 50)
-			if len(pages) < 3 {
-				t.Fatalf("the window holds %v rows, %d pages of 50; want at least three pages", pages[0]["total"], len(pages))
+			// A facet narrows the merges alone, so the faceted pass holds fewer rows; both cross at
+			// least one page's edge.
+			if len(pages) < 2 {
+				t.Fatalf("the window holds %v rows, %d page of 50; want at least two pages", pages[0]["total"], len(pages))
 			}
 			checkProjectTimelinePages(t, pages, 50, base)
 

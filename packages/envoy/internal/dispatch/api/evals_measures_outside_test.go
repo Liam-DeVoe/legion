@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/swaggest/jsonschema-go"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
@@ -49,7 +51,9 @@ func isEvalRoute(pattern string) bool {
 }
 
 // measureIn is where body, a Go type a route or a view answers, holds a measure: the JSON path
-// of the first `measures` member or measure type it reaches, or "" where it holds none.
+// of the first `measures` member or measure type it reaches, or "" where it holds none. A value
+// written as one of several shapes (jsonschema.OneOfExposer, as the project timeline's rows are)
+// holds what any of its shapes holds, each walked under its type's name.
 func measureIn(body reflect.Type) string {
 	seen := map[reflect.Type]bool{}
 	var walk func(t reflect.Type, path string) string
@@ -70,6 +74,17 @@ func measureIn(body reflect.Type) string {
 		case reflect.Map:
 			return walk(t.Elem(), path+"{}")
 		case reflect.Struct:
+			union, ok := reflect.Zero(t).Interface().(jsonschema.OneOfExposer)
+			if !ok {
+				union, ok = reflect.New(t).Interface().(jsonschema.OneOfExposer)
+			}
+			if ok {
+				for _, shape := range union.JSONSchemaOneOf() {
+					if found := walk(reflect.TypeOf(shape), path+"<"+reflect.TypeOf(shape).Name()+">"); found != "" {
+						return found
+					}
+				}
+			}
 			for i := range t.NumField() {
 				field := t.Field(i)
 				name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
