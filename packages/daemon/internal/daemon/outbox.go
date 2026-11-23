@@ -2120,7 +2120,7 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 // ownerStepRuns is whether the run an owner-step notice names is still the open run of its place
 // on issue: the place's latest start is the one the notice counted (record.NoticeStep.Starts) and
 // its run has no end. A notice that names no run (a row written before the notice named one) is
-// judged by its App alone (ownerSlotHolds), so it answers true.
+// judged by the role the owner's slot acts as alone (ownerSlotHolds), so it answers true.
 func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step *record.NoticeStep) (bool, error) {
 	if step == nil {
 		return true, nil

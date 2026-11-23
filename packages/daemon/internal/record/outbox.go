@@ -503,7 +503,7 @@ type Notice struct {
 	// (validateOutboxPayload). The notice is delivered only while that run is open: a notice of a
 	// run that ended — the retro over, the owner's report in, a role's earlier step of two — is
 	// stale, and the daemon's executor finishes it undelivered. A row written before this field
-	// names none, and the executor judges it by the App its step needs alone.
+	// names none, and the executor delivers it only while the owner's slot acts as its step's role.
 	OwnerStep *NoticeStep `json:"ownerStep,omitempty"`
 }
 
