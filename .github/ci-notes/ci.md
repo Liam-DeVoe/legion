@@ -71,7 +71,9 @@ they do name, ci_router, is on the glob itself, which leaves their lists flat.
 
 The first keys are no job's gate: each is a group many filters share, written once and named by
 every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
-that names it. The gate filters follow, one per `changes` output. ci_router carries two
+that names it. The gate filters follow: a job's, one per `changes` output, and the test job's
+step gates, which the steps read out of the one list output
+(#one-list-for-the-test-jobs-step-gates). ci_router carries two
 anchors, one on each scalar, because the image check, .github/scripts/check-image-trigger-paths.sh, reads the two filters that gate an image
 build as flat lists of globs: every filter that names ci.yaml names .github/ci-filters.yaml beside it.
 
@@ -1391,12 +1393,40 @@ The session message-wait suite, in a job of its own: it is the one test of the t
 that needs a database, and a Postgres service there would start one for every change
 that selects any of that job's harness steps.
 
-## One output per test.sh step of the test job
+## One list for the test job's step gates
 
-One output per `*.test.sh` step of the test job: each names that harness and the script
-it tests, so the step runs when either changes and skips when neither does. The job's
-own filter names every one of these lists, since a step gate decides nothing in a job
-that was not selected.
+Each `*.test.sh` step of the test job, and tooling-checks' guides layout step, has a filter of its
+own naming that harness and the script it tests (the guides' step, the guides), so the step runs
+when either changes and skips when neither does. Each job's own filter names every one of these
+lists, since a step gate decides nothing in a job that was not selected.
+
+The steps read those filters out of one output of the changes job, `matched_filters`: the
+paths filter's own `changes` output, the JSON array of every filter that matched
+(`["release_push_test","test"]`, written by JSON.stringify), or `all` on a dispatched run, whose
+filter step is skipped. Each of ci-job-test.yaml's two callers hands it on as one input,
+`matched-filters`, and the whole of each gated step's condition is
+`inputs.changes-result != 'success' || inputs.matched-filters == 'all' ||
+contains(inputs.matched-filters, '"<filter>"')`. The quotes make the `contains` match one whole
+name of the array: `ci_tools_test` without them would match `mirror_ci_tools_test` too. Before,
+each gate was an output of the changes job and a `with:` line of its calling job, about 197
+bytes of ci.yaml per gate, in a file .github/scripts/check-workflow-files.sh holds under 64,000
+bytes; replacing the 50 of them with this one output took 10,512 bytes out of the file, and a
+gate added now costs ci.yaml nothing.
+
+.github/scripts/check-ci-filters.sh reads a step's filter out of the `contains` as it reads one
+out of an output (rules 2 and 3), and holds the shape: rule 19 holds `matched_filters` to its
+one value, `all` on a dispatched run included, and refuses a filter named `changes`, under which
+the paths filter would write that filter's verdict in place of the list; rule 22 refuses a
+condition naming the list that is not that whole shape (`!= ''`, a `!` before the `contains` or
+a term after it, a `contains` without the quotes, a missing `all` or result term), a job-level
+read of it, and a spelling of the changes job or an input it does not read
+(`needs['changes']`, `INPUTS.x`). No job is gated on the list: ci-ok's CI_OK_SELECTED_BY maps a
+job to the output that is `'true'` when changes selects it, and the list is never `'true'`, so
+each job keeps an output of its own and that map needs no change.
+.github/scripts/ci-router-outputs.test.sh evaluates each gated step's `if:` through ci.yaml's
+`with:` as GitHub would (`ci_router_outputs.py --steps`): with each filter matched alone, the
+steps that run are exactly the steps naming that filter, and every one runs on a dispatched run
+and when changes did not succeed.
 
 ## Why the browser image's build carries no full-ci term
 
@@ -1547,7 +1577,8 @@ beside them ci-ok's report tells the two apart and says which
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
-holds nothing back there, and the changes job's other outputs are all 'true'.
+holds nothing back there, and the changes job's other outputs are all 'true', but for the
+list of matched filters, which is `all` there.
 
 A job a pull request held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
@@ -1765,9 +1796,9 @@ nothing tested: re-run every job instead.
 
 The script harnesses and the Bun suites of scripts/, a slow suite the merge queue runs
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue). Each
-`*.test.sh` step runs behind a `changes` output of its own naming that harness and the
-script it tests, handed down as an input of the same name
-(.github/workflows/ci-job-test.yaml), so a change to one script runs one harness. The job's
+`*.test.sh` step runs behind a filter of its own naming that harness and the script it tests,
+which the step reads out of the changes job's one list of the filters that matched
+(#one-list-for-the-test-jobs-step-gates), so a change to one script runs one harness. The job's
 own filter names every one of those lists, since a job's `if:` tests one output and a step
 gate decides nothing in a job that was not selected. When `changes` did not succeed every step
 runs. The plugin build, the changelog check, the guides' layout step, the lints and the
@@ -1809,7 +1840,8 @@ pick a job
 The steps of the old test job that a pull request runs: the Claude Code plugin's build, check
 and pack as the release runs them, the check that the plugin's build-input list covers what the
 build reads, the render check of every changelog fragment with the changie it installs, the
-guides' layout step behind its own guide_layout gate, and the lints and typechecks of
+guides' layout step behind its own guide_layout filter, read out of the same list of matched
+filters (#one-list-for-the-test-jobs-step-gates), and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
 typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
