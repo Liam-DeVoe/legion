@@ -3257,4 +3257,38 @@ package api
 // kept it at the merge of main at 51d1a21ff7a6 (main at 213, #4553's, the entry right above). That
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
-const DaemonAPIVersion = 217
+//
+// 238: dispatch://INFRA-3271 R6 -- the launcher reads the issue workspace. The release of a pod no
+// claim owns and the close of a left pod with no live claim delete a disk only after a read of its
+// workspace found nothing that origin does not hold, and no role process runs in such a pod to read
+// through, so the pod's launcher makes the read (internal/launcher's readWorkspace,
+// runtime.PodWorkspaceReader). Two shapes of the launcher wire carry it. The launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `readsWorkspace`, the launcher's word that it
+// answers the read. The daemon sends such a launcher the shim's own `workspace-work` frame
+// (`shimwire.WorkspaceWork`) on the launcher's connection, and the launcher answers
+// `workspace-work-result` (`shimwire.WorkspaceWorkResult`) there, with the count a role's shim
+// makes (`workspace.ReadWork`); `ServeLauncher` gains that answer's case.
+//
+// The skew is safe in both directions. A launcher older than this entry sends no
+// `readsWorkspace`, and the daemon sends it no read (`launchers.workspaceReader`), since that
+// launcher's command loop closes its connection on a frame it does not name: its pod is one whose
+// workspace the daemon cannot read, and the release keeps it (`unowned_workspace_unread`). An older
+// daemon ignores the hello's new member and sends no read. The number moves because the image probe
+// pairs a daemon with a worker image by it (entry 144), so a daemon of this entry boots only on an
+// image whose launcher reads a workspace, and an older launcher is left only in a pod kept from
+// before the boot.
+//
+// The same change adds the notice kind `workspace-kept`, to the issue's architect, for a pod no
+// role runs in that the daemon keeps for its disk (`record.WorkspaceKeptNotice`), and two members
+// of the workspace check's outbox row, `launcher` and `close` (`record.IssueWorkspaceCheck`). An
+// outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row; there
+// is no migration, and the rollback deletes those rows first (docs/kubernetes.md, "Rolling back
+// the release that keeps no saved workspace"). No shape of `GET /legion/v1/state` moves.
+// (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
+// at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
+// 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and
+// #5014, 237 by #5168 and #5169) and nothing at 238. This branch is stacked on #4869, which keeps
+// 217, so the merge of main that follows #4869 brings 218 and 219 in below this entry. That is a
+// reading and never the rule: read main's own number and every open head again at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 238

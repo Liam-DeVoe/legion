@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The plugin declares daemon API contract 238.
+time: 2026-11-23T20:00:02Z
+custom:
+    Issue: r6-daemon-api-238
