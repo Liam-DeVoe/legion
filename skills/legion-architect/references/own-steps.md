@@ -82,6 +82,6 @@ Read it also when a retro reports to you.
 ## A task with no pull request
 
 - An issue with no pull request, such as one whose plan is `tester` alone, has no merge.
-  Its retro's end closes it (`done`), no merger starts and no production check opens.
+  Its retro's end closes the issue (`done`), no merger starts and no production check opens.
 
 - Read its evidence from its steps' reports, its results (`dispatch results --issue <KEY> --at <head>`) and the working copy its task names, never from a pull request.
