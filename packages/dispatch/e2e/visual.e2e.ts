@@ -50,6 +50,30 @@
  *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
  *    consecutive screenshots are identical before it compares, and a finite transition is
  *    fast-forwarded to completion by the default above.
+ *  - The first shot after the load. The light shot of the `issue-activity` row failed in the
+ *    reverse order alone, by 22 pixels against the bound of 20, in CI runs 45217963089,
+ *    45240350309 and 45279483024. It passed in both orders in run 45276346586. That run's tree
+ *    differs from the tree of run 45279483024 only in `.github/ci-filters.yaml`, so the page
+ *    did not change between them. The failed renders of runs 45240350309 and 45279483024 are
+ *    the same bytes. They differ from the baseline in 54 pixels, each by one 8-bit step: the
+ *    anti-aliasing of the four corners of the issue card, and the glyph `i` of "Which" in the
+ *    activity row. Nothing a reader can see moved. In the trace, the assertion took two
+ *    identical screenshots before it compared, so the page was not still changing. The dark
+ *    shot of that row matched its baseline in every one of those runs. The dark shot always
+ *    came after `emulateMedia` switched the scheme of a settled page. The light shot was the
+ *    first shot after the load, because the context is in light from the start and the switch
+ *    to light changed nothing. Host Chromium on an issue pod, a noisier renderer than CI's,
+ *    gave the same picture. With light shot first, the shots that varied between a normal and
+ *    a reverse run were light ones (6 and 7 of 42, in two pairs of runs). With dark shot
+ *    first, they were dark ones (8 of 42 dark, 1 light). So the shot that varies is the first
+ *    shot after the load, in either scheme. A browser of its own for each row did not remove
+ *    it: run 45279483024 had one. What is done: after the navigation, each row switches the
+ *    page to dark and waits for it to settle. Only then does the `SCHEMES` loop shoot light and
+ *    then dark, so each shot comes after a switch of scheme, as the dark shot always did. The
+ *    cost is one more settle wait per row. What this does not show: it is the best reading of
+ *    CI's evidence, not a proof of what the renderer does inside. If a light baseline moves
+ *    under it, take that baseline again from CI's render, as the header of
+ *    `e2e/visual-run.sh` says.
  *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
  *    navigates and waits. A page that focuses an element of its own on load draws the same ring
  *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
@@ -70,13 +94,7 @@
  *    measured).
  */
 import { readFileSync } from "node:fs";
-import {
-  expect,
-  type Page,
-  type PlaywrightWorkerArgs,
-  type PlaywrightWorkerOptions,
-  test,
-} from "@playwright/test";
+import { type Browser, expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import {
@@ -138,55 +156,16 @@ function readVisualSeed(path: string): VisualSeed {
   return { ...seed, seededAt };
 }
 
-/** The fixtures a row launches its own browser from: the project's engine (`browserName`) and
- *  its `launchOptions`, which are what the worker's `browser` fixture launches from too, and the
- *  `playwright` module that holds each engine's launcher. */
-type BrowserLaunch = Pick<
-  PlaywrightWorkerArgs & PlaywrightWorkerOptions,
-  "browserName" | "launchOptions" | "playwright"
->;
-
-/** `withAlice` in a browser launched for this row alone and closed when the row ends. A row must
- *  not draw what an earlier row left behind, and a browser the rows share is state they share, as
- *  the seed is: the reverse order exists to catch a row that draws what another row left
- *  (e2e/visual-order.ts). While every row drew in the worker's one `browser` fixture, CI runs
- *  45217963089 and 45240350309 failed `issue-activity` in light in the reverse order alone, by 22
- *  pixels against the bound of 20. About 18 of them were one glyph, the `i` of "Which" in the
- *  activity row `asked “Which sign-in path?”`, drawn one sub-pixel step over with no other glyph
- *  of the page moved; the rest were one step of anti-aliasing at the corners of the issue card.
- *  Nothing that page draws had changed since run 45199996621, which passed it in both orders. The
- *  `person` row had, and it runs before `issue-activity` in the reverse order: its page drew
- *  1280x1618 in all three runs, a full-page shot taller than the viewport, and it failed in run
- *  45199996621 against baselines of 1280x800 and passed in the two later runs against baselines
- *  retaken at 1280x1618. So what changed for `issue-activity` was what a row before it had done in
- *  the browser they shared.
- *
- *  The launch is the one the project configures, because it takes the fixtures `BrowserLaunch`
- *  names. What it costs is one browser launch per row. */
-async function withAliceInOwnBrowser(
-  { browserName, launchOptions, playwright }: BrowserLaunch,
-  check: (page: Page) => Promise<void>
-): Promise<void> {
-  const browser = await playwright[browserName].launch(launchOptions);
-  try {
-    await withAlice(browser, check);
-  } finally {
-    await browser.close();
-  }
-}
-
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
- *  only difference between them, and it decides the viewport, the browser `withAliceInOwnBrowser`
- *  launches and the directory the baseline is read from. The skip lives here so each of the two
- *  loops below is one call, and it comes before the launch, so a run that skips every row
- *  launches no browser. */
-async function shoot(launch: BrowserLaunch, route: ReviewedRoute): Promise<void> {
+ *  only difference between them, and it decides the viewport and the directory the baseline is
+ *  read from. The skip lives here so the two loops below stay one line each. */
+async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   if (seedPath === undefined) {
     test.skip(true, SKIP_REASON);
     return;
   }
   const seed = readVisualSeed(seedPath);
-  await withAliceInOwnBrowser(launch, async (page) => {
+  await withAlice(browser, async (page) => {
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -202,6 +181,10 @@ async function shoot(launch: BrowserLaunch, route: ReviewedRoute): Promise<void>
     // is the gap between the two: a literal would drift against a corpus written now.
     await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
     await page.goto(route.path(seed));
+    // A switch to dark and a settle before the first shot, so the light shot also comes after
+    // a switch of scheme ("The first shot after the load" in the header says why).
+    await page.emulateMedia({ colorScheme: "dark" });
+    await waitForRouteSettled(page, route);
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
       // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
@@ -352,12 +335,8 @@ const order = visualOrder();
 
 for (const route of inVisualOrder(shotRoutes, order)) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
-  test(`${route.name} matches its baseline in light and dark`, async ({
-    browserName,
-    launchOptions,
-    playwright,
-  }) => {
-    await shoot({ browserName, launchOptions, playwright }, route);
+  test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
+    await shoot(browser, route);
   });
 }
 
@@ -368,11 +347,7 @@ for (const route of inVisualOrder(shotRoutes, order)) {
 // directories under the same file name.
 for (const route of inVisualOrder(phoneShotRoutes, order)) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
-  test(`${route.name} matches its phone baseline in light and dark @phone`, async ({
-    browserName,
-    launchOptions,
-    playwright,
-  }) => {
-    await shoot({ browserName, launchOptions, playwright }, route);
+  test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
+    await shoot(browser, route);
   });
 }
