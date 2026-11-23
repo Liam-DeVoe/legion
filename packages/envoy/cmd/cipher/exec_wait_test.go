@@ -315,7 +315,7 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) []string {
 	binary := buildRecordingBackoff(t)
 	backoffs := filepath.Join(t.TempDir(), "backoffs")
 	cmd := exec.Command(binary, "WAIT_ME", "--wait", "1m", "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+b.URL, "AGENT_SECRETS_KEY_DIR="+key.keyDir, backoffLogEnv+"="+backoffs)
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+b.URL, "AGENT_SECRETS_KEY_DIR="+key.keyDir, backoffLogEnv+"="+backoffs)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
@@ -424,15 +424,18 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // read at once, pending until 9 s after the first status read reached it. The loop does not read
 // it in a tight loop: an answer that is still pending well before the wait it asked has run out
 // makes it sleep its old backoff (pollBackoff, which the build records), so the child runs after
-// at most 6 reads.
+// at most 6 reads. A client held up for the whole wait it asked (record.MaxRequestWaitSeconds)
+// sees its first answer only after that wait has run out, so it rightly sleeps no backoff and
+// learns of the grant from its second read: a run with no sleep fails only when it read more than
+// twice.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
 	backoffs := runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(backoffs) == 0 {
-		t.Errorf("the client slept no backoff against a broker that answered each read at once (waits %q); want its backoff", b.waits())
+	if len(backoffs) == 0 && len(b.reads) > 2 {
+		t.Errorf("the client slept no backoff against a broker that answered each read at once, and read %d times (waits %q); want its backoff", len(b.reads), b.waits())
 	}
 	if len(b.reads) > 6 {
 		t.Errorf("the broker served %d status reads (waits %q), want at most 6: the loop must back off from a broker that answers at once", len(b.reads), b.waits())
