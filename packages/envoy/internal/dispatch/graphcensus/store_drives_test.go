@@ -227,7 +227,8 @@ const (
 // 0.000001, with one issue, its issue links index past the issues it has.
 const seedScale = "0.0002"
 
-// seedWait bounds each wait on the seed: for it to queue behind a hold, and for it to exit.
+// seedWait bounds the wait for the seed to exit once it is let go; its waits to queue behind a
+// hold end on the queue itself (queuedAt).
 const seedWait = 2 * time.Minute
 
 // seedStatementSpace is a run of whitespace in a statement, which the seed's waits fold.
@@ -272,7 +273,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	// any statement but one that starts as statement does.
 	queuedAt := func(t *testing.T, holder pgx.Tx, table, statement string) {
 		t.Helper()
-		testwait.UntilPolling(t, 10*time.Millisecond, "the seed to queue behind the hold on "+table, func() (bool, bool) {
+		testwait.UntilPolling(t, 10*time.Millisecond, "the seed to queue behind the hold on "+table+" (the backends queued last read)", func() (int, bool) {
 			select {
 			case <-process.Exited:
 				t.Fatalf("the seed exited before it queued behind the hold on %s; it wrote:\n%s", table, process.Output.String())
@@ -282,7 +283,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			if err != nil {
 				t.Fatalf("count the backends queued behind the hold on %s: %v", table, err)
 			}
-			return waiters >= 1, waiters >= 1
+			return waiters, waiters >= 1
 		})
 		var waited string
 		if err := database.Pool.QueryRow(ctx, `
