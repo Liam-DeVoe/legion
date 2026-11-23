@@ -6,17 +6,21 @@ package main
 // (dispatch://INFRA-3231).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/cmd/writing-check/harness"
+	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/eval"
 )
 
@@ -505,21 +509,24 @@ func TestDatasetFetchWorkIsReusedFromOneDispatchOnly(t *testing.T) {
 	}
 }
 
-// classify keeps an earlier verdict only where it was made with this run's prompt, model and
-// input; and a text whose last line is an error has no verdict, though an earlier line held one.
+// classify keeps an earlier verdict only where it was made with this run's prompt and input by a
+// model it keeps (--model or a --keep-model); and a text whose last line is an error has no
+// verdict, though an earlier line held one.
 func TestClassifyKeepsOnlyAVerdictOfItsOwnInputs(t *testing.T) {
 	v := dsVerdict{Text: "t1", PromptSHA256: "p", RequestedModel: "m", InputSHA256: "i", Verdict: "about_words"}
 	for _, c := range []struct {
-		name                 string
-		prompt, model, input string
-		keep                 bool
+		name          string
+		prompt, input string
+		models        []string
+		keep          bool
 	}{
-		{"the same", "p", "m", "i", true},
-		{"another prompt", "p2", "m", "i", false},
-		{"another model", "p", "m2", "i", false},
-		{"another input", "p", "m", "i2", false},
+		{"the same", "p", "i", []string{"m"}, true},
+		{"a kept model", "p", "i", []string{"m2", "m"}, true},
+		{"another prompt", "p2", "i", []string{"m"}, false},
+		{"another model", "p", "i", []string{"m2"}, false},
+		{"another input", "p", "i2", []string{"m"}, false},
 	} {
-		if got := currentVerdict(v, c.prompt, c.model, c.input); got != c.keep {
+		if got := currentVerdict(v, c.prompt, c.models, c.input); got != c.keep {
 			t.Errorf("%s: kept %t, want %t", c.name, got, c.keep)
 		}
 	}
@@ -531,6 +538,106 @@ func TestClassifyKeepsOnlyAVerdictOfItsOwnInputs(t *testing.T) {
 	}
 	if _, ok := got["t1"]; ok || got["t2"].Verdict != "plain" {
 		t.Errorf("the verdicts read: %+v", got)
+	}
+}
+
+// The two passes dataset/DATASET records, through classify and its stand-in model, which refuses
+// four texts when the default model is asked: the second pass, --model claude-sonnet-5-5
+// --keep-model claude-sonnet-4-6, sends only those four, to the second model, and keeps every
+// verdict of the first; a rerun with the default model and --keep-model claude-sonnet-5-5 sends
+// nothing and writes no line. Without --keep-model a verdict of another model asked for is
+// classified again, and a refusal leaves its text with no verdict, as before.
+func TestClassifyKeepsTheVerdictsOfEachModelItKeeps(t *testing.T) {
+	const first, second = dsDefaultModel, "claude-sonnet-5-5"
+	refused := []string{"I cannot follow this at all.", "What is this list for?", `Do not write "names the"`, `Good, "shows the cost"`}
+	// refusedText is the one of refused that the person's part of a request holds, "" for none.
+	refusedText := func(r modeltest.Request) string {
+		_, rest, _ := strings.Cut(r.Text, "<person_text")
+		part, _, _ := strings.Cut(rest, "</person_text>")
+		for _, text := range refused {
+			if strings.Contains(part, text) {
+				return text
+			}
+		}
+		return ""
+	}
+	stand := modeltest.New(t,
+		modeltest.Rule{Model: first, Match: func(r modeltest.Request) bool { return refusedText(r) != "" },
+			Reply: modeltest.Reply{Status: http.StatusBadRequest, Text: "the stand-in refuses this text"}},
+		modeltest.Rule{Reply: modeltest.Reply{Text: `{"verdict":"none","words":[]}`}},
+	)
+	dir := t.TempDir()
+	snapshot, _ := standardFixture().write(t, dir)
+	key, out := filepath.Join(dir, "key"), filepath.Join(dir, "classified.jsonl")
+	if err := os.WriteFile(key, []byte("stand-in\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// classify runs one pass on the verdicts file at path, and answers the requests it sent.
+	classify := func(path string, flags ...string) (int, string, []modeltest.Request) {
+		t.Helper()
+		before := len(stand.Requests())
+		code, _, stderr := runCmd(t, append([]string{"dataset", "classify", "--snapshot", snapshot, "--out", path, "--endpoint", stand.URL, "--key-file", key}, flags...)...)
+		return code, stderr, stand.Requests()[before:]
+	}
+	verdicts := func(path string) map[string]dsVerdict {
+		t.Helper()
+		got, _, err := readVerdicts(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	code, stderr, calls := classify(out)
+	texts := len(calls)
+	firstPass := verdicts(out)
+	if code != 1 || !strings.Contains(stderr, "4 texts got no verdict") || len(firstPass) != texts-4 {
+		t.Fatalf("the first pass = %d, %d verdicts of %d texts, want 1 and all but the 4 refused:\n%s", code, len(firstPass), texts, stderr)
+	}
+
+	code, stderr, calls = classify(out, "--model", second, "--keep-model", first)
+	var sent []string
+	for _, r := range calls {
+		sent = append(sent, r.Model+": "+refusedText(r))
+	}
+	var want []string
+	for _, text := range refused {
+		want = append(want, second+": "+text)
+	}
+	slices.Sort(sent)
+	slices.Sort(want)
+	if code != 0 || !slices.Equal(sent, want) {
+		t.Errorf("the second pass = %d and sent %q, want 0 and the 4 refused texts alone, to %s:\n%s", code, sent, second, stderr)
+	}
+	both, changed := verdicts(out), 0
+	for id, v := range firstPass {
+		if !reflect.DeepEqual(both[id], v) {
+			changed++
+		}
+	}
+	if changed > 0 || len(both) != texts {
+		t.Errorf("after the second pass %d of %d texts have a verdict, and %d of the first pass's %d verdicts changed; want all, and none", len(both), texts, changed, len(firstPass))
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stderr, calls = classify(out, "--keep-model", second)
+	if after, _ := os.ReadFile(out); code != 0 || len(calls) != 0 || !bytes.Equal(after, data) {
+		t.Errorf("a rerun of the default model keeping %s = %d, sent %d texts, and changed the verdicts file %t; want 0, none, unchanged:\n%s", second, code, len(calls), !bytes.Equal(after, data), stderr)
+	}
+
+	other := filepath.Join(dir, "other.jsonl")
+	if err := os.WriteFile(other, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stderr, calls = classify(other, "--model", second); code != 0 || len(calls) != texts-4 {
+		t.Errorf("--model %s with no --keep-model = %d and sent %d texts, want 0 and the %d of %s again:\n%s", second, code, len(calls), texts-4, first, stderr)
+	}
+	code, stderr, calls = classify(out)
+	if got := verdicts(out); code != 1 || len(calls) != 4 || len(got) != texts-4 {
+		t.Errorf("the default model with no --keep-model = %d, sent %d texts and left %d verdicts, want 1, the 4 of %s, and %d:\n%s", code, len(calls), len(got), second, texts-4, stderr)
 	}
 }
 

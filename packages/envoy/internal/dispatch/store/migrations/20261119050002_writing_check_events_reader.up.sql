@@ -20,9 +20,11 @@
 -- takes ACCESS EXCLUSIVE on writing_check_events for the catalog write alone and scans no stored
 -- row. Every stored row satisfies it, since the check it replaces is narrower, and every row
 -- written after it is checked. No row is backfilled: a row written before this migration recorded
--- no reader, and its null says so. Its identifier is a UTC moment of the forward merge of main on
--- 2026-11-19, which put this migration after main's newest, as `migrationid` requires of every
--- migration past the numbered series.
+-- no reader, and its null says so. Its identifier is the UTC moment of the forward merge of main
+-- on 2026-11-19 it was named at. `migrationid` requires such a timestamp, not an order:
+-- migrations main took since sort after it, and the runner applies every version
+-- schema_migrations does not record, so a database that ran those first applies this one at its
+-- next boot (internal/dispatch/store/migrate_out_of_order_test.go).
 alter table writing_check_events
   add column reader text,
   drop constraint writing_check_events_outcome_check,

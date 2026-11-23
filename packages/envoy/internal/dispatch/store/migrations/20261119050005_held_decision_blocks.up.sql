@@ -27,9 +27,11 @@
 -- insert of an ask and of an ask block's author and never reads these, so it rolls
 -- (cmd/dispatch/README.md, "Database migrations"). The census's catalog-only exemption covers a
 -- nullable text column alone, so CensusTableLimit applies to both tables, which are far below
--- it. The identifier is a UTC moment of the forward merge of main on 2026-11-19, which put this
--- migration after main's newest, as `migrationid` requires of every migration past the numbered
--- series.
+-- it. The identifier is the UTC moment of the forward merge of main on 2026-11-19 it was named
+-- at. `migrationid` requires such a timestamp, not an order: migrations main took since sort
+-- after it, and the runner applies every version schema_migrations does not record, so a database
+-- that ran those first applies this one at its next boot
+-- (internal/dispatch/store/migrate_out_of_order_test.go).
 alter table asks add column held_until timestamptz;
 
 alter table doc_ask_block_authors add column person_typed boolean not null default false;

@@ -14,8 +14,8 @@ body: |-
   `dataset owner-texts` or `dataset followups` leaves its output as it was: an earlier run's files
   stay, and an output directory that did not exist is not left behind. A run that continues
   earlier results (`label --resume`, `fetch --resume`, `readers --state`, `dataset fetch`,
-  `dataset classify`, `harness score` and `harness phrases-labels`) reuses them only under the
-  same inputs, by their digests,
+  `dataset classify`, `harness load`, `harness score` and `harness phrases-labels`) reuses them
+  only under the same inputs, by their digests,
   and refuses or redoes the rest; `harness asked-words` measures a run only against the cases it
   scored, and refuses with exit 2 a `--cases` build of other cases; a run whose model calls failed
   or stopped (`probe-model`, `label`,

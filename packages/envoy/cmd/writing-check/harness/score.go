@@ -997,8 +997,15 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			if inst, err = readLocalInstance(*localPath); err != nil {
 				return usage(err.Error())
 			}
-			if run.loaded, err = readLoaded(*loadedPath, inst.records()); err != nil {
+			var build LoadedBuild
+			if run.loaded, build, err = readLoaded(*loadedPath, inst.records()); err != nil {
 				return usage(err.Error())
+			}
+			// A case's id is the same in every build, so a line of another build names that build's
+			// record of the case: the run reads only the lines of the build --cases holds.
+			if build != (LoadedBuild{}) && build.CasesSHA256 != casesSHA {
+				return usage(fmt.Sprintf("--loaded %s holds cases loaded from cases.jsonl.gz sha256 %s with verdicts sha256 %s, and %s of --cases is %s: a case's id is the same in every build, so those records are not this build's; load it with `harness load` and a new --out, and give that loaded.jsonl",
+					*loadedPath, build.CasesSHA256, build.VerdictsSHA256, casesFile, casesSHA))
 			}
 			if run.rules, err = instanceRules(inst, *plan); err != nil {
 				return usage(err.Error())

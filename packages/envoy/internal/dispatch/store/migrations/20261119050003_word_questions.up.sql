@@ -36,9 +36,11 @@
 -- Two new tables no earlier release names: nothing existing is read or rewritten, no foreign key
 -- reaches another table (an event a test database truncates must not be held by a record), and
 -- the release before this one neither reads nor writes them, so this rolls (cmd/dispatch/README.md,
--- "Database migrations") and the census answers 0. The identifier is a UTC moment of the forward
--- merge of main on 2026-11-19, which put this migration after main's newest, as `migrationid`
--- requires of every migration past the numbered series.
+-- "Database migrations") and the census answers 0. The identifier is the UTC moment of the
+-- forward merge of main on 2026-11-19 it was named at. `migrationid` requires such a timestamp,
+-- not an order: migrations main took since sort after it, and the runner applies every version
+-- schema_migrations does not record, so a database that ran those first applies this one at its
+-- next boot (internal/dispatch/store/migrate_out_of_order_test.go).
 create table word_questions (
   id bigint generated always as identity primary key,
   source text not null check (source in ('event', 'define')),

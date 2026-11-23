@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -221,7 +222,8 @@ func TestLoadOpensAConversationThatStartsWithTheWritersText(t *testing.T) {
 func TestLoadedLinesHoldTheCasesOfOneSeeding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "loaded.jsonl")
 	first := LoadedInstance{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T10:00:00Z"}
-	lines, done, err := openLoadedLog(path, first)
+	build := LoadedBuild{CasesSHA256: "cases-1", VerdictsSHA256: "verdicts-1"}
+	lines, done, err := openLoadedLog(path, first, build)
 	if err != nil || len(done) != 0 {
 		t.Fatalf("a new loaded.jsonl: %v, %v", done, err)
 	}
@@ -233,7 +235,7 @@ func TestLoadedLinesHoldTheCasesOfOneSeeding(t *testing.T) {
 	if err := lines.close(); err != nil {
 		t.Fatal(err)
 	}
-	lines, done, err = openLoadedLog(path, first)
+	lines, done, err = openLoadedLog(path, first, build)
 	if err != nil || !done["plain/a"] || len(done) != 1 {
 		t.Fatalf("the records of a --keep restart continue %v (%v), want plain/a alone", done, err)
 	}
@@ -242,9 +244,51 @@ func TestLoadedLinesHoldTheCasesOfOneSeeding(t *testing.T) {
 		{Database: "dispatch_harness_2", Seeded: "seeded 2026-11-20T11:00:00Z"},
 		{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z"},
 	} {
-		if _, _, err := openLoadedLog(path, other); err == nil || !strings.Contains(err.Error(), "a load continues only in the records it began in") {
+		if _, _, err := openLoadedLog(path, other, build); err == nil || !strings.Contains(err.Error(), "a load continues only in the records it began in") {
 			t.Errorf("a load into %+v with the same --out = %v, want the refusal", other, err)
 		}
+	}
+}
+
+// loaded.jsonl names the build each case was loaded from: the SHA-256 of its cases.jsonl.gz and of
+// the verdicts file. A case's id is the same in every build, so a load continues only the lines of
+// its own build and verdicts file, and refuses a file of another, or one whose lines name none (a
+// load wrote it before lines named them), naming the way out: a new --out.
+func TestLoadedLinesHoldTheCasesOfOneBuild(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loaded.jsonl")
+	inst := LoadedInstance{Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T10:00:00Z"}
+	build := LoadedBuild{CasesSHA256: "cases-1", VerdictsSHA256: "verdicts-1"}
+	lines, _, err := openLoadedLog(path, inst, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lines.add(Loaded{CaseID: "plain/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lines.close(); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, got, err := readLoaded(path, inst); err != nil || got != build || loaded["plain/a"].Build != build {
+		t.Errorf("loaded.jsonl names build %+v and holds %+v (%v), want plain/a of %+v", got, loaded, err, build)
+	}
+	lines, done, err := openLoadedLog(path, inst, build)
+	if err != nil || !done["plain/a"] {
+		t.Fatalf("a load of the same build continues %v (%v), want plain/a", done, err)
+	}
+	lines.close()
+	for _, other := range []LoadedBuild{
+		{CasesSHA256: "cases-2", VerdictsSHA256: "verdicts-1"},
+		{CasesSHA256: "cases-1", VerdictsSHA256: "verdicts-2"},
+	} {
+		want := fmt.Sprintf("holds cases loaded from cases.jsonl.gz sha256 cases-1 with verdicts sha256 verdicts-1, and this load reads cases.jsonl.gz sha256 %s with verdicts sha256 %s", other.CasesSHA256, other.VerdictsSHA256)
+		if _, _, err := openLoadedLog(path, inst, other); err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "load it with a new --out") {
+			t.Errorf("a load of %+v with the --out of %+v = %v, want the refusal saying %q", other, build, err, want)
+		}
+	}
+	writeJSONFile(t, path, Loaded{CaseID: "plain/a", Instance: inst})
+	if _, _, err := openLoadedLog(path, inst, build); err == nil || !strings.Contains(err.Error(), "holds case plain/a with no SHA-256 of the cases.jsonl.gz and the verdicts file") ||
+		!strings.Contains(err.Error(), "load the build with a new --out") {
+		t.Errorf("a load with the --out of a load that named no build = %v, want the refusal", err)
 	}
 }
 
@@ -351,6 +395,143 @@ func TestScoreRefusesTheLoadedLinesOfOtherRecords(t *testing.T) {
 	}
 	if n := len(stand.Requests()); n != 0 {
 		t.Errorf("the refused run made %d model calls", n)
+	}
+}
+
+// otherBuild writes beside build a later build of the same cases, by the same ids, one of whose
+// agent texts reads otherwise, and answers its directory.
+func otherBuild(t *testing.T, build string) string {
+	t.Helper()
+	other := filepath.Join(filepath.Dir(build), "other-build")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var cases []any
+	for i, c := range fixtureCases() {
+		if i == 0 {
+			c.Agent.Text += " A later build reads this too."
+		}
+		cases = append(cases, c)
+	}
+	writeGzipLines(t, filepath.Join(other, casesFile), cases...)
+	for _, name := range []string{documentsFile, "counts.json"} {
+		data, err := os.ReadFile(filepath.Join(build, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(other, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return other
+}
+
+// writeLoaded writes the loaded.jsonl at path as a load of build into inst writes it, one line for
+// each fixture case, and answers the build's digests.
+func writeLoaded(t *testing.T, path string, inst LocalInstance, build, verdicts string) LoadedBuild {
+	t.Helper()
+	casesSHA, err := fileSHA256(filepath.Join(build, casesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdictsSHA, err := fileSHA256(verdicts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := LoadedBuild{CasesSHA256: casesSHA, VerdictsSHA256: verdictsSHA}
+	lines, _, err := openLoadedLog(path, inst.records(), loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fixtureCases() {
+		if err := lines.add(Loaded{CaseID: c.ID, Project: "TEST", Issue: "TEST-1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := lines.close(); err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+// `harness load` of a later build with the --out of a load of an earlier one refuses before it
+// reaches the instance's database, though each case has the same id in both, and names both
+// builds' digests and a new --out. With the same build it continues that --out, and goes on to the
+// database, here a port that answers nothing.
+func TestLoadRefusesTheOutOfAnotherBuild(t *testing.T) {
+	build, _ := writeFixture(t)
+	other := otherBuild(t, build)
+	dir := t.TempDir()
+	inst := LocalInstance{BaseURL: "http://127.0.0.1:4200", Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z",
+		DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"}
+	local, verdicts, out := filepath.Join(dir, "local.json"), filepath.Join(dir, "verdicts.jsonl"), filepath.Join(dir, "load")
+	writeJSONFile(t, local, inst)
+	if err := os.WriteFile(verdicts, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loaded := writeLoaded(t, filepath.Join(out, "loaded.jsonl"), inst, build, verdicts)
+	otherSHA, err := fileSHA256(filepath.Join(other, casesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runHarness("load", "--local", local, "--cases", other, "--verdicts", verdicts, "--out", out)
+	want := "holds cases loaded from cases.jsonl.gz sha256 " + loaded.CasesSHA256 + " with verdicts sha256 " + loaded.VerdictsSHA256 +
+		", and this load reads cases.jsonl.gz sha256 " + otherSHA + " with verdicts sha256 " + loaded.VerdictsSHA256
+	if code != 1 || !strings.Contains(stderr, want) || !strings.Contains(stderr, "load it with a new --out") || strings.Contains(stderr, "the local instance's database") {
+		t.Errorf("a load of another build with the --out of the load before = %d, want 1 saying %q before the database:\n%s", code, want, stderr)
+	}
+	code, _, stderr = runHarness("load", "--local", local, "--cases", build, "--verdicts", verdicts, "--out", out)
+	if code != 1 || !strings.Contains(stderr, "the local instance's database") {
+		t.Errorf("a load of the same build with the --out of the load before = %d, want it to reach the database:\n%s", code, stderr)
+	}
+}
+
+// `harness score` of a change that calls the local Dispatch refuses a --loaded of another build
+// than --cases, though each case has the same id in both, and one whose lines name no build (a load
+// wrote it before lines named one), before it calls a model or claims a held-out run in the
+// exposure log. A --loaded of the same build is read: a dry run of it passes.
+func TestScoreRefusesTheLoadedLinesOfAnotherBuild(t *testing.T) {
+	build, sessions := writeFixture(t)
+	other := otherBuild(t, build)
+	stand := modeltest.New(t, allJudgementRules(t)...)
+	dir := t.TempDir()
+	inst := LocalInstance{BaseURL: "http://127.0.0.1:1", Database: "dispatch_harness_1", Seeded: "seeded 2026-11-20T11:00:00Z",
+		DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"}
+	local, verdicts, loadedPath, exposure := filepath.Join(dir, "local.json"), filepath.Join(dir, "verdicts.jsonl"), filepath.Join(dir, "loaded.jsonl"), filepath.Join(dir, "exposure.log")
+	writeJSONFile(t, local, inst)
+	if err := os.WriteFile(verdicts, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded := writeLoaded(t, loadedPath, inst, build, verdicts)
+	otherSHA, err := fileSHA256(filepath.Join(other, casesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	score := func(cases, out string, flags ...string) (int, string) {
+		code, _, stderr := runHarness(append([]string{"score", "--change", "2", "--local", local, "--loaded", loadedPath, "--cases", cases, "--sessions", sessions,
+			"--out", filepath.Join(dir, out), "--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50", "--exposure-log", exposure}, flags...)...)
+		return code, stderr
+	}
+	code, stderr := score(other, "other", "--part", "held_out", "--commit", "c0ffee")
+	want := "holds cases loaded from cases.jsonl.gz sha256 " + loaded.CasesSHA256 + " with verdicts sha256 " + loaded.VerdictsSHA256 + ", and cases.jsonl.gz of --cases is " + otherSHA
+	if code != 2 || !strings.Contains(stderr, want) || !strings.Contains(stderr, "load it with `harness load` and a new --out") {
+		t.Errorf("a score with the loaded.jsonl of another build = %d, want 2 saying %q:\n%s", code, want, stderr)
+	}
+	if _, err := os.Stat(exposure); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused held-out run wrote the exposure log (%v)", err)
+	}
+	if code, stderr = score(build, "same", "--dry-run"); code != 0 {
+		t.Errorf("a dry run with the loaded.jsonl of its own build = %d, want 0:\n%s", code, stderr)
+	}
+	writeJSONFile(t, loadedPath, Loaded{CaseID: "question/comment:q1@11", Instance: inst.records()})
+	if code, stderr = score(build, "before", "--dry-run"); code != 2 || !strings.Contains(stderr, "holds case question/comment:q1@11 with no SHA-256 of the cases.jsonl.gz and the verdicts file") {
+		t.Errorf("a score with a loaded.jsonl that names no build = %d, want 2 and the refusal:\n%s", code, stderr)
+	}
+	if n := len(stand.Requests()); n != 0 {
+		t.Errorf("the runs made %d model calls", n)
 	}
 }
 

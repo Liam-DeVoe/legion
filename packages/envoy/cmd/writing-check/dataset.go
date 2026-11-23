@@ -2201,11 +2201,13 @@ func readVerdicts(path string) (map[string]dsVerdict, string, error) {
 	return out, sha256Hex(data), nil
 }
 
-// currentVerdict is whether v, a verdict an earlier run wrote, was made with the prompt, the model
-// asked for and the input of this run, whose digests the line records: only such a verdict is
-// kept, so a change of any of the three classifies the text again.
-func currentVerdict(v dsVerdict, promptSHA, model, inputSHA string) bool {
-	return v.PromptSHA256 == promptSHA && v.RequestedModel == model && v.InputSHA256 == inputSHA
+// currentVerdict is whether v, a verdict an earlier run wrote, was made with the prompt and the
+// input of this run, whose digests the line records, and asked of one of models, the models the
+// run keeps (--model and each --keep-model). Only such a verdict is kept, so a change of the
+// prompt or the input, or a verdict asked of a model the run does not keep, classifies the text
+// again.
+func currentVerdict(v dsVerdict, promptSHA string, models []string, inputSHA string) bool {
+	return v.PromptSHA256 == promptSHA && slices.Contains(models, v.RequestedModel) && v.InputSHA256 == inputSHA
 }
 
 // classifyInput is the user message of one classify call (wordrecords.Input): the agent text the
@@ -2288,6 +2290,14 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 	snapshot := flags.String("snapshot", "", "the snapshot fetch wrote (required)")
 	out := flags.String("out", "", "the verdicts file, JSONL; a run continues the texts it holds no verdict for (required)")
 	modelID := flags.String("model", dsDefaultModel, "the Claude model that classifies")
+	var keepModels []string
+	flags.Func("keep-model", "a model whose verdicts of this prompt and input the run keeps beside --model's, so it classifies only the texts neither gave one (repeatable)", func(id string) error {
+		if id == "" {
+			return errors.New("give a model id")
+		}
+		keepModels = append(keepModels, id)
+		return nil
+	})
 	endpoint := flags.String("endpoint", os.Getenv("ANTHROPIC_BASE_URL"), "the model gateway's base URL (Anthropic messages)")
 	keyFile := flags.String("key-file", dsDefaultKeyFile, "a file holding the gateway's key (never printed)")
 	concurrency := flags.Int("concurrency", 8, "calls in flight at once")
@@ -2343,15 +2353,19 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		return fail(err)
 	}
-	// A verdict is kept only where it was made with this run's prompt, input and model
-	// (currentVerdict); any other is not this run's, so the text is classified again and its new
-	// line takes its place.
+	// A verdict is kept only where it was made with this run's prompt and input by --model or a
+	// --keep-model (currentVerdict); any other is not this run's, so the text is classified again
+	// and its new line takes its place. A text that holds a kept model's verdict is never sent, so
+	// no line of this run, a refusal's error line among them, takes that verdict's place: a pass of
+	// a second model that keeps the first's classifies only the texts the first refused, and a run
+	// that keeps both classifies none.
+	kept := append([]string{*modelID}, keepModels...)
 	promptSHA := sha256Hex([]byte(wordrecords.SelectPrompt))
 	var todo []*dsText
 	stale := 0
 	for _, p := range persons {
 		v, ok := done[p.tid()]
-		if ok && currentVerdict(v, promptSHA, *modelID, sha256Hex([]byte(ix.classifyInput(p)))) {
+		if ok && currentVerdict(v, promptSHA, kept, sha256Hex([]byte(ix.classifyInput(p)))) {
 			continue
 		}
 		if ok {
@@ -2363,7 +2377,7 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 	if *limit > 0 && len(todo) > *limit {
 		todo = todo[:*limit]
 	}
-	fmt.Fprintf(stderr, "writing-check dataset classify: %d texts people wrote, %d with a verdict of this prompt, input and model, %d with one of another (classified again), %d to classify in this run\n", len(persons), current, stale, len(todo))
+	fmt.Fprintf(stderr, "writing-check dataset classify: %d texts people wrote, %d with a verdict of this prompt and input by a model it keeps (--model, --keep-model), %d with one of another (classified again), %d to classify in this run\n", len(persons), current, stale, len(todo))
 	file, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return fail(err)

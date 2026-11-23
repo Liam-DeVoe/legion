@@ -57,7 +57,7 @@ go run ./cmd/writing-check regress --cases <cases.jsonl> --repeat-bound <share> 
 go run ./cmd/writing-check reading --in <cases.jsonl> --after <event id> --through <event id> [--exclude <manifest>]... --out <dir> <reader flags>
 go run ./cmd/writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
 go run ./cmd/writing-check dataset fetch --end <RFC 3339 time> --owner <login> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
-go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
+go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>] [--keep-model <id>]...
 go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) [--to-development <file>] --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
@@ -967,6 +967,7 @@ the prompt's SHA-256.
 | --- | --- |
 | `--snapshot`, `--out` | The snapshot, and the verdicts file (JSONL). |
 | `--model` | The Claude model (default `claude-sonnet-4-6`). The call is sent at temperature 0 with thinking off. |
+| `--keep-model` | A model whose verdicts the run keeps beside those of `--model` (repeatable; see below). |
 | `--endpoint`, `--key-file` | The model gateway, Anthropic messages (default `$ANTHROPIC_BASE_URL` and `/var/run/model-gateway-key/key`). |
 | `--concurrency` | The calls in flight at once (default 8). |
 | `--limit` | Classify at most this many texts in this run (default 0: all). |
@@ -978,10 +979,15 @@ attempts. A call that fails with a 429, a 5xx, a network error or the time bound
 to 6 times, after 2 s, then twice as long each time. A reply that is not one verdict of the schema
 is asked again at once, up to 3 times. A text that still has no verdict gets a line with an
 `error`. The next run classifies each text again that has no verdict of its own inputs: no line,
-a last line with an `error`, or a verdict made with another prompt, model asked for or user
-message (its `prompt_sha256`, `requested_model` and `input_sha256`). The new line takes the old
-one's place, since the last line of a text wins, and a last line with an `error` leaves the text
-with no verdict. The summary prints
+a last line with an `error`, or a verdict made with another prompt or user message (its
+`prompt_sha256` and `input_sha256`), or by a model asked for (`requested_model`) that the run
+does not keep: neither `--model` nor a `--keep-model`. The new line takes the old one's place,
+since the last line of a text wins, and a last line with an `error` leaves the text with no
+verdict. A text that holds a verdict of a model the run keeps is not sent, so no line of the run,
+a refusal's `error` among them, takes that verdict's place. So the two passes `dataset/DATASET`
+records are a run with the default model, then a run with `--model claude-sonnet-5-5
+--keep-model claude-sonnet-4-6`, which classifies only the texts the first refused; a run with
+the default model and `--keep-model claude-sonnet-5-5` then classifies none. The summary prints
 the verdicts of the owner and of the other people, the served models, the prompt's SHA-256 and
 the tokens of every call that the file records.
 
@@ -2353,11 +2359,17 @@ written before the case's text (plan Decision 19), never the case's own question
 Dispatch writes a word record, so `load` writes those rows into the database that `local` made. A
 document the instance refuses (`INVALID_MARKDOWN`, for a block that points at a text of production
 it does not hold) is left out and named in the case's line. `loaded.jsonl` holds where each record
-stands, each line with the database and the `seeded` mark of `local.json`, and a load continues
-the cases it holds no line for. It refuses a `loaded.jsonl` of another database or mark, before it
-reaches the database, since those records are not in the instance; a `--keep` restart keeps both,
-so a load continues there. `score --loaded` refuses such a file too, before it calls a model or
-claims a held-out run in the exposure log. A line that is not written stops the load and fails it.
+stands, each line with the database and the `seeded` mark of `local.json`, and the SHA-256 of the
+build's `cases.jsonl.gz` and of the `--verdicts` file it was loaded from (`build`), and a load
+continues the cases it holds no line for. It refuses a `loaded.jsonl` of another database or mark,
+before it reaches the database, since those records are not in the instance; a `--keep` restart
+keeps both, so a load continues there. A case's id (its group and anchor) is the same in every
+build, so it refuses as well, naming both builds' digests, a `loaded.jsonl` of another build or
+verdicts file, and one whose lines name none, which a load wrote before lines named them: load
+that build with a new `--out`. `score --loaded` refuses a file of another database or mark, one
+whose lines name no build, and one loaded from another `cases.jsonl.gz` than that of `--cases`,
+before it calls a model or claims a held-out run in the exposure log. A line that is not written
+stops the load and fails it.
 So does a line of `score`'s `cases.jsonl`. Write times
 and authors differ from
 production, so the grader reads the record from the dataset, never from the local instance.

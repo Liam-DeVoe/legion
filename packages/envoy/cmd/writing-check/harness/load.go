@@ -37,11 +37,11 @@ type verdictLine struct {
 }
 
 // readWordRecords is the owner's texts about words of the verdicts file, in event order: the
-// last line of each text that holds no error.
-func readWordRecords(path, owner string) ([]verdictLine, error) {
+// last line of each text that holds no error; and the SHA-256 of the bytes it read.
+func readWordRecords(path, owner string) ([]verdictLine, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	byText := map[string]verdictLine{}
 	var order []string
@@ -63,7 +63,7 @@ func readWordRecords(path, owner string) ([]verdictLine, error) {
 		}
 	}
 	slices.SortFunc(out, func(a, b verdictLine) int { return cmp.Compare(a.EventID, b.EventID) })
-	return out, nil
+	return out, sha256Hex(data), nil
 }
 
 // recordsBefore is the word records written before the case's text (plan Decision 19): never the
@@ -107,8 +107,10 @@ type Loaded struct {
 	LeftOut []string `json:"left_out,omitempty"`
 	// ReaderWords is the word records written for the reader.
 	ReaderWords int `json:"reader_words"`
-	// Instance is the records the case was loaded into: a load continues only there.
+	// Instance is the records the case was loaded into: a load continues only there. Build is the
+	// dataset it was loaded from: a load continues, and a score reads the line, only for that one.
 	Instance LoadedInstance `json:"instance"`
+	Build    LoadedBuild    `json:"build"`
 	Error    string         `json:"error,omitempty"`
 	Time     string         `json:"time"`
 }
@@ -125,6 +127,14 @@ type LoadedInstance struct {
 // records names the records inst runs on, as a line of loaded.jsonl names them.
 func (inst LocalInstance) records() LoadedInstance {
 	return LoadedInstance{Database: inst.Database, Seeded: inst.Seeded}
+}
+
+// LoadedBuild names the dataset a line of loaded.jsonl was loaded from: the SHA-256 of the build's
+// cases.jsonl.gz and of the --verdicts file the reader's word records come from. A case's id
+// (group and anchor) is the same in every build, so a line is a record of that build alone.
+type LoadedBuild struct {
+	CasesSHA256    string `json:"cases_sha256"`
+	VerdictsSHA256 string `json:"verdicts_sha256"`
 }
 
 // LoadedDocument is one document of a record in the local Dispatch.
@@ -548,7 +558,7 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	records, err := readWordRecords(*verdicts, owner)
+	records, verdictsSHA, err := readWordRecords(*verdicts, owner)
 	if err != nil {
 		return fail(err)
 	}
@@ -563,10 +573,15 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
-	// The lines of loaded.jsonl are records of one database as one start seeded it: a load into
-	// other records is refused before it reaches the database.
+	casesSHA, err := fileSHA256(filepath.Join(*casesDir, casesFile))
+	if err != nil {
+		return fail(err)
+	}
+	// The lines of loaded.jsonl are records of one database as one start seeded it, loaded from
+	// one build and verdicts file: a load into other records, or of another build, is refused
+	// before it reaches the database.
 	path := filepath.Join(*out, "loaded.jsonl")
-	lines, done, err := openLoadedLog(path, inst.records())
+	lines, done, err := openLoadedLog(path, inst.records(), LoadedBuild{CasesSHA256: casesSHA, VerdictsSHA256: verdictsSHA})
 	if err != nil {
 		return fail(err)
 	}
@@ -631,43 +646,65 @@ feeding:
 	return 0
 }
 
-// loadedLog is loaded.jsonl as a load appends to it: each line names the instance of the load.
+// loadedLog is loaded.jsonl as a load appends to it: each line names the instance and the build of
+// the load.
 type loadedLog struct {
 	*lineFile
 	instance LoadedInstance
+	build    LoadedBuild
 }
 
-// readLoaded reads the loaded.jsonl at path: the last line of each case that holds no error. It
-// refuses a file that holds a line of another instance than inst, or of none: a case loaded there
-// is not in inst's database, so a load does not continue there and a score finds no record of it.
-func readLoaded(path string, inst LoadedInstance) (map[string]Loaded, error) {
+// readLoaded reads the loaded.jsonl at path: the last line of each case that holds no error, and
+// the build its lines were loaded from. It refuses a file that holds a line of another instance
+// than inst, or of none: a case loaded there is not in inst's database, so a load does not
+// continue there and a score finds no record of it. It refuses a line that names no build, which a
+// load wrote before lines named one, and lines of two builds: a case's id is the same in every
+// build, so only the build a line names tells whose record it is. A file of no line names none.
+func readLoaded(path string, inst LoadedInstance) (map[string]Loaded, LoadedBuild, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, LoadedBuild{}, err
 	}
 	out := map[string]Loaded{}
+	var build LoadedBuild
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		var l Loaded
 		if json.Unmarshal(line, &l) != nil || l.CaseID == "" {
 			continue
 		}
 		if l.Instance != inst {
-			return nil, fmt.Errorf("%s holds case %s loaded into database %q as seeded %q, and the local instance is database %q as seeded %q: a load continues only in the records it began in, and a score reads the cases there alone, so load them into this instance with another --out",
+			return nil, LoadedBuild{}, fmt.Errorf("%s holds case %s loaded into database %q as seeded %q, and the local instance is database %q as seeded %q: a load continues only in the records it began in, and a score reads the cases there alone, so load them into this instance with another --out",
 				path, l.CaseID, l.Instance.Database, l.Instance.Seeded, inst.Database, inst.Seeded)
+		}
+		switch {
+		case l.Build.CasesSHA256 == "" || l.Build.VerdictsSHA256 == "":
+			return nil, LoadedBuild{}, fmt.Errorf("%s holds case %s with no SHA-256 of the cases.jsonl.gz and the verdicts file it was loaded from, as a load wrote it before each line named them; a case's id is the same in every build, so its record may be another build's: load the build with a new --out",
+				path, l.CaseID)
+		case build == LoadedBuild{}:
+			build = l.Build
+		case l.Build != build:
+			return nil, LoadedBuild{}, fmt.Errorf("%s holds cases loaded from two builds: cases.jsonl.gz sha256 %s with verdicts sha256 %s, and case %s of cases.jsonl.gz sha256 %s with verdicts sha256 %s; load the build with a new --out",
+				path, build.CasesSHA256, build.VerdictsSHA256, l.CaseID, l.Build.CasesSHA256, l.Build.VerdictsSHA256)
 		}
 		if l.Error == "" {
 			out[l.CaseID] = l
 		}
 	}
-	return out, nil
+	return out, build, nil
 }
 
 // openLoadedLog reads the cases the loaded.jsonl at path holds as loaded with no error into inst
-// (readLoaded), none where there is no file yet, and opens it to append.
-func openLoadedLog(path string, inst LoadedInstance) (*loadedLog, map[string]bool, error) {
-	loaded, err := readLoaded(path, inst)
+// (readLoaded), none where there is no file yet, and opens it to append. It refuses a file whose
+// lines were loaded from another build or verdicts file than build: a case's id is the same in
+// every build, so the load would take another build's records for this one's.
+func openLoadedLog(path string, inst LoadedInstance, build LoadedBuild) (*loadedLog, map[string]bool, error) {
+	loaded, was, err := readLoaded(path, inst)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, nil, err
+	}
+	if was != (LoadedBuild{}) && was != build {
+		return nil, nil, fmt.Errorf("%s holds cases loaded from cases.jsonl.gz sha256 %s with verdicts sha256 %s, and this load reads cases.jsonl.gz sha256 %s with verdicts sha256 %s: a case's id is the same in every build, so those records are not this build's; load it with a new --out",
+			path, was.CasesSHA256, was.VerdictsSHA256, build.CasesSHA256, build.VerdictsSHA256)
 	}
 	done := map[string]bool{}
 	for id := range loaded {
@@ -677,12 +714,13 @@ func openLoadedLog(path string, inst LoadedInstance) (*loadedLog, map[string]boo
 	if err != nil {
 		return nil, nil, err
 	}
-	return &loadedLog{lineFile: lines, instance: inst}, done, nil
+	return &loadedLog{lineFile: lines, instance: inst, build: build}, done, nil
 }
 
-// add appends l's line, naming the log's instance, and answers the first write that failed.
+// add appends l's line, naming the log's instance and build, and answers the first write that
+// failed.
 func (lg *loadedLog) add(l Loaded) error {
-	l.Instance = lg.instance
+	l.Instance, l.Build = lg.instance, lg.build
 	return lg.lineFile.add(l)
 }
 

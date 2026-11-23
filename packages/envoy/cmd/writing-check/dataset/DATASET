@@ -10,7 +10,7 @@
 end: 2026-11-15T03:27:14Z
 owner_sha256: 8169ce6a3de25cec74d3a16a206656b57cf57dbf0592476da330a5e4eb5da4d6
 seed: 20261115
-classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused)
+classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused: classify --model claude-sonnet-5-5 --keep-model claude-sonnet-4-6)
 select_prompt_sha256: 696fd463e734ff1b0cc6cf0cb35796751c9ad1e9998cc34b575d0aed0e27315d
 snapshot_sha256: e8f9a0d09f99e9178c9d4538261fe60d90392f6a314e2ac4774062c7f3f843a7
 verdicts_sha256: 0f4578413da6a6798089b48232abdbd2b820951be63114894758e3d59d916733
