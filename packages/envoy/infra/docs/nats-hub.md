@@ -1063,7 +1063,12 @@ must have ended first: a write the old hub acknowledged after the snapshot is in
 2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold.
 3. Restore.
 4. While every writer is still at zero, run `envoy-infra buckets create`: it creates any copied
-   bucket the restore did not bring, and leaves the others.
+   bucket the restore did not bring, and leaves the others. A restored bucket at other copies than
+   the run asks for (one copy, say, where the run asks for the clustered hub's three), or with
+   another configuration than its own, stops the run with exit 1, a `differs:` line naming each
+   difference, and nothing is created, the missing buckets included: run it again with a
+   `--bucket` for each bucket the restore did not bring, which leaves the restored ones as they
+   are.
 5. Start them.
 
 Nothing holds the state `check` found through the restore: a writer that starts between steps 2
