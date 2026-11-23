@@ -1,10 +1,11 @@
 kind: Changed
 body: |-
-  Dispatch's access log and its sign-in and membership log lines no longer carry a person's
-  address. The access log names a person caller (`user`, `token`, and a `broker-token` that acts
-  for a person) by `login_hash` in place of `caller`, the first 16 hex digits of the SHA-256 of
-  their canonical login; a broker token that acts for no person keeps `caller=service:<service>`.
-  A session's `credential` is `token:<login_hash>` or `broker-token:<login_hash>`, and a path
+  Dispatch's access log and its sign-in and membership log lines name a person by their login's
+  hash, not their address. The access log names a person caller (`user`, `token`, and a
+  `broker-token` that acts for a person) by `login_hash` in place of `caller`, the first 16 hex
+  digits of the SHA-256 of their canonical login; a broker token that acts for no person keeps
+  `caller=service:<service>`. A session's `credential` is `token:<login_hash>`,
+  `broker-token:<login_hash>` or `broker-token:service:<service>`, and a path
   segment a route names `{login}` or `{email}`, or one that holds an `@`, is written
   `login_hash:<value>`. A line that reads `caller` for a person now reads `login_hash`. The lines
   `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a

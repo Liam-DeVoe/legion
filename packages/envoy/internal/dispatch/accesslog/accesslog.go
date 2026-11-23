@@ -286,6 +286,10 @@ var loginSegments = map[string]bool{"{login}": true, "{email}": true}
 // method the route does not serve), is written `login_hash:<hash>` (model.LoginHash of the
 // segment, unescaped), so the line holds no address; every other segment is as it was sent.
 func loggedPath(route, path string) string {
+	// A segment unescapes to an '@' only where the path holds an '@' or a '%'.
+	if !strings.ContainsAny(path, "@%") && !strings.Contains(route, "{login}") && !strings.Contains(route, "{email}") {
+		return path
+	}
 	pattern, segments := strings.Split(route, "/"), strings.Split(path, "/")
 	aligned := len(pattern) == len(segments)
 	for i, segment := range segments {

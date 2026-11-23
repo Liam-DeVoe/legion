@@ -4906,8 +4906,8 @@ Each item below names a field of the line, then what it holds.
 
 - `caller`
 
-  Who that is, for a caller that is no person: the session id or the service-account subject.
-  A person, on a `user`, `token` or `broker-token` line, is named by `login_hash` in its place.
+  Who that is, for a caller that is no person: the session id, the service-account subject, or `service:<service>` for a broker-issued token that acts for no person.
+  A person, on a `user` or `token` line or a `broker-token` line whose token acts for a person, is named by `login_hash` in its place.
   `shared-token` and `anonymous` name nobody.
 
 - `login_hash`
@@ -4951,7 +4951,7 @@ Each item below names a field of the line, then what it holds.
 
   Only on a `session` line: the credential behind the session.
   `token:<login_hash>` (the token's owner), `service:<subject>`, `shared-token`, `broker-token:<login_hash>` (the person the token acts for) or `broker-token:service:<service>` (a token that acts for no person).
-  For every one but the last that session id is the caller's own text; under a broker-issued token the credential itself named it.
+  For the first three that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
 - `aborted`
 
@@ -4976,7 +4976,7 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the sign-in and membership lines name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
 Those are the lines `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, and a passkey sign-in or ceremony refused; the API's line of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read; and the people store's line of a stored refresh token that does not open.
-The people store's other lines of a sign-in (the account binding's catch-up, ended sessions and revoked tokens, and a plain refresh token the pool did not revoke) and the passkey store's lines of an end still name `email`.
+The people store's other lines of a sign-in (the account binding's catch-up, ended sessions and revoked tokens, and a plain refresh token the pool did not revoke) and the passkey store's lines of an enrollment and an end still name `email`.
 A refusal's or an end's `reason` gives the refusal's words, and names the address a refreshed sign-in carried by its `login_hash`.
 One login has one value in every process and every build.
 To find a person's lines, the requests they made among them, hash their canonical login: their address with its ASCII capitals lowered and no white space around it, as `tr` does here:
