@@ -200,6 +200,9 @@ jobs:
       - name: Required-input test for airlock-check.sh k7 (no stack or network)
         run: bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for proxy-role-check.sh (its usage, placeholder assertion and TLS stand-in GitHub; no stack)
+        run: bash scripts/proxy-role-check.test.sh
+        working-directory: packages/envoy
       - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
         run: bash scripts/judge-check.test.sh
         working-directory: packages/envoy
