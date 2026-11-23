@@ -178,8 +178,9 @@ type pauseHold struct {
 // notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
 // one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
-// other row runs while the project is paused: the stops (a supervise row of any other op,
-// issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
+// other row runs while the project is paused: the stops (a supervise row of any other op but
+// slot_credential, issue_suspend, issue_release), the write of an owner's slot back to its own App
+// (a supervise row of the op slot_credential), the writes to Dispatch, and the controller's notices
 // (controller_notice), since the pause never holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
@@ -202,8 +203,9 @@ var pauseHolds = []pauseHold{
 
 // PauseHeldRow is one row a project's pause holds, as the state lists it and the resume logs it
 // (Postgres.PauseHeldRows, Postgres.MarkPauseHeldRows). Claim is the claim the row is for where
-// the row names one, and empty where it names none: an architect's notice goes to the architect
-// that owns its issue when it runs (the daemon's readNoticeRoute walks the tree for it), and a
+// the row names one, and empty where it names none: an architect's notice is routed when it runs
+// (the daemon's readNoticeRoute: an owner-step to its issue's own architect, every other notice up
+// the tree's walk to the architect that owns its issue), and a
 // production check's rows name no role. WaitedSeconds counts from the moment the row came due
 // (next_at), as api.HeldOutboxRow's do in the state.
 type PauseHeldRow struct {
@@ -335,7 +337,9 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
+// worker's own summary and, beside it, the verdict it gave where its step reports one (the
+// tester's pass or fail, and so a reviewer's of an issue with no pull request record, the agent's
+// of a step acceptance and a role's the deployment or the plan defines). A
 // review-stuck notice's summary names the fact that wrote it, and its topic is the topic of the
 // claim of the worker on the reviewer's step, which the architect asks for the decision.
 type Notice struct {
@@ -876,9 +880,10 @@ type CatchUpGate struct {
 	Open         bool       `json:"open"`
 }
 
-// CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
-// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
-// phase alone does not name; it is absent at every other phase.
+// CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role of the issue's
+// step where it stands at step (Issue.StepRole), a role the deployment or the plan defines, which
+// the phase alone does not name; it is absent at every other phase. It names the step, not the
+// claim that works it: the owner works a step whose key is owner, whatever its role.
 type CatchUpIssue struct {
 	Key      string      `json:"key"`
 	Parent   string      `json:"parent,omitempty"`
@@ -1184,7 +1189,9 @@ type SuperviseRequest struct {
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
 	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
-	// into it, is that start (workflow.Engine.restart): it raises no entry, and a claim whose
+	// into it, is that start where another agent than the owner works the place
+	// (workflow.Engine.restart; at a step or a retro the owner does, the retry starts nothing and
+	// tells the owner its step again, one more owner-step): it raises no entry, and a claim whose
 	// worker confirmed that entry's last task and whose turn then ended holds it as its given one
 	// with no delivery pending, so the entry test alone would drop the retry's own task and
 	// relaunch the worker with no prompt. The outbox row-id guard still holds
@@ -1220,7 +1227,8 @@ type SuperviseRequest struct {
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's
 	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
-	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// mark, since an issue in one of them holds no row (PhaseKeepsSlot) for such a start to wait
+	// for, and it is
 	// claimable the moment it commits. workflow.StartOrOwe is the
 	// one writer of the mark, which it reads from the start's own phase, so no caller decides
 	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
@@ -1932,13 +1940,14 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // instruction to a sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
-// the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
+// the daemon acted, and tells the agent asked to merge the base forward in the issue workspace,
 // the one workspace every role of the issue shares, as the worker skill's conflicts reference
 // says, after the working-copy check of its foreign-path reference, and to push the issue branch,
 // with no handoff and no completion for the merge. In implementing it also says that the
-// implementer's own assignment and its completion stand: the act starts no phase entry there.
+// agent's own assignment there and its completion stand: the act starts no phase entry there.
 //
-// The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
+// The hold gives why the daemon acted, and tells the worker that the agent of the task's last
+// implementation step is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
 // writing the workspace now (the merger also: not to merge the pull request or put it in the merge
 // queue), not to complete its phase at the old head but at the new head the daemon names, to keep
@@ -1957,8 +1966,10 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the implementer in retro, the merger in merging; the
-// architect alone in accepting).
+// worker of the phase the issue stands in (the agent that does the retro in retro, the merger in
+// merging; the architect alone in accepting). The agent asked is the agent of the task's last step
+// of the type implementation before the issue's place: the owner where that step's key is owner,
+// and the implementer for a run with no plan rows.
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -1980,7 +1991,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			merger = " Do not merge the pull request, and do not put it in the merge queue."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
-			" The implementer is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
+			" The agent of the task's last implementation step is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
 			" The issue stays in %s. Stop writing the workspace now.%s"+
 			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+
@@ -1998,7 +2009,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 		tell := "the architect, on its role topic"
 		switch p.Phase {
 		case phase.Retro:
-			tell = "the architect and the implementer, each on the topic of the claim that works its step"
+			tell = "the architect and the agent that does the retro, each on the topic of the claim that works its step"
 		case phase.Merging:
 			tell = "the architect and the merger, each on the topic of the claim that works its step"
 		}

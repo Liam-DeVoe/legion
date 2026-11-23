@@ -36,9 +36,12 @@ func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 // OwningIssue is the key of the issue whose architect owns issue: the nearest issue at or above
 // it, through its parents, whose architect claim holds its role (runs), else the tree root
 // (issue.Tree), whose architect is the tree's own claim. The daemon starts a child's architect
-// with the child's first phase, and starts a failed one again at the child's next phase start.
+// with the child's first phase, and starts a failed one again at the child's next phase start, but
+// one that failed while its child stands at a step the owner does waits for the operator's retry.
 // While a child's architect does not hold its role, which HoldsRole decides (and the daemon's
-// holdsRole over the machine's live view), the child's notices go on up to the architect above it.
+// holdsRole over the machine's live view), the child's notices go on up to the architect above it,
+// all but an owner-step, which goes to the child's own architect alone, whether its claim runs or
+// not (OwnerClaim; the daemon's noticeArchitect).
 // An issue whose key makes no claim token has no architect and owns nothing (TreeByKey), so a walk
 // that starts at one ends at the tree root.
 //
