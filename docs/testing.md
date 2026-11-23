@@ -169,6 +169,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test that requires a command to have left in place a signal it was started ignoring, as
+  `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
+  `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
+  signal clears the bit, so the read shows whether the command undid the ignore. gVisor's
+  `/proc/<pid>/status` has no `SigIgn` line, and macOS has no `/proc`, so such a file calls
+  `skipWithoutIgnoreMasks(file)` once, at module scope, as it would `skipWithout`, and hands the
+  answer to the `test.skipIf` of each row that reads the mask or rests on what is read from it. On
+  GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
+  broken, and the rows run and fail rather than pass in silence.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
@@ -194,6 +204,21 @@ itself, whose tests import its sources by relative path.
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
+- The real-binary harness's stand-in server (`serveStandin` in
+  `packages/pi-shared/test/omp-harness.ts`, and claude-envoy's copy of it) takes two pieces of
+  `@legion/test-fixtures`. It listens at `loopbackHost()` (`loopback-host`): on Linux an address
+  of `127.0.0.0/8` chosen at random and never `127.0.0.1`, as the Go tests' listeners have
+  (`LoopbackIP`, above), and `127.0.0.1` elsewhere, with its clients' URLs built from the address
+  the server reports (`server.url`). A client of a test that has ended keeps dialing the address
+  its own server had, and the kernel gives that port to the next listener on the same address: an
+  OAuth client's form POST reached that stand-in on `127.0.0.1` and failed the row that was
+  running. On Linux such a client no longer reaches it; elsewhere it still can. And it reads each
+  POST body with `readStandinBody` (`standin-body`), which refuses a non-empty body that is no
+  JSON object with a 400 naming the request, prints the same line, and leaves the request
+  unrecorded, where a parse that throws out of `Bun.serve`'s `fetch` fails whichever test is
+  running. A request with a JSON object body, an empty body or no body is recorded and answered as
+  the case's own answer decides.
 
 ## A test that looks for a process it started
 
@@ -540,6 +565,12 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
+Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
+need the schema as it stood at some earlier version, so its own tests take
+`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through
+that version, built once per version from the nearest template below it, and dropped by the
+package's `TestMain`. A test moving such a database further forward applies only the migrations
+past its version (`migrateAbove`), not the whole history again.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
