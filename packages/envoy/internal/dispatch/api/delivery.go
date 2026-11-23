@@ -247,49 +247,6 @@ func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPull
 	return delivery.ContainingRun(pr, pr.Repo, applies[deliveryRuleKey(pr.Repo)]), pr.Repo
 }
 
-// deliveryFreshness is the freshness of the delivery reads' sources: one source's own intake and
-// reconcile times and last error; of several, the latest event, the earliest reconcile (none while
-// any source has none, since that source's runs have not been reconciled yet), and each last error
-// naming its repository; and none of them where no source reads a repository.
-func deliveryFreshness(rules *delivery.SourceRules, unfetchable int) delivery.DeliveryFreshnessView {
-	return deliveryFreshnessOf(rules.All(), unfetchable)
-}
-
-// deliveryFreshnessOf is deliveryFreshness of sources, each source repository's rule with its
-// bookkeeping, in repository order.
-func deliveryFreshnessOf(all []delivery.DeliverySettings, unfetchable int) delivery.DeliveryFreshnessView {
-	freshness := delivery.DeliveryFreshnessView{UnfetchableCount: unfetchable}
-	switch len(all) {
-	case 0:
-		return freshness
-	case 1:
-		freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError = all[0].LastEventAt, all[0].LastReconcileAt, all[0].LastError
-		return freshness
-	}
-	reconciled := true
-	var lastErrors []string
-	for _, rule := range all {
-		if rule.LastEventAt != nil && (freshness.LastEventAt == nil || rule.LastEventAt.After(*freshness.LastEventAt)) {
-			freshness.LastEventAt = rule.LastEventAt
-		}
-		if rule.LastReconcileAt == nil {
-			reconciled = false
-		} else if freshness.LastReconcileAt == nil || rule.LastReconcileAt.Before(*freshness.LastReconcileAt) {
-			freshness.LastReconcileAt = rule.LastReconcileAt
-		}
-		if rule.LastError != nil {
-			lastErrors = append(lastErrors, rule.DeployRepo+": "+*rule.LastError)
-		}
-	}
-	if !reconciled {
-		freshness.LastReconcileAt = nil
-	}
-	if len(lastErrors) > 0 {
-		freshness.LastError = new(strings.Join(lastErrors, "; "))
-	}
-	return freshness
-}
-
 // deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
 // by (dispatch://INFRA-978, D9): the project's whose deploy sources read every source repository,
 // where one delivery-on project owns them all (evals.Store.DeployRepoEvals of any of them), and
@@ -514,8 +471,9 @@ type deliveryDerived struct {
 	sessionTitles   map[string]string
 	sessionPRCounts map[string]int
 	// freshness is the timeline's and the measures' freshness object: the source repositories'
-	// intake and reconcile times and last reconcile error (deliveryFreshness), and how many
-	// population pull requests can no longer be fetched from GitHub.
+	// intake and reconcile times and last reconcile error, folded by repository
+	// (delivery.FreshnessOf), and how many population pull requests can no longer be fetched from
+	// GitHub.
 	freshness delivery.DeliveryFreshnessView
 }
 
@@ -806,7 +764,7 @@ func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived 
 		issueTitles:     issueTitles,
 		sessionTitles:   sessionTitles,
 		sessionPRCounts: sessionPRCounts,
-		freshness:       deliveryFreshness(rules, p.unfetchable),
+		freshness:       delivery.FreshnessOf(rules.All(), p.unfetchable),
 	}
 }
 

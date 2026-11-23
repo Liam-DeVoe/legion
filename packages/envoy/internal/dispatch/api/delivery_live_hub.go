@@ -380,7 +380,7 @@ type deliveryLiveSpec struct {
 // rules, and moved by each delivery_freshness notification of a source the rules hold; rules is the
 // last read's, by which a notification of a source that names no repository is found under its
 // project's default repository. lastEventAt, lastReconcileAt and lastError are the sources' together
-// (deliveryFreshnessOf), what the verdict and its frame state.
+// (delivery.FreshnessOf), what the verdict and its frame state.
 type deliveryFreshnessHeard struct {
 	lastEventAt, lastReconcileAt *time.Time
 	lastError                    *string
@@ -406,13 +406,13 @@ func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 	f.combine()
 }
 
-// combine states the sources' freshness together (deliveryFreshnessOf), in repository order.
+// combine states the sources' freshness together (delivery.FreshnessOf), in repository order.
 func (f *deliveryFreshnessHeard) combine() {
 	all := make([]delivery.DeliverySettings, 0, len(f.sources))
 	for _, key := range slices.Sorted(maps.Keys(f.sources)) {
 		all = append(all, f.sources[key])
 	}
-	freshness := deliveryFreshnessOf(all, f.unfetchable)
+	freshness := delivery.FreshnessOf(all, f.unfetchable)
 	f.lastEventAt, f.lastReconcileAt, f.lastError = freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError
 }
 
