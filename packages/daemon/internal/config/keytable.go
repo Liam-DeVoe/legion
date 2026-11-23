@@ -310,13 +310,8 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "models", Default: "no model is listed", RequiredBy: "no",
-			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once. The model each role of `roles` names is listed after them, so `legion config check`, the served settings and the owner read one list. This release takes a value that is not a list, and an entry that is not one model's name or names a model again, with a warning at boot and at `legion config check`, and lists no such entry; the next release refuses them.",
-			Read: func(value *yaml.Node, key string, file *fileConfig) error {
-				// The warnings join whatever a key above raised, in file order (readProjects').
-				models, raised := readModels(value, key)
-				file.Models, file.Warnings = models, append(file.Warnings, raised...)
-				return nil
-			},
+			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once. The model each role of `roles` names is listed after them, so `legion config check`, the served settings and the owner read one list.",
+			Read:        reads(readModels, func(f *fileConfig, v []string) { f.Models = v }),
 		},
 		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",

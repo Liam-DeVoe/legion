@@ -284,10 +284,8 @@ type Config struct {
 	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
-	// One line also names each value this release takes and the next release refuses, with what
-	// this release does with it: an entry of `models` that is not one model's name, or names one
-	// again (readModels), and a step of a project's `default_steps` whose key names one agent on
-	// two models or two harnesses (checkDefaultSteps).
+	// One line also names each step of a project's `default_steps` whose key names one agent on two
+	// models or two harnesses (checkDefaultSteps), which this release takes and the next refuses.
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
