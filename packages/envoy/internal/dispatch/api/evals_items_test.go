@@ -3,12 +3,17 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
@@ -317,4 +322,222 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 		t.Errorf("after the commit the items list run %d as a deploy that reached production", runID)
 	}
 	t.Logf("the answer the commit landed in is the %d bytes of the answer before it; the next answer moved run %d", len(before), runID)
+}
+
+// failingRuns is a deliverytest history beside which two pull-request checks runs of one of its
+// pull requests are written, each counted for the history's project by its pull request's issue,
+// and the end of a seven-day range whose failing jobs they test: straddle started 25 hours before
+// end and failed 23 hours before it, and early started in the range and failed before the 24 hours
+// before end. Each failed a job of a name no other run holds.
+type failingRuns struct {
+	fixture         deliverytest.Fixture
+	from, end       time.Time
+	straddle, early delivery.DeliveryRun
+}
+
+// The names of the jobs failingRuns' two runs fail.
+const (
+	straddleJob = "items / straddle"
+	earlyJob    = "items / early"
+)
+
+// query is the items route's query of pr-ci's failing jobs over the range.
+func (f failingRuns) query() string {
+	return url.Values{
+		"sort": {evalSortFailures}, "limit": {"200"}, "from": {f.from.Format(time.RFC3339Nano)}, "to": {f.end.Format(time.RFC3339Nano)},
+	}.Encode()
+}
+
+// seedFailingRuns writes failingRuns into database: a deliverytest history of 14 days, the two runs
+// beside it, and the day rows the refresher builds of them all.
+func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns {
+	t.Helper()
+	ctx := t.Context()
+	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, OneProject: true, Days: 14})
+	end := measures.Midnight(fixture.To).AddDate(0, 0, -2).Add(10 * time.Hour)
+	f := failingRuns{fixture: fixture, from: end.AddDate(0, 0, -7), end: end}
+	index := slices.IndexFunc(fixture.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
+		return pr.Repo == fixture.DeployRepo && pr.IssueKey != nil && slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey)
+	})
+	if index < 0 {
+		t.Fatalf("no pull request of %s names an issue of %s, so no run of its checks counts for it", fixture.DeployRepo, fixture.Project)
+	}
+	number := fixture.PullRequests[index].Number
+	failure, jobFailure, jobSuccess := delivery.DeliveryRunConclusionFailure, delivery.DeliveryJobConclusionFailure, delivery.DeliveryJobConclusionSuccess
+	write := func(id int64, started, completed time.Time, failed string) delivery.DeliveryRun {
+		t.Helper()
+		run := delivery.DeliveryRun{
+			Repo: fixture.DeployRepo, RunID: id, Kind: delivery.DeliveryRunKindPRChecks, PRNumber: new(number),
+			HeadSHA: fmt.Sprintf("%040d", id), HeadCommitAt: started.Add(-time.Minute), StartedAt: started, CreatedAt: &started,
+			CompletedAt: &completed, Conclusion: &failure, URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", fixture.DeployRepo, id),
+			HeadBranch: new("feature"), Event: new("pull_request"),
+		}
+		if err := delivery.UpsertRun(ctx, database.Pool, run); err != nil {
+			t.Fatalf("write run %d: %v", id, err)
+		}
+		if err := delivery.UpsertRunJobs(ctx, database.Pool, fixture.DeployRepo, id, []delivery.DeliveryRunJob{
+			{Repo: fixture.DeployRepo, RunID: id, Name: failed, StartedAt: &started, CompletedAt: &completed, Conclusion: &jobFailure},
+			{Repo: fixture.DeployRepo, RunID: id, Name: "items / steady", StartedAt: &started, CompletedAt: &completed, Conclusion: &jobSuccess},
+		}, true); err != nil {
+			t.Fatalf("write run %d's jobs: %v", id, err)
+		}
+		return run
+	}
+	f.straddle = write(991_000_001, end.Add(-25*time.Hour), end.Add(-23*time.Hour), straddleJob)
+	f.early = write(991_000_002, end.AddDate(0, 0, -5), end.AddDate(0, 0, -5).Add(time.Hour), earlyJob)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
+	return f
+}
+
+// TestTheFailedJobsListEqualsTheBasesFailingJobs (dispatch://INFRA-2918, D9): pr-ci's items with
+// sort=failures read only the pull-request checks runs that completed in the 24 hours before the
+// range's end, and answer the list the base answered from every run of the range:
+// measures.FailingJobs over every pull-request checks run started on the range's days, with every
+// job of each, of those the project's CI day rows counted. The range holds a run that started 25
+// hours before its end and failed 23 hours before it, which both lists count, and one that started
+// in it and failed before the 24 hours, which neither does, though both are among the runs the base
+// reads.
+func TestTheFailedJobsListEqualsTheBasesFailingJobs(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	f := seedFailingRuns(t, database, deps)
+	ctx := t.Context()
+	project := f.fixture.Project
+
+	items := evalGet[evalItemsResponse](t, handler, evalItemsPath(project, evals.SlugPRCI)+"?"+f.query())
+	answered := make([]measures.FailingJob, 0, len(items.Items))
+	for _, row := range items.Items {
+		var job measures.FailingJob
+		if err := json.Unmarshal([]byte(mustJSON(t, row.Cols)), &job); err != nil {
+			t.Fatalf("decode the failing job row %s: %v", row.RowKey, err)
+		}
+		answered = append(answered, job)
+	}
+
+	// The base: every pull-request checks run started on the range's days, with every job of each
+	// (delivery.ReadCIRows, the read the route made before), those the project's CI day rows of the
+	// range counted, through the same measures.FailingJobs, all read in one snapshot.
+	tx, err := evals.New(database, deps.Docs, deps.Events).BeginSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("begin the base's read: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	entry, found, err := evals.EvalIn(ctx, tx, evals.EvalID(project, evals.SlugPRCI))
+	if err != nil || !found {
+		t.Fatalf("read %s's pr-ci: found %t, %v", project, found, err)
+	}
+	settings, err := evals.BuiltSettingsIn(ctx, tx)
+	if err != nil || settings == nil {
+		t.Fatalf("read the settings the rows stand built under: %+v, %v", settings, err)
+	}
+	days := evalDaysOf(f.from, f.end)
+	ci, err := delivery.ReadCIRows(ctx, tx, settings.DeployRepo, days.From, days.To, nil)
+	if err != nil {
+		t.Fatalf("read every run of the range: %v", err)
+	}
+	counted, err := evals.CountedIn(ctx, tx, project, evals.KindCI, evals.DeployRepoOf(entry.Definition, settings.DeployRepo), nil, days)
+	if err != nil {
+		t.Fatalf("read the runs the range's CI day rows counted: %v", err)
+	}
+	members := map[string]bool{}
+	for _, item := range counted {
+		members[item.RowKey] = true
+	}
+	runs := slices.DeleteFunc(slices.Clone(ci.Checks.Runs), func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
+	for _, held := range []delivery.DeliveryRun{f.straddle, f.early} {
+		if !slices.ContainsFunc(runs, func(run delivery.DeliveryRun) bool { return run.RunID == held.RunID }) {
+			t.Fatalf("the base's runs of the range hold no run %d (started %s), which the check needs counted among them", held.RunID, held.StartedAt.Format(time.RFC3339))
+		}
+	}
+	base := measures.FailingJobs(runs, ci.Checks.Jobs, f.end, deref(settings.PRChecksRollupJobName))
+
+	if got, want := mustJSON(t, answered), mustJSON(t, base); got != want {
+		t.Fatalf("the items answer the failing jobs %s; the base's list from every run of the range is %s", got, want)
+	}
+	straddled := slices.IndexFunc(base, func(job measures.FailingJob) bool { return job.Name == straddleJob })
+	if straddled < 0 || !base[straddled].LastFailedAt.Equal(*f.straddle.CompletedAt) || base[straddled].LastRunURL != f.straddle.URL {
+		t.Errorf("the list %s does not name %s failed by run %d at %s", mustJSON(t, base), straddleJob, f.straddle.RunID, f.straddle.CompletedAt.Format(time.RFC3339))
+	}
+	if slices.ContainsFunc(base, func(job measures.FailingJob) bool { return job.Name == earlyJob }) {
+		t.Errorf("the list %s names %s, which run %d failed before the 24 hours", mustJSON(t, base), earlyJob, f.early.RunID)
+	}
+	t.Logf("of the %d runs of the range the project's day rows counted, the items and the base list the same %d failing jobs: %s",
+		len(runs), len(base), mustJSON(t, base))
+}
+
+// TestTheFailedJobsReadReadsRunsByCompletion (dispatch://INFRA-2918, D9; R12): the statements
+// pr-ci's items with sort=failures send read the runs by their completion: the one read of
+// delivery_runs bounds the runs' completed_at by the 24 hours before the range's end, sent as its
+// two ends, and the read of their jobs names those runs alone, every job of each, each of which
+// completed in those 24 hours; the run that failed before them is named by no read.
+func TestTheFailedJobsReadReadsRunsByCompletion(t *testing.T) {
+	database := storetest.Open(t)
+	log := &statementLog{}
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, log)})
+	f := seedFailingRuns(t, database, deps)
+	horizon := f.end.Add(-measures.FailingWindow)
+
+	log.reset()
+	items := evalGet[evalItemsResponse](t, handler, evalItemsPath(f.fixture.Project, evals.SlugPRCI)+"?"+f.query())
+	if !slices.ContainsFunc(items.Items, func(row evalItemRow) bool { return row.RowKey == straddleJob }) {
+		t.Fatalf("the failing jobs %s do not name %s, so the read read no run of the 24 hours", mustJSON(t, items.Items), straddleJob)
+	}
+	var runReads, jobReads []ranStatement
+	for _, statement := range log.statements() {
+		switch {
+		case strings.Contains(statement.sql, "from delivery_runs"):
+			runReads = append(runReads, statement)
+		case strings.Contains(statement.sql, "from delivery_run_jobs"):
+			jobReads = append(jobReads, statement)
+		}
+	}
+	if len(runReads) != 1 || len(jobReads) != 1 {
+		t.Fatalf("the failures read sent %d reads of delivery_runs and %d of delivery_run_jobs, want one of each", len(runReads), len(jobReads))
+	}
+	runRead := runReads[0]
+	sql := strings.Join(strings.Fields(runRead.sql), " ")
+	bounds := map[string]time.Time{}
+	for _, operator := range []string{">=", "<="} {
+		match := regexp.MustCompile(`completed_at ` + operator + ` \$(\d+)`).FindStringSubmatch(sql)
+		if match == nil {
+			t.Fatalf("the read of the runs bounds no completed_at by %s: %s", operator, sql)
+		}
+		position, _ := strconv.Atoi(match[1])
+		at, ok := runRead.args[position-1].(time.Time)
+		if !ok {
+			t.Fatalf("the read of the runs sends $%d as %T, want a time", position, runRead.args[position-1])
+		}
+		bounds[operator] = at
+	}
+	if !bounds[">="].Equal(horizon) || !bounds["<="].Equal(f.end) {
+		t.Errorf("the read of the runs bounds their completion by %s..%s, want the 24 hours %s..%s", bounds[">="].Format(time.RFC3339),
+			bounds["<="].Format(time.RFC3339), horizon.Format(time.RFC3339), f.end.Format(time.RFC3339))
+	}
+	jobRead := jobReads[0]
+	if strings.Contains(jobRead.sql, "name =") || strings.Contains(jobRead.sql, "name <>") {
+		t.Errorf("the read of the runs' jobs names jobs, want every job of each run: %s", jobRead.sql)
+	}
+	var named []int64
+	for _, arg := range jobRead.args {
+		if ids, ok := arg.([]int64); ok {
+			named = append(named, ids...)
+		}
+	}
+	if !slices.Contains(named, f.straddle.RunID) || slices.Contains(named, f.early.RunID) {
+		t.Errorf("the read of the jobs names the runs %v, want run %d and not run %d", named, f.straddle.RunID, f.early.RunID)
+	}
+	rows, err := database.Pool.Query(t.Context(), `select run_id, completed_at from delivery_runs where repo = $1 and run_id = any($2)`, f.fixture.DeployRepo, named)
+	if err != nil {
+		t.Fatalf("read the runs the jobs' read names: %v", err)
+	}
+	var id int64
+	var completed *time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&id, &completed}, func() error {
+		if completed == nil || completed.Before(horizon) || completed.After(f.end) {
+			t.Errorf("the read of the jobs names run %d, completed %v, outside the 24 hours %s..%s", id, completed, horizon.Format(time.RFC3339), f.end.Format(time.RFC3339))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the runs the jobs' read names: %v", err)
+	}
+	t.Logf("the failures read sent %s with completion %s..%s, and read the jobs of %d runs", sql, horizon.Format(time.RFC3339), f.end.Format(time.RFC3339), len(named))
 }

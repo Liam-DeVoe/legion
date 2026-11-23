@@ -863,11 +863,14 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end,
 // the list the Pipeline route's failing-jobs table answers for an `at` at that end when the range
-// starts on the first of the seven days that at shows: the pull-request checks runs started on
-// the range's days (delivery.ReadCIRows over read.rng.days, which hold every run that can finish
-// a job in those 24 hours however long before them it started within the range), those the
-// project's CI day rows counted, through the same measures.FailingJobs; each job with its
-// failures, its results and its latest failed run, which it links to.
+// starts on the first of the seven days that at shows: of the pull-request checks runs started on
+// the range's days, the runs measures.FailingJobs picks, those that completed in the
+// FailingWindow up to the end (delivery.ReadPRChecksCompletedIn, which reads them by their
+// completion and every job of each, rather than every run of the range with every job), those
+// the project's CI day rows counted, through the same measures.FailingJobs; each job with its
+// failures, its results and its latest failed run, which it links to. The day rows count a run on
+// the day it started, so the items they counted are read on the days the runs read started on
+// alone.
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	if read.settings == nil {
 		return nil, nil
@@ -875,19 +878,23 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 	settings := *read.settings
 	end := read.rng.end
 	span := read.rng.days
-	members, err := s.counted(ctx, read, evals.KindCI, span)
+	checks, err := delivery.ReadPRChecksCompletedIn(ctx, read.tx, settings.DeployRepo, span.From, span.To, end.Add(-measures.FailingWindow), end)
 	if err != nil {
 		return nil, err
 	}
-	ci, err := delivery.ReadCIRows(ctx, read.tx, settings.DeployRepo, span.From, span.To,
-		measures.DeployCardJobNames(measures.DeployCards(settings)))
+	if len(checks.Runs) == 0 {
+		return nil, nil
+	}
+	// The runs come oldest start first, so the first started on the first day any of them did.
+	started := evals.Range{From: measures.Midnight(checks.Runs[0].StartedAt), To: span.To}
+	members, err := s.counted(ctx, read, evals.KindCI, started)
 	if err != nil {
 		return nil, err
 	}
-	runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
+	runs := slices.DeleteFunc(checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
 	rollup := deref(settings.PRChecksRollupJobName)
 	var rows []evalItemRow
-	for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, rollup) {
+	for _, job := range measures.FailingJobs(runs, checks.Jobs, end, rollup) {
 		if read.request.series != "" && read.request.series != measures.JobSeriesPrefix+job.Name {
 			continue
 		}

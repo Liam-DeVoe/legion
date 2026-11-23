@@ -361,3 +361,45 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 	}
 	return rows, nil
 }
+
+// prChecksCompletedInQuery is ReadPRChecksCompletedIn's read of the runs: the PR-checks runs of a
+// window as listRunsStartedIn lists them (kind $2, event $3, started in [$4, $5)), of those the
+// ones completed in [$6, $7], oldest start first and those started in one instant by run id. The
+// completion is a range of delivery_runs_kind_completed_at (migration 20261123042253), (repo,
+// kind, completed_at), so the read reads the runs of those hours alone, and checks the start and
+// the event on them.
+const prChecksCompletedInQuery = `
+		select ` + RunColumns + `
+		from delivery_runs
+		where repo = $1 and kind = $2 and event = $3 and started_at >= $4 and started_at < $5
+			and completed_at >= $6 and completed_at <= $7
+		order by started_at, run_id
+		limit $8`
+
+// ReadPRChecksCompletedIn reads the PR-checks workflow's pull_request runs of the deploy repository
+// in q that started in [from, to), the runs ReadCIRows reads of that window, and completed in
+// [completedFrom, completedTo], both ends counted as measures.FailingJobs counts a completion, each
+// with every job it ran: the runs of a window whose jobs the failing-jobs tally reads, read by their
+// completion rather than as every run of the window (dispatch://INFRA-2918, D9), so the read of
+// their jobs reads the jobs of a day's runs, never those of every run of an 84-day window.
+// Bounded by maxRunsPerWindow, as listRunsStartedIn is.
+func ReadPRChecksCompletedIn(ctx context.Context, q Querier, deployRepo string, from, to, completedFrom, completedTo time.Time) (RunsWithJobs, error) {
+	rows, err := q.Query(ctx, prChecksCompletedInQuery, deployRepo, string(DeliveryRunKindPRChecks), "pull_request",
+		from, to, completedFrom, completedTo, maxRunsPerWindow)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runs, err := collectRuns(rows)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runIDs := make([]int64, len(runs))
+	for i, run := range runs {
+		runIDs[i] = run.RunID
+	}
+	jobs, err := listEveryRunJobForRuns(ctx, q, deployRepo, runIDs)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
+}
