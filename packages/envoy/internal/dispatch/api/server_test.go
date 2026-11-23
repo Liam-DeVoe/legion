@@ -26,6 +26,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -62,11 +63,15 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
+// TestMain runs the package's tests through storetest.Main inside cmdtest.Run: the tests tagged
+// basebuild build the release before this one with cmdtest (buildBaseline,
+// one_inbox_basebuild_test.go), which refuses a build outside a test process that cmdtest.Main
+// or cmdtest.Run started, since Run makes the directory those binaries go into and removes it.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
