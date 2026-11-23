@@ -723,9 +723,11 @@ type ExcerptedNode struct {
 
 // ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it:
 // a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
-// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'.
-func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]ExcerptedNode, error) {
-	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
+// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'. The
+// targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
+// is its ref_key, as in TargetNames.
+func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]ExcerptedNode, error) {
+	resolved, err := resolveTargets(ctx, q, who, true, targets)
 	if err != nil {
 		return nil, err
 	}

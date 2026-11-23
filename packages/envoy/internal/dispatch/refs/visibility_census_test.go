@@ -382,7 +382,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
-		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		_, err := ExcerptedNodes(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
