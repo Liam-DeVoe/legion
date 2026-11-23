@@ -4062,6 +4062,78 @@ test("the address of a long agents' turn lands on its head", async ({ browser })
   );
 });
 
+// The address of a short reply under a long agents' turn opens Details with the reply marked in
+// the middle of its view, the turn above it drawn whole as the landing scrolls. That turn is cut
+// in the microtask after the landing's scroll (`clamp-measurer.ts`), which moves the reply up by
+// the cut and leaves the top of the thread's entry where it was; the history's anchor kept that
+// entry's top, so the reply went up by the cut, out of Details' view. Found by the tester on a
+// running build with a copy of a large real issue: at 1440 px 3 of 12 reply addresses showed none
+// of the reply, up to 2,820 px above the view, and 8 left its head above it; at 390 px too.
+// The anchor now keeps the landed turn's own place inside its entry (`ViewportAnchor.tsx`'s
+// `keepRow`).
+test("the address of a short reply under a long agents' turn keeps the reply in Details' view as the turn above it is cut", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A reply under a long turn" });
+  await createComment(issue.key, { body: "A person's comment, a row of the outline." });
+  // Oldest first: sixty short notes, then the long turn and its reply. The history lists them
+  // newest first, so the notes stand under the reply, more of the history than the cut of the
+  // long turn takes: the browser pulls nothing back as the turn is cut, and the place keeper
+  // alone decides where the cut leaves the reply.
+  for (let index = 0; index < 60; index += 1) {
+    await createMessage(issue.key, { body: `Older note ${index}` }, attentionSession);
+  }
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  const root = await createComment(
+    issue.key,
+    { body: Array.from({ length: 15 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
+    attentionSession
+  );
+  const reply = await createComment(
+    issue.key,
+    { body: "A short reply under the long turn.", reply_to: root.id },
+    attentionSession
+  );
+  // Each width's place of the reply, so one run says every width it was out of view at.
+  const outOfView: string[] = [];
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${issue.key}/comments/${reply.id}`);
+      await expect(marginShell(page), "the reply's address did not open Details").toBeVisible();
+      const marked = historyItem(page, reply.id);
+      await expect(marked, "the reply's address did not mark it").toHaveAttribute(
+        "aria-current",
+        "true"
+      );
+      // The turn above the reply is cut once the reply has landed; a few frames let the place
+      // keeper finish with the cut, so the reply is read where the keeper left it.
+      await expect
+        .poll(async () => (await historyItem(page, root.id).boundingBox())?.height ?? 0, {
+          message: `at ${size.width} px the long turn above the reply was not cut, so the row proves nothing`,
+        })
+        .toBeLessThan(400);
+      await nextFrames(page);
+      const view = await historyViewport(page);
+      const at = await marked.boundingBox();
+      const top = Math.round(at?.y ?? Number.NaN);
+      const bottom = Math.round((at?.y ?? Number.NaN) + (at?.height ?? 0));
+      if (!(top >= Math.round(view.top) - 1 && bottom <= Math.round(view.bottom) + 1)) {
+        outOfView.push(
+          `at ${size.width} px the reply stood from ${top} to ${bottom} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
+        );
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  expect(outOfView, outOfView.join("; ")).toEqual([]);
+});
+
 // At 767 px and below Details covers the page, so a link of the
 // history that leaves it, and Reply, close Details; a turn's own time is the turn's address,
 // which opens Details at it, so it leaves Details open, and never hides it for a moment.

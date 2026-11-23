@@ -1417,6 +1417,51 @@ test("a host's keep leaves the place of the reader's focused control, which a cu
   }
 });
 
+// A host scrolls its box to an element an address names, inside a long row whose head is above
+// the view, and keeps that element's own place (`keepRow`'s `at`), with no focus on it: as the
+// history lands a short reply under a long root turn drawn whole. The row's own content above the
+// element is then cut by a commit of its own, which the anchor sees only as its content resized:
+// that moves the element up by the cut and leaves the row's top where it was. Kept at the row's
+// top, the element went up by the cut, out of the view; kept at its own, it stays where the host
+// put it, and the row's top moves down by the cut instead. A host that names no element keeps the
+// row's top, as the cases above show ("a row a host keeps holds its place across a commit that
+// adds rows below it and shrinks a row above it", "a box the browser pulls back to its end keeps
+// the row a host keeps, at the offset the pull-back left").
+test("an element a host keeps inside a row keeps its own place when the row's own content above it shrinks", () => {
+  heights = { r3: 1000 };
+  const box = drawInBox(ids(40), { ownsScrollAnchoring: true });
+  try {
+    const element = rowOf("r3").querySelector("button");
+    if (element === null) throw new Error("r3 button missing");
+    // The host scrolls the box to the element: r3 runs from 200 to 1,200 px down the content, and
+    // the element stands at its foot.
+    box.scroller.scrollTop = 1000;
+    box.settle();
+    anchor.current?.keepRow(rowOf("r3"), element);
+    expect(chosen()).toEqual({ id: "r3", via: "kept" });
+    expect(element).not.toHaveFocus();
+    const kept = controlTop("r3");
+    expect(kept).toBe(180);
+    expect(viewportTop("r3")).toBe(-800);
+
+    // r3 is cut to 200 px, which raises the element by 800 px.
+    heights = { r3: 200 };
+    box.settle();
+    expect(controlTop("r3"), "the cut above the element the host keeps moved it").toBe(kept);
+    expect(viewportTop("r3")).toBe(0);
+    expect(box.scroller.scrollTop).toBe(200);
+
+    // A commit that adds a row above holds r3 at the top that puts the element back, so the
+    // element stays there too.
+    box.rerender(["new", ...ids(40)]);
+    expect(controlTop("r3")).toBe(kept);
+    box.settle();
+    expect(controlTop("r3")).toBe(kept);
+  } finally {
+    box.unmount();
+  }
+});
+
 // The host letting its place go: the next commit holds the row nearest the middle of the view,
 // or, at the top, nothing, and the box gets its own scroll anchoring back. A place the reader's
 // own act recorded is not the host's to let go.
