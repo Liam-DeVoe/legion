@@ -257,6 +257,42 @@ func TestATestLeavesTheServerEmpty(t *testing.T) {
 	}
 }
 
+// The reset at the start of each test empties a server that something other than a test of this
+// package left streams on: a Bun suite on the same external server, a binary killed before its
+// cleanups ran, or a leaveEmpty that failed. The second subtest stands in for any of them: it
+// holds the server as a test does (take) and makes a stream on a client of its own (dialReady),
+// with no URL, so no leaveEmpty runs at its end. The first subtest only starts the server, for a
+// run of this test alone. The count inside the second subtest is the reader's positive control.
+func TestAStreamLeftOutsideTheFixtureIsGoneAtTheNextTake(t *testing.T) {
+	t.Run("starts the server", func(t *testing.T) { URL(t) })
+	t.Run("leaves a stream that no test's end empties", func(t *testing.T) {
+		take(t)
+		ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
+		defer cancel()
+		conn, js, err := dialReady(ctx, t.Name())
+		if err != nil {
+			t.Fatalf("connect to the NATS server: %v", err)
+		}
+		defer conn.Close()
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "LEFT_OUTSIDE", Subjects: []string{"outside.>"}}); err != nil {
+			t.Fatalf("create stream: %v", err)
+		}
+		if held := jetStreamHeld(t); held.Streams != 1 {
+			t.Fatalf("the server's monitoring endpoint reports %+v with the stream made, want 1 stream: a reader that cannot see it proves nothing when it reads none", held)
+		}
+	})
+	t.Run("finds none of it", func(t *testing.T) {
+		js := JetStream(t)
+		names := js.StreamNames(t.Context())
+		for name := range names.Name() {
+			t.Errorf("stream %s, which no fixture's end emptied, is still on the server the next test is handed", name)
+		}
+		if err := names.Err(); err != nil {
+			t.Fatalf("list streams: %v", err)
+		}
+	})
+}
+
 // jetStreamCounts is what a server's monitoring endpoint reports it holds across its accounts.
 type jetStreamCounts struct {
 	Streams   int    `json:"streams"`
@@ -361,6 +397,12 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
 		}
 		js := JetStream(t)
+		// Registered after JetStream(t), so that it runs before the fixture's own end (leaveEmpty):
+		// with the held removal gone, that end's delete of the stream can move its directory aside and
+		// remove it, and the server's store keeps no directory of this test. Left in place, the delete
+		// removes the stream's meta.inf and cannot move the directory onto the held one, which stays
+		// in the store for good (nats-server v2.15.1 filestore.go:12231-12237).
+		t.Cleanup(func() { onTheServersHost(t, "rm", "-rf", plant) })
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
 		published, err := js.Publish(t.Context(), "left.one", []byte("x"))

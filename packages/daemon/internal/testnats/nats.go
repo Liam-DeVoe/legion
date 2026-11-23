@@ -13,14 +13,15 @@
 // its monitoring endpoint, and names it in LEGION_TEST_NATS_URL (its client URL) and
 // LEGION_TEST_NATS_MONITOR_URL (the monitoring endpoint's base URL). With both set, URL serves that
 // server, emptied for each test exactly as the container is, starts no container, and Main removes
-// nothing, so each test also empties it again when it ends (leaveEmpty) and the binary leaves no
-// stream behind for what runs on that server next; one set without the other fails the test, since
-// a half-named server is a mistake rather than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, waits for every client connection to it to end, and deletes each stream's consumers
-// and empties the stream before it deletes it, so the server is the tests' alone and the packages
-// using it run one after another (go test -p 1). The leak check at the end of each test depends
-// on that rule too: with one binary on the server, every connection it holds is this binary's, so
-// one that appeared while a test held the server is that test's own.
+// nothing; one set without the other fails the test, since a half-named server is a mistake rather
+// than a reason to fall back to Docker. On either server each test also empties it again when it
+// ends (leaveEmpty), so an external server, which outlives the test binary, holds no stream of it
+// for what runs there next. The reset holds the server for one test of one test binary at a time,
+// waits for every client connection to it to end, and deletes each stream's consumers and empties
+// the stream before it deletes it, so the server is the tests' alone and the packages using it run
+// one after another (go test -p 1). The leak check at the end of each test depends on that rule
+// too: with one binary on the server, every connection it holds is this binary's, so one that
+// appeared while a test held the server is that test's own.
 package testnats
 
 import (
