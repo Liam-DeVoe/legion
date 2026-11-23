@@ -53,8 +53,8 @@ var levelKinds = map[string]specgraph.Kind{
 // LevelStatement is one statement of a level as its documents give it: its id, its text, its
 // parent from the level's structure, the notes' kind, about and supports, as written, each field
 // its notes write where the reader cannot place it (Unread), and each field its note leaves out or
-// writes with no value (Missing). The import holds the statement for each field of either list: a
-// field its note does not supply is no approved value, as `none` is.
+// writes with a value that supplies nothing (Missing, supplies). The import holds the statement for
+// each field of either list: a field its note does not supply is no approved value, as `none` is.
 type LevelStatement struct {
 	ID, Text, Parent string
 	Kind             string
@@ -553,8 +553,8 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 	}
 	// lacks is each field of a statement no approved form or node resolves, that its notes write
 	// where the reader cannot place it (LevelStatement.Unread), or that its note leaves out or writes
-	// with no value (LevelStatement.Missing); held statements are found again until none is added,
-	// since a statement under a held one, or supporting one, is held too.
+	// with a value that supplies nothing (LevelStatement.Missing); held statements are found again
+	// until none is added, since a statement under a held one, or supporting one, is held too.
 	lacks := map[string][]string{}
 	for _, statement := range in.Level.Statements {
 		var missing []string
