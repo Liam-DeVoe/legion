@@ -4,7 +4,13 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  IssueSummary,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { PriorityPage } from "./PriorityPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -114,10 +120,10 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   // A reader who may not write a priority is any principal that is not a person
-  // (`useIsHuman`): the contract types only the person's answer, so the other is cast.
-  const whoami = writer
-    ? { event_head: "0", kind: "user" as const, login: "alice" }
-    : ({ event_head: "0", kind: "token", login: "ci" } as never);
+  // (`useIsHuman`): here an agent viewer, the shared token's.
+  const whoami: AuthenticatedUser = writer
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "agent", session: null };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const patch = spyOn(api, "patchPriority").mockImplementation(async (key) => saved(key));
   // The margin reads the priority's own history as soon as it opens on Everything.

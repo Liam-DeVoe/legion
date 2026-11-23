@@ -62,14 +62,17 @@ export function ProjectPage(): ReactNode {
   );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
+  // Whose questions the pill counts, read as every other surface that counts work waiting on
+  // the reader reads it.
+  const whoAmI = useQuery(whoAmIQuery()).data;
+  const viewer = whoAmI?.login;
+  // The asks waiting on the reader, read under the `person` scope, which an agent viewer's bearer
+  // may not hold: for one the pill counts none and nothing is asked.
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],
     queryFn: () => api.getInbox(projectKey),
-    enabled: projectKey !== undefined,
+    enabled: projectKey !== undefined && whoAmI?.kind !== "agent",
   });
-  // Whose questions the pill counts, read as every other surface that counts work waiting on
-  // the reader reads it.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
   const projects = useQuery(projectsQuery());
   const project = projects.data?.find((candidate) => candidate.key === route?.project);
   // Whether the project has an architecture source decides where the bare project path opens
@@ -305,9 +308,11 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "settings" ? (
-          // A project with no default repository carries no `default_repo`.
+          // A project with no default repository carries no `default_repo`. Keyed by the project,
+          // so another project's tab starts with none of this one's draft, save or refusal.
           <DeliverySettingsSection
             defaultRepo={project.default_repo ?? null}
+            key={route.project}
             project={route.project}
           />
         ) : null}

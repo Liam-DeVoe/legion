@@ -5,7 +5,13 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  IssueSummary,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -128,10 +134,10 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
-  // `useIsHuman`: the contract types only a person's answer, so the other principal is cast.
-  const whoami = writer
-    ? { event_head: "0", kind: "user" as const, login: "alice" }
-    : ({ event_head: "0", kind: "token", login: "ci" } as never);
+  // `useIsHuman`: a reader who is not a person is an agent viewer, here the shared token's.
+  const whoami: AuthenticatedUser = writer
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "agent", session: null };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
   const patch = spyOn(api, "patchPriority").mockImplementation(async (id) => saved(id));

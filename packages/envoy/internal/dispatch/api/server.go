@@ -672,7 +672,13 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{
+		Wait:             s.waitBackground,
+		ResumeDeliveries: s.resumeOwedDeliveries,
+		EventHead:        s.eventFeedHead,
+		EventHorizon:     s.horizon,
+		Agent:            s.dashboardAgent,
+	}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -694,6 +700,11 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// Agent answers the agent a request's Authorization header proves, resolved by the code every
+	// route of the table resolves its caller by and answered as GET /api/v1/whoami answers it,
+	// and false where that route would answer no agent (dashboardAgent). GET /auth/whoami draws
+	// the dashboard for it when the request carries no browser credential.
+	Agent func(*http.Request) (AgentCaller, bool)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
@@ -1457,12 +1468,19 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
-			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
+			readOnlyCredential(caller.actor) {
 			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// readOnlyCredential reports whether actor's credential is a read-only token
+// (model.Credential.ReadOnly), which only the routes the read list names serve
+// (refuseReadOnlyToken). A caller that resolved to no credential at all is none.
+func readOnlyCredential(actor model.Actor) bool {
+	return actor.Credential != nil && actor.Credential.ReadOnly
 }
 
 // actingPerson answers the person a request acts for, on a route gateRouteScopes has already

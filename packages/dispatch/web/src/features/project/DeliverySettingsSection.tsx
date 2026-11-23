@@ -2,10 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { agentSession } from "../../api/agent-session";
 import { api, apiErrorMessage } from "../../api/client";
-import { projectDeliverySettingsQuery, projectEvalsQueryKey } from "../../api/queries";
+import { projectDeliverySettingsQuery, whoAmIQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type {
+  AuthenticatedUser,
   ProjectDeliverySettings,
   ProjectDeliverySettingsInput,
   ProjectDeploySource,
@@ -79,7 +81,8 @@ const checkboxLabel = `flex items-center gap-2 text-sm font-medium ${textSeconda
 type SourceKind = ProjectDeploySource["kind"];
 
 /** The seven evals whose targets the settings name (the spec's Design), each a number in its
- *  eval's own unit or `off`, in the order the route answers them. */
+ *  eval's own unit or `off`. `TARGET_LABELS` lists them in the order the route's own list
+ *  (`deliverySettingsTargetSlugs`) gives, which is the order the editor shows them in. */
 type TargetSlug = keyof NonNullable<ProjectDeliverySettings["targets"]>;
 
 const TARGET_LABELS: Record<TargetSlug, string> = {
@@ -156,6 +159,18 @@ interface Refusal {
   readonly message: string;
   readonly sources?: readonly number[];
   readonly target?: TargetSlug;
+}
+
+/** Why `project`'s Save refuses every save of an agent viewer that names no session, `null`
+ *  where the save names its writer: a person, whose cookie names them, or an agent whose
+ *  credential proved a session or whose page's first address named one (`agentSession`). A
+ *  bearer whose credential proves no session must name one as the save's writer, which Dispatch
+ *  refuses `400 ACTOR_KIND` otherwise, so the editor sends nothing and says how to name it. */
+function writerRefusal(project: string, viewer: AuthenticatedUser | undefined): Refusal | null {
+  if (viewer?.kind !== "agent" || agentSession(viewer) !== undefined) return null;
+  return {
+    message: `An agent saves these settings as one of its sessions, and this page names none: open it at /projects/${project}/settings?session=<your session>.`,
+  };
 }
 
 let addedSources = 0;
@@ -372,6 +387,7 @@ export function DeliverySettingsSection({
   const queryClient = useQueryClient();
   const settings = useQuery(projectDeliverySettingsQuery(project));
   const submitGuard = useSubmitGuard();
+  const unnamedWriter = writerRefusal(project, useQuery(whoAmIQuery()).data);
   // The section shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -392,15 +408,15 @@ export function DeliverySettingsSection({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
-      // Each target the save changed is a new version of the project's eval.
-      void queryClient.invalidateQueries({ queryKey: projectEvalsQueryKey(project) });
     },
   });
 
   let body: ReactNode;
-  if (settings.isPending || (settings.isError && settings.isFetching)) {
+  // Only a first read that failed takes the fields away: a re-read that fails after a record
+  // loaded keeps that record, and the draft drawn from it.
+  if (settings.isPending || (settings.isLoadingError && settings.isFetching)) {
     body = <p className={`mt-4 ${textMutedOnCanvas}`}>Loading delivery settings…</p>;
-  } else if (settings.isError) {
+  } else if (settings.isLoadingError) {
     body = (
       <div className="mt-4">
         <QueryError
@@ -425,6 +441,7 @@ export function DeliverySettingsSection({
           pending={save.isPending}
           project={project}
           record={record}
+          unnamedWriter={unnamedWriter}
         />
         {saved ? (
           <p className={`mt-4 text-sm ${textSecondaryOnCanvas}`} role="status">
@@ -474,6 +491,9 @@ interface DeliverySettingsFieldsProps {
   readonly onSave: (input: ProjectDeliverySettingsInput) => void;
   /** Save refused the draft before sending: the last save's outcome no longer speaks for it. */
   readonly onRefused: () => void;
+  /** Why every save is refused before sending, whatever the draft holds: an agent viewer that
+   *  names no session to save as (`writerRefusal`); `null` where the save names its writer. */
+  readonly unnamedWriter: Refusal | null;
 }
 
 function DeliverySettingsFields({
@@ -483,6 +503,7 @@ function DeliverySettingsFields({
   pending,
   onSave,
   onRefused,
+  unnamedWriter,
 }: DeliverySettingsFieldsProps): ReactNode {
   const id = useId();
   const [draft, setDraft] = useState<Draft>(() => draftOf(record));
@@ -500,6 +521,11 @@ function DeliverySettingsFields({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (unnamedWriter !== null) {
+      setRefusal(unnamedWriter);
+      onRefused();
+      return;
+    }
     if (!draft.delivery) {
       onSave(storedInput(record));
       return;

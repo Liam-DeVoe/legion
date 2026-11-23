@@ -4202,12 +4202,20 @@ Each item below names a path with its method and identity, then its purpose.
 
   End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
 
-- `/auth/whoami` (GET; cookie or trusted header)
+- `/auth/whoami` (GET; cookie, trusted header, or bearer)
 
-  Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
+  Return who the dashboard is drawn for, with `event_head` an event id at or below which every event is final, read when the sign-in check answered.
   The page starts its events subscription from that id.
-  The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
-  A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
+  A browser credential decides first: a request carrying a session cookie or an IAP assertion is answered for the person it names, `{kind: "user", login, event_head}` with `login` their lowercase email, or refused as that credential is refused, whatever `Authorization` header it carries beside it.
+  A request carrying neither, whose bearer (or broker-issued DPoP token) the API takes for an agent, the same code `/api/v1/whoami` answers from, is answered `{kind: "agent", login, session, event_head}`, and its access-log line names that caller as `/api/v1/whoami`'s does.
+  `session` is the session the credential proved (a broker-issued token), else `null`.
+  `login` is the label the web app keeps that viewer's own state under: the lowercase email of the person the credential acts for where it names one (a personal token's owner, a broker-issued token's person), else `agent:<session>` where it proved a session, else `agent` (the shared token, a pod's service-account token).
+  A bearer the API refuses, a read-only token among them, is answered as a request with no bearer is.
+  So an agent may use the dashboard in a headless browser that sends its bearer on every request to Dispatch, with no sign-in.
+  An agent whose credential proves no session opens it at an address carrying `?session=<its session>` (`/projects/<KEY>/settings?session=<id>`); the page keeps that session for its life and its writes name it as their writer (`actor`), as a bearer's must.
+  The agent's shell draws no Sign out, no Settings link, no pinned issues or agents, and makes none of a person's own reads (the Inbox's asks and threads, the per-issue and per-agent state): each needs a person's sign-in or the `person` scope.
+  The sign-in check comes first: a caller with no credential this route takes is `401 NO_IDENTITY` and the head is never read.
+  A caller it takes is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
 

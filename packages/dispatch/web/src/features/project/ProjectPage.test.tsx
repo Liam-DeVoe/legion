@@ -325,6 +325,45 @@ test("/settings selects the Settings tab, which holds the project's delivery set
   }
 });
 
+test("another project's settings tab shows nothing of the last project's save", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  const refusal = "acme/core cannot be read by the Dispatch GitHub App";
+  const putProjectDeliverySettings = spyOn(api, "putProjectDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: refusal })
+  );
+  const project = (key: string, name: string) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    gated_steps: [],
+    key,
+    name,
+    open_asks: 0,
+  });
+  // The reader came from OTHER's settings tab to CORE's, and goes back to OTHER's.
+  const page = renderPage(
+    ["/projects/OTHER/settings", "/projects/CORE/settings"],
+    [project("CORE", "Core"), project("OTHER", "Other")]
+  );
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(await screen.findByRole("button", { name: "Save delivery settings" }));
+    expect(await screen.findByText(refusal)).toBeInTheDocument();
+    expect(putProjectDeliverySettings.mock.calls[0]?.[0]).toBe("CORE");
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Other" });
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("OTHER");
+    expect(screen.queryByText(refusal)).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+    putProjectDeliverySettings.mockRestore();
+  }
+});
+
 test("shows a compact blocker link only when asks await the viewer", async () => {
   const waiting = renderPage("/projects/CORE", undefined, "alice", [inboxRow()]);
   try {

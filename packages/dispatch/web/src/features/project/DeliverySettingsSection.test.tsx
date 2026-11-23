@@ -1,21 +1,29 @@
 import { expect, jest, spyOn, test } from "bun:test";
+import { DISPATCH_LOGIN_HEADER } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { answerRequests } from "../../__tests__/network";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
+import { keepPageSession } from "../../api/agent-session";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ProjectDeliverySettings, ProjectDeploySource } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  ProjectDeliverySettings,
+  ProjectDeploySource,
+} from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsSection } from "./DeliverySettingsSection";
 
-// The editor's states (dispatch://INFRA-978, the plan's "The editor's states"): one test per row,
-// each driving the row's event on the row's state and reading what the row says shows.
+// The editor's states (dispatch://INFRA-978): one test per state and event, each driving the
+// event on the state and reading what then shows.
 
 const PROJECT = "ACME";
 const DEFAULT_REPO = "acme/widgets";
@@ -108,8 +116,14 @@ function savedLater(overrides: Partial<ProjectDeliverySettings> = {}): ProjectDe
   return { ...record, updated_at: "2026-11-21T09:00:00Z", ...overrides };
 }
 
-function renderSection(defaultRepo: string | null = DEFAULT_REPO): QueryClient {
+/** The section of PROJECT, drawn for `viewer` (`/auth/whoami`'s answer) where one is given, which
+ *  is in the cache before the first render. */
+function renderSection(
+  defaultRepo: string | null = DEFAULT_REPO,
+  viewer?: AuthenticatedUser
+): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (viewer !== undefined) queryClient.setQueryData<AuthenticatedUser>(["whoami"], viewer);
   render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -454,7 +468,7 @@ test("the fields are disabled while the save is in flight", async () => {
   }
 });
 
-test("a save restarts the fields from the stored record and refreshes the evals", async () => {
+test("a save restarts the fields from the stored record and refreshes the delivery reads", async () => {
   const user = userEvent.setup();
   const stored = savedLater({ sources: [githubSource({ id: "source-stored" })] });
   // The record's read after the save answers what the save stored.
@@ -466,9 +480,6 @@ test("a save restarts the fields from the stored record and refreshes the evals"
   try {
     const queryClient = renderSection();
     const reads = seedDeliveryReads(queryClient);
-    const evals = ["evals", PROJECT, "list"];
-    queryClient.getQueryCache().build(queryClient, { queryKey: evals });
-    queryClient.setQueryData(evals, []);
     await user.click(await screen.findByRole("switch", { name: "Delivery" }));
     const invalidate = spyOn(queryClient, "invalidateQueries");
 
@@ -517,24 +528,48 @@ test("a save restarts the fields from the stored record and refreshes the evals"
     expect(field("Population authors").value).toBe("octocat\noctocat-agent[bot]");
     expect(field("Deploy frequency (deploys a day)").value).toBe("20");
     expect(field("Change failure rate (a share from 0 to 1)").value).toBe("0.05");
-    // The save refreshes the project's settings, the delivery reads that are not live (an open
-    // run's drill-down; a live view learns of the save from Dispatch, as a delta) and the
-    // project's evals, whose targets the save wrote.
+    // The save refreshes the project's settings and the delivery reads that are not live (an
+    // open run's drill-down; a live view learns of the save from Dispatch, as a delta).
     await waitFor(() =>
       expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
         ["project-delivery-settings", PROJECT],
         ["delivery"],
-        ["evals", PROJECT],
       ])
     );
     expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(reads.live)?.isInvalidated).toBe(false);
-    expect(queryClient.getQueryState(evals)?.isInvalidated).toBe(true);
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
   } finally {
     cleanup();
     get.mockRestore();
     put.mockRestore();
+  }
+});
+
+test("a failed re-read of a loaded record keeps the editor and the draft", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockRejectedValue(new ApiError(500, { code: "INTERNAL", error: "database unavailable" }));
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "hubot");
+
+    // A re-read that fails - a window regaining focus, another save's refresh - leaves the record
+    // the section already holds, and the fields drawn from it, as they were.
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["project-delivery-settings", PROJECT] })
+    );
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(["project-delivery-settings", PROJECT])?.status).toBe("error");
+    expect(screen.queryByText("Couldn't load the delivery settings.")).not.toBeInTheDocument();
+    expect(deliverySwitch()).toBeChecked();
+    expect(field("Population authors").value).toBe("hubot");
+  } finally {
+    cleanup();
+    get.mockRestore();
   }
 });
 
@@ -1022,5 +1057,108 @@ test("a project holds one events source at most", async () => {
   } finally {
     cleanup();
     get.mockRestore();
+  }
+});
+
+/** What Dispatch received of one save: the body, and the login its `Dispatch-Login` named. */
+interface ReceivedSave {
+  readonly body: Record<string, unknown>;
+  readonly login: string | null;
+}
+
+/** Saves a project whose delivery is off as `viewer` (`/auth/whoami`'s answer), through the page's
+ *  own write path and client, and answers what Dispatch received. */
+async function saveAs(viewer: AuthenticatedUser): Promise<ReceivedSave> {
+  const user = userEvent.setup();
+  const stored: ProjectDeliverySettings = { ...record, delivery: false };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const received = Promise.withResolvers<ReceivedSave>();
+  answerRequests(
+    http.put(`/api/v1/projects/${PROJECT}/settings/delivery`, async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      received.resolve({ body, login: request.headers.get(DISPATCH_LOGIN_HEADER) });
+      return Response.json(stored);
+    })
+  );
+
+  try {
+    renderSection(DEFAULT_REPO, viewer);
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+    const save = await received.promise;
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    return save;
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+}
+
+test("an agent viewer's save names the session its credential proved as its writer, and no person", async () => {
+  // The session whoami answers is the one the save names, whatever the page's address named.
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({
+      event_head: "0",
+      kind: "agent",
+      login: "agent:ses_from_whoami",
+      session: "ses_from_whoami",
+    });
+    expect(save.body.actor).toEqual({ id: "ses_from_whoami", kind: "session" });
+    expect(save.body.delivery).toBe(false);
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer whose credential proves no session names the one the page's first address named", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "agent", login: "agent", session: null });
+    expect(save.body.actor).toEqual({ id: "ses_from_the_address", kind: "session" });
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("a person's save names no writer in its body, and names the person in Dispatch-Login", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "user", login: "alice" });
+    expect(save.body).not.toHaveProperty("actor");
+    expect(save.login).toBe("alice");
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer that names no session is told to open the page with one, and its save is not sent", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+  // Neither the credential (`session: null`) nor the page's first address names a session.
+  keepPageSession("");
+
+  try {
+    renderSection(DEFAULT_REPO, {
+      event_head: "0",
+      kind: "agent",
+      login: "agent",
+      session: null,
+    });
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `An agent saves these settings as one of its sessions, and this page names none: open it at /projects/${PROJECT}/settings?session=<your session>.`
+    );
+    expect(put).not.toHaveBeenCalled();
+    // The draft stays, as for every refusal made before a request.
+    expect(deliverySwitch()).toBeChecked();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
   }
 });

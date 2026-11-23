@@ -232,13 +232,16 @@ export interface WriteRequest<T = unknown> {
  *  every attempt of it, and what the store keeps it under; sent as `Idempotency-Key` on a `POST`
  *  and a `PATCH`, and never on a `PUT` or a `DELETE`, which are the same however often they are
  *  made - the login of the person who pressed it (`Dispatch-Login`, sent on every write, so
- *  Dispatch refuses it under anyone else's session), the attempt's silence deadline, `sent`, told
- *  the request as it goes out, for a caller that keeps it to make again, and `progress`, told how
- *  much of an upload's body has gone up. Every write method takes these, so a write made outside
- *  the store does not type-check. */
+ *  Dispatch refuses it under anyone else's session), none for an agent viewer, whose bearer names
+ *  no person; `session`, the session an agent viewer's write is made as (`agentSession`), which a
+ *  route that takes a writer in its body names there; the attempt's silence deadline, `sent`,
+ *  told the request as it goes out, for a caller that keeps it to make again, and `progress`,
+ *  told how much of an upload's body has gone up. Every write method takes these, so a write made
+ *  outside the store does not type-check. */
 export interface WriteBounds extends RequestBounds {
   readonly key: string;
   readonly login?: string;
+  readonly session?: string;
   readonly sent?: (request: WriteRequest) => void;
   readonly progress?: (loaded: number, total: number) => void;
 }
@@ -1796,15 +1799,22 @@ export class DispatchApiClient {
 
   /** Replaces one project's delivery settings and sets the targets it names, each a new version
    *  of the project's eval, in one write, and answers them as `getProjectDeliverySettings` does.
-   *  A refusal names its field and source (`400 DELIVERY_SETTINGS_INPUT`, `409
-   *  DELIVERY_SETTINGS_ACCESS`, `409 DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project
-   *  (`409 DELIVERY_REPOSITORY_SHARED`), and writes nothing. */
+   *  An agent viewer's save names the session it is made as (`bounds.session`) as its `actor`,
+   *  which a bearer whose credential proves no session must (`400 ACTOR_KIND`); a person's names
+   *  none, their cookie naming them. A refusal names its field and source
+   *  (`400 DELIVERY_SETTINGS_INPUT`, `409 DELIVERY_SETTINGS_ACCESS`, `409
+   *  DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project (`409 DELIVERY_REPOSITORY_SHARED`), and
+   *  writes nothing. */
   putProjectDeliverySettings(
     project: string,
     input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
     bounds: WriteBounds
   ) {
-    return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, input, bounds);
+    const body =
+      bounds.session === undefined
+        ? input
+        : { ...input, actor: { id: bounds.session, kind: "session" } };
+    return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, body, bounds);
   }
 
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named

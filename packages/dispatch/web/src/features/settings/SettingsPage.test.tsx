@@ -64,11 +64,23 @@ test("holds no delivery settings form and reads no project's delivery settings",
     null
   );
 
+  // One project, drawn before the check, so a per-project read of its delivery settings would
+  // have been made by then.
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key: "ACME",
+      name: "Acme",
+      open_asks: 0,
+    },
+  ]);
+
   try {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeDefined();
-    await waitFor(() => expect(unrelated.listProjects).toHaveBeenCalled());
+    expect((await screen.findAllByText("ACME")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("heading", { name: "Delivery timeline" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Save delivery settings" })

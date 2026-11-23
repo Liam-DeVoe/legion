@@ -549,11 +549,6 @@ export const projectDeliverySettingsQuery = (project: string) =>
     queryFn: () => api.getProjectDeliverySettings(project),
   });
 
-/** The prefix of every read of one project's evals, which a write of the project's eval rows
- *  invalidates: a delivery settings save writes each target it changes as a new version of that
- *  project's eval. */
-export const projectEvalsQueryKey = (project: string) => ["evals", project] as const;
-
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project
  *  (`useLegionDaemons`), since no route lists them. */

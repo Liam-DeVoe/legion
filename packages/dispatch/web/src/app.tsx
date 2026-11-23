@@ -464,17 +464,21 @@ function NavigationContents({
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
-          above is read on every visit, so the footer sits under it rather than over it. */}
+          above is read on every visit, so the footer sits under it rather than over it. An agent
+          viewer is shown by its label and offered no sign-out: its bearer is no session of this
+          browser's, so `POST /auth/logout` has nothing to end and refuses it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
         <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
-        <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
-          type="button"
-        >
-          Sign out
-        </button>
+        {user.kind === "user" ? (
+          <button
+            className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+            disabled={signOutPending}
+            onClick={onSignOut}
+            type="button"
+          >
+            Sign out
+          </button>
+        ) : null}
         {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
@@ -623,9 +627,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
   // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
-  // on the page while the sidebar is collapsed or its sheet is closed.
+  // on the page while the sidebar is collapsed or its sheet is closed. An agent viewer has none.
   const liveViews = useLiveViews();
-  const pinnedAgents = usePinnedAgents();
+  const pinnedAgents = usePinnedAgents(user.kind === "user");
   useEffect(() => {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);
@@ -641,10 +645,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // leaves the key whole, so the next load writes the lot again, in the same order. The key the
   // run began under is held here rather than read back from storage, because the key outlives
   // the first write now: an effect that runs again - React runs it twice under StrictMode -
-  // would otherwise write every id a second time.
+  // would otherwise write every id a second time. The pins are a person's: an agent viewer has
+  // none to move, and its bearer may hold no `person` scope to write one with.
   const writePin = useAgentPinWrite();
   const migrated = useRef<string | null>(null);
   useEffect(() => {
+    if (user.kind !== "user") return;
     const key = legacyPinnedAgentsKey(user.login);
     if (migrated.current === key) return;
     const kept = window.localStorage.getItem(key);
@@ -656,12 +662,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       }
       window.localStorage.removeItem(key);
     })();
-  }, [user.login, writePin]);
+  }, [user.kind, user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
   const inboxCount = useInboxCount();
-  const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
+  // The person's conversations with sessions, read under the `person` scope: an agent viewer has
+  // none, and asks for none (`useIsHuman`).
+  const unreadReplies = totalUnreadReplies(
+    useQuery({ ...userAgentStateQuery(), enabled: user.kind === "user" }).data
+  );
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);

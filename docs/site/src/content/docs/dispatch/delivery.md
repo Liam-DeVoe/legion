@@ -45,7 +45,8 @@ They are:
 
 A repository is the deploy source of one delivery-on project at most, and of one source of that project, so each repository has one rule and one owner.
 The save checks this under a lock of each repository involved, taken in name order, so two saves cannot both take one repository.
-A move of a project's default repository is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear the default repository of a delivery-on project whose source reads it (`409 DELIVERY_NEEDS_REPOSITORY`).
+A move of the default repository of a delivery-on project whose `github_workflow` source names no repository, and so reads the default, is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads or that another source of the project names (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear it (`409 DELIVERY_NEEDS_REPOSITORY`).
+Any other project moves its default repository freely.
 
 A save replaces the project's sources.
 A source whose repository and rule are both unchanged keeps its id, its bookkeeping and its repository's reconcile progress.
@@ -72,6 +73,11 @@ A refused save writes nothing, and its body is `{code, error, field?, source?, p
 - `409 DELIVERY_REPOSITORY_SHARED`: with delivery on, a repository that a source of another delivery-on project reads, that project named in `project`.
 
 - `404 PROJECT_NOT_FOUND`: no project has the key.
+
+An agent may save them on the tab itself, in a headless browser that sends its agent bearer on every request to Dispatch and has no sign-in: `GET /auth/whoami` answers such a bearer as an agent, and the dashboard draws its shell for it.
+An agent whose credential proves no session opens the tab at `/projects/<KEY>/settings?session=<its session>`, and its save names that session as the writer (`actor`), as a bearer's write must; a broker-issued token's own session is named without the parameter.
+Opened with neither, the tab sends no save: **Save delivery settings** says to open the page with `?session=<your session>`, since Dispatch would refuse the save `400 ACTOR_KIND`.
+The agent's shell has no **Sign out** and no **Settings** link, and shows none of a person's own lists (the Inbox's asks and threads, pinned issues and pinned agents), since each needs a person's sign-in or the `person` scope.
 
 The deployment-wide delivery record of the release before this one, `GET` and `PUT /api/v1/settings/delivery`, still answers for one release, because a route is removed only in the release after the one that stops calling it; nothing in the web app calls it, this release reads that record nowhere else, and the next release removes the route.
 
