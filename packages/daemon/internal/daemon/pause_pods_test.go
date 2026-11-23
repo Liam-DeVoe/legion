@@ -635,7 +635,7 @@ func (r *podUpdateRig) underLaunchTurn(hold func(func()), what string, act func(
 func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim.Role, pause int64) {
 	r.t.Helper()
 	r.underLaunchTurn(hold, fmt.Sprintf("a replacement to take the wake of the %s under the pod's launch turn", role), func() {
-		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], pods.WakeDelivery, r.clock.Now(), pause)
+		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], role, pods.WakeDelivery, r.clock.Now(), pause)
 		if err != nil || !taken {
 			r.t.Fatalf("take the wake of the %s that the pause held = %t, %v; want it taken", role, taken, err)
 		}
