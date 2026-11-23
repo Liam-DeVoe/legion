@@ -1080,6 +1080,7 @@ func (r *pauseRig) backstopsDue() []string {
 // key, on the checker's step, whose token names the implementer. The pause's stop of that claim
 // arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
 func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	held := r.pauseLegion()
@@ -1100,6 +1101,7 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 // of a key, and not the checker's own claim beside it. The release's mark names both claims by
 // their tokens, as its stops record them (store.ReleaseSuspendedClaim).
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
@@ -1130,6 +1132,7 @@ func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 // with nothing to stop. Read by the role, both rows would reach the checker's own claim, and the
 // worker's stop would stay open for as long as the pause stands.
 func TestAPauseStopStopsTheClaimItsRowNames(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	sup, _ := r.supervisor()
@@ -1178,6 +1181,7 @@ func TestAPauseStopStopsTheClaimItsRowNames(t *testing.T) {
 // stop row ends, and not the checker's own claim beside it, which works no step and whose stop row
 // stays open. Both claims are queued, so the stop ends `stopped` with nothing to stop.
 func TestAPauseStopNamingNoClaimStopsTheStepsWorker(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	sup, _ := r.supervisor()

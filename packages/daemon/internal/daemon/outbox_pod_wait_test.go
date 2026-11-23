@@ -110,6 +110,7 @@ func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
 // start waits on its row where the pod lacks either, its text naming the one it lacks, and asks
 // the runtime for nothing: a launch refused for the role would be charged as a launch failure.
 func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)

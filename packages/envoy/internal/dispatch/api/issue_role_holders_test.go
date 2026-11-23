@@ -125,6 +125,7 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // stores both: each session holds the role, the set reads back with both, and a later set that
 // names one of them leaves the other's session with no role.
 func TestTwoClaimsOfOneRoleBothHoldIt(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	claimOf := func(agent string) string {

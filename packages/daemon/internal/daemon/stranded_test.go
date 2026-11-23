@@ -510,6 +510,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 // turn: that claim is stranded, and the role's own claim, which nothing woke, waits for a delivery
 // as a released claim is meant to.
 func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	released := func(c supervise.Claim) supervise.Claim {

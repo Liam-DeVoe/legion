@@ -1034,6 +1034,7 @@ func (r *idleRig) implementerOfAnotherAgent(t *testing.T, agent claim.Agent, sta
 // claim of the role is not one the release suspended at all; and a cancel resumes the claim its
 // release suspended and leaves the claim of the same role that an earlier release left released.
 func TestAReleaseKeepsTheClaimsItSuspendedByTheirTokens(t *testing.T) {
+	t.Parallel()
 	t.Run("two idle claims of one role are both released and the pod is taken", func(t *testing.T) {
 		rig := newIdleRig(t)
 		ctx := context.Background()
