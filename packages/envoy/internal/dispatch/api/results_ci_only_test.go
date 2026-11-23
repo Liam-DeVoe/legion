@@ -177,6 +177,7 @@ func (w ciOnlyWorld) requireTheHead(since time.Time, after string) {
 // only rows that exist, the linked case stays no_head; at a build whose intake binds only under
 // delivery settings, the event case does.
 func TestACheckOnlyCIProvesComparesWithTheHeadOfItsPullRequestWithNoResultRecorded(t *testing.T) {
+	t.Parallel()
 	t.Run("a link by hand", func(t *testing.T) {
 		world := newCIOnlyWorld(t, "CIOL", func(string) (string, string) { return "feature/no-key", "" })
 		world.requireNoHead("the link")

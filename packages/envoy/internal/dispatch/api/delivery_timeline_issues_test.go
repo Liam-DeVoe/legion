@@ -273,6 +273,7 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 // selects #40 under __issue_not_known__ and #41 under __no_issue__, by priority and by component.
 // Control in the same test: with the messages of #40 read and empty, both are under __no_issue__.
 func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{

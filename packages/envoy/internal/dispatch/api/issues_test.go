@@ -1180,6 +1180,7 @@ func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
 // its project, CORE, in its body, as every create does: Dispatch finds no project from a
 // repository.
 func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
@@ -1254,6 +1255,7 @@ func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
 // The issue that holds one form may send the other form of its own pull request. Control: a link
 // to the comments page of the held number, which names no pull request, is not taken.
 func TestALinkInTheOtherFormOfAHeldPullRequestIsTaken(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())

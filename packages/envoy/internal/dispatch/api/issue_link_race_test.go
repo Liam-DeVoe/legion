@@ -38,6 +38,7 @@ const heldLinkLock = 4209012
 // that case seeds oldco/tools renamed to acme/tools by SQL, as the last release left it, and
 // builds the server after the seed, since a server reads the pairs once, as it is built.
 func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		second, url string
 		rename      bool

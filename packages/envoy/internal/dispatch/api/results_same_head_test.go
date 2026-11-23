@@ -119,6 +119,7 @@ func wantSameHeadRows(t *testing.T, database *store.Store, issueKey, after strin
 // The record path. Recording a pass at headCommit, which #41 of the issue heads, asks GitHub for
 // the commit's pull requests, and the record stores #42 and #44.
 func TestARecordedResultStoresEveryPullRequestGitHubNamesAtItsCommit(t *testing.T) {
+	t.Parallel()
 	handler, database, _, fake := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Two pull requests at one head")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -134,6 +135,7 @@ func TestARecordedResultStoresEveryPullRequestGitHubNamesAtItsCommit(t *testing.
 // at the same head, #43 is opened and closed, and #44 merges, and no event of them arrives. One
 // read of the results asks GitHub once and stores #42 and #44.
 func TestAResultsReadStoresEveryPullRequestGitHubNamesAtAResultsCommit(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Two pull requests at one head")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)

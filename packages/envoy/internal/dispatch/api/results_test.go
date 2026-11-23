@@ -2362,6 +2362,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 // stored issue for a row with no facts. The pass's facts line then reads #93's facts in its
 // batched query, with no read of the pull request, and k1 compares with it.
 func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
+	t.Parallel()
 	for _, withTexts := range []bool{true, false} {
 		t.Run(fmt.Sprintf("texts=%v", withTexts), func(t *testing.T) {
 			handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
@@ -3411,6 +3412,7 @@ func pullRequestsComparedWith(check model.CheckBlock) []int {
 // owed_in_another_repository (a read owed of acme/other#65). Each wants #65 as its one basis, and
 // pass_stands yes.
 func TestAPassAtTheHeadOfAPullRequestOwedAReadDoesNotStand(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		owedAs string // the repository that the read of #65 is owed under, "" for no read owed
@@ -3472,6 +3474,7 @@ func TestAPassAtTheHeadOfAPullRequestOwedAReadDoesNotStand(t *testing.T) {
 // issue's pass at newHeadCommit while #98 is owed a read. GitHub refuses the list of the pull
 // requests of that commit with 403. The read stores no row of #98, and the owed read of #98 stays.
 func TestAResultsReadComparesWithAPullRequestOwedARead(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESL", "acme/widgets", "Learned while owed")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -3526,6 +3529,7 @@ func TestAResultsReadComparesWithAPullRequestOwedARead(t *testing.T) {
 // newer pass first, and GitHub answers #97 at the other commit. The read must read the heads again
 // after that write, so one read compares with #97 and the pass at its head stands.
 func TestAResultsReadComparesWithThePullRequestItLearnsInTheSameAnswer(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESB", "acme/widgets", "Both")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -3549,6 +3553,7 @@ func TestAResultsReadComparesWithThePullRequestItLearnsInTheSameAnswer(t *testin
 // the issue, so the read reads no page of commits. One read compares with #98, and the pass
 // stands.
 func TestAResultsReadComparesWithAPullRequestWhoseCommitsAnswer500(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESF", "acme/widgets", "Commits refused")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -4795,6 +4800,7 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 // check runs is read, and pass_stands is unknown. The control owes nothing: the runs at the head
 // of #65 are read, and the pass stands.
 func TestACheckThatCIProvesIsUnreadWhileAReadIsOwed(t *testing.T) {
+	t.Parallel()
 	for _, owed := range []bool{true, false} {
 		t.Run(map[bool]string{true: "a_read_owed", false: "control_nothing_owed"}[owed], func(t *testing.T) {
 			handler, database, fake := resultsGitHubCheckRuns(t)

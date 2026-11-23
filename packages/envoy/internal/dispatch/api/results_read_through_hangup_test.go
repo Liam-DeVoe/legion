@@ -18,6 +18,7 @@ import (
 // ("store the head of cybermonklabs/legion#4490: context canceled"). Here GitHub holds its answer
 // naming #7 at k1's commit until the caller has hung up, and the head must be stored all the same.
 func TestAResultsReadWhoseCallerHangsUpStillStoresTheHead(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "HANG", "acme/widgets", "The caller hangs up")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -75,6 +76,7 @@ func TestAResultsReadWhoseCallerHangsUpStillStoresTheHead(t *testing.T) {
 // commit's pull requests keeps the claim, as delivery.CommitPullReads.Claim says a read that fails
 // must, so the second read asks GitHub nothing.
 func TestAReadThroughWhoseStoreFailsGivesItsClaimBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		storeFails bool // else GitHub answers 500 to the list
@@ -152,6 +154,7 @@ func TestAReadThroughWhoseStoreFailsGivesItsClaimBack(t *testing.T) {
 // claim of the commit is held after the read, and the next read at once asks GitHub nothing.
 // Control in the same test: the commit messages answer 200, and the claim is held the same way.
 func TestAGitHubRateLimitOfAReadThroughsCommitMessagesKeepsTheClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status int

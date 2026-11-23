@@ -192,6 +192,7 @@ func (w citedWorld) requireCompared(key string, why string, want ...string) {
 // holds, still gives #51 to the other issue by the citation, which outranks the branch: the rule
 // leaves a real citation of a GitHub issue standing.
 func TestABodyNamingAPullRequestByNumberLeavesThePullRequestItsBranchsIssue(t *testing.T) {
+	t.Parallel()
 	t.Run("the body names a pull request Dispatch holds", func(t *testing.T) {
 		world := newCitedWorld(t, "CITEPR",
 			fmt.Sprintf("#%d renamed the helper, so this change calls it by its new name.", citedPull), citedPull)

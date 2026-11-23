@@ -268,6 +268,7 @@ func wantNotReadPassStands(t *testing.T, check model.CheckBlock, want string) {
 // pass_stands is unknown for each check, never no. The guard shows that HeadsAttributedTo lists
 // #81 with no head, so the fixture is the case of the test.
 func TestAPullRequestWhoseHeadIsNotReadIsNamedAndProvesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _, _ := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "ATTR", "acme/widgets", "A head not read").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", notReadChecks)
@@ -294,6 +295,7 @@ func TestAPullRequestWhoseHeadIsNotReadIsNamedAndProvesNothing(t *testing.T) {
 // head names. That pass is unknown with head_not_read, and k2 answers unknown, not no. The
 // guard shows that HeadsAttributedTo lists #80 with its head and #81 with none.
 func TestAPullRequestWhoseHeadIsNotReadBesideOneThatIs(t *testing.T) {
+	t.Parallel()
 	handler, database, _, _ := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "ATTR", "acme/widgets", "A head read and a head not read").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", notReadChecks)
@@ -334,6 +336,7 @@ func TestAPullRequestWhoseHeadIsNotReadBesideOneThatIs(t *testing.T) {
 // at a third commit. That pass is at another commit, and pass_stands is no. A guard reads the
 // answer of the statement.
 func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		messages string // "" is not read; %s is the issue of the check
@@ -413,6 +416,7 @@ func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testin
 // unknown. Control in the same test: the message that names NKCI-2 is read. Then the run at the
 // head of #85 decides: the CI answer is pass, and pass_stands is yes.
 func TestACheckThatCIProvesBesideAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		messages string // "" is not read; %s is the issue of the check
@@ -472,6 +476,7 @@ func TestACheckThatCIProvesBesideAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t
 // pass_stands is yes. Control in the same test: without #85, the first pass stands at release.
 // Guards read the merged branch of NKAM-1 and the answers of the statement.
 func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		notKnown bool // the merged #85, whose answer is not known, is stored
@@ -547,6 +552,7 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 // with the messages of #86 read and naming no issue, k1 compares with nothing for
 // no_pull_request_or_branch, and pass_stands is no. A guard reads the answer of the statement.
 func TestAnIssueWithNoHeadBesideANotKnownPullRequestIsNotKnown(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		state    string
@@ -594,6 +600,7 @@ func TestAnIssueWithNoHeadBesideANotKnownPullRequestIsNotKnown(t *testing.T) {
 // heads_not_read and names no pull request whose answer is not known. The first server holds no
 // App key. The App of the second server answers 404 for the installation on acme/widgets.
 func TestNoAppKeyAndAnUnreadableRepositoryAnswerAsTheBaseDoes(t *testing.T) {
+	t.Parallel()
 	for _, server := range []struct {
 		name  string
 		serve func(t *testing.T) (http.Handler, *store.Store)

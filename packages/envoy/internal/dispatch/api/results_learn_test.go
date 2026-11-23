@@ -28,6 +28,7 @@ func openPull(number int, issueKey, repo, sha string) string {
 // control marks the same row read by GitHub (github_read_at). The guard of the write keeps that
 // row, so no read is owed, and the first read compares with #99.
 func TestAReadThroughWhoseOwnWriteOwesAReadComparesAtTheNextRead(t *testing.T) {
+	t.Parallel()
 	for _, marked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the_write_owes_a_read", true: "control_the_row_marked_read"}[marked], func(t *testing.T) {
 			handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
@@ -102,6 +103,7 @@ func TestAReadThroughWhoseOwnWriteOwesAReadComparesAtTheNextRead(t *testing.T) {
 // The control reads one commit message that names NKLR-1: #98 is the issue's, and the pass stands
 // at its head.
 func TestAPullRequestThatTheSameReadLearnsIsNotKnownInThatAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		message string // the one commit message of #98, "" where GitHub answers 500 to the page

@@ -81,6 +81,7 @@ func putTextsOnReading(t *testing.T, database *store.Store, number int, reading 
 // settings or an App key, or where a count reads the wrong rows. Each step whose name starts with
 // control shows that the count of the step after it can fail.
 func TestTheAttributionCountsNeedNoDeliverySettings(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	if deps.GitHub != nil {
@@ -180,6 +181,7 @@ func TestTheAttributionCountsNeedNoDeliverySettings(t *testing.T) {
 // in place of refused_since fails. Want owed_failures 1 since the owe of #61, and owed_refusals 1
 // since the first refusal of #62.
 func TestTheAttributionCountsNameTheReadsThatAreOwed(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	read := func(step string) (delivery.AttributionCounts, map[string]json.RawMessage) {

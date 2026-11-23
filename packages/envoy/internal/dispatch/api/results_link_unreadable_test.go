@@ -69,6 +69,7 @@ func owedReadOf(t *testing.T, database interface {
 // reads it one time more and records it as unreadable again. Control: a link to the comments page
 // of an issue names no pull request, so it owes nothing and is not named.
 func TestALinkToARepositoryTheAppIsNotInstalledOnIsReadOnceUntilTheLinkIsWrittenAgain(t *testing.T) {
+	t.Parallel()
 	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "UPST", "acme/tools", "Links an upstream report")
 	links := []map[string]string{
@@ -123,6 +124,7 @@ func TestALinkToARepositoryTheAppIsNotInstalledOnIsReadOnceUntilTheLinkIsWritten
 // read looked the row up in the link's own letters, the upstream/project link was not named
 // (review F2 of #4209 at 4ccee6c7e6).
 func TestEachSpellingOfALinkToARepositoryTheAppIsNotInstalledOnIsNamed(t *testing.T) {
+	t.Parallel()
 	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "UPSC", "acme/tools", "Links an upstream report twice")
 	patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{

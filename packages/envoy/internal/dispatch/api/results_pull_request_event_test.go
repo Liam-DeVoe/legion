@@ -41,6 +41,7 @@ const headAfterEventBound = 5 * time.Second
 // reads that pull request from GitHub, so GitHub's single pull request read answers #7 as GitHub
 // holds it.
 func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *testing.T) {
+	t.Parallel()
 	requireTheEventsHeadWithinTheBound(t, 0)
 }
 
@@ -51,6 +52,7 @@ func TestAPullRequestEventGivesTheResultsReadItsHeadWithNoDeliverySettings(t *te
 // route (acceptance round 3, defect 5: 420 s and no head). Each is now final at its first
 // delivery, so the event behind them is taken at once.
 func TestAPullRequestEventBehindFourEnvelopesNoRowCanHoldGivesTheResultsReadItsHead(t *testing.T) {
+	t.Parallel()
 	requireTheEventsHeadWithinTheBound(t, intakeSlots)
 }
 
@@ -245,6 +247,7 @@ func startNoSettingsIntakes(t *testing.T, database *store.Store, served *server)
 // event is never taken, #9 stays stored open, and when the bound ends c1 still reads run 42's
 // cancel at #9.
 func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySettings(t *testing.T) {
+	t.Parallel()
 	runs := newCheckRunsFake()
 	runs.set(headCommit, completedRun(41, ciCheckRun, "success"))
 	runs.set(newHeadCommit, completedRun(42, ciCheckRun, "cancelled"))

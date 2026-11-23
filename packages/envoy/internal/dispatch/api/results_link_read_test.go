@@ -31,6 +31,7 @@ func linkedOpenPull(repo string, number int, sha string) string {
 // row. The results read of the issue then compares check k1 with that head. The test fails where
 // the link write owes no read: then no step reads the pull request, and no head row is stored.
 func TestALinkByHandStoresTheHeadOfThePullRequestItLinks(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Linked by hand")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -79,6 +80,7 @@ func TestALinkByHandStoresTheHeadOfThePullRequestItLinks(t *testing.T) {
 // stored link back under oldco/tools, as a release before the rename stored it: the pass, the
 // results read, the link check and the resolve each read it there under either name of the pair.
 func TestALinkByHandByTheNameBeforeARenameGivesItsIssueTheHead(t *testing.T) {
+	t.Parallel()
 	seeded, renames := renamedRepositoryStore(t, "ACME", "oldco/tools", "acme/tools")
 	handler, database, served, fake := readThroughGitHubOn(t, testServerOptions{store: seeded, renames: renames}, "acme/tools")
 	setDefaultRepository(t, handler, "ACME", "acme/tools")
@@ -138,6 +140,7 @@ func TestALinkByHandByTheNameBeforeARenameGivesItsIssueTheHead(t *testing.T) {
 // writes a rename pair, so the pair of oldco/tools is seeded by SQL, as the last release left it,
 // before the server is built, since a server reads the pairs once, as it is built.
 func TestALinkByHandAsksGitHubForAPullRequestOnlyWhereItsHeadIsNotHeld(t *testing.T) {
+	t.Parallel()
 	seeded, renames := renamedRepositoryStore(t, "ACME", "oldco/tools", "acme/tools")
 	handler, database, served, fake := readThroughGitHubOn(t, testServerOptions{store: seeded, renames: renames}, "acme/tools")
 	setDefaultRepository(t, handler, "ACME", "acme/tools")
@@ -250,6 +253,7 @@ func owedReads(t *testing.T, database *store.Store) []string {
 //
 // A link held before the write, in other letters, owes nothing again.
 func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing.T) {
+	t.Parallel()
 	handler, database, _, _ := readThroughGitHub(t, "acme/tools", "acme/elsewhere")
 	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Links by hand")
 	writeReadMergedRow(t, database, "acme/tools", 30, headCommit, "")
@@ -294,6 +298,7 @@ func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing
 // link owes a read only in a repository that a project maps: then no step reads the pull request,
 // and k1 compares with nothing.
 func TestALinkByHandInARepositoryThatNoProjectMapsGetsItsHeadFromOneRead(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/loose")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": "LOOS", "name": "Loose"}, "alice"); response.Code != http.StatusCreated {
@@ -343,6 +348,7 @@ func TestALinkByHandInARepositoryThatNoProjectMapsGetsItsHeadFromOneRead(t *test
 // count (pass_stands unknown). The test fails where a refused read of an owed pull request ends the
 // owe, and where a pass reads it again.
 func TestALinkByHandToAPullRequestThatGitHubRefusesStaysOwedAsARefusal(t *testing.T) {
+	t.Parallel()
 	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "HIDE", "acme/hidden", "Linked where the App cannot read")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)

@@ -503,6 +503,7 @@ func storeLinkedHeadOn(t *testing.T, database *store.Store, repo string, number 
 // no repository: GitHub proves acme/widgets does not hold the commit, and it is refused
 // RESULT_COMMIT_UNKNOWN.
 func TestAResultAtACommitOfAPullRequestTheIssueLinksInAnotherRepositoryIsKeptWithThatRepository(t *testing.T) {
+	t.Parallel()
 	const (
 		toolsHead  = "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a"
 		toolsOlder = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
@@ -548,6 +549,7 @@ func TestAResultAtACommitOfAPullRequestTheIssueLinksInAnotherRepositoryIsKeptWit
 // the same. The control is a commit that heads no pull request of the issue, which GitHub's same
 // answer refuses.
 func TestAResultAtAHeadOfTheIssueDispatchHoldsIsStoredWithNoReadOfGitHub(t *testing.T) {
+	t.Parallel()
 	linked := &linkedGitHub{held: map[string][]string{}, pulls: map[string]string{}}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "KNWN", "acme/tools", "A head Dispatch holds")

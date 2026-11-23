@@ -23,6 +23,7 @@ import (
 // here until GitHub's own count proves the pull request absent (delivery's pullRequestAbsent), a
 // query this fake does not answer.
 func TestAnIssuesLinkOfAPullRequestsNumberComparesWithItsHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		external string // `dispatch issue --external`'s reference; "" links by hand instead

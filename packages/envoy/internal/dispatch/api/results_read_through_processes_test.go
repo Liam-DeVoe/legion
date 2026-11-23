@@ -12,6 +12,7 @@ import (
 // passed, a read in the second process reads the commit through. A claim that each process keeps
 // in its own memory alone makes the second process ask GitHub again inside the span.
 func TestTwoProcessesReadAResultsCommitThroughOnceASpan(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	otherHandler, other := secondReadThroughServer(t, database, fake)
 	issue := issueInRepository(t, handler, "TWOP", "acme/widgets", "Read by two processes")

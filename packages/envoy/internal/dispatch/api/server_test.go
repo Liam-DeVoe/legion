@@ -1090,6 +1090,7 @@ func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
 // pair. Each issue of the pair sends its own link again beside a new one and is answered 200, and
 // owner/repo#42 answers AMBIGUOUS_ISSUE_REF naming both issues.
 func TestAPairThatLinkedBothFormsOfOneNumberBeforeTheCheckStaysAmbiguous(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

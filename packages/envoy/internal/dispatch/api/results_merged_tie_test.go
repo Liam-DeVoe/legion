@@ -53,6 +53,7 @@ func githubIssueLink(url string) []map[string]string {
 //   - the pull request's repository made the default of the issue's project;
 //   - a cited GitHub issue's link moved from the row's issue to the check's issue.
 func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
+	t.Parallel()
 	for _, kase := range []struct {
 		name string
 		// setUp makes the issues and answers the check's issue, the issue the merged row is
@@ -175,6 +176,7 @@ func storeMergedRowWithTexts(t *testing.T, attributor *delivery.Attributor, data
 // first read, in both subtests. The read is held off by a claim of the commit, so it asks GitHub
 // nothing and the stored rows answer alone.
 func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *testing.T) {
+	t.Parallel()
 	for _, withOpen := range []bool{false, true} {
 		name := map[bool]string{false: "the_merged_row_alone", true: "with_an_open_row_of_another_pull_request_at_the_commit"}[withOpen]
 		t.Run(name, func(t *testing.T) {
@@ -222,6 +224,7 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 // child. The claim holds each later read off within the span (delivery.CommitPullReadStaleAfter),
 // though the merged row heads the commit. Three reads in a row ask GitHub once.
 func TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RMTE", "acme/widgets", "Parent")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -246,6 +249,7 @@ func TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) 
 // and the read reads the commit through all the same, since GitHub can name a second pull request
 // at that head (R6 of the results lookup). Two reads in a row ask once: the claim bounds them.
 func TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RMTF", "acme/widgets", "Own")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -327,6 +331,7 @@ func comparedWithPull(t *testing.T, read issueResults, blockID string, number in
 // is no pull request's, and one to a pull request with no stored row, store no row. The results
 // read reads GitHub for a result at the head of the second, as at main.
 func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
+	t.Parallel()
 	t.Run("a_link_added", func(t *testing.T) {
 		handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 		issue := issueInRepository(t, handler, "RMTG", "acme/widgets", "Linked after the merge")
