@@ -48,8 +48,8 @@ type Call struct {
 	Tree string
 	// Issue is IssuePod's issue.
 	Issue string
-	// Claim and Role are WriteSlotCredential's and SlotHoldsCredential's: the claim whose slot is
-	// written or read, and the role whose App it is asked for.
+	// Claim is WriteSlotCredential's and SlotHoldsCredential's: the claim whose slot is written or
+	// read. Role is SlotHoldsCredential's: the role whose App the slot is asked to hold.
 	Claim claim.Token
 	Role  claim.Role
 }
@@ -323,11 +323,12 @@ func (r *Runtime) ScriptSlotHolds(err error) {
 	r.slotHolds = err
 }
 
-// WriteSlotCredential records its call and writes nothing: the fake holds no slots.
-func (r *Runtime) WriteSlotCredential(_ context.Context, token claim.Token, role claim.Role) error {
+// WriteSlotCredential records its call and writes nothing: the fake holds no slots, and judges no
+// role for one.
+func (r *Runtime) WriteSlotCredential(_ context.Context, token claim.Token) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "WriteSlotCredential", Claim: token, Role: role})
+	r.calls = append(r.calls, Call{Method: "WriteSlotCredential", Claim: token})
 	return nil
 }
 

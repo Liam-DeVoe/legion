@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -99,23 +101,49 @@ func slotToken(t *testing.T, g *rig, sandbox string, slot claim.Role) string {
 	return token
 }
 
-// A runtime writes the architect's slot for the implementer's App on request, and says when the
-// slot's gh files hold it: WriteSlotCredential writes the implement App's token into the slot's
-// Secret; while the slot's launcher reads the review App's token in its hosts.yml,
-// SlotHoldsCredential answers a wait, having asked the launcher once for the default owner's
-// hosts.yml and the digest of the implement App's token; once the launcher reads the implement
-// App's, it answers nil. A launcher whose hello says it answers no check is sent none: the write
-// still happens, and the answer is runtime.ErrAwaitsPodUpdate, which only the pod's update round
-// or its release ends.
+// actingOwner gives the rig's runtime an ActsAs that answers, for the rig's root architect, the role
+// acting holds ("" for none: its owner does no step).
+func actingOwner(acting *atomic.Value) rigOption {
+	acting.Store(claim.Role(""))
+	return withOptions(func(o *Options) {
+		o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
+			if role := acting.Load().(claim.Role); token == rootToken && role != "" {
+				return role, true, nil
+			}
+			return "", false, nil
+		}
+	})
+}
+
+// storeOwner stores the rig's root architect's claim, as the supervisor stores it, so a write of
+// its slot judges the role of the claim in it (judgeSlot).
+func storeOwner(g *rig) {
+	g.store.mu.Lock()
+	defer g.store.mu.Unlock()
+	g.store.claims = append(g.store.claims, supervise.Claim{Token: rootToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleArchitect})
+}
+
+// A runtime writes the architect's slot for the App of the step its owner does, and says when the
+// slot's gh files hold it: while the runtime's ActsAs gives the architect the implementer,
+// WriteSlotCredential writes the implement App's token into the slot's Secret; while the slot's
+// launcher reads the review App's token in its hosts.yml, SlotHoldsCredential answers a wait,
+// having asked the launcher once for the default owner's hosts.yml and the digest of the implement
+// App's token; once the launcher reads the implement App's, it answers nil. Once the step ended,
+// the write puts the review App's back. A launcher whose hello says it answers no check is sent
+// none: the write still happens, and the answer is runtime.ErrAwaitsPodUpdate, which only the pod's
+// update round or its release ends.
 func TestASlotSaysWhenItsFilesHoldTheCredential(t *testing.T) {
-	g := newRig(t, nil)
+	var acting atomic.Value
+	g := newRig(t, nil, actingOwner(&acting))
 	g.spawn(rootSpec(t))
+	storeOwner(g)
 	sandbox := SandboxName(rootToken)
 	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
 	launcher := connectChecking(t, g, rootToken, true, review)
 
-	if err := g.r.WriteSlotCredential(g.ctx, rootToken, claim.RoleImplementer); err != nil {
-		t.Fatalf("WriteSlotCredential(the architect, implementer) = %v", err)
+	acting.Store(claim.RoleImplementer)
+	if err := g.r.WriteSlotCredential(g.ctx, rootToken); err != nil {
+		t.Fatalf("WriteSlotCredential(the architect) while it does the implementer step = %v", err)
 	}
 	if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != implement {
 		t.Fatalf("the architect's Secret holds %q after the write, want %q", got, implement)
@@ -137,8 +165,9 @@ func TestASlotSaysWhenItsFilesHoldTheCredential(t *testing.T) {
 	}
 
 	before := connectChecking(t, g, rootToken, false, implement)
-	if err := g.r.WriteSlotCredential(g.ctx, rootToken, claim.RoleArchitect); err != nil {
-		t.Fatalf("WriteSlotCredential(the architect, architect) = %v", err)
+	acting.Store(claim.Role(""))
+	if err := g.r.WriteSlotCredential(g.ctx, rootToken); err != nil {
+		t.Fatalf("WriteSlotCredential(the architect) once its step ended = %v", err)
 	}
 	if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != review {
 		t.Fatalf("the architect's Secret holds %q after the write to a launcher that answers no check, want %q", got, review)
@@ -154,11 +183,13 @@ func TestASlotSaysWhenItsFilesHoldTheCredential(t *testing.T) {
 
 // The App a slot is written for on request is the App of the step's role on the slot's own issue:
 // on the rig's issue, whose plan defines coder of the type implementation and prober of the type
-// testing, WriteSlotCredential of the architect for coder writes the implement App's lease and
-// for prober the review App's, read on the issue the slot's Secret records.
+// testing, WriteSlotCredential of the architect while it does coder writes the implement App's
+// lease and while it does prober the review App's, read on the issue the slot's Secret records.
 func TestASlotCredentialIsTheAppOfTheStepsRoleOnItsIssue(t *testing.T) {
-	g := newRig(t, nil, withProjectTokensOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, planOfTheRigsIssue))
+	var acting atomic.Value
+	g := newRig(t, nil, withProjectTokensOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, planOfTheRigsIssue), actingOwner(&acting))
 	g.spawn(rootSpec(t))
+	storeOwner(g)
 	sandbox := SandboxName(rootToken)
 	for _, tc := range []struct {
 		role   claim.Role
@@ -168,11 +199,12 @@ func TestASlotCredentialIsTheAppOfTheStepsRoleOnItsIssue(t *testing.T) {
 		{"prober", "ghs_review_"},
 		{"coder", "ghs_implement_"},
 	} {
-		if err := g.r.WriteSlotCredential(g.ctx, rootToken, tc.role); err != nil {
-			t.Fatalf("WriteSlotCredential(the architect, %s) = %v", tc.role, err)
+		acting.Store(tc.role)
+		if err := g.r.WriteSlotCredential(g.ctx, rootToken); err != nil {
+			t.Fatalf("WriteSlotCredential(the architect) while it does %s = %v", tc.role, err)
 		}
 		if got := slotToken(t, g, sandbox, claim.RoleArchitect); !strings.HasPrefix(got, tc.prefix) {
-			t.Fatalf("the architect's Secret holds %q after the write for %s, want a token that begins %s", got, tc.role, tc.prefix)
+			t.Fatalf("the architect's Secret holds %q after the write while it does %s, want a token that begins %s", got, tc.role, tc.prefix)
 		}
 	}
 }

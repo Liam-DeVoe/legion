@@ -260,7 +260,8 @@ func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
 // The end of an owner's step writes the owner's slot back to its own App once, and the next notice
 // to the owner waits for that write. At the owner's retro of `implementer:owner`, a notice queued
 // after the slot_credential row the step's end queued waits as a notice held for its architect and
-// publishes nothing; the row writes the slot for the architect's App, once; then the notice
+// publishes nothing; the row asks one write of the slot, which the runtime makes for the App it
+// judges, the architect's; then the notice
 // publishes. Where the owner's next step of another App runs already (step 3 of
 // `implementer:owner reviewer implementer:owner`), the row writes nothing: that step's owner-step
 // writes its App, so the slot is written once at that end too.
@@ -296,8 +297,8 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 			t.Fatalf("the notice published %v before the write-back ran, want nothing", got)
 		}
 		finish(t, r, slot)
-		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "WriteSlotCredential architect" {
-			t.Fatalf("the write-back asked the runtime %q of the owner's slot, want one write of the architect's App", calls)
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "WriteSlotCredential" {
+			t.Fatalf("the write-back asked the runtime %q of the owner's slot, want one write", calls)
 		}
 		notice.LeaseToken = leaseOutboxRow(t, r.pool, notice.ID)
 		finish(t, r, notice)
@@ -319,8 +320,8 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 			Reason: "Step 3 of 3: implementer:owner.", OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 3, Starts: 1}}); err != nil {
 			t.Fatalf("step 3's owner-step = %v", err)
 		}
-		if calls := slotCalls(r.rt, r.owner); len(calls) != 2 || calls[0] != "WriteSlotCredential implementer" {
-			t.Fatalf("step 3's owner-step asked the runtime %q, want one write of the implementer's App and its check", calls)
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 2 || calls[0] != "WriteSlotCredential" || calls[1] != "SlotHoldsCredential implementer" {
+			t.Fatalf("step 3's owner-step asked the runtime %q, want one write and the check of the implementer's App", calls)
 		}
 	})
 }

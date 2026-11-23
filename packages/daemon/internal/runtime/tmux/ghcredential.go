@@ -55,13 +55,13 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // or an owner, and a bundle's default owner, the directory GH_CONFIG_DIR names, is never minting
 // authority. It rewrites only the directories whose hosts.yml differs
 // (ghconfig.WriteBundle), recreating a root that is gone, and only while the pane it rendered for
-// is still watched, judged again under the launch lock (writeWatchedBundle): the claim's gh
-// directory is the claim's, for every pane it runs in, and a relaunch of a re-roled claim writes
-// its new role's bundle there. A repository that cannot be read, a render that fails, or a render
-// whose default is not the directory the pane's own repository routes to by the bundle's pairs
-// (ghconfig.RouteDir, which the bundle's default is chosen by: the repository's owner, or the
-// owner a configured pair moved it to) is logged and the pane keeps its last tokens until the
-// next tick. A controller whose project has
+// is still watched, judged again under the launch lock with the pane's role (writePaneCredential):
+// the claim's gh directory is the claim's, for every pane it runs in, and a relaunch of a re-roled
+// claim writes its new role's bundle there. A repository that cannot be read, a render that fails,
+// or a render whose default is not the directory the pane's own repository routes to by the
+// bundle's pairs (ghconfig.RouteDir, which the bundle's default is chosen by: the repository's
+// owner, or the owner a configured pair moved it to) is logged and the pane keeps its last tokens
+// until the next tick. A controller whose project has
 // no GitHub owner to mint for (runtime.ErrNoGitHubOwner) launched with gh acting as nobody, its
 // gh directory empty, and has nothing to refresh: it is passed over without a word, as the
 // sandbox runtime passes over such a controller's pod. A runtime with no credential function
@@ -86,50 +86,91 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
-		role, ok, err := r.paneRole(ctx, entry)
-		refreshFailed := func(err error) {
-			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", role, "err", err)
-		}
-		if err != nil {
-			refreshFailed(err)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		changed, watched, bundle, err := r.writePaneCredential(ctx, bundles, entry, role)
-		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
+		written, err := r.writePaneCredential(ctx, bundles, entry)
+		if written.role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
 			continue
 		}
 		if err != nil {
-			refreshFailed(err)
+			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", written.role, "err", err)
 			continue
 		}
-		if !watched {
-			continue
-		}
-		if len(changed) > 0 {
-			written := bundle.Dirs[bundle.Default]
-			r.log.Info("tmux runtime: github credential refreshed", "claim", token, "role", role, "app", written.App,
-				"expiresAt", written.ExpiresAt, "dirs", changed)
+		if len(written.changed) > 0 {
+			held := written.bundle.Dirs[written.bundle.Default]
+			r.log.Info("tmux runtime: github credential refreshed", "claim", token, "role", written.role, "app", held.App,
+				"expiresAt", held.ExpiresAt, "dirs", written.changed)
 		}
 	}
 }
 
-// writePaneCredential writes entry's pane's gh files for role's App: the bundle paneBundle mints
-// on the pane's claim's issue, rendered for the pane's own repository — the one its launch minted
-// the write token for, and for a tree pane this runtime adopted, the one the daemon records for
-// the claim's issue (Options.ClaimRepository) — and written while the pane is still watched
-// (writeWatchedBundle). It answers the directories it rewrote, whether the pane is still watched,
-// and the bundle. A render whose default is not the directory the pane's own repository routes to
-// (ghconfig.RouteDir) is refused and writes nothing.
-func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess, role claim.Role) ([]string, bool, ghconfig.Bundle, error) {
+// paneWrite is what one write of a pane's gh files did (writePaneCredential): the role whose App
+// it wrote, judged under the launch lock; the bundle rendered for that role; the directories it
+// rewrote; and whether the pane was still watched. A pane no longer watched, or whose role the
+// runtime cannot know, is written nothing.
+type paneWrite struct {
+	role    claim.Role
+	bundle  ghconfig.Bundle
+	changed []string
+	watched bool
+}
+
+// writePaneCredential writes entry's pane's gh files for the App of the role the pane works as
+// (paneRole), and is every write of a watched pane's gh files: the refresh's and the one an
+// owner's step asks of a slot (WriteSlotCredential). The role is judged once to mint its bundle
+// before the launch lock, since a mint is a network call every launch would wait out, and judged
+// again under the launch lock, which the write is made under and every launch's write of the
+// claim's gh directory too (writeGitHubCredential); where the two differ, a step of the owner
+// having started or ended in the mint, the bundle is minted again there for the role judged under
+// the lock. So the App a pane's files hold is decided in the one critical section that writes it,
+// and no write judged before another lands after it: a refresh that judged the architect's own App
+// before the owner's step started cannot write it over the step's App once the step's write is
+// made. The write is made only while the pane is still watched, judged under the same lock: the
+// lock a launch holds from its refusal of the claim's earlier process, which lets that process go
+// (refuseLiveIncarnation), through its own write of the claim's bundle to its watch of the new pane
+// (launch), so a pane the caller's snapshot held and a relaunch has since let go is passed over,
+// the relaunch having written the bundle of the role its new pane runs as.
+func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess) (paneWrite, error) {
+	role, known, err := r.paneRole(ctx, entry)
+	if err != nil || !known {
+		return paneWrite{role: role}, err
+	}
+	bundle, err := r.renderPane(ctx, bundles, entry, role)
+	if err != nil {
+		return paneWrite{role: role}, err
+	}
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	if !r.watching(entry) {
+		return paneWrite{role: role}, nil
+	}
+	now, known, err := r.paneRole(ctx, entry)
+	if err != nil || !known {
+		return paneWrite{role: now}, err
+	}
+	if now != role {
+		role = now
+		if bundle, err = r.renderPane(ctx, bundles, entry, role); err != nil {
+			return paneWrite{role: role}, err
+		}
+	}
+	changed, err := r.writeBundle(runtime.GHConfigDir(r.stateDir, entry.locator.Claim), bundle)
+	if err != nil {
+		return paneWrite{role: role, bundle: bundle, watched: true}, fmt.Errorf("write the github credential: %w", err)
+	}
+	return paneWrite{role: role, bundle: bundle, changed: changed, watched: true}, nil
+}
+
+// renderPane is the bundle of role's App for entry's pane: the one paneBundle mints on the pane's
+// claim's issue, rendered for the pane's own repository — the one its launch minted the write
+// token for, and for a tree pane this runtime adopted, the one the daemon records for the claim's
+// issue (Options.ClaimRepository). A render whose default is not the directory the pane's own
+// repository routes to (ghconfig.RouteDir) is refused. It writes nothing.
+func (r *Runtime) renderPane(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess, role claim.Role) (ghconfig.Bundle, error) {
 	token := entry.locator.Claim
 	repo := entry.ghRepo
 	if entry.issue == "" && role != claim.RoleController {
 		recorded, err := r.claimRepository(ctx, token)
 		if err != nil {
-			return nil, false, ghconfig.Bundle{}, fmt.Errorf("the claim's repository: %w", err)
+			return ghconfig.Bundle{}, fmt.Errorf("the claim's repository: %w", err)
 		}
 		repo = recorded
 	}
@@ -139,18 +180,14 @@ func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bund
 	}
 	bundle, err := r.paneBundle(ctx, bundles, issue, role, repo, entry.ghDefault)
 	if err != nil {
-		return nil, false, ghconfig.Bundle{}, err
+		return ghconfig.Bundle{}, err
 	}
 	if !repo.IsZero() {
 		if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
-			return nil, false, ghconfig.Bundle{}, fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed)
+			return ghconfig.Bundle{}, fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed)
 		}
 	}
-	changed, watched, err := r.writeWatchedBundle(entry, runtime.GHConfigDir(r.stateDir, token), bundle)
-	if err != nil {
-		return nil, watched, bundle, fmt.Errorf("write the github credential: %w", err)
-	}
-	return changed, watched, bundle, nil
+	return bundle, nil
 }
 
 // paneBundle is the gh bundle of one pane's claim of issue ("" for the controller's), and the one
@@ -166,25 +203,14 @@ func (r *Runtime) paneBundle(ctx context.Context, bundles *appauth.Bundles, issu
 	return bundles.Bundle(ctx, issue, role, repo)
 }
 
-// writeWatchedBundle writes bundle, rendered for entry's pane, into root, the gh directory of
-// entry's claim, and answers the directories it rewrote and true, or nothing and false where the
-// pane is no longer watched. It judges that under the launch lock, the lock a launch holds from
-// its refusal of the claim's earlier process, which lets that process go (refuseLiveIncarnation),
-// through its own write of the claim's bundle to its watch of the new pane (launch): a pane the
-// refresh's snapshot held and a relaunch has since let go is passed over, since the relaunch has
-// written the bundle of the role its new pane runs as, and a relaunch that starts after this
-// judgment writes its bundle after this write. The next tick refreshes the new pane.
-func (r *Runtime) writeWatchedBundle(entry trackedProcess, root string, bundle ghconfig.Bundle) ([]string, bool, error) {
-	r.launchMu.Lock()
-	defer r.launchMu.Unlock()
+// watching is whether entry's pane is still watched: its incarnation is tracked, for the same
+// claim. Its callers hold the launch lock, under which a launch lets a pane go and watches its
+// next one.
+func (r *Runtime) watching(entry trackedProcess) bool {
 	r.trackedMu.Lock()
+	defer r.trackedMu.Unlock()
 	watched, ok := r.tracked[entry.locator.Incarnation]
-	r.trackedMu.Unlock()
-	if !ok || watched.locator.Claim != entry.locator.Claim {
-		return nil, false, nil
-	}
-	changed, err := r.writeBundle(root, bundle)
-	return changed, true, err
+	return ok && watched.locator.Claim == entry.locator.Claim
 }
 
 // paneRole is the role whose App entry's pane holds (runtime.SlotRole): the controller's for the

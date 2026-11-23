@@ -824,13 +824,18 @@ func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.
 // before it tells an owner a step whose App the owner's slot must hold, and at that step's end.
 // Both runtimes answer it.
 type SlotCredentials interface {
-	// WriteSlotCredential writes the gh credential of the App of role into the slot of token now,
-	// where the slot does not hold it already. A slot with no live process to read it is left to
-	// the claim's next launch, which writes the App SlotRole answers then.
-	WriteSlotCredential(ctx context.Context, token claim.Token, role claim.Role) error
-	// SlotHoldsCredential answers nil once the slot's gh files hold that credential, a wait
-	// (ErrSlotCredentialPending) while they do not, and ErrAwaitsPodUpdate for a pod whose
-	// launcher cannot tell.
+	// WriteSlotCredential brings the slot of token to the gh credential of the App of the role
+	// SlotRole answers for it now, where the slot does not hold it already. The runtime decides that
+	// role itself, in the one serialization every write of the slot is made under (the tmux
+	// runtime's launch lock, the slot Secret's resourceVersion), as its refresh and a launch do: so
+	// no write judged before another lands after it, and no caller's earlier reading of whose step
+	// runs decides the App. A slot with no live process to read it is left to the claim's next
+	// launch, which judges and writes the same way.
+	WriteSlotCredential(ctx context.Context, token claim.Token) error
+	// SlotHoldsCredential answers nil once the slot's gh files hold the credential of the App of
+	// role, a wait (ErrSlotCredentialPending) while they do not, and ErrAwaitsPodUpdate for a pod
+	// whose launcher cannot tell. It reads what the files hold, after every write of the slot that
+	// began before it.
 	SlotHoldsCredential(ctx context.Context, token claim.Token, role claim.Role) error
 }
 

@@ -63,7 +63,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 		t.Fatalf("the outbox never asked whether %s's slot holds the implementer's App: the implementer was launched %v (its claim recorded: %t), and the owner was told %d owner-step notices",
 			owner.token, r.launchesOfRole(claim.RoleImplementer), r.claimRecorded(r.token(claim.RoleImplementer)), len(r.ownerNotices(record.OwnerStepNotice)))
 	}
-	if !r.slotAsked("WriteSlotCredential", owner.token, claim.RoleImplementer) {
+	if r.slotWrites(owner.token) == 0 {
 		t.Fatalf("the outbox asked whether %s's slot holds the implementer's App without writing it: calls %+v", owner.token, r.slotCalls())
 	}
 	if testwait.Holds(liveSettle, 100*time.Millisecond, func() bool { return len(r.ownerNotices(record.OwnerStepNotice)) > 0 }) {
@@ -80,6 +80,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 	}
 
 	r.github.open("legion/"+r.key, r.number)
+	written := r.slotWrites(owner.token)
 	handoff, version := r.writeHandoff(owner.session, "implement")
 	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 1, Summary: "implemented", Commit: stepRecordsHead,
 		HandoffID: handoff, HandoffVersion: version}); status != http.StatusOK {
@@ -90,8 +91,8 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 	if told[1].Role != "" || told[1].Phase != phase.Retro {
 		t.Fatalf("the owner of %s was told %+v at the retro, want the owner-step of task a's retro", r.key, told[1])
 	}
-	if !r.slotAsked("WriteSlotCredential", owner.token, claim.RoleArchitect) {
-		t.Fatalf("the end of %s's step 1 left the owner's slot on another App: calls %+v, want a write of the architect's", r.key, r.slotCalls())
+	if r.slotWrites(owner.token) == written {
+		t.Fatalf("the end of %s's step 1 asked no write of the owner's slot back to its own App: calls %+v", r.key, r.slotCalls())
 	}
 	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead,
 		PlanRating: new(deploymentRating), PlanReason: new(deploymentReason)}); status != http.StatusOK {
@@ -665,21 +666,34 @@ func (r *ownerStepsRig) waitOwnerNotices(kind record.NoticeKind, count int) []re
 }
 
 // slotCalls is each call the daemon made of the runtime's slot credentials
-// (runtime.SlotCredentials), in order, as `<method> <claim> <role>`.
+// (runtime.SlotCredentials), in order, as `<method> <claim> <role>`; a write, which names no role
+// since the runtime judges it, as `<method> <claim>`.
 func (r *ownerStepsRig) slotCalls() []string {
 	var calls []string
 	for _, call := range r.rt.Calls() {
 		if call.Method == "WriteSlotCredential" || call.Method == "SlotHoldsCredential" {
-			calls = append(calls, fmt.Sprintf("%s %s %s", call.Method, call.Claim, call.Role))
+			calls = append(calls, strings.TrimSpace(fmt.Sprintf("%s %s %s", call.Method, call.Claim, call.Role)))
 		}
 	}
 	return calls
 }
 
-// slotAsked says whether the daemon has called method of the runtime's slot credentials for the
-// slot of token and the App of role.
+// slotAsked says whether the daemon has asked the runtime whether the slot of token holds the App
+// of role (runtime.SlotCredentials.SlotHoldsCredential).
 func (r *ownerStepsRig) slotAsked(method string, token claim.Token, role claim.Role) bool {
 	return slices.Contains(r.slotCalls(), fmt.Sprintf("%s %s %s", method, token, role))
+}
+
+// slotWrites is how many writes of the slot of token the daemon has asked of the runtime
+// (runtime.SlotCredentials.WriteSlotCredential).
+func (r *ownerStepsRig) slotWrites(token claim.Token) int {
+	writes := 0
+	for _, call := range r.rt.CallsOf("WriteSlotCredential") {
+		if call.Claim == token {
+			writes++
+		}
+	}
+	return writes
 }
 
 // claimRecorded says whether the daemon's store records a claim of token.

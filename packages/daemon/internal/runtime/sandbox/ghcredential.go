@@ -295,13 +295,25 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // role.
 func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Role, held map[slotKey]slotHolder, repo ghrepo.Repository, bundles *appauth.Bundles) {
 	var role claim.Role
-	judge := func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
+	judge := r.judgeSlot(held, pod.Name, slot)
+	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, bundles, slotWrite{role: func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
 		var err error
-		role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation])
+		role, err = judge(ctx, secret)
 		return role, err
-	}
-	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, bundles, slotWrite{role: judge}); err != nil && !errors.Is(err, errSecretNotOwned) {
+	}}); err != nil && !errors.Is(err, errSecretNotOwned) {
 		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", pod.Name, "slot", slot, "role", role, "err", err)
+	}
+}
+
+// judgeSlot judges, on the Secret a write of slot of the pod of sandbox reads, the role whose App
+// the slot is written for (slotAppRole, over held, the stored claims by slot): the judgment of
+// every write of a slot of a pod that is running (writeSlotCredential) but a launch's, which judges
+// for the role it launches (writeLaunchCredential). It reads the runtime's ActsAs at each read of
+// the Secret, so under that read's resourceVersion: a step of the owner that began or ended since
+// is in the judgment, or the Secret was written since and the write is refused and judged again.
+func (r *Runtime) judgeSlot(held map[slotKey]slotHolder, sandbox string, slot claim.Role) func(context.Context, *corev1.Secret) (claim.Role, error) {
+	return func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
+		return r.slotAppRole(ctx, held, sandbox, slot, secret.Annotations[launchedRoleAnnotation])
 	}
 }
 
@@ -330,10 +342,11 @@ type slotCredential struct {
 }
 
 // slotWrite is what one write of a slot's Secret is made for (writeSlotCredential). role judges,
-// on the Secret as the write read it, the role whose App the slot is written for: a refresh's
-// judges it on what the Secret records (refreshGitHubCredential), a launch's is the role of the
-// step its claim does now. launched is the record of a launch's process, which the write puts on
-// the Secret (launchedRecord), and "" for a refresh, which records nothing.
+// on the Secret as the write read it, the role whose App the slot is written for: a refresh's and
+// a step's judge it on what the Secret records (judgeSlot), a launch's on the role it launches;
+// each reads the runtime's ActsAs there, after the read, so the role is never judged before the
+// read the write is fenced to. launched is the record of a launch's process, which the write puts
+// on the Secret (launchedRecord), and "" for any other write, which records nothing.
 type slotWrite struct {
 	role     func(ctx context.Context, secret *corev1.Secret) (claim.Role, error)
 	launched string
@@ -494,7 +507,10 @@ func (r *Runtime) renderSlot(ctx context.Context, pod *corev1.Pod, slot claim.Ro
 // as (launchedRoleAnnotation), which the refresher renders the slot for from then on unless the
 // runtime's ActsAs gives another role (runtime.SlotRole), and answers
 // what the slot's gh files must hold before the child starts: the default owner's hosts.yml and
-// the digest of its token. A slot whose gh acts as nobody needs nothing. The kubelet projects the
+// the digest of its token. The role is judged on each read of the Secret the write makes, so a
+// step of the owner that began after the launch read the Secret, and wrote it for its App, makes
+// the launch's write a conflict, judged again on a fresh read, never a write of the App judged
+// before. A slot whose gh acts as nobody needs nothing. The kubelet projects the
 // Secret anew within its sync period, and the launcher waits for it; so that no wait is silent,
 // the start logs the wait whenever the slot's files may not hold its credential yet: at the first
 // start this runtime makes in the slot, and at each start of another App than the slot's last,
@@ -505,13 +521,11 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		return nil, fmt.Errorf("pod %s names no Sandbox that owns it", pod.Name)
 	}
 	slot := slotOf(spec.Claim)
-	role, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
-	if err != nil {
-		return nil, err
-	}
 	repo, _ := fetchRepository(pod)
 	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential, r.roleApps), slotWrite{
-		role:     func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
+		role: func(ctx context.Context, _ *corev1.Secret) (claim.Role, error) {
+			return runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+		},
 		launched: launchedRecord(spec.Generation, spec.Role),
 	})
 	if err != nil {

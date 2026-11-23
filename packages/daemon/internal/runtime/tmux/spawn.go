@@ -653,7 +653,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	ghDefault, err := r.writeGitHubCredential(spec, credential)
+	ghDefault, err := r.writeGitHubCredential(ctx, spec, credential)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
@@ -704,7 +704,9 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 type launchGitHubCredential struct {
 	// root is the claim's gh directory, "" when the runtime mints no credential
 	// (Options.GitHubCredential nil: a daemon with no GitHub Apps).
-	root   string
+	root string
+	// role is the role whose App bundle holds, as the mint judged it (runtime.SlotRole).
+	role   claim.Role
 	bundle ghconfig.Bundle
 	// noOwner is set for a controller whose project has no GitHub owner to mint for
 	// (runtime.ErrNoGitHubOwner): its gh acts as nobody, and bundle goes unwritten.
@@ -723,7 +725,8 @@ type launchGitHubCredential struct {
 // its default the first owner (runtime.GitHubCredential).
 //
 // It writes nothing: a mint is a network call, made before the launch lock, and the claim's
-// directories are written only after the refusal (writeGitHubCredential).
+// directories are written only after the refusal (writeGitHubCredential), which judges the role
+// again under the lock.
 func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
@@ -745,14 +748,18 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if err != nil && !noOwner {
 		return launchGitHubCredential{}, fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
-	return launchGitHubCredential{root: runtime.GHConfigDir(r.stateDir, spec.Claim), bundle: bundle, noOwner: noOwner}, nil
+	return launchGitHubCredential{root: runtime.GHConfigDir(r.stateDir, spec.Claim), role: role, bundle: bundle, noOwner: noOwner}, nil
 }
 
 // writeGitHubCredential writes credential, which mintGitHubCredential minted for spec, into the
 // claim's gh directory, its caller holding the launch lock past the refusal, and answers the
 // bundle's default owner, the directory GH_CONFIG_DIR names: "" when the runtime mints no
-// credential or the controller's gh acts as nobody.
-func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launchGitHubCredential) (string, error) {
+// credential or the controller's gh acts as nobody. The pane's role is judged again here, under
+// the launch lock every write of a pane's gh files is made under (writePaneCredential), and where
+// it is no longer the role the mint judged, an owner's step having started or ended in the mint,
+// the bundle is minted again for the role judged now: so the App the pane's files hold is decided
+// with the write, and a step's write of the slot made in the mint is never undone by this one.
+func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnSpec, credential launchGitHubCredential) (string, error) {
 	switch {
 	case credential.root == "":
 		return "", nil
@@ -769,6 +776,15 @@ func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launc
 		return "", nil
 	}
 	bundle := credential.bundle
+	if credential.role != claim.RoleController {
+		now, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+		if err == nil && now != credential.role {
+			bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.roleApps), spec.Issue, now, spec.Repository, "")
+		}
+		if err != nil {
+			return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
+		}
+	}
 	if _, err := ghconfig.WriteBundle(credential.root, bundle); err != nil {
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}

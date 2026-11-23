@@ -19,13 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// slotCalls is every call of the fake runtime that wrote or read token's slot, as
-// "<method> <role>", in order.
+// slotCalls is every call of the fake runtime that wrote or read token's slot, as "<method>
+// <role>", in order; a write, which names no role since the runtime judges it, is its method alone.
 func slotCalls(rt *fake.Runtime, token claim.Token) []string {
 	var calls []string
 	for _, call := range rt.Calls() {
 		if (call.Method == "WriteSlotCredential" || call.Method == "SlotHoldsCredential") && call.Claim == token {
-			calls = append(calls, call.Method+" "+string(call.Role))
+			calls = append(calls, strings.TrimSpace(call.Method+" "+string(call.Role)))
 		}
 	}
 	return calls
@@ -41,9 +41,10 @@ func slotCalls(rt *fake.Runtime, token claim.Token) []string {
 //  2. A pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate) holds the row the same way.
 //  3. Once the runtime answers that the slot holds it, the notice is published once, to the
 //     owner's role topic.
-//  4. A supervise slot_credential of the owner's claim writes the slot back to the owner's own App
-//     when the row runs: nothing while step 1 runs, whose owner-step writes that step's App, and
-//     the architect's own once the task stands at step 2, the reviewer's step; it waits for nothing.
+//  4. A supervise slot_credential of the owner's claim asks the runtime to write the slot back to
+//     the owner's own App when the row runs: no write while step 1 runs, whose owner-step writes
+//     that step's App, and one once the task stands at step 2, the reviewer's step, which the
+//     runtime makes for the App it judges for the slot; it waits for nothing.
 //  5. A notice owner-step of step 1 that runs after the task moved to step 2 finishes unpublished,
 //     with one log line, and asks the runtime nothing.
 func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
@@ -96,7 +97,7 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if n := published(); n != 0 {
 			t.Fatalf("the notice was published %d times while the slot does not hold the step's App, want none", n)
 		}
-		if got, want := slotCalls(rt, owner), []string{"WriteSlotCredential implementer", "SlotHoldsCredential implementer"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		if got, want := slotCalls(rt, owner), []string{"WriteSlotCredential", "SlotHoldsCredential implementer"}; strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Fatalf("the runtime was asked %q of the owner's slot, want %q", got, want)
 		}
 	})
@@ -128,7 +129,7 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		}
 	})
 
-	slotCredential := func(t *testing.T, want string) {
+	slotCredential := func(t *testing.T, writes bool) {
 		t.Helper()
 		before := len(slotCalls(rt, owner))
 		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
@@ -140,12 +141,12 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 			t.Fatalf("finish the slot_credential row: %v", err)
 		}
 		got := slotCalls(rt, owner)[before:]
-		if want == "" && len(got) != 0 || want != "" && (len(got) != 1 || got[0] != "WriteSlotCredential "+want) {
-			t.Fatalf("the slot_credential row asked the runtime %q of the owner's slot, want one write for %q (none for \"\")", got, want)
+		if !writes && len(got) != 0 || writes && (len(got) != 1 || got[0] != "WriteSlotCredential") {
+			t.Fatalf("the slot_credential row asked the runtime %q of the owner's slot, want one write: %t", got, writes)
 		}
 	}
 	t.Run("4 a slot_credential row writes the owner's own App back", func(t *testing.T) {
-		slotCredential(t, "")
+		slotCredential(t, false)
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			if err := records.MoveTask(ctx, tx, "LEGION-1", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 				return err
@@ -156,7 +157,7 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("move LEGION-1 to its reviewer's step: %v", err)
 		}
-		slotCredential(t, "architect")
+		slotCredential(t, true)
 	})
 
 	t.Run("5 a notice of a step that no longer runs", func(t *testing.T) {

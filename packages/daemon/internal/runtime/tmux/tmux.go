@@ -252,7 +252,7 @@ type Runtime struct {
 	run func(ctx context.Context, argv []string) (result, error)
 	// readProc reads a /proc file; a field for the same reason.
 	readProc func(path string) ([]byte, error)
-	// writeBundle writes a claim's gh bundle for the credential refresh (writeWatchedBundle); New
+	// writeBundle writes a claim's gh bundle for a watched pane's write (writePaneCredential); New
 	// sets it to ghconfig.WriteBundle. A field so an in-package test can hold the refresh inside its
 	// write, under the launch lock, while a relaunch of the same claim runs.
 	writeBundle func(root string, bundle ghconfig.Bundle) ([]string, error)
@@ -260,9 +260,10 @@ type Runtime struct {
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
 	// refusal of a claim whose process still runs and the files it then writes for the claim, window
-	// choice, the pane's opening and recording, orphan reaping, and the scrub. A refresh's write of
-	// a claim's gh directory takes it too, to judge under it that its pane is still watched
-	// (writeWatchedBundle).
+	// choice, the pane's opening and recording, orphan reaping, and the scrub. Every other write of
+	// a claim's gh directory takes it too, and judges under it that its pane is still watched and the
+	// role whose App it writes (writePaneCredential), and a read of what the directory holds takes
+	// it (SlotHoldsCredential).
 	launchMu sync.Mutex
 
 	trackedMu sync.Mutex
