@@ -358,11 +358,13 @@ type Machine struct {
 	// requests the entry allows.
 	Airlock proxyrules.Rules
 	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
-	// AirlockCACertificate the PEM certificate of its certificate authority
-	// (BROKER_AIRLOCK_CA_CERT_FILE, read at boot). Every release that holds a name back carries
-	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
-	AirlockProxyURL      string
-	AirlockCACertificate string
+	// ProxyRoots the PEM roots a command trusts it by (proxy.Authority.ReleaseRoots: the root of
+	// the proxy's own chain and BROKER_PROXY_RELEASE_ROOTS_FILE's), read at each release since a
+	// pod that asks a pool for its intermediate learns its root from the first answer. Every
+	// release that holds a name back carries both, since a command that cannot reach the proxy
+	// or cannot trust it has nothing. A nil ProxyRoots carries none.
+	AirlockProxyURL string
+	ProxyRoots      func() string
 	// Judge, when set, is handed every request Create has just written pending, once that
 	// transaction has committed and the request's grant-log line is out: the broker's model
 	// judge, which may approve such a request in its approver's place (cmd/cipherd wires it to

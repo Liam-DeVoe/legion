@@ -39,7 +39,7 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 	)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "WORKER_TOKEN", Hosts: []string{"api.example.com"}}}}
-		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = proxyURL, caCertificate
+		d.Machine.AirlockProxyURL, d.Machine.ProxyRoots = proxyURL, func() string { return caCertificate }
 	})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",

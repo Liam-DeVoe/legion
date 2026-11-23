@@ -91,7 +91,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 		}
 	}
 	approver := record.GroupPrefix + wiredGroup
-	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader)
+	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, nil, nil, nil, reader)
 	for _, c := range []struct {
 		login string
 		want  bool

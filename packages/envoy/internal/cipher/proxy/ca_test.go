@@ -31,7 +31,7 @@ func TestTheAuthorityRefusesFilesItCannotSignWith(t *testing.T) {
 		{"a certificate file that is not there", filepath.Join(t.TempDir(), "absent.crt"), keyFile, "absent.crt"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			authority, err := NewAuthority(row.certFile, row.keyFile)
+			authority, err := NewAuthority(row.certFile, row.keyFile, AuthorityOptions{})
 			if err == nil {
 				t.Fatalf("NewAuthority(%s) built an authority; want a refusal naming %q", row.name, row.want)
 			}
@@ -43,7 +43,7 @@ func TestTheAuthorityRefusesFilesItCannotSignWith(t *testing.T) {
 			}
 		})
 	}
-	if _, err := NewAuthority(certFile, keyFile); err != nil {
+	if _, err := NewAuthority(certFile, keyFile, AuthorityOptions{}); err != nil {
 		t.Fatalf("NewAuthority on a key and certificate that do match: %v", err)
 	}
 }
@@ -99,10 +99,9 @@ func TestOneLeafPerHostSignedOnce(t *testing.T) {
 // waiting one.
 func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	const host = "api.example.com"
-	authority := newTestAuthority(t)
-	clock := &testClock{now: time.Now()}
-	authority.now = clock.read
-	began := clock.read()
+	clock := &steppedClock{now: time.Now()}
+	authority := newTestAuthorityOn(t, clock)
+	began := clock.Now()
 
 	first, err := authority.leaf(host)
 	if err != nil {
@@ -132,8 +131,9 @@ func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the renewed leaf: %v", err)
 	}
-	if !parsed.NotAfter.After(clock.read().Add(leafLifetime - time.Minute)) {
-		t.Errorf("the renewed leaf ends at %v, with the clock at %v; want a leaf's life from now", parsed.NotAfter, clock.read())
+	// A certificate's times are whole seconds, so a second of slack.
+	if parsed.NotAfter.Before(clock.Now().Add(leafLifetime - leafBackdate - time.Second)) {
+		t.Errorf("the renewed leaf ends at %v, with the clock at %v; want a leaf's life from now", parsed.NotAfter, clock.Now())
 	}
 	if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != host {
 		t.Errorf("the renewed leaf names %v; want %s and nothing else", parsed.DNSNames, host)

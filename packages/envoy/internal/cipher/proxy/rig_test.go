@@ -871,7 +871,7 @@ func bodyOf(t *testing.T, answer *http.Response) string {
 func newTestAuthority(t *testing.T) *Authority {
 	t.Helper()
 	certFile, keyFile := writeCAFiles(t)
-	authority, err := NewAuthority(certFile, keyFile)
+	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{})
 	if err != nil {
 		t.Fatalf("the test certificate authority: %v", err)
 	}
