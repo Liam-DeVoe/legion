@@ -25,6 +25,7 @@ import {
   targetNaming,
 } from "./issue-tree";
 import { citedReferences } from "./row-references";
+import { askState } from "./tree-drafts";
 
 /** The issue's tree, and how far the reads it is built from have got. */
 export interface IssueTreeView {
@@ -144,7 +145,8 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
  *
  * The note a person wrote as they declined an ask is drawn under the ask's row in the Decisions
  * view (`DecisionsRow.tsx`'s `Declined`) from the asks read, not from a node, so what each note
- * cites (`asks`) is asked for here too.
+ * cites (`asks`) is asked for here too. An ask is declined by the tree's own rule (`askState`):
+ * the server stores a decline as a `resolved` ask whose resolution is of kind `declined`.
  */
 function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[] {
   const refs = new Set<string>();
@@ -164,7 +166,7 @@ function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[]
   };
   walk(root);
   for (const ask of asks) {
-    if (ask.state !== "declined") continue;
+    if (askState(ask) !== "declined") continue;
     for (const reference of citedReferences(ask.resolution?.reason ?? "")) add(reference);
   }
   return [...refs];

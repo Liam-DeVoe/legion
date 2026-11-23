@@ -1215,7 +1215,8 @@ test("another issue's spec a comment cites alone is read with its issue and publ
 
 // A declined ask's note is drawn under its row in the Decisions view from the asks read, not from
 // a node of the tree, so the page asks the one names read for what the note cites, and no row
-// reads it itself.
+// reads it itself. The ask is the row the server answers for a decline: `resolved`, with a
+// resolution of kind `declined` (the database's `asks_state_check` holds no `declined` state).
 test("what a declined ask's note cites is asked for in the one names read", async () => {
   const cited = "dispatch://CORE-9";
   const asked: string[][] = [];
@@ -1243,7 +1244,7 @@ test("what a declined ask's note cites is asked for in the one names read", asyn
       kind: "declined",
       reason: `Ask about ${cited} first.`,
     },
-    state: "declined",
+    state: "resolved",
     urgency: "normal",
   } satisfies IssueAskRow;
   const stubs = stubTreeReads(
