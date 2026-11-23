@@ -141,16 +141,16 @@ jobs:
       - run: docker pull $REGISTRY@$NATS
 YAML
   # The second shape IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
-  # command each, as the check demands. It is outside ci.yaml: it lives in a called file of a
-  # job, where ci.yaml's job of that id holds the gate and the file the steps.
-  cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
-name: CI job envoy-smoke
-on: [workflow_call]
-jobs:
-  envoy-smoke:
-    runs-on: ubuntu-24.04
-    steps:
-      - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
+  # command each, as the check demands. It is a leg's action beneath its job's directory, which
+  # the check reads at any depth.
+  mkdir -p "$root/.github/actions/go-envoy-held/envoy-smoke"
+  cat > "$root/.github/actions/go-envoy-held/envoy-smoke/action.yml" <<YAML
+name: envoy-smoke
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
   # The worker image's build runs the image it pushed by its recorded digest, the entry IMAGE_FROM
   # holds for worker-image.yaml, so the fixture carries that command too.
@@ -740,6 +740,34 @@ run_check tree "$root"
 check "a container on a digest outside the file fails" "$(is "$status" 1)"
 check "names the container it read" \
   "$(contains "$out" "this job's container image names a digest no row of .github/ci-images.yaml holds")"
+
+echo "case: an action nested beneath a job's directory is in CI's reach"
+root=$(fixture nested-action)
+printf '    - shell: bash\n      run: docker pull %s@%s\n' "$REGISTRY" "$UNKNOWN" \
+  >> "$root/.github/actions/go-envoy-held/envoy-smoke/action.yml"
+run_check tree "$root"
+check "a digest no row holds in a nested action's docker pull fails" "$(is "$status" 1)"
+check "names the nested action" \
+  "$(contains "$out" '^.github/actions/go-envoy-held/envoy-smoke/action.yml:[0-9]*:.*names a digest no row of .github/ci-images.yaml holds')"
+
+echo "case: a service only some legs start, \${{ <condition> && '<reference>' || '' }}"
+root=$(fixture conditional-service)
+sed -i "s#image: $REGISTRY@$NATS#image: \${{ matrix.leg != 'smoke' \&\& '$REGISTRY@$NATS' || '' }}#" \
+  "$root/.github/workflows/ci.yaml"
+run_check tree "$root"
+check "a reference a row holds in that form passes" "$(is "$status" 0)"
+root=$(fixture conditional-service-unknown)
+sed -i "s#image: $REGISTRY@$NATS#image: \${{ matrix.nats \&\& '$REGISTRY@$UNKNOWN' || '' }}#" \
+  "$root/.github/workflows/ci.yaml"
+run_check tree "$root"
+check "a reference no row holds in that form fails" "$(is "$status" 1)"
+check "names the service and the digest no row holds" \
+  "$(contains "$out" "ci.yaml:8: the nats service's image names a digest no row of .github/ci-images.yaml holds")"
+root=$(fixture conditional-service-other)
+sed -i "s#image: $REGISTRY@$NATS#image: \${{ matrix.image }}#" "$root/.github/workflows/ci.yaml"
+run_check tree "$root"
+check "any other expression fails" "$(is "$status" 1)"
+check "says the check cannot read it" "$(contains "$out" "ci.yaml:8: the nats service's image is \${{ matrix.image }}, which this check cannot read")"
 
 echo "case: an image of a Kubernetes manifest CI's reach names"
 # A manifest is read document by document from the parsed YAML, every image: at any depth, so the

@@ -33,7 +33,7 @@ cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
 case "\$*" in
-  *"/actions/runs/41/jobs?per_page=100"*)
+  *"/actions/runs/41/jobs?per_page=50"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
   *"/commits/abc123/check-runs"*)

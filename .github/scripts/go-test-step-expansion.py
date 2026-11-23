@@ -73,7 +73,8 @@ its AUDITED_SCRIPTS reads; a step into the local composite action it uses, a mat
 once per leg with the leg's values read in, a called workflow's step with the inputs its caller
 gives, a script a step runs whose lines the reader can read, and a gotestsum command as the
 `go test` it wraps (its `--packages` and the flags after its `--`). A package a job splits
-between its legs with `.github/scripts/go-test-split.sh` is listed whole for each leg, and the
+between its legs with `.github/scripts/go-test-split.sh` is listed whole for each leg, or under
+the `-run=<pattern>` the call passes the script, which the legs run between them, and the
 legs of one job, keyed as one step, count once in the pairs. Two lines are answered by running
 them in the step's own directory (`go_test_steps.shell_answer`): a `-run "$pattern"` assigned
 from a `$(…)` call of `.github/scripts/go-tagged-tests.sh`, and the package list of `go list … |

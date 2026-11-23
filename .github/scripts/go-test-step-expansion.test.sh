@@ -326,6 +326,11 @@ jobs:
           pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 ./internal/split/)
           gotestsum --format standard-verbose --jsonfile split-${{ matrix.leg }}.json --packages ./internal/split/ -- -count=1 -run "$pattern"
         working-directory: packages/envoy
+      - name: A split of the tests a pattern selects
+        run: |
+          pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 -tags=memory "-run=^(TestOne|TestTwo)$" ./internal/split/)
+          gotestsum --format standard-verbose --jsonfile narrowed-${{ matrix.leg }}.json --packages ./internal/split/ -- -count=1 -tags memory -run "$pattern"
+        working-directory: packages/envoy
       - name: A variable set before the command
         run: GODEBUG=checkfinalizers=1 go test -count=1 ./internal/docs/
         working-directory: packages/envoy
@@ -384,6 +389,8 @@ check "a go-test.sh command is read as the gotestsum command it runs, the variab
   "$(has "$read" "$job / A go-test.sh command | packages/envoy | ./internal/e/ ./internal/f/ | tags= race=True run=^(TestThree)\$ skip= split=False env=RACE_MEM_LIMIT_KB=8388608")"
 check "a package go-test-split.sh splits between the legs is read as run whole, and marked a split" \
   "$(has "$read" "$job / A package split between the legs | packages/envoy | ./internal/split/ | tags= race=False run= skip= split=True env=")"
+check "a split given -run=<pattern> is read as running what the pattern selects, and marked a split" \
+  "$(has "$read" "$job / A split of the tests a pattern selects | packages/envoy | ./internal/split/ | tags=memory race=False run=^(TestOne|TestTwo)\$ skip= split=True env=")"
 check "a variable set before the command is part of the command's environment" \
   "$(has "$read" "$job / A variable set before the command | packages/envoy | ./internal/docs/ | tags= race=False run= skip= split=False env=GODEBUG=checkfinalizers=1")"
 check "a variable an -exec 'env …' hands the test binary is part of the command's environment" \

@@ -3,10 +3,13 @@
 # time by a hash of each name. It reads what `go test -list` printed, captured into
 # .github/scripts/testdata/go-test-split/ with the commands its README names (a package of this
 # repository with Tests, a Benchmark and Fuzz targets; a package with no test files; a scratch
-# package with a Test, an Example and a Fuzz target), fed through GO_TEST_LIST_OUTPUT so no go
-# command runs. It holds that each listed name lands in exactly one leg for 1 to 8 legs, that a
-# name added later lands in exactly one leg, and that a package's `ok` and `?` lines and a
-# Benchmark are no leg's.
+# package with a Test, an Example and a Fuzz target, listed whole and under a -list pattern), fed
+# through GO_TEST_LIST_OUTPUT, or printed by a stand-in go that records the command and writes a
+# captured `go: downloading` line to standard error, so no real go command runs. It holds that
+# each listed name lands in exactly one leg for 1 to 8 legs, that a name added later lands in
+# exactly one leg, that a package's `ok` and `?` lines and a Benchmark are no leg's, that go's
+# standard error is no name, and that -run=<pattern> lists under the pattern and keeps each
+# name's leg.
 #
 # Run from anywhere: .github/scripts/go-test-split.test.sh
 # CI runs it in ci.yaml's test job.
@@ -60,7 +63,7 @@ landings() {
 # must print between them.
 listed() { grep -E '^(Test|Fuzz|Example)[A-Za-z0-9_]*$' "$1" | sort -u || true; }
 
-for capture in logmask test-example-fuzz no-test-files; do
+for capture in logmask test-example-fuzz no-test-files run-pattern; do
   listing="$captures/$capture.txt"
   echo "case: $capture.txt, each listed name in exactly one leg"
   for legs in 1 2 3 4 5 6 7 8; do
@@ -104,6 +107,43 @@ for legs in 2 3 4 5 6 7 8; do
   check "$legs legs: exactly one leg takes the new name, and each leg keeps its other names" "$(is "$holding" 1)"
 done
 
+# A stand-in go on PATH that records its arguments, prints the capture of `go test -list` under
+# the pattern and writes the capture of what go wrote to standard error while it fetched a module,
+# so the case reads the command the script runs as well as what it makes of each stream.
+echo "case: -run=<pattern> narrows the split to the tests the pattern selects"
+mkdir -p "$work/bin"
+cat >"$work/bin/go" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$GO_ARGUMENTS"
+cat "$GO_STDERR" >&2
+cat "$GO_LISTING"
+SH
+chmod +x "$work/bin/go"
+pattern='^(TestAdds|ExampleGreeting)$'
+for legs in 1 2 3; do
+  : >"$work/narrowed"
+  : >"$work/unnarrowed"
+  for leg in $(seq 1 "$legs"); do
+    status=0
+    PATH="$work/bin:$PATH" GO_ARGUMENTS="$work/arguments" GO_LISTING="$captures/run-pattern.txt" \
+      GO_STDERR="$captures/downloading.stderr.txt" \
+      "$splitter" "$leg" "$legs" -tags=memory "-run=$pattern" ./scratch >"$work/out" 2>"$work/stderr" || status=$?
+    check "$legs legs, leg $leg: exits 0, the module go fetched on standard error read as no name" "$(is "$status" 0)"
+    check "$legs legs, leg $leg: lists under the pattern, with the other flags, and passes go no -run" \
+      "$(is "$(cat "$work/arguments")" "$(printf '%s\n' test -list "$pattern" -tags=memory ./scratch)")"
+    check "$legs legs, leg $leg: passes go's standard error through to its own" \
+      "$(contains "$(cat "$work/stderr")" '^go: downloading cloud.google.com/go/iam v1.15.1$')"
+    names_of "$(cat "$work/out")" >>"$work/narrowed"
+    # The names this leg takes without the pattern: a name keeps its leg under it.
+    split_leg "$captures/test-example-fuzz.txt" "$leg" "$legs"
+    { names_of "$out" | grep -v '^FuzzReverses$' || true; } >>"$work/unnarrowed"
+  done
+  check "$legs legs: the legs print the pattern's two names once each, and not the Fuzz target it leaves out" \
+    "$(is "$(sort "$work/narrowed")" "$(printf '%s\n' ExampleGreeting TestAdds)")"
+  check "$legs legs: each name lands in the leg it lands in without the pattern" \
+    "$(is "$(cat "$work/narrowed")" "$(cat "$work/unnarrowed")")"
+done
+
 echo "case: what it refuses"
 printf 'TestOne\ncan'"'"'t load package: package ./nowhere: no such directory\n' >"$work/unreadable.txt"
 split_leg "$work/unreadable.txt" 1 2
@@ -115,5 +155,9 @@ split_leg "$captures/logmask.txt" 3 2
 check "a leg past the number of legs exits 2" "$(is "$status" 2)"
 split_leg "$captures/logmask.txt" 1 0
 check "zero legs exits 2" "$(is "$status" 2)"
+status=0
+GO_TEST_LIST_OUTPUT="$captures/run-pattern.txt" "$splitter" 1 2 -run= ./scratch >/dev/null 2>"$work/stderr" || status=$?
+check "an empty -run= exits 2" "$(is "$status" 2)"
+check "and says it would list every test" "$(contains "$(cat "$work/stderr")" 'names no pattern')"
 
 summary "go-test-split.sh"

@@ -2868,7 +2868,7 @@ sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags
 check "and fails when go list fails" "$(is "$status" 1)"
 check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
 
-# The typecheck step's own run text, taken from its workflow, over a module with one tag and a
+# The typecheck step's own run text, taken from its action, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
 # and a shell's command substitution drops a trailing empty line, so a transport of bare sets
 # would vet only -tags=feature and pass. The module sits two directories deep, as
@@ -2879,10 +2879,10 @@ mkdir -p "$root/deep/module"
 printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
 printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
 printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
-PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../actions/lint/typecheck/action.yml" "$root/step.sh" <<'PY'
 import sys, yaml
-jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
-step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+step = next(s for s in steps if s.get("name", "").startswith("Vet the Go daemon for darwin"))
 open(sys.argv[2], "w").write(step["run"])
 PY
 status=0

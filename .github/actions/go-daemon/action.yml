@@ -96,11 +96,9 @@ runs:
     # repository's one copy of it, installed through the mise above (.github/actions/install-omp).
     - uses: ./.github/actions/install-omp
 
-    # internal/runtime/sandbox's uv link-mode test needs the uv the worker image ships
-    # (.github/actions/install-uv), which ci.yaml's go-daemon job installs in a step of its own
-    # before this action: install-uv writes LEGION_TEST_UV into $GITHUB_ENV, and the test-reach
-    # search reads such a write as reaching the job's later steps, not the later steps of the one
-    # action that holds it.
+    # internal/runtime/sandbox's uv link-mode test needs the uv the worker image ships, which
+    # install-uv writes into LEGION_TEST_UV for every later step.
+    - uses: ./.github/actions/install-uv
 
     # internal/workspace's TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli
     # runs the real CodeGraph CLI it finds on PATH, and refuses on GitHub Actions without one.

@@ -14,7 +14,10 @@
 # packages hold and a name two packages share lands in the same leg in both. It prints that leg's
 # share as the -run the leg passes go test, `^(Name|Name|…)$`, sorted, or `^$`, which runs no test,
 # for a leg the hash gives none. The flags before the packages are the ones the leg's go test runs
-# with that choose which test files build (-tags=…, -race), each written as one word.
+# with that choose which test files build (-tags=…, -race), each written as one word, and
+# -run=<pattern>, which narrows the split to the tests the pattern selects: the listing is
+# `go test -list <pattern>` in place of '.*', so the legs between them run what one go test
+# -run <pattern> of the packages would run, and no other test.
 #
 # The hash is h = (h * 31 + byte) mod 2147483647 over the name's bytes, and the leg is h mod
 # <legs>, plus one: every value stays below 2^36, which awk's double holds exactly on any runner.
@@ -22,8 +25,11 @@
 # GO_TEST_LIST_OUTPUT, where set, names a file holding what `go test -list` printed, which is read
 # instead of running go: .github/scripts/go-test-split.test.sh feeds it captured listings.
 #
-# It exits 1 when go test -list fails or prints a line that is neither a name nor a package's
-# `ok`, `?` or `FAIL` line, and 2 on a usage error. It reports how many names it kept on stderr.
+# It reads go's standard output alone, the names and each package's line; what go writes to
+# standard error (a `go: downloading` line for each module it fetches, a build's errors) passes
+# through to this script's own. It exits 1 when go test -list fails or prints a line that is
+# neither a name nor a package's `ok`, `?` or `FAIL` line, and 2 on a usage error. It reports how
+# many names it kept on stderr.
 set -euo pipefail
 export LC_ALL=C
 
@@ -40,8 +46,12 @@ shift 2
 [[ "$leg" =~ ^[1-9][0-9]*$ ]] && [ "$leg" -le "$legs" ] || usage "the leg is a number from 1 to $legs, not \"$leg\""
 flags=()
 packages=()
+list='.*'
 for word in "$@"; do
-  if [ "${#packages[@]}" -eq 0 ] && [[ "$word" == -* ]]; then
+  if [ "${#packages[@]}" -eq 0 ] && [[ "$word" == -run=* ]]; then
+    list=${word#-run=}
+    [ -n "$list" ] || usage "-run= names no pattern, which would list every test"
+  elif [ "${#packages[@]}" -eq 0 ] && [[ "$word" == -* ]]; then
     flags+=("$word")
   else
     [[ "$word" != -* ]] || usage "the flag $word comes after a package; the flags come first"
@@ -53,8 +63,8 @@ done
 if [ -n "${GO_TEST_LIST_OUTPUT:-}" ]; then
   listing=$(cat "$GO_TEST_LIST_OUTPUT")
 else
-  listing=$(go test -list '.*' "${flags[@]}" "${packages[@]}" 2>&1) || {
-    echo "go-test-split.sh: go test -list '.*' ${flags[*]} ${packages[*]} failed, so no leg's share can be known:" >&2
+  listing=$(go test -list "$list" "${flags[@]}" "${packages[@]}") || {
+    echo "go-test-split.sh: go test -list '$list' ${flags[*]} ${packages[*]} failed (its errors are above), so no leg's share can be known:" >&2
     printf '%s\n' "$listing" >&2
     exit 1
   }

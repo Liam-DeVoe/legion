@@ -38,7 +38,7 @@ runs:
     # Only what the tag adds, its names read off the source at run time by
     # .github/scripts/go-tagged-tests.sh: a `go test -list` of the package under -tags=memory would
     # list its untagged tests too, which envoy-go's unit step runs, so go-test-split.sh splits the
-    # tagged names alone, handed to it one a line as the listing it reads (GO_TEST_LIST_OUTPUT).
+    # tests the tagged names' -run selects alone, listed under that pattern (its -run= flag).
     # Each assignment is a line of its own, so under bash -e an empty or refused list fails the
     # step instead of running -run "", which matches every test.
     - name: Memory tests of the Dispatch server
@@ -46,7 +46,7 @@ runs:
       working-directory: packages/envoy
       run: |
         tagged=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-        run=$(GO_TEST_LIST_OUTPUT=<(tr '|' '\n' <<<"${tagged:2:-2}") ../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" ./cmd/dispatch)
+        run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" -tags=memory "-run=$tagged" ./cmd/dispatch)
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-dispatch-memory-${{ inputs.part }}-memory.json" --packages ./cmd/dispatch -- -tags memory -count=1 -timeout "${{ inputs.go-timeout }}" -run "$run"
     - if: always()
       uses: ./.github/actions/go-test-upload

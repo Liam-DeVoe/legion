@@ -5,8 +5,7 @@
 # read), build (an image or binary build reads), own (the job's .github/ file). A comment gives
 # the kind and a reader of the lines up to the next comment. `!` drops files no step of the job
 # reads. Shared .github/ files stay unnamed and select every job. lint has no filter; kind-image
-# reads kind's, claude-envoy-names pi's. Image filters (worker-image, kind, browser-image) are
-# flat lists, as check-image-trigger-paths.sh reads them.
+# reads kind's, claude-envoy-names pi's.
 worker-image:
   - &pd packages/daemon/** # build worker.Dockerfile:462
   - &pe packages/envoy/** # build Dockerfile:463
@@ -38,10 +37,11 @@ worker-image:
   - '!packages/*/.changes/**'
   - '!skills/AGENTS.md'
   - &wiw .github/workflows/worker-image.yaml # own
-kind: # kind-image and kind. build: kind-image builds worker.Dockerfile; test: its leak guard;
-  # pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml; own
-  [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di, *lg,
-   &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**]
+kind: # kind-image and kind. build: kind-image builds worker.Dockerfile as worker-image.yaml's build
+  # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml;
+  # own
+  [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di,
+   &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**, *wiw]
 go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun
@@ -65,10 +65,10 @@ agent-harness:
   - [*e2e, &pins [.claude-code-pin, .codex-pin], &ag .agents/**] # test stage2-tmux-supervision.sh, codex-host.sh
   - &o5 .github/actions/agent-harness/** # own
 airlock-arm:
-  - *dm # mod k9 builds packages/envoy in the go.work workspace
+  - [*pe, *gw, *ni, &dgo packages/daemon/go.*] # mod dev-broker.sh builds packages/envoy in the go.work workspace
   - &o6 .github/actions/airlock-arm/** # own
 go-envoy-held:
-  - &ew [*pe, *gw, packages/daemon/go.*] # pkg+mod go test ./... in packages/envoy, infra/host
+  - &ew [*pe, *gw, *dgo] # pkg+mod go test ./... in packages/envoy, infra/host
   - [*dsp, *tsp, *cc, *bun] # pkg+ws dispatch-two-builds in packages/dispatch
   - [*di, packages/daemon/docker/legion-testpg, &its packages/daemon/internal/intake/testdata/**, *tpn] # test envoy-smoke
   - [*e2e, docs/site/src/content/docs/**, docs/solutions/**, docs/testing.md, packages/*/README.md, &dsa .dispatch/**] # test repository-markdown.txt guides

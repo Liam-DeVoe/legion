@@ -6,7 +6,9 @@
 # which must fail and name its file; and the registry's classes, each held to a gate. Then the
 # fixtures of the forms the layout of matrix jobs writes, each named in its checks: a go test in a
 # matrix value, in a script, in a composite action and in a called workflow's input, read as runs;
-# gotestsum's `-skip` and `-tags` after its `--`; a package go-test-split.sh splits, read whole;
+# a $GITHUB_ENV write of an action's step, read by that action's later steps and the job's;
+# gotestsum's `-skip` and `-tags` after its `--`; a package go-test-split.sh splits, read whole,
+# or under the -run=<pattern> its call passes;
 # workflows no merge waits for (run on a pull request only when their files change, schedule-only,
 # workflow_dispatch-only, a called workflow) with a test, a preload or a repeat count; release
 # steps listed, unlisted, and reading nothing their job built; race-impossible tests, a module or
@@ -652,6 +654,71 @@ required_job "$root" action '    runs-on: ubuntu-24.04
 run_check "$root"
 passes "go-action: the action's go test, under the input its user gives, is read as a run"
 
+echo "case: a variable an action's step writes into \$GITHUB_ENV, read by that action's later step and the job's"
+root=$(fixture action-env)
+for package in inner later; do
+  mkdir -p "$root/packages/envoy/$package"
+  cat > "$root/packages/envoy/$package/${package}_test.go" <<GO
+package $package
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNeedsTheActionsServer(t *testing.T) {
+	if os.Getenv("FIXTURE_ACTION_SERVER") == "" {
+		t.Skip("FIXTURE_ACTION_SERVER names no server")
+	}
+}
+GO
+done
+mkdir -p "$root/.github/actions/server-then-test"
+cat > "$root/.github/actions/server-then-test/action.yml" <<'YAML'
+name: Server then test
+description: Names the server, then runs the inner package's tests against it.
+runs:
+  using: composite
+  steps:
+    - name: Name the server
+      shell: bash
+      run: echo "FIXTURE_ACTION_SERVER=postgres://action" >> "$GITHUB_ENV"
+    - name: The inner tests
+      shell: bash
+      run: go test -count=1 ./inner/
+      working-directory: packages/envoy
+YAML
+required_job "$root" action-env '    runs-on: ubuntu-24.04
+    steps:
+      - name: The server and the inner tests
+        uses: ./.github/actions/server-then-test
+      - name: The later tests
+        run: go test -count=1 ./later/
+        working-directory: packages/envoy'
+row "$root" FIXTURE_ACTION_SERVER 'class: set' 'jobs: [action-env]' 'why: Names the server the action starts.'
+run_check "$root"
+passes "action-env: the write reaches the action's later step and the job's later step"
+# The write after the inner tests reaches the job's later step and not the step before it.
+cat > "$root/.github/actions/server-then-test/action.yml" <<'YAML'
+name: Server then test
+description: Runs the inner package's tests, then names the server.
+runs:
+  using: composite
+  steps:
+    - name: The inner tests
+      shell: bash
+      run: go test -count=1 ./inner/
+      working-directory: packages/envoy
+    - name: Name the server
+      shell: bash
+      run: echo "FIXTURE_ACTION_SERVER=postgres://action" >> "$GITHUB_ENV"
+YAML
+run_check "$root"
+check "action-env: a write after the action's step fails" "$(is "$status" 1)"
+check "action-env: names the test the step before the write runs" \
+  "$(contains "$out" 'packages/envoy/inner/inner_test.go:[0-9]*: FIXTURE_ACTION_SERVER: its row.s class is set, and no job it names (action-env) runs TestNeedsTheActionsServer with it set')"
+check "action-env: and not the test of the job's later step" "$(is "$(contains "$out" 'later_test.go')" false)"
+
 echo "case: a test whose only go test is an input a job gives a called workflow"
 root=$(fixture go-called-input)
 go_test_file "$root/packages/envoy/unit/input_test.go" unit inputtag TestOnlyInTheInput
@@ -717,6 +784,26 @@ required_job "$root" split '    runs-on: ubuntu-24.04
         working-directory: packages/envoy'
 run_check "$root"
 passes "split: each leg is read as running the split package whole"
+
+echo "case: a split given -run=<pattern> is read as running the tests the pattern selects"
+root=$(fixture split-run)
+go_test_file "$root/packages/envoy/split/split_test.go" split splittag TestTheFirstShare TestTheSecondShare TestOutsideThePattern
+required_job "$root" split '    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
+    steps:
+      - name: This leg'"'"'s share of the tests the pattern selects
+        run: |
+          pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 -tags=splittag "-run=^(TestTheFirstShare|TestTheSecondShare)$" ./split/)
+          gotestsum --format standard-verbose --jsonfile split-${{ matrix.leg }}.json --packages ./split/ -- -count=1 -tags splittag -run "$pattern"
+        working-directory: packages/envoy'
+run_check "$root"
+check "split-run: fails" "$(is "$status" 1)"
+check "split-run: names the test the pattern leaves out" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/split/split_test.go:[0-9]*: TestOutsideThePattern: ')"
+check "split-run: and not the tests the pattern selects" "$(is "$(contains "$out" 'TestTheFirstShare\|TestTheSecondShare')" false)"
 
 # Workflows ci-ok does not need, each of whose steps that runs a test file is read.
 echo "case: a workflow run on a pull request only when its own files change, with a preload"

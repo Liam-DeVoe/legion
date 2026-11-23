@@ -729,6 +729,25 @@ run_check "$root"
 check "unnamed-output: an output its filter or the unnamed-file step makes true passes" "$(is "$status" 0)"
 check "unnamed-output: and its filter decides the build" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')"
 
+# The unnamed-file step selects every job on a file no filter names, so such an input reaches
+# the build though the job's own filter leaves it out; an input another filter names does not.
+partial_inputs="  - 'package.json'
+  - 'packages/app/**'
+  - 'docker/**'
+  - '.github/workflows/image.yaml'"
+root=$(fixture unnamed-output-unnamed-input)
+gate_build_job "$root" "$partial_inputs"
+unnamed_output "$root" unnamed
+run_check "$root"
+check "unnamed-output-unnamed-input: an input no filter names reaches the build through the unnamed-file step" "$(is "$status" 0)"
+root=$(fixture unnamed-output-named-elsewhere)
+gate_build_job "$root" "$partial_inputs"
+printf 'other:\n  - .dockerignore\n' >> "$root/.github/ci-areas.yaml"
+unnamed_output "$root" unnamed
+run_check "$root"
+check "unnamed-output-named-elsewhere: an input only another filter names fails" "$(is "$status" 1)"
+check "unnamed-output-named-elsewhere: names that input" "$(contains "$out" 'does not cover .dockerignore')"
+
 root=$(fixture unnamed-output-other-step)
 gate_build_job "$root" "$all_inputs"
 unnamed_output "$root" decide
@@ -736,6 +755,117 @@ run_check "$root"
 check "unnamed-output-other-step: a second term that reads another step fails" "$(is "$status" 1)"
 check "unnamed-output-other-step: names the output it cannot read" \
   "$(contains "$out" 'is gated on needs.changes.outputs.gated, which is not a dorny/paths-filter filter this check can read')"
+
+echo "case: the full-ci shape, its filter or the unnamed-file step in parentheses, is read as narrowed"
+# ci.yaml's go-envoy-held output: `<term> && (steps.filter.outputs.x == 'true' ||
+# steps.unnamed.outputs.found == 'true') || 'false'`, behind a term that hands every other event
+# 'true'. The pair is the job's filter, widened by the unnamed-file step; the term beside it
+# narrows it. The fixture's trigger is push, so the term before it is written for push's opposite.
+#
+# full_ci_output <root> <step id of the second term>: rewrites the changes job's output so.
+full_ci_output() {
+  local root=$1 step=$2
+  python3 - "$root/.github/workflows/image.yaml" "$step" <<'PY'
+import sys
+path, step = sys.argv[1], sys.argv[2]
+text = open(path).read()
+plain = "      gated: ${{ steps.filter.outputs.gated }}\n"
+assert text.count(plain) == 1, "the fixture's output is not the plain shape"
+shaped = ("      gated: ${{ github.event_name != 'push' && 'true' || "
+          "contains(github.event.pull_request.labels.*.name, 'full-ci') && "
+          "(steps.filter.outputs.gated == 'true' || steps." + step + ".outputs.found == 'true') || 'false' }}\n")
+open(path, "w").write(text.replace(plain, shaped))
+PY
+}
+
+root=$(fixture full-ci-unnamed)
+gate_build_job "$root" "$all_inputs"
+full_ci_output "$root" unnamed
+run_check "$root"
+check "full-ci-unnamed: passes where the job publishes nothing" "$(is "$status" 0)"
+check "full-ci-unnamed: and its filter decides the build" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')"
+
+root=$(fixture full-ci-unnamed-partial)
+gate_build_job "$root" "$partial_inputs"
+printf 'other:\n  - .dockerignore\n' >> "$root/.github/ci-areas.yaml"
+full_ci_output "$root" unnamed
+run_check "$root"
+check "full-ci-unnamed-partial: a filter missing one input fails" "$(is "$status" 1)"
+check "full-ci-unnamed-partial: names that input" "$(contains "$out" 'does not cover .dockerignore')"
+
+root=$(fixture full-ci-other-step)
+gate_build_job "$root" "$all_inputs"
+full_ci_output "$root" decide
+run_check "$root"
+check "full-ci-other-step: a second term that reads another step fails" "$(is "$status" 1)"
+check "full-ci-other-step: names the output it cannot read" \
+  "$(contains "$out" 'is gated on needs.changes.outputs.gated, which is not a dorny/paths-filter filter this check can read')"
+
+root=$(fixture full-ci-unnamed-publishes)
+gate_build_job "$root" "$all_inputs"
+full_ci_output "$root" unnamed
+publishing_build "$root"
+run_check "$root"
+check "full-ci-unnamed-publishes: the label term narrows a published build, which fails" "$(is "$status" 1)"
+check "full-ci-unnamed-publishes: names the label term, and not the event term" \
+  "$(contains "$out" "only while \`contains(github.event.pull_request.labels.\*.name, 'full-ci')\` holds")"
+
+echo "case: an output's event terms say on which events its filter decides the job"
+# event_output <root> <expression>: the changes job's output, as written.
+event_output() {
+  local root=$1 expression=$2
+  python3 - "$root/.github/workflows/image.yaml" "$expression" <<'PY'
+import sys
+path, expression = sys.argv[1], sys.argv[2]
+text = open(path).read()
+plain = "      gated: ${{ steps.filter.outputs.gated }}\n"
+assert text.count(plain) == 1, "the fixture's output is not the plain shape"
+open(path, "w").write(text.replace(plain, "      gated: ${{ " + expression + " }}\n"))
+PY
+}
+
+# ci.yaml's kind output hands a merge group 'true' whatever changed: on that event no filter
+# decides the build, so a filter that leaves out an input drops nothing there.
+root=$(fixture event-free)
+gate_build_job "$root" "  - 'packages/other/**'"
+event_output "$root" "github.event_name == 'push' && 'true' || github.event_name != 'push' && steps.filter.outputs.gated || 'false'"
+run_check "$root"
+check "event-free: an event the output hands 'true' whatever changed is not held to the filter" "$(is "$status" 0)"
+check "event-free: and the filter is not named for it" "$(is "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')" false)"
+
+# And never 'true' on a pull request: an event term beside the filter that fails there, with no
+# widening term that holds, leaves the build no run on that event to check.
+root=$(fixture event-never)
+gate_build_job "$root" "  - 'packages/other/**'"
+event_output "$root" "github.event_name == 'merge_group' && 'true' || github.event_name != 'push' && steps.filter.outputs.gated || 'false'"
+run_check "$root"
+check "event-never: an event the output is never 'true' on is not checked" "$(is "$status" 0)"
+check "event-never: and says so" "$(contains "$out" 'not checked, since jobs.docker.if admits no push run')"
+
+# The control: the same filter where the event term holds on push decides the build there.
+root=$(fixture event-decided)
+gate_build_job "$root" "  - 'packages/other/**'"
+event_output "$root" "github.event_name == 'merge_group' && 'true' || github.event_name == 'push' && steps.filter.outputs.gated || 'false'"
+run_check "$root"
+check "event-decided: where the filter decides the event, an input it leaves out fails" "$(is "$status" 1)"
+check "event-decided: names that input" "$(contains "$out" 'does not cover docker/Dockerfile')"
+
+echo "case: a filter whose patterns nest in lists, as YAML anchors write them, is read flat"
+# dorny/paths-filter flattens a filter's nested lists; .github/ci-areas.yaml writes its filters so.
+root=$(fixture nested-filter)
+gate_build_job "$root" "  - ['package.json', ['packages/app/**', 'docker/**']]
+  - '.dockerignore'
+  - ['.github/workflows/image.yaml']"
+run_check "$root"
+check "nested-filter: a filter of nested lists covering every input passes" "$(is "$status" 0)"
+check "nested-filter: and is named" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')"
+root=$(fixture nested-filter-partial)
+gate_build_job "$root" "  - ['package.json', ['packages/app/**']]
+  - '.dockerignore'
+  - ['.github/workflows/image.yaml']"
+run_check "$root"
+check "nested-filter-partial: one that leaves out an input fails" "$(is "$status" 1)"
+check "nested-filter-partial: names that input" "$(contains "$out" 'does not cover docker/Dockerfile')"
 
 echo "case: a gate reaches the build however it is written"
 # gate_probe <root> <docker job header> [extra job yaml]: a changes job exposing img (covers
@@ -1201,6 +1331,29 @@ step_if "$root" "github.ref == 'refs/heads/main'"
 run_check "$root"
 check "a step gate this check cannot evaluate is refused" "$(is "$status" 1)"
 check "quotes the term" "$(contains "$out" "is narrowed by \`github.ref == 'refs/heads/main'\`")"
+
+# A step whose if: reads only matrix values runs on its legs whenever its job runs, since a job
+# runs every leg of its matrix: it narrows by leg and never by path, as ci.yaml's go-envoy-held
+# job builds the envoy-smoke image on its envoy-smoke leg alone.
+root=$(fixture step-gate-matrix)
+gate_probe "$root" "$unchanged"
+step_if "$root" "matrix.leg == 'smoke'"
+run_check "$root"
+check "step-gate-matrix: a step if: of matrix values alone passes" "$(is "$status" 0)"
+
+root=$(fixture step-gate-matrix-beside-narrow)
+gate_probe "$root" "$unchanged"
+step_if "$root" "matrix.leg == 'smoke' && needs.changes.outputs.narrow == 'true'"
+run_check "$root"
+check "step-gate-matrix-beside-narrow: the filter beside it is still read, and a narrow one fails" "$(is "$status" 1)"
+check "step-gate-matrix-beside-narrow: names an input it drops" "$(contains "$out" 'does not cover package.json')"
+
+root=$(fixture step-gate-matrix-variable)
+gate_probe "$root" "$unchanged"
+step_if "$root" "matrix.leg == vars.SMOKE_LEG"
+run_check "$root"
+check "step-gate-matrix-variable: a matrix value compared with anything but a literal is refused" "$(is "$status" 1)"
+check "step-gate-matrix-variable: quotes the term" "$(contains "$out" "is narrowed by \`matrix.leg == vars.SMOKE_LEG\`")"
 
 root=$(fixture step-gate-vars)
 gate_probe "$root" "$unchanged"
@@ -2421,6 +2574,33 @@ root=$(fixture base-checkout-this-repository)
 base_action "$root" base ./base/.github/actions/builder '${{ github.repository }}'
 run_check "$root"
 check "a checkout that names this repository is read as this tree, as one naming none is" "$(is "$status" 0)"
+
+# A checkout a local composite action of the job makes writes the job's workspace as the job's
+# own does: ci.yaml's tool-fallback job checks the merge base out at base in its start action,
+# and its later steps use ./base/.github/actions/<tool>.
+# start_action <root> <path>: a local action that checks this repository out at <path>, used by
+# the job before the ./base step.
+start_action() {
+  local root=$1 path=$2
+  mkdir -p "$root/.github/actions/start"
+  printf 'name: Start\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v5\n      with:\n        path: %s\n' \
+    "$path" > "$root/.github/actions/start/action.yml"
+  sed -i 's|^      - uses: ./base/.github/actions/builder$|      - uses: ./.github/actions/start\n&|' \
+    "$root/.github/workflows/image.yaml"
+}
+root=$(fixture base-checkout-in-action)
+base_action "$root" "" ./base/.github/actions/builder
+start_action "$root" base
+run_check "$root"
+check "a uses under a checkout a local action of the job makes at base is read as this tree's action" "$(is "$status" 0)"
+check "  and its build counts" "$(contains "$out" '(1 image build(s))')"
+
+root=$(fixture base-checkout-in-action-elsewhere)
+base_action "$root" "" ./base/.github/actions/builder
+start_action "$root" vendor
+run_check "$root"
+check "the same action checking out at another path is refused" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
 
 echo "case: a job that calls a workflow outside this repository is refused"
 root=$(fixture job-uses-foreign)

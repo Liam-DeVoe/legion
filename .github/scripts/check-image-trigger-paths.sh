@@ -16,7 +16,8 @@
 #     one — `docker/build-push-action` is itself a JavaScript action — so `using: docker`,
 #     `using: node*` and a missing `using` are all refused unless NON_BUILDING_ACTIONS names
 #     it. A local `./<dir>/<rest>` whose `<dir>` is the `path:` of an `actions/checkout` step
-#     of the same job (checkout_paths) is this repository's own action at another commit, so
+#     of the same job, or of a local composite action the job uses (checkout_paths), is this
+#     repository's own action at another commit, so
 #     the file READ is this tree's `<rest>/action.yml`. A second checkout of this same
 #     repository holds this same repository's actions, and it can introduce no image builder
 #     this check does not already read at `<rest>`, because `<rest>` is where every other
@@ -56,11 +57,16 @@
 #     steps.filter.outputs.x == 'true' || steps.unnamed.outputs.found == 'true' }}`, which only
 #     widens the changes the job runs on and is read as the plain reference (a last disjunct that
 #     reads any other step is refused) — and the NARROWED one, where the reference is the last
-#     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
-#     ci.yaml's `full-ci` outputs. A narrowed output runs the job on fewer changes than its
+#     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`, or
+#     that conjunct the filtered or unnamed pair in parentheses, ci.yaml's `full-ci` outputs. A
+#     narrowed output runs the job on fewer changes than its
 #     filter selects, so it is admitted only for a job whose every `docker/build-push-action`
 #     step publishes nothing (step_publishes): there a change the filter selects publishes no
 #     image either way, so no pin can name the commit it skipped. Every other shape is refused.
+#     An output's event terms are read for each event (output_events): an event on which a
+#     widening disjunct hands the job 'true' whatever changed holds the build to no filter, and
+#     one on which no disjunct can be true starts no build to check. A filter's nested lists,
+#     which YAML anchors write, are read flat, as the action reads them.
 #     GitHub compares case-insensitively,
 #     so this check does too. A filter is read under its step's `predicate-quantifier`: under
 #     `some` (the default) a file matches when any pattern does, and a `!` pattern, which
@@ -265,6 +271,13 @@ EVENT_TERM = re.compile(r"github\.event_name\s*(==|!=)\s*'([\w-]+)'", re.I)
 # names call_inputs admits for the job's own workflow, the `modes` gate_outputs is handed.
 CALL_MODE = re.compile(r"inputs\.([\w-]+)\s*==\s*''", re.I)
 INPUTS_TERM = re.compile(r"(?<![\w.])inputs\.", re.I)
+# A term that reads only matrix values: in a step's `if:`, which alone may read them, it picks the
+# legs the step runs on, and a job runs every leg of its matrix whenever it runs, so the step runs
+# on that leg on every change that reaches the job. It narrows by leg and never by path. A value
+# compared with it is a quoted string, a number, true, false or null.
+MATRIX_TERM = re.compile(
+    r"!?\s*matrix\.[\w-]+(?:\.[\w-]+)*(?:\s*[=!]=\s*(?:'[^']*'|-?\d+(?:\.\d+)?|true|false|null))?", re.I
+)
 
 
 def call_inputs(document: dict) -> dict[str, str | None]:
@@ -308,10 +321,10 @@ def call_inputs(document: dict) -> dict[str, str | None]:
 
 
 def neutral(term: str, modes: dict[str, str | None]) -> bool:
-    """True for an `if:` term that cannot narrow which CHANGES reach a job: a NEUTRAL term, or
-    a CALL_MODE comparison on an input `modes` admits."""
+    """True for an `if:` term that cannot narrow which CHANGES reach a job: a NEUTRAL term, a
+    MATRIX_TERM, or a CALL_MODE comparison on an input `modes` admits."""
     term = unwrap(term).strip()
-    if NEUTRAL.fullmatch(term):
+    if NEUTRAL.fullmatch(term) or MATRIX_TERM.fullmatch(term):
         return True
     mode = CALL_MODE.fullmatch(term)
     return bool(mode) and mode.group(1).lower() in modes and modes[mode.group(1).lower()] is None
@@ -361,6 +374,27 @@ class AnyOf:
 
     def covers(self, path: str) -> bool:
         return any(f.covers(path) for f in self.filters)
+
+
+class UnnamedFiles:
+    """Covers a file no filter of a filters file names, each pattern read with its `!` taken off,
+    as the changes job's unnamed-file step reads them (.github/scripts/unnamed-files.sh): that
+    step makes every output its term widens true on such a file, so the file reaches the job."""
+
+    def __init__(self, filters: dict):
+        def patterns(value) -> list[str]:
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, list):
+                return [pattern for item in value for pattern in patterns(item)]
+            if isinstance(value, dict):
+                return [pattern for item in value.values() for pattern in patterns(item)]
+            return []
+
+        self.naming = [glob_regex(p) for p in sorted({p.removeprefix("!") for p in patterns(filters)})]
+
+    def covers(self, path: str) -> bool:
+        return not any(regex.fullmatch(path) for regex in self.naming)
 
 
 def dockerignore_filter(path: str | None):
@@ -1076,7 +1110,8 @@ def gate_outputs(
             f"(`always()`, `success()`, `!cancelled()`, a `needs.<job>.result` comparison that "
             f"still admits `skipped`, `github.event_name == '<event>'` tests joined by ||, one "
             f"`github.event_name != '<event>'`, `!github.event.pull_request.draft`, "
-            f"`github.event.action != 'closed'`, `github.run_attempt == '1'`) beside it{hint}"
+            f"`github.event.action != 'closed'`, `github.run_attempt == '1'`, a step's "
+            f"comparison of matrix values) beside it{hint}"
         )
     if not clauses:
         return [], admitted, skips_draft, taken
@@ -1106,10 +1141,12 @@ def gating_filters(
     holder: dict,
     modes: dict[str, str | None] | None,
     job_name: str,
-) -> tuple[list[tuple[str, PathsFilter, str]], set[str]]:
+) -> tuple[list[tuple[str, PathsFilter, str, set[str]]], set[str], set[str]]:
     """The dorny/paths-filter filters an `if:` is gated on, each with the refusal its narrowing
-    term earns ("" when the output hands the filter's value unnarrowed), and the trigger events
-    the `if:` admits. The holder is a job that builds an image, a job that calls a workflow which
+    term earns ("" when the output hands the filter's value unnarrowed) and the events on which
+    it decides its output; the trigger events the `if:` admits; and the events on which an
+    output hands the job 'true' whatever changed (output_events), where the clause holds with no
+    filter. The holder is a job that builds an image, a job that calls a workflow which
     does, a job either of those needs, or the build step itself, in `workflow`; `modes` are the
     CALL_MODE inputs its `if:` may test, none for a step. Whether a narrowed output is a fault
     depends on whether the build the gate decides is published, which only the build loop knows,
@@ -1129,7 +1166,7 @@ def gating_filters(
         )
     except Unreadable as error:
         problems.append(f"::error::{describe} builds or calls an image, and its if: {error}")
-        return [], set(PATH_EVENTS)
+        return [], set(PATH_EVENTS), set()
     for entry in taken:
         gate_matches.setdefault(entry, set()).add(describe)
         gate_excusals.append(f"{workflow}: {describe} if: `{entry[2]}`")
@@ -1145,6 +1182,10 @@ def gating_filters(
             )
     jobs = document.get("jobs") or {}
     found = []
+    # The events some output of the clause hands 'true' whatever changed, and those on which some
+    # output can be 'true' at all: the clause admits no other.
+    free: set[str] = set()
+    reached: set[str] = set()
     for needed, output in outputs:
         upstream = jobs.get(needed) or {}
         reference = output_filter(document, needed, output)
@@ -1161,6 +1202,8 @@ def gating_filters(
                 f"this check can read; make that output a paths-filter filter, or drop the gate"
             )
             continue
+        free |= reference[4]
+        reached |= reference[3] | reference[4]
         narrowing = reference[2]
         refusal = "" if not narrowing else (
             f"::error::{describe} builds or calls an image its job publishes, and is gated "
@@ -1189,7 +1232,9 @@ def gating_filters(
         filters = step_filters(step)
         if filters is None:
             continue  # step_filters has refused the file the step names
-        patterns = filters.get(name)
+        # dorny/paths-filter v4.0.3 (src/filter.ts, parseFilterItemYaml) flattens a filter's
+        # nested lists, which YAML anchors make (.github/ci-areas.yaml), in order.
+        patterns = flat_patterns(filters.get(name))
         if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
             problems.append(
                 f"::error::jobs.{needed} filter {name} is not a list of globs, which this "
@@ -1214,18 +1259,31 @@ def gating_filters(
                 f"`[...]` and literal characters"
             )
             continue
-        found.append((filter_label(needed, name), PathsFilter(patterns, quantifier), refusal))
-    return found, admitted
+        decider = PathsFilter(patterns, quantifier)
+        if reference[5]:
+            decider = AnyOf([decider, UnnamedFiles(filters)])
+        found.append((filter_label(needed, name), decider, refusal, reference[3]))
+    if outputs:
+        admitted &= reached
+    return found, admitted, free
+
+
+def flat_patterns(item):
+    """A filter's value with each list inside it flattened in place, as dorny/paths-filter reads
+    it; any other value as it is, for the caller to refuse."""
+    if not isinstance(item, list):
+        return item
+    return [pattern for part in item for pattern in (flat_patterns(part) if isinstance(part, list) else [part])]
 
 
 def filter_label(needed: str, name: str) -> str:
     return f"jobs.{needed} filter {name}"
 
 
-def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, str] | None:
-    """(step id, filter name, narrowing term) for the paths-filter output
-    `needs.<needed>.outputs.<output>` hands the job, or None when the whole expression is in
-    neither shape this check reads.
+def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, str, set[str], set[str], bool] | None:
+    """(step id, filter name, narrowing term, decided events, free events, widened) for the paths-filter
+    output `needs.<needed>.outputs.<output>` hands the job, or None when the whole expression is
+    in neither shape this check reads.
 
     The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` inside a term
     this check has not read can reach the job narrower than its filter. GitHub's `&&` binds
@@ -1247,24 +1305,31 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         filter's match reaches the job whole, and it is read as the plain reference. The term
         is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
-        `${{ <term> && steps.filter.outputs.x || 'false' }}`, ci.yaml's `full-ci` shape, whose
-        <term> is every conjunct beside it. The job then runs on fewer changes than its filter
-        selects, which the build loop admits only for a build that publishes nothing
-        (narrowed_refusals). A
-        disjunct after the reference may only be the literal `'false'`, the fallback that
-        shape writes.
+        `${{ <term> && steps.filter.outputs.x || 'false' }}`, or that conjunct the filtered or
+        unnamed pair in parentheses, `${{ <term> && (steps.filter.outputs.x == 'true' ||
+        steps.unnamed.outputs.found == 'true') || 'false' }}`, ci.yaml's `full-ci` shape, whose
+        <term> is every conjunct beside it but an event term. The job then runs on fewer changes
+        than its filter selects, which the build loop admits only for a build that publishes
+        nothing (narrowed_refusals). A disjunct after the reference may only be the literal
+        `'false'`, the fallback that shape writes.
 
-    Anything else is refused by returning None, which gating_filters reports as an output it
-    cannot read: the reference in two disjuncts, a last term that reads any other step than the
-    unnamed-file step's `found`, a conjunct beside it that is not last, a widening disjunct this
-    check cannot prove yields 'true', any other fallback."""
+    The event terms (`github.event_name == '<event>'` or `!=`) are read for each path event, as
+    `output_events` says: the events whose run the filter decides, and those whose run takes the
+    output 'true' whatever changed. The last element says whether the unnamed-file step's term
+    widens the filter: then a change to a file no filter names reaches the job too (UnnamedFiles).
+    Anything else is refused by returning None, which
+    gating_filters reports as an output it cannot read: the reference in two disjuncts, a last
+    term that reads any other step than the unnamed-file step's `found`, a conjunct beside it
+    that is not last, a widening disjunct this check cannot prove yields 'true', any other
+    fallback."""
     upstream = (document.get("jobs") or {}).get(needed) or {}
     expression = str((upstream.get("outputs") or {}).get(output, "")).strip()
     if not (expression.startswith("${{") and expression.endswith("}}")):
         return None
     disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
     filtered = STEP_OUTPUT_TRUE.fullmatch(disjuncts[-2]) if len(disjuncts) >= 2 else None
-    if filtered and UNNAMED_TERM.fullmatch(disjuncts[-1]):
+    widened = bool(filtered and UNNAMED_TERM.fullmatch(disjuncts[-1]))
+    if widened:
         disjuncts = [*disjuncts[:-2], filtered.group(1)]
     holders = [index for index, part in enumerate(disjuncts) if STEP_OUTPUT.search(part)]
     if len(holders) != 1:
@@ -1275,10 +1340,52 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     if any(part != "'false'" for part in disjuncts[index + 1 :]):
         return None
     conjuncts = split_top(disjuncts[index], "&&")
-    reference = STEP_OUTPUT.fullmatch(unwrap(conjuncts[-1]))
+    last = unwrap(conjuncts[-1])
+    pair = [unwrap(part) for part in split_top(last, "||")]
+    if len(pair) == 2 and STEP_OUTPUT_TRUE.fullmatch(pair[0]) and UNNAMED_TERM.fullmatch(pair[1]):
+        last = STEP_OUTPUT_TRUE.fullmatch(pair[0]).group(1)
+        widened = True
+    reference = STEP_OUTPUT.fullmatch(last)
     if not reference or any(STEP_OUTPUT.search(part) for part in conjuncts[:-1]):
         return None
-    return reference.group(1), reference.group(2), " && ".join(conjuncts[:-1])
+    decided, free = output_events(disjuncts[:index], conjuncts[:-1])
+    narrowing = [part for part in conjuncts[:-1] if event_holds(part, "push") is None]
+    return reference.group(1), reference.group(2), " && ".join(narrowing), decided, free, widened
+
+
+def event_holds(term: str, event: str) -> bool | None:
+    """Whether an event term holds on a run of `event`; None for any other term."""
+    match = EVENT_TERM.fullmatch(unwrap(term).strip())
+    if not match:
+        return None
+    same = match.group(2).lower() == event
+    return same if match.group(1) == "==" else not same
+
+
+def output_events(widenings: list[str], beside: list[str]) -> tuple[set[str], set[str]]:
+    """(decided, free): the path events on which the filter decides the output, and those on
+    which the output is 'true' whatever changed. On each event, a widening disjunct whose every
+    conjunct but its last `'true'` is an event term that holds hands the job 'true' (free); one
+    with an event term that fails is false there. Where no widening disjunct is free, the filter
+    decides unless an event term beside the reference fails, and then the output is never 'true'
+    on that event, unless a widening disjunct with another term may make it so, which leaves the
+    filter deciding as a reading that errs long. ci.yaml's kind output, `github.event_name ==
+    'merge_group' && 'true' || … || github.event_name != 'pull_request' && steps.filter.outputs.kind
+    || 'false'`, is free on a merge group and never true on a pull request."""
+    decided, free = set(), set()
+    for event in PATH_EVENTS:
+        open_widening = False
+        for part in widenings:
+            held = [event_holds(term, event) for term in split_top(part, "&&")[:-1]]
+            if all(value is True for value in held):
+                free.add(event)
+                break
+            open_widening = open_widening or False not in held
+        if event in free:
+            continue
+        if open_widening or all(event_holds(term, event) is not False for term in beside):
+            decided.add(event)
+    return decided, free
 
 
 def widening(disjunct: str) -> bool:
@@ -1412,17 +1519,17 @@ def deciding_jobs(document: dict, job_name: str) -> list[str]:
 
 def inherited_gates(
     workflow: Path, job_name: str
-) -> list[tuple[str, list[tuple[str, PathsFilter, str]], set[str]]]:
-    """(label, filters, admitted events) for every gate that decides whether `job_name` runs:
-    the `if:` of each of its deciding_jobs, in `workflow`. Each filter carries the refusal a
-    narrowed output earns, which narrowed_refusals reads for a published build."""
+) -> list[tuple[str, list[tuple[str, PathsFilter, str, set[str]]], set[str], set[str]]]:
+    """(label, filters, admitted events, free events) for every gate that decides whether
+    `job_name` runs: the `if:` of each of its deciding_jobs, in `workflow`. Each filter carries
+    the refusal a narrowed output earns, which narrowed_refusals reads for a published build."""
     document = documents[workflow]
     modes = call_inputs(document)
     gates = []
     for name in deciding_jobs(document, job_name):
         job = (document.get("jobs") or {}).get(name) or {}
-        found, admitted = gating_filters(workflow, f"jobs.{name}", job, modes, name)
-        gates.append((f"jobs.{name}.if", found, admitted))
+        found, admitted, free = gating_filters(workflow, f"jobs.{name}", job, modes, name)
+        gates.append((f"jobs.{name}.if", found, admitted, free))
     return gates
 
 
@@ -1431,32 +1538,37 @@ def narrowed_refusals(gates: list) -> list[str]:
     filter's value only while another term holds, so the job runs on fewer changes than the
     filter selects: that is a fault only where the build those gates decide is published, and
     the caller is what knows it."""
-    return [refusal for _, found, _ in gates for _, _, refusal in found if refusal]
+    return [refusal for _, found, *_ in gates for _, _, refusal, _ in found if refusal]
 
 
 def apply_gates(triggers: list, gates: list, workflow: Path) -> list:
-    """Drop each trigger whose event a gate does not admit, and AND each gate's filters into the
-    rest. Filters inside one `if:` are ||-joined and widen, but separate gates must all hold.
-    Each trigger's selectors gain the gates' filters, as (workflow, filter label)."""
-    for gate_label, found, admitted in gates:
+    """Drop each trigger whose event a gate does not admit, and AND each gate's filters that
+    decide its output on the trigger's event into the rest, but on an event where an output of
+    the gate is 'true' whatever changed. Filters inside one `if:` are ||-joined and widen, but
+    separate gates must all hold. Each trigger's selectors gain the gates' filters, as
+    (workflow, filter label)."""
+    for gate_label, found, admitted, free in gates:
         for label, event, *_ in triggers:
             if event not in admitted:
                 print(f"{label}: not checked, since {gate_label} admits no {event} run")
         triggers = [trigger for trigger in triggers if trigger[1] in admitted]
         if not found:
             continue
-        names = " or ".join(label for label, _, _ in found)
-        either = AnyOf([f for _, f, _ in found])
-        triggers = [
-            (
+        gated = []
+        for label, event, filters, origin, selectors in triggers:
+            deciding = [entry for entry in found if event in entry[3]]
+            if event in free or not deciding:
+                gated.append((label, event, filters, origin, selectors))
+                continue
+            names = " or ".join(name for name, *_ in deciding)
+            gated.append((
                 f"{label} + {gate_label} ({names})",
                 event,
-                filters + [either],
+                filters + [AnyOf([entry[1] for entry in deciding])],
                 origin,
-                selectors + tuple((workflow, name) for name, _, _ in found),
-            )
-            for label, event, filters, origin, selectors in triggers
-        ]
+                selectors + tuple((workflow, name) for name, *_ in deciding),
+            ))
+        triggers = gated
     return triggers
 
 
@@ -1481,7 +1593,7 @@ def triggers_for(workflow: Path) -> tuple[list[tuple[str, str, list, Path, tuple
             (f"{caller} {label}", event, [caller_filter], caller, ())
             for event, label, caller_filter in event_filters(caller, caller_document)
         ]
-        filtered = any(gate_filters for _, gate_filters, _ in gates)
+        filtered = any(gate_filters for _, gate_filters, *_ in gates)
         found += [
             (label if filtered else f"{label} (jobs.{job_name})", *rest)
             for label, *rest in apply_gates(base, gates, caller)
@@ -1516,16 +1628,40 @@ def checkout_paths(job: dict) -> set[str]:
     so both sides of the comparison in scan_local_action go through posixpath.normpath. The
     root checkout, which has no `path:` or writes `.`, is left out: `./x` already names this
     tree. A checkout of another repository is left out too: `./x` under it is that repository's
-    file and not this tree's, whatever `ref:` either of them names."""
+    file and not this tree's, whatever `ref:` either of them names. A checkout a step of a local
+    composite action of this tree makes, which the job uses, writes the job's workspace as one of
+    the job's own steps does, so the steps of each such action are read too."""
     return {
         posixpath.normpath(step["with"]["path"])
-        for step in job.get("steps") or []
-        if isinstance(step, dict)
-        and str(step.get("uses", "")).split("@", 1)[0] == "actions/checkout"
+        for step in job_steps(job.get("steps") or [], 0)
+        if str(step.get("uses", "")).split("@", 1)[0] == "actions/checkout"
         and isinstance(step.get("with"), dict)
         and isinstance(step["with"].get("path"), str)
         and checks_out_this_repository(step)
     } - {"."}
+
+
+def job_steps(steps: list, depth: int) -> list[dict]:
+    """The steps given, each followed by the steps of the local composite action of this tree it
+    uses, as deep as scan_local_action reads one."""
+    found = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        found.append(step)
+        uses = str(step.get("uses", ""))
+        if not uses.startswith("./") or depth >= 5:
+            continue
+        directory = Path(posixpath.normpath(uses[2:]))
+        definition = next((p for p in (directory / "action.yml", directory / "action.yaml") if p.is_file()), None)
+        try:
+            document = yaml.load(definition.read_text(), Loader=UniqueKeyLoader) if definition else None
+        except yaml.YAMLError:
+            document = None  # scan_local_action refuses the file when the job's steps are scanned
+        runs = document.get("runs") if isinstance(document, dict) else None
+        if isinstance(runs, dict) and runs.get("using") == "composite":
+            found += job_steps(runs.get("steps") or [], depth + 1)
+    return found
 
 
 def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, depth: int, checkouts: set[str], prefix: str | None = None) -> None:
@@ -1821,8 +1957,8 @@ for workflow, job_name, step, context, dockerfile, _ in builds:
     if str(step.get("if", "")):
         where = step.get("name") or "an unnamed step"
         describe = f"jobs.{job_name} step '{where}'"
-        found, admitted = gating_filters(workflow, describe, step, None, job_name)
-        gates.append((f"{describe} if", found, admitted))
+        found, admitted, free = gating_filters(workflow, describe, step, None, job_name)
+        gates.append((f"{describe} if", found, admitted, free))
     reached, caller_refusals = triggers_for(workflow)
     # Whether a narrowed gate is a fault is this loop's to say: the narrowing costs a published
     # image for a change its filter selects, and nothing at all where the job publishes none.

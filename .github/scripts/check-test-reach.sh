@@ -96,7 +96,8 @@
 # loops, `-tags`, `-race`, `-run`, `-skip`, `-exec`, a gotestsum command, and a
 # .github/scripts/go-test.sh command, as the `go test` it wraps (its `--packages`, and the `go
 # test` flags after its `--`), a `-run` that
-# .github/scripts/go-test-split.sh prints as the leg's share of packages its job runs whole, a
+# .github/scripts/go-test-split.sh prints as the leg's share of packages its job runs whole, or of
+# the tests the `-run=<pattern>` its call passes selects, a
 # script the step runs whose lines the reader reads, and the scripts its AUDITED_SCRIPTS reads
 # (database-skips.sh, backend-count.sh and race-unit.sh, by their arguments); a `-run "$pattern"`
 # from .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the
@@ -437,16 +438,18 @@ def run_steps(part: Part) -> list[RunStep]:
         name = str(step.get("name") or f"step {index + 1}")
         keys = frozenset(str(step[key]) for key in ("name", "id", "uses") if step.get(key))
         step_values = {**values, **steps.env_text(step.get("env"), contexts)}
-        env = frozenset(base | written | set(step_values))
         skipped = bool(step.get("continue-on-error"))
         scheduled = scheduled_only(step.get("if"))
         line = getattr(step, "line", 0)
+        # Each step of a composite action sees what the action's earlier steps wrote into
+        # $GITHUB_ENV, as each later step of the job does.
         for run in step_runs(part, step, contexts):
+            run_scheduled = scheduled or scheduled_only(run.condition)
+            env = frozenset(base | written | set(step_values) | set(run.values))
             found.append(RunStep(part, index, f"{name} ({run.action})" if run.action else name, line, run.workdir,
-                                 run.script, frozenset(env | set(run.values)), frozenset(exported(run.script)),
-                                 skipped, scheduled or scheduled_only(run.condition),
+                                 run.script, env, frozenset(exported(run.script)), skipped, run_scheduled,
                                  {**step_values, **run.values}, name, keys))
-            if not scheduled:
+            if not run_scheduled:
                 written |= env_written(run.script)
     return found
 

@@ -218,8 +218,10 @@ JQ
 # which the title and summary give rather than the job's id. A job of one check run, or a read
 # that finds none, leaves the job's id.
 decided_name=$decided_job
+# 50 a page, as leg-verdict.sh reads: per_page=100 answered HTTP 502 for every read of a run this
+# size (.github/scripts/testdata/leg-verdict/README).
 if jobs=$(gh_read gh api --paginate \
-  "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+  "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=50" \
   --jq '.jobs[] | {name, status, conclusion, runner_name}'); then
   jobs=$(jq -s . <<<"$jobs")
   needs=$(jq -n -L "$script_dir" --argjson jobs "$jobs" --argjson changes "$CHANGES" \

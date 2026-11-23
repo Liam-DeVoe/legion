@@ -124,15 +124,18 @@
 #      the controller's decision, no such attack having been seen, and no by-hand reading stands
 #      in for it (one was written and withdrawn).
 #
-# CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
-# other file a CI job runs that names an image. The first two kinds come from those two globs;
-# REACH below is the explicit list of the other files, each entry a file and never a directory.
-# A REACH entry that is gone fails this check rather than silently checking nothing. A
-# .github/workflows/*.yml, or a .github/actions/*/action.yaml, fails too: this check reads the
-# two spellings the repository uses, and a third would be in no list.
+# CI'S REACH is every .github/workflows/*.yaml, every action.yml under .github/actions/ at any
+# depth, and each other file a CI job runs that names an image. The first two kinds come from
+# those two globs; REACH below is the explicit list of the other files, each entry a file and
+# never a directory. A REACH entry that is gone fails this check rather than silently checking
+# nothing. A .github/workflows/*.yml, or an action.yaml under .github/actions/, fails too: this
+# check reads the two spellings the repository uses, and a third would be in no list.
 #
 # A REFERENCE in those files is one of:
-#   * a job's `services:` or `container:` image, read from the parsed YAML, never grepped;
+#   * a job's `services:` or `container:` image, read from the parsed YAML, never grepped. The
+#     image of a service only some legs of a matrix start is written
+#     `${{ <condition> && '<reference>' || '' }}`, where GitHub starts no service for the empty
+#     string: the one literal reference in it is read, and any other expression is refused;
 #   * a buildx `driver-opts` `image=` value;
 #   * a `FROM` argument, continuations joined, with each `ARG`'s default substituted into it.
 #     Docker builds `FROM` the default when no `--build-arg` overrides it, so the default is the
@@ -355,6 +358,10 @@ REACH = (
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
+# A service image only some legs start: `${{ <condition> && '<reference>' || '' }}`. GitHub starts
+# no service whose image is empty, so the one literal reference is the only image it can fetch.
+CONDITIONAL_IMAGE = re.compile(r"\$\{\{\s*[^']*(?:'[^']*'[^']*)*?&&\s*'([^']+)'\s*\|\|\s*''\s*\}\}")
+
 # A docker command whose image is a variable, and where that variable's value comes from. The
 # key is (file, variable name); the value is why the image it carries is checked elsewhere.
 IMAGE_FROM = {
@@ -372,8 +379,8 @@ IMAGE_FROM = {
         "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
         "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
     ),
-    (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
-        "the local tag the envoy-smoke job's own build loaded (the job sets it to "
+    (".github/actions/go-envoy-held/envoy-smoke/action.yml", "ENVOY_SMOKE_IMAGE"): (
+        "the local tag the envoy-smoke leg's own build loaded (its steps set it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
     ),
     (".github/workflows/worker-image.yaml", "REF"): (
@@ -929,14 +936,16 @@ if not any(carried.partition("-")[0] == go_pin for carried in carried_by[GOLANG_
 
 # ---------------------------------------------------------------- CI's reach
 workflows = sorted(Path(".github/workflows").glob("*.yaml"))
-actions = sorted(Path(".github/actions").glob("*/action.yml"))
+# Every action.yml under .github/actions/, at any depth: a job's legs keep their steps in actions
+# of their own beneath the job's directory (.github/actions/go-envoy-held/envoy-smoke/).
+actions = sorted(Path(".github/actions").glob("**/action.yml"))
 for stray in sorted(Path(".github/workflows").glob("*.yml")) + sorted(
-    Path(".github/actions").glob("*/action.yaml")
+    Path(".github/actions").glob("**/action.yaml")
 ):
     problems.append(
-        f"{stray}:1: CI's reach is .github/workflows/*.yaml and .github/actions/*/action.yml, so "
-        f"this file is in no list and its images are checked by nothing. Rename it, or widen the "
-        f"two globs in this check."
+        f"{stray}:1: CI's reach is .github/workflows/*.yaml and every action.yml under "
+        f".github/actions/, so this file is in no list and its images are checked by nothing. "
+        f"Rename it, or widen the two globs in this check."
     )
 reach: list[Path] = list(workflows) + list(actions)
 workflow_files = set(reach)
@@ -1216,10 +1225,16 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
                 else:
                     images.append((key_line(services, name), service, how))
         for line, image, how in images:
+            conditional = CONDITIONAL_IMAGE.fullmatch(image) if isinstance(image, str) else None
+            if conditional:
+                note(path, line, conditional.group(1), how)
+                continue
             if not isinstance(image, str) or "${{" in image:
                 problems.append(
                     f"{path}:{line}: {how} is {one_line(image)}, which this check cannot read. "
-                    f"Write {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds."
+                    f"Write {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds, or "
+                    f"${{{{ <condition> && '{REGISTRY}@<digest>' || '' }}}} for a service only some "
+                    f"legs start."
                 )
                 continue
             note(path, line, image, how)

@@ -22,7 +22,8 @@ one command that runs a shell script of the repository is read through the scrip
 `--jsonfile`, `--packages` and `--` and runs gotestsum with them. A `-run` that
 `.github/scripts/go-test-split.sh` prints is the leg's share of
 its packages, which the legs of the job run between them, so the command is read as running its
-packages whole and is marked `split`. The variables a line sets before its command, and those a
+packages whole, or the tests the `-run=<pattern>` the call passes the script selects, and is
+marked `split`. The variables a line sets before its command, and those a
 `-exec 'env NAME=value'` hands the test binary, are the command's own environment (`GoTest.env`).
 
 Two shapes of a line need an answer from outside the line: a `-run "$pattern"` assigned from a
@@ -76,11 +77,15 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # The script that splits one package's tests between the legs of a job at run time: given
 # `<leg> <legs> <packages…>`, it prints the `-run` alternation of the tests that land in that leg
 # by their names' hash, so the legs between them run each test of the packages once. A reader of
-# what the job runs reads the command whose `-run` it prints as running its packages whole.
+# what the job runs reads the command whose `-run` it prints as running its packages whole, or,
+# where the call passes the script `-run=<pattern>`, as running what that pattern selects.
 SPLIT = ".github/scripts/go-test-split.sh"
-# What read_block assigns the variable a `$(…)` call of SPLIT sets, so the `-run` that expands it
-# is known as the split's: no pattern a step writes is this text.
+# What read_block assigns the variable a `$(…)` call of SPLIT sets, followed by the call's own
+# `-run=` pattern, so the `-run` that expands it is known as the split's: no pattern a step writes
+# starts with this text.
 SPLIT_RUN = "(the -run go-test-split.sh prints)"
+# The `-run=<pattern>` a call of SPLIT narrows its split to, one word before its packages.
+SPLIT_PATTERN = re.compile(r"""(?:^|\s)["']?-run=([^"'\s]+)""")
 # A run: that starts a go test, a gotestsum or a go-test.sh, by its comment-free lines.
 GO_TEST_TEXT = re.compile(r"\b(?:go\s+test|gotestsum|go-test\.sh)\b")
 # The commands read as gotestsum (parse_gotestsum), by the last part of the word that names them:
@@ -285,7 +290,8 @@ class GoTest:
     # hands the test binary: GODEBUG=checkfinalizers=1 either way.
     env: dict[str, str] = field(default_factory=dict)
     # Its `-run` is the share of its packages go-test-split.sh gives one leg of its job, so the
-    # legs between them run the packages whole, and `run` is "".
+    # legs between them run the packages whole, and `run` is "", or the `-run=<pattern>` the call
+    # passes the script, whose tests the legs run between them.
     split: bool = False
 
 
@@ -649,7 +655,7 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         if assignment:
             name, inner = assignment.group(1), expand(assignment.group(2), variables)
             if SPLIT in inner:
-                variables[name] = SPLIT_RUN
+                variables[name] = SPLIT_RUN + split_pattern(inner)
             elif TAGGED_TESTS in inner or re.match(r"go\s+list\b", inner):
                 variables[name] = answer(step, inner).strip()
             else:
@@ -778,11 +784,18 @@ def skip_names(pattern: str) -> list[str] | None:
     return names if all(NAME.match(name) for name in names) else None
 
 
+def split_pattern(text: str) -> str:
+    """The `-run=<pattern>` a call of SPLIT in text passes it, or "" where it splits every test of
+    its packages."""
+    match = SPLIT_PATTERN.search(text[text.index(SPLIT):])
+    return match.group(1) if match else ""
+
+
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
     """The packages, -tags, -race, -run and -skip of one `go test` command, and the variables a
     `-exec 'env NAME=value'` hands its test binary. A `-run` go-test-split.sh prints is read as
-    none, the command marked `split`. The words after `-args` are the test binary's own, so the
-    reading stops there."""
+    the `-run=<pattern>` its call passes the script, or none, the command marked `split`. The
+    words after `-args` are the test binary's own, so the reading stops there."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
     position = words.index("test") + 1
@@ -798,8 +811,9 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
             if not value and flag in VALUE_FLAGS:
                 value = words[position]
                 position += 1
-            if flag == "-run" and (value == SPLIT_RUN or SPLIT in value):
+            if flag == "-run" and (value.startswith(SPLIT_RUN) or SPLIT in value):
                 command.split = True
+                command.run = value.removeprefix(SPLIT_RUN) if value.startswith(SPLIT_RUN) else split_pattern(value)
             elif flag == "-run":
                 command.run = value
             elif flag == "-exec":

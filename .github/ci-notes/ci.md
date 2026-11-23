@@ -1842,8 +1842,7 @@ The daemon's Go suite runs in three legs of go-daemon: at two, one leg's -run wo
 136 KB of test names, past the 131,072 bytes Linux takes in one argument
 (.github/actions/go-daemon says how each leg's bounds are read); daemon-go carries its old
 check-run name. Its Postgres service runs ghcr.io/cybermonklabs/legion/ci, the copy of
-pgvector/pgvector (.github/ci-images.yaml). install-uv is a step of ci.yaml before the action
-for LEGION_TEST_UV, which a step of the same action would write for no step the search reads.
+pgvector/pgvector (.github/ci-images.yaml).
 
 ## The jobs that carry a split job's old check-run name
 
