@@ -213,24 +213,14 @@ test("no skill or daemon prompt names a list of open items", () => {
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
 // before set and adding none.
 //
-// It moved again on 2026-11-16, when private projects let a token list the projects it may
-// use and answer every other project's items as missing: an agent whose token cannot see a
-// private project reads that project as gone, so the skill every session loads says what a token
-// sees, and no other skill holds that. The `blocked_by` bullet's refusal is `BLOCKED_BY_INPUT`
-// now, the answer to a key of a project the caller does not see as to an unknown key, and its
-// sentence, "A token links only issues it sees", is 1 word shorter. The token bullet gains 21:
-// "It sees the projects it lists, or with none the public ones, within what its person sees;
-// others answer as missing." So the three skills stand at 2,339 - 1 + 21 = 2,359, and the bound
-// moves by those 20 to 2,360, keeping the margin above it as it was.
 // The accepted-request rule grew by 17 words when it moved to the plan, issues and asks. The
 // bound did not move: dispatch-first cut 17 words from its own lines. Each cut is a reason or
 // words that another of its sentences says. The decided bullet lost its reason, "the answered ask
 // is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
-// lost "or write an" (3). Main's three skills stay at 2,337 words, and with the private-projects
-// change's 20 they stand at 2,357, under the bound of 2,360.
-test("the three Dispatch skills total fewer than 2,360 words", () => {
+// lost "or write an" (3). The three skills stay at 2,337 words, as on main.
+test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -240,7 +230,7 @@ test("the three Dispatch skills total fewer than 2,360 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_360);
+  expect(words).toBeLessThan(2_340);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {
