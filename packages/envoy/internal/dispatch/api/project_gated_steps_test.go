@@ -224,6 +224,7 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 // `decisions`: a stored list that holds it beside another step reads without it, and a stored list
 // of it alone reads as [spec].
 func TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "OLDER", "The root", "A spec\n")
 	for _, write := range []struct{ published, stored []string }{

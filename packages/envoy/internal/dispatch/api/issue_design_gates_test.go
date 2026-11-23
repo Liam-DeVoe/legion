@@ -708,6 +708,7 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 // clause. A publish of a set holding the step, which a daemon of the release before still sends,
 // is taken: the step is dropped, and that publish's own rule takes the issue's row of it away.
 func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createAdviceProject(t, handler, "DROW")

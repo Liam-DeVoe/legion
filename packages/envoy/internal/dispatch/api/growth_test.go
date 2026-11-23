@@ -280,6 +280,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 // 8 MB, and an answer of 900 KB to a document with no room for it was refused and recorded
 // nowhere.
 func TestAnAnswerTheDocumentHasNoRoomForIsKeptWholeOnItsAskAndBesideTheText(t *testing.T) {
+	t.Parallel()
 	t.Run("words", func(t *testing.T) {
 		prose := boundedAnswer()
 		handler, _ := blockAskHandler(t)

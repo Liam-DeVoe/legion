@@ -261,6 +261,7 @@ func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *s
 // approval to it, and answers the approval request the agent opened at version 3; the settlement
 // after it writes the block's kept state back, and her approval is carried to that version too.
 func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenOthersAnswer(t, handler, database, "Approved text over a decided block")
 	request := requestApproval(t, handler, document.artifactID)
@@ -276,6 +277,7 @@ func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
 // upload of version 1's text over the block bob decided since restores the approved text, and
 // carries alice's approval.
 func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenOthersAnswer(t, handler, database, "Uploaded approved text over a decided block")
 
@@ -333,6 +335,7 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 // agent then restores the paragraph. Version 4 is version 1's text but for what a version keeps of
 // her answer - the block's state, answerer and time - so R10's case carries her approval to it.
 func TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenChange(t, handler, "Restore around her answer", "\n"+waveAsk, waveBlock)
 	artifactID := document.artifactID

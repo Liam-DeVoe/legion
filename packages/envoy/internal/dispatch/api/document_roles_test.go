@@ -106,6 +106,7 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 // write gives a roleless one no role. Once that document is retired, its name is refused as a
 // new one is, rather than as a retired document, and so is an edit of it by its id or its slug.
 func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "DEC", "Decisions", "A spec\n")

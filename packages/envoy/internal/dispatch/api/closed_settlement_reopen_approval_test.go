@@ -385,6 +385,7 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 // form a version keeps of an open ask (docs.keptAskState). The request then names that version,
 // still waits on the person, requested at it, and its move is quiet and notifies nobody.
 func TestAReopenKeepsTheRequestWithThePersonWhenItsVersionDiffersOnlyInTheAskAttributes(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "A reopen over the release before's form", reopenDecisionSpec)
@@ -738,6 +739,7 @@ const closeReopenSpec = "Context\n\n" +
 // no approval (versionWrite.closedIssue), so her approval reads stale at it. The reopen's version
 // holds her approved text again, and its settlement carries her approval to it.
 func TestOnOneBuildACloseAndAReopenEachWriteOneVersionAndOnlyTheReopensCarries(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "A close and a reopen on one build", closeReopenSpec)

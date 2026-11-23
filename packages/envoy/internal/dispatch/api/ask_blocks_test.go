@@ -19,6 +19,7 @@ import (
 // An answered block ask reads answered in the asks member of its document's text, with who
 // answered and the words, and the markdown beside it carries none of that.
 func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -943,6 +944,7 @@ func TestBlockAskIndexedAfterEditKeepsTheWritingActor(t *testing.T) {
 // Changing a block ask's answer replaces the one its document's text answers: the asks member
 // reads the new choice and none of the old words.
 func TestChangingBlockAskReplacesTheAnswerItsTextAnswers(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Change typed ask", "decision", transportAsk, "Which transport?")
 	first := readBlockAsk(t, handler, askID)

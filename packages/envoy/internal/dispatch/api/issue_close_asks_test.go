@@ -380,6 +380,7 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 // it resolved from the issue's close (docs.TextWithAsks). The reopen's settlement opens it as its
 // author's ask.
 func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                       string
 		settlementFails, twoBuilds bool
@@ -467,6 +468,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 // own settlement fails, so the copies still show the ask open when the sweep reaches them: one in
 // a short document, one in a document all but full.
 func TestClosingAnIssueWritesAnAnsweredAsksCopiesWithoutItsWordsWhileAnotherBuildServes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {

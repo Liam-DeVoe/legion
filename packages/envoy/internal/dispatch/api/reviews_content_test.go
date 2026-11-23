@@ -108,6 +108,7 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 // approved one in the block's server-owned attributes alone, and its bytes are not the approved
 // version's.
 func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	registerTwoBuilds(t, database)
 	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n\n"+waveAsk)

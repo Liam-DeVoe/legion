@@ -198,6 +198,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
 func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

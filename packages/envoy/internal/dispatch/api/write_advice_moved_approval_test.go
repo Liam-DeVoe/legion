@@ -260,6 +260,7 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
 // the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)

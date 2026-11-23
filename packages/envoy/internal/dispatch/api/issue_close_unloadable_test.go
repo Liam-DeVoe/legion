@@ -143,6 +143,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 // answer's words; the asks member of the text an agent reads still holds both blocks' states
 // from the store.
 func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesAsTheFleetStands(t *testing.T) {
+	t.Parallel()
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
 		if twoBuilds {

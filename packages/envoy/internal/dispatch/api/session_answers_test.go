@@ -382,6 +382,7 @@ func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
 // rewritten with other words and another selection, and the list reads alice's answer as the node
 // holds it.
 func TestSessionAnswersListsTheAnswerTheAsksNodeHolds(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
