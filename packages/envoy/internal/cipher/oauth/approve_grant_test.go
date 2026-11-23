@@ -9,9 +9,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -101,9 +103,41 @@ func TestASignInIsTradedForAnApprovePlaceholderAndNeverAToken(t *testing.T) {
 	}
 }
 
+// TestAnApproveGrantNamesNoProject: a sign-in trade that names projects and asks for the
+// placeholder writes a grant holding the project scope person and no projects, so the token the
+// broker mints for it is the approve-only shape (a person, the scope approve, no project), which
+// is the one shape Dispatch serves on its approve routes alone.
+func TestAnApproveGrantNamesNoProject(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) {
+		c.Exchange.Projects = newFakeAccess()
+		c.Approve = approveSettings()
+	})
+	status, body := f.exchange(t, withProjects(url.Values(f.placeholderForm(t, "ada-box-projects")), "PRIV"), newKey(t))
+	id, _ := body[oauthwire.ExtraGrantID].(string)
+	if status != http.StatusOK || id == "" {
+		t.Fatalf("the placeholder trade naming PRIV = %d %v; want 200 and a grant", status, body)
+	}
+	grant, err := oauthstore.ApproveGrants{Store: oauthstore.New(f.pool)}.MintedByID(context.Background(), strings.TrimPrefix(id, "approve:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projects, named := grant.Extra[oauth.ClaimProjects]; named || grant.Extra[oauth.ClaimProjectScope] != oauthwire.ProjectScopePerson {
+		t.Fatalf("the grant's claims hold projects %v (%v) and project scope %v; want no projects and the project scope person", projects, named, grant.Extra[oauth.ClaimProjectScope])
+	}
+	minted, err := f.provider.MintGrantToken(context.Background(), grant, thumbprint(t, newKey(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer, err := f.provider.Introspect(context.Background(), minted); err != nil || !answer.Active || len(answer.Projects) != 0 || answer.Scope != "approve" {
+		t.Fatalf("the minted token introspects as %+v, %v; want live, scope approve, no project", answer, err)
+	}
+}
+
 // TestOnlyASignInIsTradedForTheApprovePlaceholder: the placeholder is refused invalid_request, with
-// nothing written, to a broker that serves no approve capability and to a trade that is no
-// person's sign-in - a dev box's machine token trade asking for it.
+// nothing written, to a broker that serves no approve capability and to every trade that is no
+// person's sign-in: a dev box's machine token trade asking for it, and a machine whose fleet entry
+// names a person, whose trade acts for that person and holds a launcher credential but carries no
+// sign-in of theirs.
 func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	plain := newSignInFixture(t)
 	status, body := plain.exchange(t, plain.placeholderForm(t, "ada-box-2"), newKey(t))
@@ -120,6 +154,26 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	}
 	if n := f.count(t, "approve_grants"); n != 0 {
 		t.Fatalf("the refused trades wrote %d approve grants; want none", n)
+	}
+	// An entry names its person with a project, which the exchange holds to Dispatch's answer.
+	access := newFakeAccess()
+	access.sees[person] = []string{project}
+	fleet := newSignInFixtureWith(t, func(c *oauth.Config) {
+		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person})
+		c.Exchange.Projects = access
+		c.Approve = approveSettings()
+	})
+	form = exchangeForm(fleet.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
+	if traded := fleet.exchanged(t, form, key); traded == "" {
+		t.Fatal("the fleet's machine trade minted no token for its person; the row below would prove nothing")
+	}
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
+	status, body = fleet.exchange(t, form, key)
+	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
+		t.Fatalf("the placeholder trade of a machine whose fleet names %s = %d %v; want 400 invalid_request", person, status, body)
+	}
+	if n := fleet.count(t, "approve_grants"); n != 0 {
+		t.Fatalf("the fleet machine's refused trade wrote %d approve grants; want none", n)
 	}
 }
 

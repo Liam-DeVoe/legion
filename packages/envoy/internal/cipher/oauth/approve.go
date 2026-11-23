@@ -53,22 +53,17 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 // transaction txCtx. Only a person's sign-in is granted it, and only by a broker that serves the
 // approve capability: every other trade is refused invalid_request, the subject token being sound
 // and the request asking for what its identity is not given. The grant holds the session the
-// exchange decided - its subject, principal and extra claims, the person, the project scope person
-// and no projects - with the scope approve alone, the sign-in's credential, which ends it when
-// revoked, and the capability's entry digest. Nobody approves it: the person's sign-in is its
-// authority. The session name is claimed until the grant's end, the transaction commits, and the
-// answer is the placeholder as access_token, its type as issued_token_type, the token_type N_A of
-// a token that is no access token (RFC 8693 Section 2.2.1), the seconds the grant lasts, the
-// grant's id and the proxy release a session runs with, with no-store. The library mints
-// nothing, and no approve-capable token ever leaves the broker.
+// exchange decided for the sign-in - its subject, principal and extra claims, the person and the
+// project scope person - less any projects, with the scope approve alone, the sign-in's
+// credential, which ends it when revoked, and the capability's entry digest. Nobody approves it:
+// the person's sign-in is its authority. The session name is claimed until the grant's end, the
+// transaction commits, and the answer is the placeholder as access_token, its type as
+// issued_token_type, the token_type N_A of a token that is no access token (RFC 8693 Section
+// 2.2.1), the seconds the grant lasts, the grant's id and the proxy release a session runs with,
+// with no-store. The library mints nothing, and no approve-capable token ever leaves the broker.
 func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, session *oauthstore.ExchangeSession, subjectTokenType, credentialID string, committed *bool) {
 	if subjectTokenType != oauthwire.SubjectTokenTypePerson || p.approve == nil || credentialID == "" {
 		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it."))
-		return
-	}
-	person, _ := session.Extra[ClaimPerson].(string)
-	if person == "" {
-		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("The sign-in names no person to approve as."))
 		return
 	}
 	held, err := placeholder.Mint(placeholder.MintedPrefix(p.approve.Word))
@@ -79,7 +74,6 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 	lifetime := p.approveGrantLifetime()
 	expires := time.Now().UTC().Add(lifetime).Truncate(time.Microsecond)
 	extra := maps.Clone(session.Extra)
-	extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
 	delete(extra, ClaimProjects)
 	sessionName, _ := extra[ClaimSession].(string)
 	grant, err := p.store.CreateApproveGrant(txCtx, oauthstore.MintedGrant{
