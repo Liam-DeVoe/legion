@@ -33,7 +33,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -185,10 +184,11 @@ func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, docume
 // approval, and nothing wider does (c-attribute-removal). The base release writes the documents, a
 // person approves them and an agent requests approval of one; this head writes a document holding
 // a reading; the base release serves again beside this head and leaves that document be; while
-// both serve, the roll window keeps the attributes; once the base release is gone, the first write
-// to each document cuts them to the form R10 keeps and carries its approval, an answer keeps an
-// approval request's turn, a copy of an open ask keeps every carry and every turn, and every wider
-// write supersedes.
+// both serve, this head's first write to a document already cuts its attributes to the form R10
+// keeps and carries its approval, as every write of this head does; once the base release is
+// gone, the first write to each document cuts them so and carries its approval, an answer keeps
+// an approval request's turn, a copy of an open ask keeps every carry and every turn, and every
+// wider write supersedes.
 func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -318,8 +318,11 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	if held := thirdDocumentHolds(t, ctx, database, third); held != thirdHeld {
 		t.Errorf("while the base release served beside this head the third document's ask row and reading node moved from %+v to %+v, want them as they were", thirdHeld, held)
 	}
-	// While both builds are live, an accepted write to the first document keeps the attributes, in
-	// step with the asks row: the upload takes them off, and the roll window writes them back.
+	// While both builds are live, an accepted write to the first document keeps of the attributes
+	// only what a version keeps (docs' keptAskState): the upload takes them off, and settlement
+	// writes back the form R10 keeps, from each ask's node, as it does on a fleet of this head
+	// alone. That version differs from the approved one in those attributes alone, so it carries
+	// the approval.
 	uploadDocument(t, current, issue, documentName(t, current, first), one.markdown)
 	settledDocument(t, ctx, current, database, first)
 	_, rolled := latestMarkdown(t, current, first)
@@ -330,9 +333,14 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	if err := database.QueryRow(ctx, `select slug from artifacts where id = $1::uuid`, sourceDocument).Scan(&sourceSlug); err != nil {
 		t.Fatalf("read the source document's slug: %v", err)
 	}
-	requireBlockInStepWithRow(t, ctx, database, rolled, "decided-one", first, "")
-	requireBlockInStepWithRow(t, ctx, database, rolled, "pending-one", first, "")
-	requireBlockInStepWithRow(t, ctx, database, rolled, "shared", sourceDocument, "dispatch://"+issue+"/artifact/"+sourceSlug)
+	for _, block := range []keptBlock{
+		{"decided-one", blockAskOf(t, current, issue, "decided-one"), ""},
+		{"pending-one", blockAskOf(t, current, issue, "pending-one"), ""},
+		{"shared", blockAskOf(t, current, issue, "shared"), "dispatch://" + issue + "/artifact/" + sourceSlug},
+	} {
+		requireKeptForm(t, ctx, database, "while both builds serve, the first document's latest version", rolled, block)
+	}
+	requireNoAnswerWords(t, "while both builds serve, the first document's latest version", rolled)
 	if approval := approvalOf(t, current, first); !approval.approvedLatest() {
 		t.Errorf("while both builds serve the first document reads %+v, want its approval carried", approval)
 	}
@@ -354,8 +362,8 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// The server's own text read, once the fleet is one build and before any write of it, while
-	// the documents the base release wrote still hold the attributes it and the roll window wrote,
+	// The server's own text read, once the fleet is one build and before any write of the other
+	// documents, while the documents the base release wrote still hold the attributes it wrote,
 	// live and stored: Verification v43's statements, each read by name.
 	slugOf := func(document string) string {
 		t.Helper()
@@ -695,54 +703,6 @@ func thirdDocumentHolds(t *testing.T, ctx context.Context, database *pgx.Conn, a
 		t.Fatalf("the third document's reading has no node: %+v", held)
 	}
 	return held
-}
-
-// requireBlockInStepWithRow fails t unless the ask block blockID of markdown, a stored version,
-// holds of the eight server-owned attributes exactly what the release before writes from the ask
-// row of the block blockID on rowDocument, each value as the row holds it: the state; for an
-// answered ask, who answered, when, the options chosen and the words; and, where copied is the
-// address of rowDocument, the row's ask and that address, the block being a copy. It never holds
-// invalid, which no stored version holds. The row is read as every read of a document's asks reads
-// it (refs.AsksOfDocumentSQL): keyed by the room rowDocument is edited in, the tree artifact of
-// its issue's room for a document converted into it, and naming a block rowDocument holds, so it
-// answers for a converted and an unconverted document alike.
-func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.Conn, markdown, blockID, rowDocument, copied string) {
-	t.Helper()
-	var askID, state string
-	var answer []byte
-	if err := database.QueryRow(ctx, `select a.id::text, a.state, a.answer from asks a
-		where `+refs.AsksOfDocumentSQL("a", "$1::uuid")+` and a.block_id = $2`,
-		rowDocument, blockID).Scan(&askID, &state, &answer); err != nil {
-		t.Fatalf("read the ask row of the block %s: %v", blockID, err)
-	}
-	want := map[string]any{"state": state}
-	if state == "answered" && answer != nil {
-		var row struct {
-			User     string    `json:"user"`
-			Selected []string  `json:"selected"`
-			Text     *string   `json:"text"`
-			At       time.Time `json:"at"`
-		}
-		if err := json.Unmarshal(answer, &row); err != nil {
-			t.Fatalf("decode the answer of the block %s's ask: %v: %s", blockID, err, answer)
-		}
-		want["answered_by"], want["answered_at"], want["selected"] = row.User, asks.AnsweredAtValue(row.At), row.Selected
-		if row.Text != nil {
-			want["answer"] = *row.Text
-		}
-	}
-	if copied != "" {
-		want["copied_from"], want["copied_from_document"] = askID, copied
-	}
-	block := storedAskBlock(t, markdown, blockID)
-	for _, name := range []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"} {
-		wanted, isWanted := want[name]
-		got, held := block.Attrs[name]
-		if held != isWanted || (isWanted && mustJSON(t, got) != mustJSON(t, wanted)) {
-			t.Errorf("while both builds serve the block %s holds %s=%s (held %t), want %s (held %t), as its asks row holds it",
-				blockID, name, mustJSON(t, got), held, mustJSON(t, wanted), isWanted)
-		}
-	}
 }
 
 // lonelyAsk is the second document's one ask, which the fifth and the sixth document copy.

@@ -703,8 +703,8 @@ func (n *Node) EqualWithBlockIDs(o *Node) bool {
 // EqualWithBlockIDs does, but for the attributes of a typed block that the server keeps (the
 // schema's server attributes): an ask's state, who answered it, when and with what, and whether it
 // reads. No caller writes those, and none of them is the block's own text: a person's answer is
-// held once, on the ask's node, and while two builds serve the server
-// keeps a copy of it in the block for the build before (docs' rollWindowAskAttributes).
+// held once, on the ask's node, and the block keeps only what a stored version keeps of it, the
+// state, who answered and when (docs' keptAskState).
 func (n *Node) EqualOutsideServerState(o *Node) bool {
 	return equalNode(n, o, attrsEqualOutsideServerState)
 }

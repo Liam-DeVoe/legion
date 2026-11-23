@@ -25,7 +25,7 @@ func TestAnAskOpenedBesideARepairIsCausedByItsOwnEvent(t *testing.T) {
 	var reconciled settlementReconciliation
 	repaired := model.Event{Type: "block.repaired", Payload: model.BlockRepairedEventPayload{BlockID: "ask-0"}}
 	open := model.Ask{ID: "ask-row-0", State: "open"}
-	if !reconciled.repairAsk(block, "ask-0", askReadableWrite(false, open, ""), &repaired) {
+	if !reconciled.repairAsk(block, "ask-0", askReadableWrite(open, ""), &repaired) {
 		t.Fatal("the repair taking the forged answerer off changed nothing")
 	}
 	opened := model.Ask{ID: "ask-row-1", State: "open"}

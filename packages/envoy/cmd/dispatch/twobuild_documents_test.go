@@ -481,14 +481,13 @@ func corpusSkips(file string, markdown []byte) bool {
 }
 
 // requireCorpusCrossesBuilds creates every corpus document of the writer's on the writer, then
-// waits for each to settle before any build reads it: while two builds serve, an ask block's state
-// reaches its markdown at its document's settlement alone, which keeps it in step with the ask's
-// row for the earlier build's pages (docs' rollWindowAskAttributes), since this build gives a
-// server attribute no written default (pmdoc's writtenDefault) and the earlier build writes the
-// default `state="open"` into every ask block it renders. So the writer's first render, taken once
-// the document has settled, is the document as the roll window keeps it, and the reader's append
-// changes nothing else in it. The documents are all created before the first wait, so their
-// settle delays run together.
+// waits for each to settle before any build reads it: what a version keeps of an ask block's ask
+// (docs' keptAskState) reaches its markdown at its document's settlement, and neither build gives
+// a server attribute a written default (pmdoc's writtenDefault), since the earlier build is the
+// children's release, which reads every answer from the server as this one does. So the writer's
+// first render, taken once the document has settled, is the document as settlement keeps it, and
+// the reader's append changes nothing else in it. The documents are all created before the first
+// wait, so their settle delays run together.
 func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	fleet := builds.fleet(t)
 	type corpusDocument struct{ file, artifactID string }

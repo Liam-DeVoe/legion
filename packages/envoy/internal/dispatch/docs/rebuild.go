@@ -227,24 +227,18 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
 	// from the rows as they stand under the issue's owner lock this transaction holds, and every
-	// readable ask block with no ask row marked resolved. The sweep is written as the fleet stands
-	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
-	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
-	// each gets the ones a version keeps, which the release before's readers of a stored version
-	// read its state from, written from its ask's node, and none of the rest of the seven
-	// (readIssueAskStateWrites, keptAskState, onItsNode). The ask
-	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
-	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
-	// reads as the issue's other documents do. In an issue room the sweep is written into the whole
-	// room, whose blocks are each fragment's own (joinFragments), so every fragment's tree takes it.
+	// readable ask block with no ask row left with none of the seven attributes a version can
+	// store. As the close writes it, each block gets the attributes a version keeps, which the
+	// release before's readers of a stored version read its state from, written from its ask's
+	// node, and none of the rest of the seven (readIssueAskStateWrites, keptAskState, onItsNode).
+	// The ask rows are taken before RebuildTx takes the document's advisory lock, the order the
+	// close's own write takes them in (WriteIssueAskStates). Once this transaction commits, the
+	// rebuilt document reads as the issue's other documents do. In an issue room the sweep is
+	// written into the whole room, whose blocks are each fragment's own (joinFragments), so every
+	// fragment's tree takes it.
 	var closedStates *issueAskStateWrites
 	if !open {
-		// kept for one release: roll-window-attributes
-		twoBuilds, err := anotherBuildServes(ctx, tx)
-		if err != nil {
-			return RebuildReport{}, VersionResult{}, err
-		}
-		closedStates, err = readIssueAskStateWrites(ctx, tx, asksOf, owner, whole, closedIssueAskState, true, twoBuilds)
+		closedStates, err = readIssueAskStateWrites(ctx, tx, asksOf, owner, whole, closedIssueAskState, true)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
@@ -303,8 +297,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// from the latest version by the close's states, as each of the issue's documents the
 		// close wrote differs from its own, so it owes the settlement those writes leave owed
 		// (updateOwedStatement). That settlement versions the document whether or not the issue
-		// is closed. While the issue is closed it keeps each block marked resolved here with no
-		// ask row resolved and opens no ask for it (reconcileAskBlocks), and a settlement after
+		// is closed. While the issue is closed it keeps each block with no ask row as this left it
+		// and opens no ask for it (reconcileAskBlocks), and a settlement after
 		// the reopen indexes it as a new open ask. RebuildTx holds the document's advisory lock,
 		// which the mark is ordered by. The writes credit no one, as the close's do (the zero
 		// owedUpdates): no pending author is added, and the latest edit source the row names is
@@ -316,7 +310,6 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
 	if markdown == nil || canonical == latest.markdown {
 		return report, VersionResult{Version: latest.Version}, nil

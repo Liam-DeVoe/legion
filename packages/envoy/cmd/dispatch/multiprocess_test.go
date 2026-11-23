@@ -5988,8 +5988,8 @@ func (p *dispatchProcess) readVersionMarkdown(t *testing.T, artifactID string, n
 // closingAskSpec is the spec of the issues below: a paragraph to type into and an open decision.
 const closingAskSpec = "Context\n\n:::ask{#ship-it urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// closingAskResolved is the ask block of closingAskSpec as the close of its issue writes it
-// while another build serves.
+// closingAskResolved is the ask block of closingAskSpec as the close of its issue writes it, as a
+// version keeps a withdrawn ask (docs' keptAskState).
 const closingAskResolved = `#ship-it urgency="med" multiple="false" state="resolved"`
 
 // closedSettlementWithin is how long a closed issue's owed document is given to settle on the
@@ -6010,17 +6010,13 @@ type closingAskIssue struct {
 	bob                    *docstest.Peer
 }
 
-// openClosingAskIssue creates a closingAskIssue titled title in project through A, with a process
-// of another build registered beside the pair's for the rest of the test (registerOtherBuild). The
-// rows below are about the close's write of the ask block and the settlement of it, and an
-// ask's state is written into its block only while another build serves, whose pages read it
-// there: A's settlement writes the block open (docs' rollWindowAskAttributes), the close writes it
-// resolved and the reopen open again (WriteIssueAskStates). On a fleet of one build none of them
-// changes a byte of the document, which api's
-// TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem proves.
+// openClosingAskIssue creates a closingAskIssue titled title in project through A. The rows below
+// are about the close's write of the ask block and the settlement of it: every write keeps what a
+// version keeps of the ask in its block (docs' keptAskState), so A's settlement leaves the open
+// ask's block with no state, the close writes it resolved and the reopen takes the state off again
+// (WriteIssueAskStates).
 func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string) closingAskIssue {
 	t.Helper()
-	registerOtherBuild(t, context.Background(), pair.databaseURL(t), earlierBuildStamp, "")
 	issueKey, artifactID := pair.a.createIssueIn(t, project, title, closingAskSpec)
 	var askID string
 	for deadline := time.Now().Add(10 * time.Second); askID == ""; time.Sleep(50 * time.Millisecond) {
@@ -6035,12 +6031,12 @@ func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string
 		t.Fatalf("the decision's ask reads %s before the close, want open", ask.State)
 	}
 
-	// A's settlement wrote the ask's state into its block (docs' rollWindowAskAttributes), so the
-	// live document bob's tab syncs holds it. The text routes serve that document with none of an
-	// ask block's server-owned attributes, whatever its live tree holds (docs' TextWithAsks), so
-	// the copy the tab is held to is the stored document, which every room loads.
-	pair.waitStoredHolds(t, artifactID, `#ship-it urgency="med" multiple="false" state="open"`, 5*time.Second,
-		"A's settlement's write of the ask block open")
+	// A's settlement leaves the open ask's block with no state (docs' keptAskState), so the live
+	// document bob's tab syncs holds none. The text routes serve that document with none of an ask
+	// block's server-owned attributes, whatever its live tree holds (docs' TextWithAsks), so the
+	// copy the tab is held to is the stored document, which every room loads.
+	pair.waitStoredHolds(t, artifactID, `#ship-it urgency="med" multiple="false"}`, 5*time.Second,
+		"A's settlement of the open ask block")
 	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, storedText(t, pair, artifactID))
 	if scope := authenticateEditor(t, bob); scope != "read-write" {
 		t.Fatalf("bob's tab on B on an open issue was granted %q, want read-write", scope)
@@ -6083,8 +6079,7 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 // The issue's close withdraws its open ask and freezes every process's room of its spec, and
 // neither undoes the other; its reopen brings both back.
 //
-// A process of another build is registered beside the pair (openClosingAskIssue), so the ask's
-// state is kept in its block as the release before keeps it. Bob's
+// The close writes the ask's state into its block as a version keeps it (docs' keptAskState). Bob's
 // tab on B holds the spec, whose ask block is an open ask, and his keystroke there is
 // stored, which arms B's settlement of it. The issue closes through A, which settles the issue's
 // documents before it closes the issue (settleIssueBeforeClose, in the api package), so the
@@ -6148,8 +6143,8 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	}
 	requireEndsWithin(t, bob, liveWithin, "reopening the issue through B left bob's read-only tab on B connected", pair.b)
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "read-write", "bob's tab on B, reconnected after the reopen")
-	if reopened, err := roomRendering(bob, 5*time.Second); err != nil || !strings.Contains(reopened, `#ship-it urgency="med" multiple="false" state="open"`) {
-		t.Fatalf("B's room of the reopened issue does not hold the ask block open (%v):\n%s", err, reopened)
+	if reopened, err := roomRendering(bob, 5*time.Second); err != nil || !strings.Contains(reopened, `#ship-it urgency="med" multiple="false"}`) {
+		t.Fatalf("B's room of the reopened issue does not hold the ask block open, with no state (%v):\n%s", err, reopened)
 	}
 	if err := typeAtEnd(bob, " again"); err != nil {
 		t.Fatalf("bob's keystroke on the reopened issue: %v", err)
@@ -6164,10 +6159,9 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // A closed issue's document settles on the running servers as an open issue's does, with nobody
 // opening it again.
 //
-// A process of another build is registered beside the pair (openClosingAskIssue), whose pages the
-// close writes the withdrawn ask's attributes into the spec for; on a fleet of one build the close
-// writes the ones a version keeps, one version that changes only the server-owned attributes of the
-// ask's block (R3). Bob's keystroke in his tab on
+// The close writes the withdrawn ask's state into the spec as a version keeps it (docs'
+// keptAskState), one version that changes only the server-owned attributes of the ask's block
+// (R3). Bob's keystroke in his tab on
 // B is stored, and the issue closes through A. The close settles the spec first, so the keystroke
 // is in the version the close leaves; the close's withdrawal of the decision's ask then writes the
 // block resolved, which leaves the spec owing a settlement, and the close closes B's room. Nothing
@@ -8686,9 +8680,9 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 	// A process on B's build that is beating, and then one whose last heartbeat left the window. It
 	// serves this tree's binary, so its row carries this build's schema numbers and owner lock
 	// protocol, as processes.Register writes them: a row without the schema numbers reads as a
-	// build that predates the fleet columns, which every document socket's admission and the ask
-	// attributes' fleet guard read as another build, and one at owner lock protocol 0 as a build
-	// before that protocol, which holds every owner lock in the legacy mode.
+	// build that predates the fleet columns, which every document socket's admission reads as
+	// another build, and one at owner lock protocol 0 as a build before that protocol, which holds
+	// every owner lock in the legacy mode.
 	var instance string
 	if err := pair.database.Pool.QueryRow(ctx, `
 		insert into server_processes (instance, dashboard_build, signing_keys, schema_version, schema_creatable, owner_lock_protocol)

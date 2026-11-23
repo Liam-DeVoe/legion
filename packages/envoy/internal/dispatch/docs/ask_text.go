@@ -33,9 +33,9 @@ type AskedText struct {
 // /api/v1/artifacts/{id}/text and its issue and project slug variants, and so `dispatch read` and
 // `doc-read`): its canonical markdown and its whole-document token, with its blocks beside them
 // when withBlocks, rendered from its tree with the server-owned attributes of every ask block
-// (askServerAttributeNames) taken off first, whatever the tree holds: the roll window keeps them
-// in step with the asks rows while another build serves (rollWindowAskAttributes), and a document
-// no write has touched since the release before holds them as that release wrote them. So the text
+// (askServerAttributeNames) taken off first, whatever the tree holds: every write keeps the ones a
+// version keeps in step with each ask (keptAskState), and a document no write has touched since
+// the release before holds them as that release wrote them. So the text
 // an agent reads uploads back unchanged, and a ?blocks=true read's byte ranges index the markdown
 // it serves. The token is the document's own, since no token weighs a server-owned attribute. A
 // person's answer is held once, on the ask's node, and the text routes
@@ -254,8 +254,7 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 			} else if closed && parsed[id] {
 				// A readable block no ask indexes on a closed issue's document opens no ask until
 				// the issue reopens (reconcileAskBlocks), and the close withdrew every ask of the
-				// issue, so it reads resolved, as the close's sweep writes such a block while
-				// another build serves (unindexedAskResolution).
+				// issue, so it reads resolved, though its block holds no state (unindexedAskWrite).
 				entries[index].State = asks.StateResolved
 			}
 		}
@@ -371,9 +370,9 @@ func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
 
 // textAskOf is the entry of the ask block blockID whose ask's node holds answer, or, for a copy,
 // whose source, the ask source on the document whose address is copied, holds it: under the
-// names the roll window writes into the block while another build serves (rollWindowAskWrite) -
-// the state, open where the node holds none; who answered, when, the options chosen (never a nil
-// list) and the words, for an answered ask; and for a copy, the source ask and its document.
+// names the release before wrote into the block (rollWindowAskWrite) - the state, open where the
+// node holds none; who answered, when, the options chosen (never a nil list) and the words, for an
+// answered ask; and for a copy, the source ask and its document.
 func textAskOf(blockID string, answer askNodeAnswer, source, copied string) model.TextAsk {
 	entry := model.TextAsk{BlockID: blockID, State: answer.state}
 	if entry.State == "" {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -43,14 +44,13 @@ type keptEditorSweep struct {
 // the store's close margin admits alice's rewording however long the run takes
 // (observedBeforeClose). The ask repair withdraws the decision and the request, writing the
 // decision's block resolved first, all in one transaction holding the issue's row, as the repair's
-// final sweep does (api.sweepIssueAskBlocksTx). That write, and the reopen's that writes the block
-// open again, are made while another build serves (serveTwoBuilds), whose pages read an ask's
-// state from its block: on a fleet of one build neither changes a byte of the document
-// (WriteIssueAskStates), and no settlement would follow either.
+// final sweep does (api.sweepIssueAskBlocksTx). That write puts `state="resolved"` on the block,
+// as a version keeps a withdrawn ask's state, and the reopen's takes it off again, as a version
+// keeps an open ask's block with no state (keptAskState): each changes the document, and leaves it
+// owing a settlement.
 func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSweep {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, keptEditorSpec)
@@ -95,7 +95,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
-		if _, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
+		if err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
 			return err
 		}
 		// The sweep's ask.resolved events are no part of what this test reads, so each withdrawal
@@ -132,12 +132,13 @@ func (f keptEditorSweep) settleOwed(t *testing.T, what string) int64 {
 }
 
 // reopen reopens DOC-1 as the API's reopen does (api.prepareRestoration, recordRestoredAsksTx), in one transaction that
-// holds the issue's row once it clears closed_at: it restores the asks the sweep withdrew, writes
-// the decision's block open again (the reopen's ask-state write, which names no editor of its own,
-// so the pending row it inserts names alice), marks owed the documents whose ask blocks wait for
-// the reopen, and follows the versions written while the issue was closed. The document owes the
-// settlement of the ask-state write, so the follow moves no request and keeps alice for that
-// settlement.
+// holds the issue's row once it clears closed_at: it restores the asks the sweep withdrew, on
+// their nodes and their rows through the one writer of an ask's answer state, as the reopen's
+// restore does (WriteRestoredAsks), writes the decision's block open again from its node (the
+// reopen's ask-state write, which names no editor of its own, so the pending row it inserts names
+// alice), marks owed the documents whose ask blocks wait for the reopen, and follows the versions
+// written while the issue was closed. The document owes the settlement of the ask-state write, so
+// the follow moves no request and keeps alice for that settlement.
 func (f keptEditorSweep) reopen(t *testing.T) {
 	t.Helper()
 	reopener := model.Actor{Kind: "user", ID: "dave@example.com"}
@@ -150,10 +151,14 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 			return fmt.Errorf("clear the issue's closed_at: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, restored); err != nil {
-			return fmt.Errorf("restore the withdrawn asks: %w", err)
+		for _, id := range restored {
+			change := asks.Reopened()
+			change.Who, change.At = reopener, time.Now().UTC()
+			if _, err := asks.Settle(ctx, tx, id, change); err != nil {
+				return fmt.Errorf("restore the withdrawn ask %s: %w", id, err)
+			}
 		}
-		if _, err := f.service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{f.decision}, reopener, false); err != nil {
+		if err := f.service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{f.decision}, reopener, false); err != nil {
 			return err
 		}
 		if err := f.service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
@@ -180,7 +185,7 @@ func (f keptEditorSweep) settledAfterTheReopen(t *testing.T, swept int) []append
 	t.Helper()
 	lastEvent := f.settleOwed(t, "the settlement after the reopen")
 	reopened, markdown, authors := latestDocumentVersion(t, f.service.store, f.artifactID)
-	const open = `#kept-editor-decision urgency="med" multiple="false" state="open"`
+	const open = `:::ask{#kept-editor-decision urgency="med" multiple="false"}`
 	if reopened != swept+1 || !strings.Contains(markdown, open) || !strings.Contains(markdown, keptEditorReword) {
 		t.Fatalf("the settlement after the reopen left version %d reading:\n%s\nwant version %d holding the decision open (%s) asking %q",
 			reopened, markdown, swept+1, open, keptEditorReword)

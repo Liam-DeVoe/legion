@@ -831,9 +831,8 @@ func answerDecision(t *testing.T, service *Service, artifactID, askID string, pe
 
 // settleAskAs writes change on askID, the ask of the block blockID on artifactID, as the answer
 // and resolve routes write theirs, in one transaction, as person: on the ask's node and its row
-// (asks.Settle), then into the ask's block (KeepAskBlockInStep) - while another build serves the
-// attributes that build's pages read, and on a fleet of one build the ones a version keeps - so
-// the document's next settlement writes the one version the answer or resolve writes (R3).
+// (asks.Settle), then into the ask's block (KeepAskBlockInStep) - the attributes a version keeps -
+// so the document's next settlement writes the one version the answer or resolve writes (R3).
 func settleAskAs(t *testing.T, service *Service, artifactID, blockID, askID string, person model.Actor, change asks.Change) {
 	t.Helper()
 	if err := joinedWrite(service, func(ctx context.Context) error {
@@ -852,11 +851,10 @@ func settleAskAs(t *testing.T, service *Service, artifactID, blockID, askID stri
 // A person's answer to an ask block changes only the block's server state, and its own event
 // (ask.answered) already reaches the spec's writers: the version it leaves sends no edit notice,
 // and the window it opened goes. An answer writes one version, which changes only the
-// server-owned attributes of the ask's block (R3); while another build serves (serveTwoBuilds)
-// that block carries the answer's words for that build's pages too.
+// server-owned attributes of the ask's block (R3): its state, answerer and time, as a version
+// keeps them (keptAskState).
 func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
-	serveTwoBuilds(t, service.store)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	answerDecision(t, service, artifactID, askID, alice)
 	settle()
@@ -876,10 +874,10 @@ func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 }
 
 // A person's resolve of an ask block changes only its server state too, and sends no notice. As
-// an answer's, its one version changes only the server-owned attributes of the ask's block (R3).
+// an answer's, its one version changes only the server-owned attributes of the ask's block (R3):
+// its state, as a version keeps it (keptAskState).
 func TestEditNoticeAResolveAloneSendsNone(t *testing.T) {
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
-	serveTwoBuilds(t, service.store)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	change := asks.Resolved(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: alice, At: time.Now().UTC()})
 	change.Who, change.At = alice, time.Now().UTC()

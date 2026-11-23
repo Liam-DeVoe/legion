@@ -161,7 +161,7 @@ func TestAnAskStateWriteSkipsADocumentRetiredAfterItsListWasRead(t *testing.T) {
 			defer tx.Rollback(ctx)
 			joined, ledger := documents.Join(ctx, tx)
 			defer ledger.Discard()
-			if _, err := documents.WriteIssueAskStates(joined, issue.Key, nil, alice, true); err != nil {
+			if err := documents.WriteIssueAskStates(joined, issue.Key, nil, alice, true); err != nil {
 				return err
 			}
 			return ledger.Commit(ctx)

@@ -25,14 +25,13 @@ import (
 // A person's answer is held once, on the ask's node, and the text a person approves is the
 // document's words and blocks. What changes the bytes beside them is the answer's old second copy:
 // the server-owned attributes of every ask block (askServerAttributeNames), which the release
-// before wrote into every version. While two builds serve, the roll window keeps all of them in
-// step with each ask (rollWindowAskAttributes); once the whole fleet runs this build, every write
-// takes the answer's words and selection off, and an open ask's state, and keeps the state of an
-// ask that is not open, its answerer and time and a copy's provenance (keptAskState), and every
-// change of an ask's state rewrites those. Each rewrites bytes a person approved, on blocks nobody
-// edited: the first accepted write once the fleet is one build does so on every document holding
-// an ask block, open or answered, whose stored opener the release before wrote, since `state="open"` is
-// written on every open ask. So a version whose only change from the approved one is in those
+// before wrote into every version, and which a write while two builds served kept in step with
+// each ask. Every write takes the answer's words and selection off, and an open ask's state, and
+// keeps the state of an ask that is not open, its answerer and time and a copy's provenance
+// (keptAskState), and every change of an ask's state rewrites those. Each rewrites bytes a person
+// approved, on blocks nobody edited: the first accepted write does so on every document holding an
+// ask block, open or answered, whose stored opener the release before wrote, since `state="open"`
+// is written on every open ask. So a version whose only change from the approved one is in those
 // attributes carries the approval (R10).
 //
 // The approval carried is the document's newest review, an approval of version A; the version
@@ -150,9 +149,9 @@ var readingCase = carryCase{
 }
 
 // attributeRemovalCase is R10's: the server-owned attributes of every ask block
-// (askServerAttributeNames), which the first accepted write once the fleet is one build cuts to the
-// ones a version keeps (keptAskState), which every change of an ask's state then rewrites, and
-// which a write while two builds serve keeps in step with an answer given since.
+// (askServerAttributeNames), which the first accepted write cuts to the ones a version keeps
+// (keptAskState), which every change of an ask's state then rewrites, and which a version the
+// release before wrote, or one written while two builds served, kept in step with an answer.
 var attributeRemovalCase = carryCase{
 	change: "the server-owned attributes of its ask blocks, which hold no answer",
 	neutral: func(tree *pmdoc.Node, _ carryInput) (*pmdoc.Node, bool) {
@@ -556,21 +555,20 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 // than ask's - its own ask's row, or where copied names the source's document, the source's, its
 // provenance among it - as one of the writes that put them there leaves it, so that it changes
 // nothing: none of the seven attributes a version can store, as a version an upload wrote holds;
-// the ones a version keeps once the fleet is one build (keptAskState), written from onNode, the
-// ask as its node holds it, as every write on a fleet of one build writes them (onItsNode) - which
-// differs from the row only where the row names no node, one an older build wrote that the boot's
-// backfill has not stated yet; the roll window's write without the
-// answer's words (rollWindowAskAttributesWithheld, the same form as keptAskState) from the row; or
-// the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
-// while two builds serve, or by the release before, holds. Only a block every one of them would
+// the ones a version keeps (keptAskState), written from onNode, the ask as its node holds it, as
+// every write writes them (onItsNode) - which differs from the row only where the row names no
+// node, one an older build wrote that the boot's backfill has not stated yet; the release
+// before's write without the answer's words (rollWindowAskWrite without words, the same form as
+// keptAskState) from the row, which that release wrote where its document had no room for the
+// answer; or its write with them (rollWindowAskWrite with words) from the row, as a version written
+// while two builds served, or by the release before, holds. Only a block every one of them would
 // change shows a state neither the row nor the node holds.
 //
-// kept for one release: roll-window-attributes
 // kept for one release: stored-ask-state
 func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) bool {
 	return !withoutStoredAskAttributes(attributesOf(node)) || !keptAskState(onNode, copied)(attributesOf(node)) ||
-		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||
-		!rollWindowAskAttributes(true, ask, copied)(attributesOf(node))
+		!rollWindowAskWrite(ask, copied, false)(attributesOf(node)) ||
+		!rollWindowAskWrite(ask, copied, true)(attributesOf(node))
 }
 
 // attributesOf is a node of node's type holding a copy of its attributes alone, for a write to an

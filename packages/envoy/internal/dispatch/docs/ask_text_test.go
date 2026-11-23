@@ -78,13 +78,13 @@ func requireNoAskServerAttributes(t *testing.T, document, markdown string) {
 	}
 }
 
-// While another build serves, settlement keeps the server-owned attributes of an ask block in step
-// with its asks row in the live document, for that build's pages (rollWindowAskAttributes), and
-// the text routes take them off all the same (TextWithAsks): read through the room that holds the
-// document and through the cache once no room does, with its blocks and without, the markdown an
-// agent reads holds none of them, the blocks' byte ranges index that markdown, the token is the
-// document's own, and the answer reads in the asks member.
-func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServes(t *testing.T) {
+// Settlement keeps the server-owned attributes a version keeps of an ask block in step with its
+// ask in the live document (keptAskState), and the text routes take them off all the same
+// (TextWithAsks): read through the room that holds the document and through the cache once no
+// room does, with its blocks and without, the markdown an agent reads holds none of them, the
+// blocks' byte ranges index that markdown, the token is the document's own, and the answer reads
+// in the asks member.
+func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttribute(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -92,7 +92,7 @@ func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServe
 	service.settleRoom(artifactID, 0)
 	live, token, err := service.TextWithToken(ctx, artifactID)
 	if err != nil || live != repaired {
-		t.Fatalf("the live document reads %q (%v), want the roll window's attributes on its ask block:\n%s", live, err, repaired)
+		t.Fatalf("the live document reads %q (%v), want the kept attributes on its ask block:\n%s", live, err, repaired)
 	}
 	answeredAt := strings.Split(strings.Split(repaired, `answered_at="`)[1], `"`)[0]
 	const served = ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n\nContext.\n"

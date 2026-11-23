@@ -509,9 +509,9 @@ func awaitDocumentText(t *testing.T, handler http.Handler, document, what string
 }
 
 // awaitVersionText polls document until its latest version holds, failing the test after ten
-// seconds. The roll window writes the server-owned attributes of each ask block into the live
-// document and its versions while another build serves (docs' rollWindowAskAttributes), and the
-// text routes take them off what they serve, so a test reads them in the versions.
+// seconds. Every write keeps what a version keeps of each ask in its block, in the live document
+// and its versions (docs' keptAskState), and the text routes take it off what they serve, so a
+// test reads it in the versions.
 func awaitVersionText(t *testing.T, handler http.Handler, document, what string, holds func(string) bool) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {

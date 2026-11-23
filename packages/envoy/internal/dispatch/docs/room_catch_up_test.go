@@ -491,12 +491,10 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 // head, which reads as a replaced history. Its confirmation under the document's lock waits for
 // the settlement, which holds that lock until its commit, and then finds the room at the head;
 // closed instead, the room would lose its readers over this process's own repair. The repair is
-// the answer written into the ask's block for the release before's pages, which settlement makes
-// while another build serves (rollWindowAskAttributes): on a fleet of one build an answer changes
-// no byte of the document, and the settlement after it repairs nothing.
+// the answer's state, answerer and time settlement writes into the ask's block (keptAskState),
+// which the answer, written on the ask's node and its row alone (answerBlockAsk), left out of it.
 func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing.T) {
 	database := storetest.Open(t)
-	serveTwoBuilds(t, database)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}

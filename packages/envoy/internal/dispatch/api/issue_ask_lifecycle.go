@@ -86,7 +86,7 @@ func (s *server) prepareWithdrawal(ctx context.Context, tx pgx.Tx, issueKey stri
 	if err != nil {
 		return withdrawal{}, err
 	}
-	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, shown, actor, false); err != nil {
+	if err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, shown, actor, false); err != nil {
 		return withdrawal{}, err
 	}
 	return planWithdrawal(ctx, tx, issueKey, open, actor)
@@ -237,7 +237,7 @@ func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey str
 	if err := docs.WriteRestoredAsks(ctx, tx, restored.asks, actor, restored.at, restored.held); err != nil {
 		return restoredAsks{}, err
 	}
-	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored.asks, actor, false); err != nil {
+	if err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored.asks, actor, false); err != nil {
 		return restoredAsks{}, err
 	}
 	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
@@ -307,13 +307,14 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // sweep catches the blocks written before then. In a transaction of its own, holding the issue's
 // owner lock, it writes the blocks of withdrawn - the asks the close withdrew - and of every
 // other resolved block ask of the issue, and their copies, again, from their rows as they now
-// stand, writes the copies of every answered block ask of the issue from its row with the answer
-// left out (docs.WriteIssueAskStates), and writes resolved every readable ask block no settlement
-// has indexed: one a browser wrote into the room after the close forked it, or one whose
-// settlement failed before the close. Each such block is logged. An issue reopened in the meantime
-// is left alone. The sweep never fails the close: an error is logged. A block a room stores after
-// the sweep, before its process has heard of the close, leaves its document owing a settlement,
-// which runs on the closed issue: it saves the block resolved and opens no ask for it. The
+// stand, writes the copies of every answered block ask of the issue from its row, the answer's
+// words left out (docs.WriteIssueAskStates), and takes every attribute a version can store off
+// each readable ask block no settlement has indexed: one a browser wrote into the room after the
+// close forked it, or one whose settlement failed before the close. An issue reopened in the
+// meantime is left alone. The sweep never fails the close: an error is logged. A block a room
+// stores after the sweep, before its process has heard of the close, leaves its document owing a
+// settlement, which runs on the closed issue: it saves the block with none of those attributes
+// and opens no ask for it. The
 // repair's interval pass sweeps a closed issue's document that still owes a settlement when it
 // runs (RunIssueAskRepair).
 //
@@ -347,7 +348,7 @@ func (s *server) sweepClosedIssueAsksTx(ctx context.Context, issueKey string, wi
 	for index, ask := range withdrawn {
 		ids[index] = ask.ID
 	}
-	if _, err := s.sweepIssueAskBlocksTx(documentCtx, tx, issueKey, ids, nil, actor); err != nil {
+	if err := s.sweepIssueAskBlocksTx(documentCtx, tx, issueKey, ids, nil, actor); err != nil {
 		return err
 	}
 	return ledger.Commit(ctx)
@@ -359,9 +360,9 @@ func (s *server) sweepClosedIssueAsksTx(ctx context.Context, issueKey string, wi
 // resolved or answered block ask of the issue, and their copies, from their rows as they stand,
 // and the blocks of withdrawing, open asks as their blocks show them once withdrawn
 // (readOpenIssueAsks), which a repair records withdrawn after this, all in one write of each
-// document (docs.WriteIssueAskStates). It marks resolved every readable ask block no settlement
-// has indexed, which WriteIssueAskStates logs, and answers them for a caller that counts them.
-func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey string, withdrawnIDs []string, withdrawing []model.Ask, actor model.Actor) ([]docs.BlockRef, error) {
+// document (docs.WriteIssueAskStates). It takes every attribute a version can store off each
+// readable ask block no settlement has indexed.
+func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey string, withdrawnIDs []string, withdrawing []model.Ask, actor model.Actor) error {
 	// The rows as they stand under the issue's owner lock: a reopen, an answer and a second close
 	// between the close's commit and this lock leave them other than the close wrote them. Every
 	// other resolved or answered block ask's blocks are written from its row too: an ask resolved
@@ -378,7 +379,7 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 		order by a.id
 	`, issueKey, withdrawnIDs)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	return s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
 }

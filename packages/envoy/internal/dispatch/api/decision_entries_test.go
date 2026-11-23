@@ -1021,11 +1021,10 @@ func versionMarkdownAt(t *testing.T, database *store.Store, artifactID string, n
 }
 
 // An answered ask's changed_version is the version that last changed its own words, its question
-// and its options: a version that writes the server's attributes into its block, as the roll
-// window does while the release before serves, the first write on one build that takes the
-// answer's words and selection out again and keeps its state, answerer and time (R10's kept form,
-// keptAskState), and a write that gives its block a `shaped` pointer, as the conversion does, each
-// move the block's row and leave the ask at the version that wrote it.
+// and its options: a version that writes the server's attributes into its block - the answer's
+// state, answerer and time (R10's kept form, keptAskState) - and a write that gives its block a
+// `shaped` pointer, as the conversion does, each move the block's row and leave the ask at the
+// version that wrote it.
 func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
@@ -1045,29 +1044,20 @@ func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttri
 				what, entry.ChangedVersion, entry.ChangedAt, opened, openedAt)
 		}
 	}
-	whileTheReleaseBeforeServes(t, database, func() {
-		answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
-		settleIssue(t, documents, issue.Key)
-	})
-	inStep := rowChangedVersion(t, database, asks, "a1")
-	if stored := versionMarkdownAt(t, database, asks.id, inStep); inStep <= opened || !strings.Contains(stored, `state="answered"`) {
-		t.Fatalf("the roll window left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the answer's state", inStep, stored, opened)
-	}
-	requireAtOpened("after the roll window wrote the answer into its block,")
-	editIssueDocumentAs(t, handler, issue.Key, "asks-md", "alice", []map[string]any{{"op": "replace", "find": "A note.", "with": "A note, edited."}})
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
 	settleIssue(t, documents, issue.Key)
-	oneBuild := rowChangedVersion(t, database, asks, "a1")
-	if stored := versionMarkdownAt(t, database, asks.id, oneBuild); oneBuild <= inStep || strings.Contains(stored, `selected="`) ||
+	kept := rowChangedVersion(t, database, asks, "a1")
+	if stored := versionMarkdownAt(t, database, asks.id, kept); kept <= opened || strings.Contains(stored, `selected="`) ||
 		strings.Contains(stored, ` answer="`) || !strings.Contains(stored, `state="answered" answered_by="bob" answered_at="`) {
-		t.Fatalf("the first write on one build left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the answer's state, answerer and time and none of its words", oneBuild, stored, inStep)
+		t.Fatalf("the answer's settlement left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the answer's state, answerer and time and none of its words", kept, stored, opened)
 	}
-	requireAtOpened("after the first write on one build took them out,")
-	pointed := strings.Replace(versionMarkdownAt(t, database, asks.id, oneBuild), `:::ask{#a1 `, `:::ask{#a1 shaped="dispatch://`+issue.Key+`/spec#b-r1" `, 1)
+	requireAtOpened("after the answer's state, answerer and time were written into its block,")
+	pointed := strings.Replace(versionMarkdownAt(t, database, asks.id, kept), `:::ask{#a1 `, `:::ask{#a1 shaped="dispatch://`+issue.Key+`/spec#b-r1" `, 1)
 	uploadAs(t, handler, issue.Key, "asks.md", pointed, "alice")
 	settleIssue(t, documents, issue.Key)
 	shaped := rowChangedVersion(t, database, asks, "a1")
-	if stored := versionMarkdownAt(t, database, asks.id, shaped); shaped <= oneBuild || !strings.Contains(stored, `shaped="dispatch://`+issue.Key+`/spec#b-r1"`) {
-		t.Fatalf("the write of a shaped pointer left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the pointer", shaped, stored, oneBuild)
+	if stored := versionMarkdownAt(t, database, asks.id, shaped); shaped <= kept || !strings.Contains(stored, `shaped="dispatch://`+issue.Key+`/spec#b-r1"`) {
+		t.Fatalf("the write of a shaped pointer left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the pointer", shaped, stored, kept)
 	}
 	requireAtOpened("after a write that gave its block a shaped pointer,")
 }

@@ -462,52 +462,39 @@ func TestSettlementWritingNoVersionNamesTheOneItLeavesTheDocumentAt(t *testing.T
 	}
 }
 
-// While another build serves (serveTwoBuilds), settlement repairs an ask block's server-owned
-// attributes into step with its answered row for that build's pages (rollWindowAskAttributes),
-// once per version: the settlement after the repair finds the block in step and repairs nothing.
+// Settlement repairs an ask block's server-owned attributes into step with its ask, as a version
+// keeps them (keptAskState), once per version: a page of the release before writes
+// `state="open"` back onto the block of an open ask, settlement takes it off with one
+// block.repaired, and the settlement after the repair finds the block in step and repairs nothing.
 func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
-	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
+	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n")
 	service.settleRoom(artifactID, 0)
-	var askID string
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select id::text from asks where block_artifact_id = $1
-	`, artifactID).Scan(&askID); err != nil {
-		t.Fatalf("read indexed ask: %v", err)
+	const inStep = ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n"
+	repairs := func() int {
+		t.Helper()
+		var repaired int
+		if err := service.store.Pool.QueryRow(context.Background(), `
+			select count(*) from events where type = 'block.repaired' and payload->>'block_id' = 'ask-block'
+		`).Scan(&repaired); err != nil {
+			t.Fatalf("count repairs: %v", err)
+		}
+		return repaired
 	}
-	answer := model.AskAnswer{User: "alice", Selected: []string{}, At: time.Now().UTC()}
-	answerJSON, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatalf("encode answer: %v", err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		update asks set state = 'answered', answer = $2 where id = $1
-	`, askID, answerJSON); err != nil {
-		t.Fatalf("answer indexed ask: %v", err)
-	}
-	// The block still reads state="open" while its row is answered: a browser's edit setting it to
-	// open again would change nothing, and a transaction that changes nothing commits nothing.
+	before := repairs()
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		tree.Children[0].Attrs["state"] = "open"
+		return tree
+	})
 	settleCurrentGeneration(t, service, artifactID)
-	waitForDocumentText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\""+answer.At.Format(time.RFC3339Nano)+"\" selected=\"[]\"}\nShip it?\n:::\n")
-	var repaired int
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select count(*) from events where type = 'block.repaired' and payload->>'block_id' = 'ask-block'
-	`).Scan(&repaired); err != nil {
-		t.Fatalf("count repairs: %v", err)
-	}
-	if repaired != 1 {
-		t.Fatalf("repair events = %d, want one", repaired)
+	waitForDocumentText(t, service, artifactID, inStep)
+	if repaired := repairs(); repaired != before+1 {
+		t.Fatalf("repair events = %d, want one more than the %d before the page's write", repaired, before)
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select count(*) from events where type = 'block.repaired' and payload->>'block_id' = 'ask-block'
-	`).Scan(&repaired); err != nil {
-		t.Fatalf("count idempotent repairs: %v", err)
-	}
-	if repaired != 1 {
-		t.Fatalf("repair events after repeat = %d, want one", repaired)
+	if repaired := repairs(); repaired != before+1 {
+		t.Fatalf("repair events after repeat = %d, want %d", repaired, before+1)
 	}
 }
 

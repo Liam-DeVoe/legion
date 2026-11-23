@@ -44,9 +44,9 @@ func getDashboardBuildsAs(t *testing.T, handler http.Handler, credential string)
 // registerProcess writes a registry row for a process of this build's binary serving the dashboard
 // build build, whose last heartbeat was ageSeconds ago by the database's clock. It carries this
 // build's schema numbers and owner lock protocol, as processes.Register writes them: a row without
-// the schema numbers reads as a build that predates the fleet columns, which the document service
-// reads as another build (docs' anotherBuildServes), and one without the owner lock protocol as a
-// build before it (store.OwnerLockProtocol).
+// the schema numbers reads as a build that predates the fleet columns, beside which the document
+// service admits every document socket read-only (docs' schemaFleet), and one without the owner
+// lock protocol as a build before it (store.OwnerLockProtocol).
 func registerProcess(t *testing.T, database *store.Store, build string, ageSeconds float64) string {
 	t.Helper()
 	var instance string

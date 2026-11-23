@@ -303,12 +303,11 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 // is written by SQL a minute ahead: the issue row reads closed from then on, and the store's close
 // margin admits B's browser's block however long the run takes (observedBeforeClose). B's own timer
 // settles the document; its record reads the issue open when the settlement holds the document's
-// owner lock, and the block is saved with no row, its author recorded for the reopen. Another
-// build serves beside this one (serveTwoBuilds), so the block is saved resolved for that build's
-// pages, which read a block's state from its markdown (unindexedAskWrite).
+// owner lock, and the block is saved with no row, its author recorded for the reopen, and with
+// none of the seven attributes a version can store (unindexedAskWrite): the text routes answer it
+// resolved.
 func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	pair := newProcessPair(t)
-	serveTwoBuilds(t, pair.database)
 	ctx := context.Background()
 	b := pair.taskB
 	if err := b.warmLiveDocument(ctx, pair.artifactID); err != nil {
@@ -334,7 +333,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	b.addConnection(pair.artifactID, 1, bob)
 	editAsPeer(t, b, pair.artifactID, appendBlocks(t, ":::ask{#unheard-close urgency=\"med\" multiple=\"false\"}\nAsked where the close is not heard?\n:::\n"))
 	b.removeConnection(pair.artifactID, 1)
-	const resolved = `#unheard-close urgency="med" multiple="false" state="resolved"`
+	const saved = `:::ask{#unheard-close urgency="med" multiple="false"}`
 	waitFor(t, roomWait(t), "task B's timer to settle the document on the closed issue", func() bool {
 		_, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID)
 		owed, err := settlementPending(ctx, pair.database.Pool, pair.artifactID)
@@ -347,8 +346,8 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	if rows := askRowCount(t, pair.taskA, pair.artifactID, "unheard-close"); rows != 0 {
 		t.Fatalf("the block written on the closed issue has %d ask rows, want none", rows)
 	}
-	if _, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID); !strings.Contains(markdown, resolved) {
-		t.Fatalf("the settled version reads:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	if _, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID); !strings.Contains(markdown, saved) {
+		t.Fatalf("the settled version reads:\n%s\nwant the block saved with none of the attributes a version can store: %s", markdown, saved)
 	}
 	recorded, err := readRecordedAskAuthors(ctx, pair.database.Pool, pair.artifactID)
 	if err != nil {

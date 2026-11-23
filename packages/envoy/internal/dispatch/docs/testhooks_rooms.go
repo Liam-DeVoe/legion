@@ -116,9 +116,9 @@ func (s *Service) ResidentRooms() []string {
 // AskBlockAttributes is, for each ask block of the live document artifactID, by block id, every
 // attribute but the id the block holds in the live tree (loadTree): the tree a socket's browser
 // edits, which no rendering filters, so an attribute the server writes there - `invalid`, and the
-// ones the roll window keeps in step while another build serves (rollWindowAskAttributes) - and
-// one a browser put on the block both read here. A block repeating an earlier block's id is left
-// out. A document with no stored state holds none.
+// ones a version keeps of an ask (keptAskState) - and one a browser put on the block both read
+// here. A block repeating an earlier block's id is left out. A document with no stored state holds
+// none.
 func (s *Service) AskBlockAttributes(ctx context.Context, artifactID string) (map[string]map[string]any, error) {
 	if s.hooks == nil {
 		return nil, ErrTestHooksOff

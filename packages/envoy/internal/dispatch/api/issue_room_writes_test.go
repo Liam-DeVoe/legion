@@ -24,9 +24,9 @@ import (
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
 // per document (decision 7 of dispatch://INFRA-1253's plan). The process registers this build's
-// schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the ask
-// roll window, which a process of an older schema opens (docs' anotherBuildServes), stays shut as
-// with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
+// schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the
+// document sockets' admission, which a process of an older schema narrows (docs' schemaFleet),
+// stays as with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
 // would stamp the legacy mark and hold every owner lock in the advisory-and-row mode for an hour
 // (store.OwnerLockProtocol, owner_lock_legacy_mark).
 func holdIssuesUnconverted(t *testing.T, database *store.Store) {

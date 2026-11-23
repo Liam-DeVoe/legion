@@ -38,12 +38,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// storedAskAttributes are the seven server-owned attributes of an ask block a version can store:
-// the eighth, invalid, never reaches stored bytes (pmdoc's typedAttributeValues).
-var storedAskAttributes = []string{"state", "answered_by", "answered_at", "selected", "answer", "copied_from", "copied_from_document"}
-
-// answerAttributes are the four of them that hold an answer: who and when, the selection and the
-// words.
+// answerAttributes are the four server-owned attributes of an ask block that hold an answer: who
+// and when, the selection and the words.
 var answerAttributes = []string{"answered_by", "answered_at", "selected", "answer"}
 
 // answerWordAttributes are the two of those that hold the answer itself, the selection and the
@@ -519,20 +515,18 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 }
 
 // A person's answer is held once, on the ask's node (c-one-answer). The test registers no other
-// build, so processes.Live shows the whole fleet on this build: the answer route appends the
-// answer to the ask's node, the asks row is its projection, and the version the answer writes
-// changes only the block's state, answered_by and answered_at, which R10 keeps for one release,
-// and carries an approval. While a process of the base release is registered, the roll window
-// keeps the eight attributes of the block in step with the asks row; once it is gone the helper
-// writes nothing. A block the browser's room writes, which fails the strict read and claims an
-// answer, puts none on the node and none in the stored version. A resolve and a decline each write
-// one version changing only the block's state. An issue's close and reopen each write one version
-// of each document, changing only its open ask's state; the close withdraws an approval request
-// and leaves an approval stale, and the reopen restores the request with the person and carries
-// the approval back. A copy is one copied_from tuple and no attribute on any node; its stored block
-// keeps its provenance, which the text route takes off, and it settles again once its source is
-// answered. The whole case holds again over asks the base release wrote and this head's boot step
-// carried forward. Last, the source of docs and pmdoc declares neither deleted writer.
+// build: the answer route appends the answer to the ask's node, the asks row is its projection,
+// and the version the answer writes changes only the block's state, answered_by and answered_at,
+// which R10 keeps for one release, and carries an approval. A block the browser's room writes,
+// which fails the strict read and claims an answer, puts none on the node and none in the stored
+// version. A resolve and a decline each write one version changing only the block's state. An
+// issue's close and reopen each write one version of each document, changing only its open ask's
+// state; the close withdraws an approval request and leaves an approval stale, and the reopen
+// restores the request with the person and carries the approval back. A copy is one copied_from
+// tuple and no attribute on any node; its stored block keeps its provenance, which the text route
+// takes off, and it settles again once its source is answered. The whole case holds again over
+// asks the base release wrote and this head's boot step carried forward. Last, the source of docs
+// and pmdoc declares none of the deleted writers.
 func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -547,7 +541,7 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	// The base release writes two asks before the upgrade, and the test captures them.
 	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	previous.waitHealthy(t)
-	baseCommit := announcedBaseCommit(t, ctx, database)
+	announcedBaseCommit(t, ctx, database)
 	previous.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ONE","name":"One answer"}`, http.StatusCreated)
 	carriedIssue, carriedSpec := createCensusIssue(t, previous, "ONE", "Asks the base release wrote",
 		"# Carried\n\n:::ask{#carried urgency=\"med\" multiple=\"false\"}\nCarry the ask forward?\n\n- Ship: Now.\n- Hold: Later.\n:::\n\n"+carriedSourceBlock)
@@ -577,7 +571,7 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 		t.Fatalf("the live processes serve %v, want this head's build alone", commits)
 	}
 	issue, spec := createCensusIssue(t, current, "ONE", "One answer", oneAnswerSpec)
-	requireOneAnswerCase(t, ctx, current, database, databaseURL, baseCommit, oneAnswerCase{
+	requireOneAnswerCase(t, ctx, current, database, oneAnswerCase{
 		what: "the head's asks", issue: issue, spec: spec,
 		own: blockAskOf(t, current, issue, "own"), ownBlock: "own",
 		source: blockAskOf(t, current, issue, "source"), sourceBlock: "source", sourceMarkdown: oneAnswerSourceBlock,
@@ -597,7 +591,7 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	if _, markdown := latestMarkdown(t, current, carriedSpec); markdown != capturedMarkdown {
 		t.Errorf("the carried document reads otherwise than the capture before the upgrade:\n%s\nwant:\n%s", markdown, capturedMarkdown)
 	}
-	requireOneAnswerCase(t, ctx, current, database, databaseURL, baseCommit, oneAnswerCase{
+	requireOneAnswerCase(t, ctx, current, database, oneAnswerCase{
 		what: "the asks the base release wrote", issue: carriedIssue, spec: carriedSpec,
 		own: carriedAsk, ownBlock: "carried",
 		source: carriedSource, sourceBlock: "carried-source", sourceMarkdown: carriedSourceBlock,
@@ -627,17 +621,16 @@ type oneAnswerCase struct {
 }
 
 // requireOneAnswerCase is the whole of c-one-answer over c, in the order its words give: the
-// answer held once (requireAnswerHeldOnce); while a process of the base release is registered, the
-// roll window keeping all eight attributes of a block answered meanwhile in step with its asks row;
-// once it is gone, an answer whose version holds the block's state, answered_by and answered_at and
-// no answer and no selection; a block the browser's room writes, which fails the strict read and
+// answer held once (requireAnswerHeldOnce); an answer whose version holds the block's state,
+// answered_by and answered_at and no answer and no selection; a block the browser's room writes,
+// which fails the strict read and
 // claims an answer, putting none on the node and none in the stored version; a resolve and a
 // decline, each one version changing only the block's state; the close and the reopen
 // (requireCloseAndReopen); and a copy of source on a second document, which is one copied_from
 // tuple and no attribute on any node, whose stored block keeps copied_from and copied_from_document
 // and whose text serves it without them, which names the spec through the source's parent tuple,
 // and which, once the source is answered, owes a settlement and settles again against that answer.
-func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchProcess, database *pgx.Conn, databaseURL, baseCommit string, c oneAnswerCase) {
+func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchProcess, database *pgx.Conn, c oneAnswerCase) {
 	t.Helper()
 	// In the repeat over the asks the base release wrote, the answer is the first accepted write of
 	// the spec on this build, since the test writes nothing into the spec through this build before
@@ -649,58 +642,14 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 	requireAnswerHeldOnce(t, ctx, current, database, c.spec, c.own, c.ownBlock, c.what, releaseBeforeOpen...)
 
-	// While a process of the base release is registered, the roll window keeps the eight attributes
-	// of a block answered meanwhile in step with its asks row, as the release before does.
-	roll := registerOtherBuild(t, ctx, databaseURL, baseCommit, headBuildStamp)
-	rolled := insertAskBlock(t, current, c.issue, c.spec, "roll", "Roll it out?")
-	answerAsk(t, current, rolled, "Ship", "Roll it out now.")
-	var rolledRow []byte
-	if err := database.QueryRow(ctx, `select answer from asks where id = $1::uuid`, rolled).Scan(&rolledRow); err != nil {
-		t.Fatalf("%s: read the rolled ask's row: %v", c.what, err)
-	}
-	var rolledAnswer struct {
-		User     string    `json:"user"`
-		Selected []string  `json:"selected"`
-		Text     *string   `json:"text"`
-		At       time.Time `json:"at"`
-	}
-	if err := json.Unmarshal(rolledRow, &rolledAnswer); err != nil || rolledAnswer.Text == nil {
-		t.Fatalf("%s: decode the rolled ask's answer %s: %v", c.what, rolledRow, err)
-	}
-	// The eight as the row and the node hold them: the block's own ask, so no copy of another
-	// document's, and one whose block reads, whose node holds no invalid reason.
-	inStep := map[string]any{
-		"state": "answered", "answered_by": rolledAnswer.User, "answered_at": asks.AnsweredAtValue(rolledAnswer.At),
-		"selected": rolledAnswer.Selected, "answer": *rolledAnswer.Text,
-	}
-	if invalid := askNodeHolds(t, ctx, database, rolled)["invalid"].ToID; invalid != "" {
-		inStep["invalid"] = invalid
-	}
-	rolledBlock := liveAskAttributesOf(t, current, c.spec)["roll"]
-	for _, name := range append(slices.Clone(storedAskAttributes), "invalid") {
-		want, wanted := inStep[name]
-		got, held := rolledBlock[name]
-		if held != wanted || (wanted && mustJSON(t, got) != mustJSON(t, want)) {
-			t.Errorf("%s: while two builds serve the block holds %s=%s (held %t), want %s (held %t), in step with the asks row",
-				c.what, name, mustJSON(t, got), held, mustJSON(t, want), wanted)
-		}
-	}
-	settledDocument(t, ctx, current, database, c.spec)
-	_, rolledMarkdown := latestMarkdown(t, current, c.spec)
-	requireBlockInStepWithRow(t, ctx, database, rolledMarkdown, "roll", c.spec, "")
-	t.Logf("%s: while a process of %s is registered the block reads %v in the live tree and opens %q in the stored version",
-		c.what, baseCommit, rolledBlock, blockOpener(rolledMarkdown, "roll"))
-	roll.stop()
-
-	// The process is gone, so the fleet is one build again and the helper writes nothing: the
-	// version the next answer writes holds that block's state, answered_by and answered_at and no
-	// answer and no selection.
+	// The version the next answer writes holds that block's state, answered_by and answered_at
+	// and no answer and no selection.
 	last := insertAskBlock(t, current, c.issue, c.spec, "last", "One more question?")
 	settledDocument(t, ctx, current, database, c.spec)
 	lastNumber, lastBefore := latestMarkdown(t, current, c.spec)
 	answerAsk(t, current, last, "Hold", "Not yet.")
 	settledDocument(t, ctx, current, database, c.spec)
-	lastWhat := c.what + ": the answer once the fleet is one build again"
+	lastWhat := c.what + ": the answer"
 	number, markdown := latestMarkdown(t, current, c.spec)
 	requireOnlyChange(t, lastWhat, lastNumber, lastBefore, number, markdown, "last", "state", "answered_by", "answered_at")
 	requireKeptForm(t, ctx, database, fmt.Sprintf("%s: the version %d", lastWhat, number), markdown, keptBlock{block: "last", ask: last})
@@ -1036,13 +985,11 @@ func mustJSON(t *testing.T, value any) string {
 }
 
 // scanForTheDeletedWriters parses the source of the docs and pmdoc packages and fails where either
-// declares setAskServerAttributes or IsAnswerAttribute. It allows rollWindowAskAttributes, the
-// roll-window helper, where its fleet guard returns nothing on a fleet of one build, and prints
-// that finding and the one of restoresApprovedText, which stays.
+// declares setAskServerAttributes, IsAnswerAttribute or rollWindowAskAttributes, and prints the
+// finding of restoresApprovedText, which stays.
 func scanForTheDeletedWriters(t *testing.T) {
 	t.Helper()
 	declared := map[string]string{}
-	var guard string
 	files := token.NewFileSet()
 	for _, dir := range []string{"../../internal/dispatch/docs", "../../internal/dispatch/pmdoc"} {
 		packages, err := parser.ParseDir(files, dir, func(info os.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
@@ -1052,59 +999,21 @@ func scanForTheDeletedWriters(t *testing.T) {
 		for _, parsed := range packages {
 			for name, file := range parsed.Files {
 				for _, decl := range file.Decls {
-					function, ok := decl.(*ast.FuncDecl)
-					if !ok {
-						continue
-					}
-					declared[function.Name.Name] = filepath.Base(name) + ":" + strconv.Itoa(files.Position(function.Pos()).Line)
-					if function.Name.Name == "rollWindowAskAttributes" {
-						guard = fleetGuard(function)
+					if function, ok := decl.(*ast.FuncDecl); ok {
+						declared[function.Name.Name] = filepath.Base(name) + ":" + strconv.Itoa(files.Position(function.Pos()).Line)
 					}
 				}
 			}
 		}
 	}
-	for _, deleted := range []string{"setAskServerAttributes", "IsAnswerAttribute"} {
+	for _, deleted := range []string{"setAskServerAttributes", "IsAnswerAttribute", "rollWindowAskAttributes"} {
 		if at, found := declared[deleted]; found {
 			t.Errorf("the scan finds %s declared at %s, want it gone", deleted, at)
 		}
 	}
-	at, found := declared["rollWindowAskAttributes"]
-	if !found || guard == "" {
-		t.Errorf("the scan finds rollWindowAskAttributes at %q with fleet guard %q, want the roll-window helper returning nothing on a fleet of one build", at, guard)
-	}
-	t.Logf("scan: allowed rollWindowAskAttributes at %s, which keeps the copy in step with the asks row while two builds serve and %s", at, guard)
 	if at, found := declared["restoresApprovedText"]; found {
 		t.Logf("scan: restoresApprovedText stays, at %s", at)
 	} else {
 		t.Errorf("the scan finds no restoresApprovedText, which stays")
 	}
-}
-
-// fleetGuard describes the fleet guard function opens with - `if !twoBuilds { return nil }` - or is
-// "" where it opens with none.
-func fleetGuard(function *ast.FuncDecl) string {
-	if function.Body == nil || len(function.Body.List) == 0 {
-		return ""
-	}
-	guard, ok := function.Body.List[0].(*ast.IfStmt)
-	if !ok || len(guard.Body.List) != 1 {
-		return ""
-	}
-	not, ok := guard.Cond.(*ast.UnaryExpr)
-	if !ok || not.Op != token.NOT {
-		return ""
-	}
-	fleet, ok := not.X.(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	returned, ok := guard.Body.List[0].(*ast.ReturnStmt)
-	if !ok || len(returned.Results) != 1 {
-		return ""
-	}
-	if nothing, ok := returned.Results[0].(*ast.Ident); !ok || nothing.Name != "nil" {
-		return ""
-	}
-	return "returns nil while !" + fleet.Name
 }

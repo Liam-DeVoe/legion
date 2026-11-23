@@ -617,22 +617,21 @@ func TestAJoinedFlushTheCloseCutsFailsAndMarksNothing(t *testing.T) {
 }
 
 // A writer of a closed issue's documents flushes the room before its own write, and the close can
-// cut that run: while another build serves (serveTwoBuilds), WriteIssueAskStates writes each
-// withdrawn ask's state into the document, on the issue's row and owner-verified, through a live
-// write whose Ledger.flushThrough stores the room's queued keystrokes first. The gate admits the
-// keystroke the room took in time and refuses the one it took after the margin, and the write
-// must fail there rather than carry on: its own update is derived from a room that holds the
-// refused keystroke, so stored on top of the admitted prefix it would store a document the store
-// refused the makings of. Nothing of the run is stored, no ask state with it, and both keystrokes
-// are left to the room's own call.
+// cut that run: WriteIssueAskStates writes each withdrawn ask's state into the document as a
+// version keeps it (keptAskState, `state="resolved"`), on the issue's row and owner-verified,
+// through a live write whose Ledger.flushThrough stores the room's queued keystrokes first. The
+// gate admits the keystroke the room took in time and refuses the one it took after the margin,
+// and the write must fail there rather than carry on: its own update is derived from a room that
+// holds the refused keystroke, so stored on top of the admitted prefix it would store a document
+// the store refused the makings of. Nothing of the run is stored, no ask state with it, and both
+// keystrokes are left to the room's own call.
 func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	database := storetest.Open(t)
-	serveTwoBuilds(t, database)
 	artifactID := createDocument(t, database, "before")
 	service, server := newHeldAppendsService(t, database)
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
-	// Settlement indexes the ask the write withdraws below and writes its state into the block,
-	// so what the store holds from here on is what alice's browser connects on.
+	// Settlement indexes the ask the write withdraws below, so what the store holds from here on is
+	// what alice's browser connects on.
 	settleCurrentGeneration(t, service, artifactID)
 	region := blockAskOn(t, service, artifactID, "region")
 	waitForLandedAppends(t, service, artifactID)
@@ -648,8 +647,7 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
-		_, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, false)
-		return err
+		return service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, false)
 	})
 	if !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("the ask-state write over a run the close cuts = %v, want ErrIssueClosed", err)

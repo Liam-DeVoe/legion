@@ -652,21 +652,21 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 4, 2, attributeRemovalSentence(2), nil)
 }
 
-// Stale: a server-owned attribute forged on a decided block - each of the eight a block of the
-// release before held (askServerAttributeNames), forged alone - in a version a person approved
-// the document before. The human answered the first block, whose state the answer writes into the
-// block (R3); the agent added a second, and the human approved that version and answered the
-// second block. A browser's socket edit then puts a value on the first block, and the agent
-// names a version, in the route's own transaction, before settlement runs, while a process of the
-// release before serves: the one fleet whose version writes keep every attribute a version can
-// store, since on a fleet of one build a version written before settlement takes the answer's
-// words off (docs' storableVersionTree). That version's block shows a state its row does not hold,
-// so it does not agree with its node and nothing is carried (R10: "Every ask of the document must
-// still agree with its node"). Once the release before's process has left, settlement writes the
-// block's kept state from its node over the forgery, and that version is the one he approved but
-// for what a version keeps of the second answer, which carries his approval by R10's case; for
-// `invalid`, which no rendering writes and no version write takes off, settlement's repair changes
-// no markdown and versions nothing, so the approval stays stale.
+// Stale: a server-owned attribute forged on a decided block - each a version keeps of an ask
+// (docs' keptAskState), forged alone, and `invalid` - in a version a person approved the document
+// before. The human answered the first block, whose state the answer writes into the block (R3);
+// the agent added a second, and the human approved that version and answered the second block. A
+// browser's socket edit then puts a value on the first block, and the agent names a version, in
+// the route's own transaction, before settlement runs: a version written before settlement keeps
+// the attributes a version keeps of an ask as the live tree holds them (docs'
+// storableVersionTree). That version's block shows a state its row does not hold, so it does not
+// agree with its node and nothing is carried (R10: "Every ask of the document must still agree
+// with its node"). Settlement then writes the block's kept state from its node over the forgery,
+// and that version is the one he approved but for what a version keeps of the second answer, which
+// carries his approval by R10's case; for `invalid`, which no rendering writes and no version write
+// takes off, settlement's repair changes no markdown and versions nothing, so the approval stays
+// stale. A forged selection or answer is no case here: no version this build writes keeps either
+// (docs' TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesTheApproval).
 func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		attribute string
@@ -676,8 +676,6 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 		{"state", "resolved", `state="resolved"`},
 		{"answered_by", "mallory", `answered_by="mallory"`},
 		{"answered_at", "2026-01-01T00:00:00Z", `answered_at="2026-01-01T00:00:00Z"`},
-		{"selected", []string{"West"}, `selected="[&#x22;West&#x22;]"`},
-		{"answer", "Pick West.", `answer="Pick West."`},
 		{"invalid", "forged", ""},
 		{"copied_from", "00000000-0000-0000-0000-000000000000", `copied_from="00000000-0000-0000-0000-000000000000"`},
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
@@ -695,12 +693,10 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 
 			answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
 			setLiveBlockAttributes(t, handler, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
-			whileTheReleaseBeforeServes(t, database, func() {
-				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
-				if named.Code != http.StatusCreated {
-					t.Fatalf("name the version holding the forged %s: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
-				}
-			})
+			named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
+			if named.Code != http.StatusCreated {
+				t.Fatalf("name the version holding the forged %s: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
+			}
 			waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
 			markdown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 3)
 			if !strings.Contains(markdown, "How many regions take the first wave?") {
@@ -735,7 +731,8 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // browser's socket edit does: a document-socket peer sets them on the block in its own tree, which
 // no route's checks hold, and stays connected for the rest of the test, as an open editor does. No
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
-// alone, and the roll window's copy is settlement's (docs' rollWindowAskAttributes).
+// alone, and what a version keeps of it is written by the answer route and settlement (docs'
+// keptAskState).
 func setLiveBlockAttributes(t *testing.T, handler http.Handler, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
 	peer := connectBrowserPeer(t, handler, documents, artifactID)

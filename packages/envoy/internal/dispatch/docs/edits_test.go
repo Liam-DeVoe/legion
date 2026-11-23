@@ -378,39 +378,22 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 	}
 }
 
-// The answer route's write into an ask's block (KeepAskBlockInStep) puts the ask's state and
-// answer into the block while another build serves, whose pages read them there, as the release
-// before wrote them; on a fleet of one build it writes the state, the answerer and the time
-// (keptAskState), which the release before's readers of a stored version read, and never the
-// answer's words, which the ask's node and its row alone hold.
-func TestKeepAskBlockInStepWritesTheAnswersWordsOnlyWhileAnotherBuildServes(t *testing.T) {
+// The answer route's write into an ask's block (KeepAskBlockInStep) writes the state, the
+// answerer and the time (keptAskState), which the release before's readers of a stored version
+// read, and never the answer's words, which the ask's node and its row alone hold.
+func TestKeepAskBlockInStepWritesTheAsksStateAndNeverTheAnswersWords(t *testing.T) {
 	const block = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
-	for _, twoBuilds := range []bool{false, true} {
-		name := "a fleet of one build"
-		if twoBuilds {
-			name = "two builds serving"
-		}
-		t.Run(name, func(t *testing.T) {
-			service, artifactID := newTestService(t)
-			service.settle = time.Hour
-			seedServiceText(t, service, artifactID, block)
-			settleCurrentGeneration(t, service, artifactID)
-			if twoBuilds {
-				serveTwoBuilds(t, service.store)
-			}
-			alice := model.Actor{Kind: "user", ID: "alice"}
-			words := "Yes."
-			at := time.Date(2026, 9, 12, 13, 20, 0, 0, time.UTC)
-			change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, Text: &words, At: at})
-			change.Who, change.At = alice, at
-			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, alice, change)
-			want := strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z"}`, 1)
-			if twoBuilds {
-				want = strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z" selected="[&#x22;Yes&#x22;]" answer="Yes."}`, 1)
-			}
-			waitForDocumentText(t, service, artifactID, want)
-		})
-	}
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, block)
+	settleCurrentGeneration(t, service, artifactID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	words := "Yes."
+	at := time.Date(2026, 9, 12, 13, 20, 0, 0, time.UTC)
+	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, Text: &words, At: at})
+	change.Who, change.At = alice, at
+	settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, alice, change)
+	waitForDocumentText(t, service, artifactID, strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z"}`, 1))
 }
 
 func TestApplyOpsRejectsAmbiguousTargetWithoutChangingDocument(t *testing.T) {

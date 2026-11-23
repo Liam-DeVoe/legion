@@ -24,11 +24,10 @@ import (
 // leaves it none to refuse. TestAVersionHoldingARepeatedBlockIDCarriesNothing's run without the
 // repeat is the control that carries. The service settles a second after a live write, wide
 // enough that settlement does not run between the steps and repair or version the repeat on its
-// own. Another build serves (serveTwoBuilds), so the answer is written into the block, as the
-// version without the repeat must show.
+// own. The answer's write keeps who answered in the block, as a version keeps it (keptAskState),
+// and the version without the repeat must show it.
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	database, service, artifactID := seededRegionDocument(t, time.Second)
-	serveTwoBuilds(t, database)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 
 	editLiveTree(t, service, artifactID, appendSecondRegionAsk(t))

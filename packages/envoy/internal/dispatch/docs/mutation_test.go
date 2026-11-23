@@ -861,12 +861,11 @@ func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
 // the document's owed settlement marked when it was and naming whom it named, and keeps the
 // transaction's fork for the transaction's next write. That holds for an ask-state write naming
 // the state the block already holds and for any rewrite whose edit changes nothing. The write
-// that first resolved the block changed the document, and appended its update and marked the
-// settlement owed. The ask-state writes are made while another build serves (serveTwoBuilds):
-// on a fleet of one build an issue's close writes no ask's state into a document at all.
+// that first resolved the block changed the document - it wrote `state="resolved"` into a block
+// that held no state while its ask was open, as a version keeps a withdrawn ask (keptAskState) -
+// and appended its update and marked the settlement owed.
 func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSettlementMark(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 	settleCurrentGeneration(t, service, artifactID)
@@ -886,8 +885,7 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 		answers error
 	}{
 		{name: "an ask-state write naming the state the block holds", write: func(ctx context.Context) error {
-			_, err := service.WriteIssueAskStates(ctx, "DOC-1", withdrawn, closer, true)
-			return err
+			return service.WriteIssueAskStates(ctx, "DOC-1", withdrawn, closer, true)
 		}},
 		{name: "a rewrite whose edit changes nothing", answers: ygws.ErrNoChanges, write: func(ctx context.Context) error {
 			return service.applyLive(ctx, artifactID, closer, func(doc liveDoc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {

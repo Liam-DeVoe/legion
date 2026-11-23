@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The version a human approved is compared with a later version byte for byte once both have had
@@ -37,19 +40,51 @@ func attributeRemovalSentence(from int) string {
 	return fmt.Sprintf("Carried forward from the approval of version %d: the server-owned attributes of its ask blocks, which hold no answer, were the whole change since it.", from)
 }
 
+// storeAsTheReleaseBeforeWroteIt rewrites the stored markdown of version number of artifactID as
+// a process of the release before wrote it, whose version writes kept every server-owned attribute
+// of an ask block as its live tree held it, where this build's keep only what a version keeps of an
+// ask (docs' keptAskState, storableVersionTree): the opener of the ask block blockID gets
+// rendered, an attribute as that release's rendering spells it, before its closing brace. A
+// version that release wrote holds no version_renders row, so every read answers its stored
+// markdown (docs.RenderVersion): the row this build wrote is deleted. It answers the version's
+// markdown as stored.
+func storeAsTheReleaseBeforeWroteIt(t *testing.T, database *store.Store, artifactID string, number int, blockID, rendered string) string {
+	t.Helper()
+	markdown := versionMarkdownAt(t, database, artifactID, number)
+	var seeded strings.Builder
+	found := false
+	for line := range strings.Lines(markdown) {
+		if !found && strings.HasPrefix(strings.TrimLeft(line, ":"), "ask{#"+blockID+" ") && strings.HasSuffix(line, "}\n") {
+			line, found = strings.TrimSuffix(line, "}\n")+" "+rendered+"}\n", true
+		}
+		seeded.WriteString(line)
+	}
+	if !found {
+		t.Fatalf("version %d of %s holds no opener of the ask block %s:\n%s", number, artifactID, blockID, markdown)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2;
+	`, artifactID, number, seeded.String()); err != nil {
+		t.Fatalf("store version %d of %s as the release before wrote it: %v", number, artifactID, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `delete from version_renders where artifact_id = $1 and number = $2`, artifactID, number); err != nil {
+		t.Fatalf("drop the render row of version %d of %s: %v", number, artifactID, err)
+	}
+	return seeded.String()
+}
+
 // Carried: the version he approved shows a server-owned attribute on the block he answered - a
 // selection, an answer, or a copy's provenance other than its row's (askServerAttributeNames) -
-// which a browser's socket edit put there and the agent named a version of while a process of the
-// release before served, the one fleet whose version writes keep the seven attributes a version can
-// store: on a fleet of one build a version written before settlement takes them off
-// (docs' storableVersionTree). The human approved that version inside the settle window; the
-// release before's process then left, settlement takes the attribute off the block, as it takes
-// each of the seven off a block once the fleet is one build, and the version it writes differs
-// from the one he approved by that attribute alone. The two are byte-equal once both have had the
-// eight attributes taken off every ask block, and the block agrees with its node, so his approval
-// is carried to it with the attribute case's reason (R10: "It carries the approval when the new
-// rendering equals the approved rendering after both have had those eight attributes removed from
-// every ask block").
+// which a browser's socket edit put there and the agent named a version of: this build's version
+// write keeps the copy's provenance as the live tree holds it, and a process of the release before
+// kept the selection and the answer too, as the version stored here holds them. The human approved
+// that version inside the settle window; settlement then takes the attribute off the block, as it
+// takes off each of the seven a version keeps of no ask in step with its node, and the version it
+// writes differs from the one he approved by that attribute alone. The two are byte-equal once
+// both have had the eight attributes taken off every ask block, and the block agrees with its
+// node, so his approval is carried to it with the attribute case's reason (R10: "It carries the
+// approval when the new rendering equals the approved rendering after both have had those eight
+// attributes removed from every ask block").
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWithoutIt(t *testing.T) {
 	for _, tc := range []struct {
 		attribute string
@@ -68,16 +103,14 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 
 			setLiveBlockAttributes(t, handler, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.shown})
-			whileTheReleaseBeforeServes(t, database, func() {
-				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the " + tc.attribute + " other than the row's", "actor": sessionActor()})
-				if named.Code != http.StatusCreated {
-					t.Fatalf("name the version showing the %s other than the row's: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
-				}
-			})
+			named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the " + tc.attribute + " other than the row's", "actor": sessionActor()})
+			if named.Code != http.StatusCreated {
+				t.Fatalf("name the version showing the %s other than the row's: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
+			}
 			waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
 			shown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 2)
 			if !strings.Contains(shown, tc.rendered) {
-				t.Fatalf("version 2 = %s, want it to show the %s other than the row's on the block alice answered", shown, tc.attribute)
+				shown = storeAsTheReleaseBeforeWroteIt(t, database, issue.PrimaryArtifactID, 2, "region", tc.rendered)
 			}
 			approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 2)
 

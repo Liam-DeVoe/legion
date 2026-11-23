@@ -409,8 +409,8 @@ func (s *Service) sendEditNotice(ctx context.Context, artifactID string) (bool, 
 
 // serverStateOnly reports whether two stored versions differ only in the attributes the server
 // keeps on its typed blocks: an ask's state, who answered it and when, the options selected and
-// the answer's words, which a version written while another build serves keeps in step with the
-// ask. Both are compared without those attributes (pmdoc.StripServerOwnedAttrs), so a version a
+// the answer's words, which a version written while two builds served kept in step with the ask.
+// Both are compared without those attributes (pmdoc.StripServerOwnedAttrs), so a version a
 // person's answer or resolve wrote is no edit of theirs. Block ids are left out too
 // (pmdoc.Node.Equal): a stored version carries only a typed block's id, and each parse mints the
 // others afresh. A list's and a list item's spread is left

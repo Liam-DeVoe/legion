@@ -131,18 +131,16 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 }
 
 // A carry pins its destination bytes, not the source approval's bytes. The carry here is R10's
-// attribute case while two builds serve: the answer is written into the block for the release
-// before's pages (docs' rollWindowAskAttributes), so the version it settles into differs from the
-// approved one in the block's server-owned attributes alone, and its bytes are not the approved
-// version's.
+// attribute case: the answer writes its state, answerer and time into the block (docs'
+// keptAskState), so the version it settles into differs from the approved one in the block's
+// server-owned attributes alone, and its bytes are not the approved version's.
 func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
-	registerTwoBuilds(t, database)
 	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n\n"+waveAsk)
 	id := issue.PrimaryArtifactID
 	asks := indexedDecisionBlocks(t, handler, issue.Key, id, map[string]string{"wave": "How many regions take the first wave?"})
-	awaitVersionText(t, handler, id, "the block written in step with its open ask",
-		contains(`:::ask{#wave urgency="med" multiple="false" state="open"}`))
+	awaitVersionText(t, handler, id, "the open ask's block, which a version keeps with no state",
+		contains(`:::ask{#wave urgency="med" multiple="false"}`))
 	awaitSettled(t, database, id)
 	approved := latestVersion(t, database, id).Number
 	approveVersion(t, handler, id, "alice", approved)

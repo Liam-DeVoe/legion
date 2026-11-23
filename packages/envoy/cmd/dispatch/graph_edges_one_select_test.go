@@ -66,8 +66,7 @@ const (
 // head, are each one child's, and the test fails on an arm on none of the check's lists. The code
 // goes with no condition: dispatch://INFRA-1150's catch-up from the `ask.*` events and
 // rollWindowAskAttributes are no declarations of the docs package, read from its own source after a
-// scan has found a planted instance in a scratch copy. rollWindowAskAttributes goes in T7b's
-// roll-window part, its own commit after this one.
+// scan has found a planted instance in a scratch copy.
 //
 // The stored objects go in a step of every boot (startup.AsksArmsRetirement,
 // startup.IssueTreeArmsRetirement), over these databases:
@@ -272,10 +271,6 @@ func declaredWithReceivers(t *testing.T, dir string) map[string]bool {
 // the step that ran it, its pass and its pass over one ask, and the events it read.
 var askCatchUpNames = []string{"DecisionStep", "DecisionStep.catchUp", "DecisionStep.catchUpAsk", "caughtUpEvent"}
 
-// rollWindowPart is the part of the root's deletion that takes rollWindowAskAttributes, the
-// roll window's write of an ask's state into its block, which goes with the catch-up.
-const rollWindowPart = "T7b's roll-window part, its own commit after this one"
-
 // requireTheAskCatchUpGone fails while the docs package declares any of askCatchUpNames or
 // rollWindowAskAttributes, read from its own source, after the scan finds each in a scratch copy
 // that plants them.
@@ -295,7 +290,7 @@ func requireTheAskCatchUpGone(t *testing.T, root string) {
 		}
 	}
 	if declared["rollWindowAskAttributes"] {
-		t.Errorf("internal/dispatch/docs declares rollWindowAskAttributes, which goes with dispatch://INFRA-1150's catch-up: %s", rollWindowPart)
+		t.Errorf("internal/dispatch/docs declares rollWindowAskAttributes, which goes with dispatch://INFRA-1150's catch-up")
 	}
 }
 
@@ -654,8 +649,8 @@ func startBuild(t *testing.T, d *decisionsDatabase, binary string, within time.D
 	return process
 }
 
-// stopProcess stops process as a deploy does.
-func stopProcess(t *testing.T, process *dispatchProcess) {
+// stopDeployedProcess stops process as a deploy does.
+func stopDeployedProcess(t *testing.T, process *dispatchProcess) {
 	t.Helper()
 	process.Terminate(t)
 	process.WaitExit(t, "SIGTERM")
@@ -701,7 +696,7 @@ func warmUp(t *testing.T, d *decisionsDatabase, rootBuild string, seed armsSeed)
 	process := startBuild(t, d, rootBuild, 30*time.Second)
 	requireChildrenArms(t, d, true, true)
 	settleBoot(t, d, process, seed)
-	stopProcess(t, process)
+	stopDeployedProcess(t, process)
 }
 
 // requireServes fails unless process answers the read of ARMS-3. The seeded asks are ARMS-1's and
@@ -714,9 +709,9 @@ func requireServes(t *testing.T, process *dispatchProcess) {
 	}
 }
 
-// requireAnswered fails unless graph_edges over database answers edge, the head of a row's
+// requireGraphEdgeAnswered fails unless graph_edges over database answers edge, the head of a row's
 // rendering.
-func requireAnswered(t *testing.T, database *store.Store, edge string) {
+func requireGraphEdgeAnswered(t *testing.T, database *store.Store, edge string) {
 	t.Helper()
 	if rows := readView(t, database, map[string][]string{}).rows; !slices.ContainsFunc(rows, func(row string) bool {
 		return strings.HasPrefix(row, edge+" ")
@@ -744,7 +739,7 @@ func requireTheReleasedDatabaseLosesTheArms(t *testing.T, rootBuild string) {
 	requireServes(t, d.process)
 	requireOneSelect(t, d)
 
-	stopProcess(t, d.process)
+	stopDeployedProcess(t, d.process)
 	again := startBuild(t, d, rootBuild, 30*time.Second)
 	if strings.Contains(again.Output.String(), "the boot's retirement deleted its objects") {
 		t.Errorf("a second boot deleted again:\n%s", again.Output.String())
@@ -770,7 +765,7 @@ func requireTheRollWindowIsBroughtIn(t *testing.T, rootBuild string) {
 	announceBuild(t, d, oneSelectChildrenRelease, refs.TupleKinds())
 	database := openStore(t, d)
 	before := readView(t, database, nil)
-	requireAnswered(t, database, "issue ARMS-4 -blocked_by-> issue ARMS-2")
+	requireGraphEdgeAnswered(t, database, "issue ARMS-4 -blocked_by-> issue ARMS-2")
 	d.process = startBuild(t, d, rootBuild, 30*time.Second)
 	requireLogged(t, d.process.Output.String(), deletedLine(startup.AsksArmsRetirement), deletedLine(startup.IssueTreeArmsRetirement))
 	var linkMarked bool
@@ -831,7 +826,7 @@ func writeAsTheReleaseBefore(t *testing.T, d *decisionsDatabase, database *store
 	if err := d.exec(t, `insert into issue_links (issue_key, kind, target_key) values ($1, 'blocked_by', 'ARMS-1')`, from); err != nil {
 		t.Fatalf("write the release before's wait of %s: %v", from, err)
 	}
-	requireAnswered(t, database, "issue "+from+" -blocked_by-> issue ARMS-1")
+	requireGraphEdgeAnswered(t, database, "issue "+from+" -blocked_by-> issue ARMS-1")
 }
 
 // waitForAnnouncement waits up to 30 s for the announcer of the processes serving commit to write
@@ -878,15 +873,15 @@ func requireTheReleaseBeforeKeepsTheArms(t *testing.T, rootBuild, laterBuild str
 	second := startBuild(t, d, rootBuild, 30*time.Second)
 	requireKeptFor(t, second, oneSelectBeforeTheTree)
 	requireChildrenArms(t, d, true, true)
-	stopProcess(t, second)
+	stopDeployedProcess(t, second)
 	restarted := startBuild(t, d, rootBuild, 30*time.Second)
 	requireKeptFor(t, restarted, oneSelectBeforeTheTree)
 	requireChildrenArms(t, d, true, true)
 	writeAsTheReleaseBefore(t, d, database, "ARMS-4")
 
 	waitForAnnouncement(t, d, oneSelectRootBuild)
-	stopProcess(t, first)
-	stopProcess(t, restarted)
+	stopDeployedProcess(t, first)
+	stopDeployedProcess(t, restarted)
 	before := readView(t, database, nil)
 	later := startBuild(t, d, laterBuild, 30*time.Second)
 	requireLogged(t, later.Output.String(), deletedLine(startup.AsksArmsRetirement), deletedLine(startup.IssueTreeArmsRetirement),
@@ -901,7 +896,7 @@ func requireARollbackKeepsTheArms(t *testing.T, rootBuild string) {
 	first := startBuild(t, d, rootBuild, 30*time.Second)
 	settleBoot(t, d, first, seed)
 	waitForAnnouncement(t, d, oneSelectRootBuild)
-	stopProcess(t, first)
+	stopDeployedProcess(t, first)
 	// The fleet rolled back to the release before this tree, whose announcer names its commit again.
 	announceBuild(t, d, oneSelectBeforeTheTree, nil)
 	again := startBuild(t, d, rootBuild, 30*time.Second)

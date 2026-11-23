@@ -32,8 +32,10 @@ const issueAskRepairTimeout = 5 * time.Minute
 const issueAskRepairLease = "issue-ask-repair"
 
 // IssueAskRepair counts what one RepairIssueAsks pass changed: the asks it withdrew on closed
-// issues, the asks it restored on reopened ones, and the readable ask blocks with no ask row its
-// sweeps of closed issues' documents marked resolved.
+// issues and the asks it restored on reopened ones. Swept counted the readable ask blocks with no
+// ask row its sweeps marked resolved while two builds served; no sweep marks one now, so it stays
+// zero, and the log line keeps its `swept` count (LogArgs), which cmd/dispatch's
+// TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts reads.
 type IssueAskRepair struct {
 	Withdrawn int
 	Restored  int
@@ -68,13 +70,13 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 //     it is nil) - a write a room stored after the close's sweep, before its process heard of the
 //     close, or a room of a process of an older build, which never hears of it, leaves one - gets
 //     the close's final sweep: its resolved block asks' blocks and copies, and its answered block
-//     asks' copies, the answer left out, are written again from their rows, and every readable ask
-//     block with no ask row and no source is marked resolved, each one logged, attributed to its
-//     latest closer. The sweep's write arms the document's settlement, which saves what the sweep
-//     wrote whether or not the issue is closed.
+//     asks' copies, the answer's words left out, are written again from their rows, and every
+//     readable ask block with no ask row and no source keeps none of the attributes a version can
+//     store, attributed to its latest closer. The sweep's write arms the document's settlement,
+//     which saves what the sweep wrote whether or not the issue is closed.
 //
 // A closed issue's repair writes each of its documents once, the withdrawn asks' blocks beside
-// the sweep's, and counts every unindexed block it marks resolved as swept.
+// the sweep's.
 //
 // An issue with no event naming the closer or the reopener is logged and left as it is: no actor
 // is invented. Every record is dated when the pass writes it. Each issue is repaired in a
@@ -269,18 +271,16 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		// The open asks are withdrawn as a close withdraws them, and the documents get the close's
 		// final sweep (sweepClosedIssueAsks) in the same write: the open asks' blocks and copies
 		// written resolved, while their rows still read open, beside the resolved and answered block
-		// asks' blocks and copies from their rows as they stand, and every unindexed block marked
-		// resolved. Every document write comes before the first event, and each withdrawal is
-		// planned after them, as a close plans it (planWithdrawal).
+		// asks' blocks and copies from their rows as they stand, and every unindexed block left with
+		// none of the attributes a version can store. Every document write comes before the first
+		// event, and each withdrawal is planned after them, as a close plans it (planWithdrawal).
 		openAsks, withdrawing, err := s.readOpenIssueAsks(documentCtx, tx, issueKey)
 		if err != nil {
 			return repair, err
 		}
-		unindexed, err := s.sweepIssueAskBlocksTx(documentCtx, tx, issueKey, nil, withdrawing, closer)
-		if err != nil {
+		if err := s.sweepIssueAskBlocksTx(documentCtx, tx, issueKey, nil, withdrawing, closer); err != nil {
 			return repair, err
 		}
-		repair.Swept = len(unindexed)
 		planned, err := planWithdrawal(documentCtx, tx, issueKey, openAsks, closer)
 		if err != nil {
 			return repair, err

@@ -41,13 +41,11 @@ import (
 // already past the bound - stored before it, or grown by browser edits, which no server write
 // carries - can still be trimmed or split. Each refusal is ErrDocumentTooLarge, served as 413
 // CAP_EXCEEDED. An answer is no text of the document's: it is held on its ask's node alone, and
-// while another build serves the server keeps a copy of it in the
-// block for that build's pages (rollWindowAskAttributes), whose words the answer route and
-// settlement each leave out of a block the document has no room for, as the release before does
-// (KeepAskBlockInStep, withholdAnswersWithoutRoom). The text routes serve no answer in the
-// markdown, so an agent's read uploads back as its rendering does: they take the server-owned
-// attributes off every ask block and answer each ask beside the text (TextWithAsks). Of the
-// other writes that run through none of these, a rebuild weighs the
+// its block keeps only the state, who answered and when (keptAskState), never the answer's words.
+// The text routes serve no answer in the markdown, so an agent's read uploads back as its
+// rendering does: they take the server-owned attributes off every ask block and answer each ask
+// beside the text (TextWithAsks). Of the other writes that run through none of these, a rebuild
+// weighs the
 // markdown a caller supplies as SeedText weighs a new document's, and restores a latest version
 // whatever it weighs, since that is the server's own text (RebuildDocument); the block-id backfill
 // (stampBlockIDs) and the sweep of unrecorded marks (unmarkExpired) add no caller text. None of
@@ -75,8 +73,7 @@ type growth struct {
 	// serverState reports whether the write changed the document's tree only in the state the
 	// server keeps on its typed blocks (pmdoc.EqualOutsideServerState). Such a write is weighed as
 	// one that left the rendering as it was, so an ask on a document already past the bound can
-	// still be answered, resolved or retracted while another build serves and its block is kept in
-	// step with the answer.
+	// still be answered, resolved or retracted and its block kept in step with the answer.
 	serverState func() bool
 }
 

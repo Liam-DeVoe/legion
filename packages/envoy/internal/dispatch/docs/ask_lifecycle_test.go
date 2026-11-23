@@ -15,7 +15,6 @@ import (
 	ygws "github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -27,16 +26,16 @@ const (
 	freshBlock          = ":::ask{#fresh urgency=\"med\" multiple=\"false\"}\nShould the copy ask this?\n:::\n"
 )
 
-// While another build serves (serveTwoBuilds), whose pages read an ask's state from its block, the
-// close of an issue writes each withdrawn ask's state into its own block and into every copy of it
-// on another document of the issue, which keeps naming its source. A copy of an answered ask, a
-// block asking something else under a withdrawn ask's id, and a block no settlement has indexed
-// yet are left as they are; the last is written resolved only by a write that marks unindexed
-// blocks, which names it. No version is written, and the closer is credited as no pending author:
-// the authors already pending stay, and no one else is added.
+// The close of an issue writes each withdrawn ask's state into its own block and into every copy
+// of it on another document of the issue, which keeps naming its source, as a version keeps them
+// (keptAskState): `state="resolved"`, where an open ask's block held no state. A copy of an
+// answered ask, a block asking something else under a withdrawn ask's id, and a block no
+// settlement has indexed yet are left as they are; the last holds no state either after a write
+// that marks unindexed blocks, which takes off it every attribute a version can store and writes
+// none. No version is written, and the closer is credited as no pending author: the authors
+// already pending stay, and no one else is added.
 func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing.T) {
 	service, original := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock+"\n"+transportBlock+"\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
@@ -52,18 +51,19 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 		t.Fatalf("the copy opened %d asks, want one, its own transport question", count)
 	}
 	// As an agent reads the copy, its asks member answers each block's state and a copy's source
-	// (requireCopiedStates). While another build serves, settlement keeps the same in each block's
-	// opening line of the live document (rollWindowAskAttributes), which the writes below change.
+	// (requireCopiedStates). Settlement keeps in each block's opening line of the live document
+	// what a version keeps of it (keptAskState): an answered ask's state, answerer and time, a
+	// copy's source, and no open ask's state, which the writes below change.
 	requireCopiedStates(t, service, copied,
 		`#region state="open" `+copiedFrom(t, service, region.ID, original)+"\n",
 		`#ship state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=["Yes"] `+copiedFrom(t, service, ship.ID, original)+"\n",
 		`#transport state="open"`+"\n")
-	regionCopy := `:::ask{#region urgency="med" multiple="false" state="%s" ` + copiedFrom(t, service, region.ID, original) + `}`
+	regionCopy := `:::ask{#region urgency="med" multiple="false" %s` + copiedFrom(t, service, region.ID, original) + `}`
 	live := documentText(t, service, copied)
 	for _, opener := range []string{
-		fmt.Sprintf(regionCopy, "open"),
-		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" ` + copiedFrom(t, service, ship.ID, original) + `}`,
-		`:::ask{#transport urgency="med" multiple="false" state="open"}`,
+		fmt.Sprintf(regionCopy, ""),
+		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" ` + copiedFrom(t, service, ship.ID, original) + `}`,
+		`:::ask{#transport urgency="med" multiple="false"}`,
 	} {
 		if !strings.Contains(live, opener) {
 			t.Fatalf("the copy's live document lacks %q:\n%s", opener, live)
@@ -78,37 +78,31 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 	closer := model.Actor{Kind: "user", ID: "carol"}
 	withdrawn := []model.Ask{withdrawnAsk(region, closer), withdrawnAsk(transport, closer)}
 
-	if marked := writeIssueAskStates(t, service, withdrawn, closer, false); len(marked) != 0 {
-		t.Fatalf("a write that marks no unindexed block marked %+v", marked)
-	}
+	writeIssueAskStates(t, service, withdrawn, closer, false)
 	originalWant := strings.NewReplacer(
-		`:::ask{#region urgency="med" multiple="false" state="open"}`, `:::ask{#region urgency="med" multiple="false" state="resolved"}`,
-		`:::ask{#transport urgency="med" multiple="false" state="open"}`, `:::ask{#transport urgency="med" multiple="false" state="resolved"}`,
+		`:::ask{#region urgency="med" multiple="false"}`, `:::ask{#region urgency="med" multiple="false" state="resolved"}`,
+		`:::ask{#transport urgency="med" multiple="false"}`, `:::ask{#transport urgency="med" multiple="false" state="resolved"}`,
 	).Replace(originalBefore)
-	copiedWant := strings.Replace(copiedBefore, fmt.Sprintf(regionCopy, "open"), fmt.Sprintf(regionCopy, "resolved"), 1)
+	copiedWant := strings.Replace(copiedBefore, fmt.Sprintf(regionCopy, ""), fmt.Sprintf(regionCopy, `state="resolved" `), 1)
 	if originalWant == originalBefore || copiedWant == copiedBefore {
 		t.Fatalf("the documents lack the blocks this test withdraws:\n%s\n%s", originalBefore, copiedBefore)
 	}
 	requireText(t, service, original, originalWant)
 	requireText(t, service, copied, copiedWant)
 
-	marked := writeIssueAskStates(t, service, withdrawn, closer, true)
-	if want := []BlockRef{{ArtifactID: copied, BlockID: "fresh"}}; !reflect.DeepEqual(marked, want) {
-		t.Fatalf("the sweep marked %+v, want %+v", marked, want)
-	}
 	// An agent's ask block holds no state of its own (a server attribute has no written default),
-	// so the block no settlement has indexed reads with none until the sweep writes it resolved.
-	freshOpen := `:::ask{#fresh urgency="med" multiple="false"}`
-	if !strings.Contains(copiedWant, freshOpen) {
+	// and the sweep that marks unindexed blocks writes none into the block no settlement has
+	// indexed: the text routes answer it resolved (textAsks).
+	if !strings.Contains(copiedWant, `:::ask{#fresh urgency="med" multiple="false"}`) {
 		t.Fatalf("the copy lacks the unindexed block:\n%s", copiedWant)
 	}
-	copiedWant = strings.Replace(copiedWant, freshOpen, `:::ask{#fresh urgency="med" multiple="false" state="resolved"}`, 1)
-	requireText(t, service, original, originalWant)
-	requireText(t, service, copied, copiedWant)
-	if marked := writeIssueAskStates(t, service, withdrawn, closer, true); len(marked) != 0 {
-		t.Fatalf("a second sweep marked %+v, which the first already wrote", marked)
+	for sweep := range 2 {
+		writeIssueAskStates(t, service, withdrawn, closer, true)
+		requireText(t, service, original, originalWant)
+		if text := documentText(t, service, copied); text != copiedWant {
+			t.Fatalf("sweep %d left the copy\n%s\nwant\n%s", sweep+1, text, copiedWant)
+		}
 	}
-	requireText(t, service, copied, copiedWant)
 
 	if count := asksOn(t, service, copied); count != 1 {
 		t.Fatalf("the copy holds %d asks after the writes, want its one", count)
@@ -124,86 +118,12 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 	}
 }
 
-// A block repeating an ask's id - a browser's paste copies the block with its id - is no ask, and
-// a write addressed by that id lands on the ask's own block. While another build serves, a write
-// that marks no unindexed block leaves the copy as it is; one that marks them writes it resolved
-// by its place in the document and names it under the id it repeats, which it leaves alone for
-// settlement to stamp.
-func TestWritingIssueAskStatesMarksABlockRepeatingAnAsksIDByItsPlace(t *testing.T) {
-	service, original := newTestService(t)
-	serveTwoBuilds(t, service.store)
-	service.settle = time.Hour
-	seedServiceText(t, service, original, "Context\n\n"+regionBlock)
-	settleCurrentGeneration(t, service, original)
-	region := blockAskOn(t, service, original, "region")
-	appendLiveBlock(t, service, original, regionBlock)
-	pastedBefore := documentText(t, service, original)
-	if count := strings.Count(pastedBefore, ":::ask{#region "); count != 2 {
-		t.Fatalf("the document holds %d blocks under region, want the ask's and its pasted copy:\n%s", count, pastedBefore)
-	}
-	closer := model.Actor{Kind: "user", ID: "carol"}
-	withdrawn := []model.Ask{withdrawnAsk(region, closer)}
-	resolved := `:::ask{#region urgency="med" multiple="false" state="resolved"}`
-
-	if marked := writeIssueAskStates(t, service, withdrawn, closer, false); len(marked) != 0 {
-		t.Fatalf("a write that marks no unindexed block marked %+v", marked)
-	}
-	want := strings.Replace(pastedBefore, `:::ask{#region urgency="med" multiple="false" state="open"}`, resolved, 1)
-	if want == pastedBefore {
-		t.Fatalf("the document lacks the ask's open block:\n%s", pastedBefore)
-	}
-	requireText(t, service, original, want)
-
-	marked := writeIssueAskStates(t, service, withdrawn, closer, true)
-	if want := []BlockRef{{ArtifactID: original, BlockID: "region"}}; !reflect.DeepEqual(marked, want) {
-		t.Fatalf("the sweep marked %+v, want %+v", marked, want)
-	}
-	text := documentText(t, service, original)
-	if strings.Count(text, ":::ask{") != 2 || strings.Count(text, resolved) != 2 {
-		t.Fatalf("the document after the sweep:\n%s\nwant the ask's block and its pasted copy under region, both resolved", text)
-	}
-	if marked := writeIssueAskStates(t, service, withdrawn, closer, true); len(marked) != 0 {
-		t.Fatalf("a second sweep marked %+v, which the first already wrote", marked)
-	}
-	requireText(t, service, original, text)
-	if count := asksOn(t, service, original); count != 1 {
-		t.Fatalf("the document holds %d asks after the writes, want its one", count)
-	}
-}
-
-// appendLiveBlock appends the blocks markdown parses to, ids and all, to the live document, as a
-// browser's paste does, past the id repair every server write runs.
-func appendLiveBlock(t *testing.T, service *Service, artifactID, markdown string) {
-	t.Helper()
-	pasted, err := pmdoc.Parse(markdown)
-	if err != nil {
-		t.Fatalf("parse the pasted block: %v", err)
-	}
-	err = service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-		fragment := doc.GetXmlFragment(fragmentName)
-		tree, err := treeOf(doc)
-		if err != nil {
-			t.Errorf("read live tree: %v", err)
-			return
-		}
-		tree.Children = append(tree.Children, pasted.Children...)
-		transact(func(txn *crdt.Transaction) {
-			if err := pmdoc.Update(txn, fragment, tree); err != nil {
-				t.Errorf("paste the block: %v", err)
-			}
-		})
-	})
-	if err != nil {
-		t.Fatalf("apply the paste: %v", err)
-	}
-}
-
-// The close's write of its asks' states, made while another build serves, is no edit: it credits
-// the closer as no pending author, and the document's latest edit source, which settlement names
-// as the author of an ask block it indexes with no author of its own, stays the session that wrote
-// the unindexed block, on the pending-settlement row and in the room. Settlement still names it
-// when the session's edit wrote its own version, as POST /edits does, so that no one is pending.
-// An edit the same transaction made before the close's write is still the latest edit source.
+// The close's write of its asks' states is no edit: it credits the closer as no pending author,
+// and the document's latest edit source, which settlement names as the author of an ask block it
+// indexes with no author of its own, stays the session that wrote the unindexed block, on the
+// pending-settlement row and in the room. Settlement still names it when the session's edit wrote
+// its own version, as POST /edits does, so that no one is pending. An edit the same transaction
+// made before the close's write is still the latest edit source.
 func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 	session := model.Actor{Kind: "session", ID: "late-asking-session"}
 	closer := model.Actor{Kind: "user", ID: "carol"}
@@ -221,15 +141,13 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			serveTwoBuilds(t, service.store)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 			settleCurrentGeneration(t, service, artifactID)
 			region := blockAskOn(t, service, artifactID, "region")
 			writeThroughLedger(t, service, artifactID, session, freshBlock, test.version)
 
-			var marked []BlockRef
-			err := joinedWrite(service, func(ctx context.Context) (err error) {
+			err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
 				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
@@ -239,14 +157,10 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 						return fmt.Errorf("apply the edit: %w", err)
 					}
 				}
-				marked, err = service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, true)
-				return err
+				return service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, true)
 			})
 			if err != nil {
 				t.Fatalf("write the close's ask states: %v", err)
-			}
-			if want := []BlockRef{{ArtifactID: artifactID, BlockID: "fresh"}}; !reflect.DeepEqual(marked, want) {
-				t.Fatalf("the close's write marked %+v, want %+v", marked, want)
 			}
 			requireLatestEditSource(t, service, artifactID, test.want)
 			pending := pendingAuthorRows(t, service.store, artifactID)
@@ -431,9 +345,10 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-// A closed issue's documents refuse every ordinary write, and the close's own, made while another
-// build serves, still reaches them, since its caller holds the issue's owner lock: a room flagged
-// closed that a reader loaded again, and a document no room holds, whose write the store keeps.
+// A closed issue's documents refuse every ordinary write, and the close's own, which writes
+// `state="resolved"` into a withdrawn ask's block as a version keeps it (keptAskState), still
+// reaches them, since its caller holds the issue's owner lock: a room flagged closed that a reader
+// loaded again, and a document no room holds, whose write the store keeps.
 func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 	for _, resident := range []bool{true, false} {
 		name := "no resident room"
@@ -442,7 +357,6 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			serveTwoBuilds(t, service.store)
 			service.settle = time.Hour
 			ctx := context.Background()
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
@@ -467,7 +381,7 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 			closer := model.Actor{Kind: "user", ID: "carol"}
 			writeIssueAskStates(t, service, []model.Ask{withdrawnAsk(region, closer)}, closer, false)
 			want := strings.Replace(before,
-				`:::ask{#region urgency="med" multiple="false" state="open"}`, `:::ask{#region urgency="med" multiple="false" state="resolved"}`, 1)
+				`:::ask{#region urgency="med" multiple="false"}`, `:::ask{#region urgency="med" multiple="false" state="resolved"}`, 1)
 			if want == before {
 				t.Fatalf("the document lacks the withdrawn block:\n%s", before)
 			}
@@ -478,15 +392,15 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 	}
 }
 
-// While another build serves, a reopen writes the withdrawn blocks back to open, so a document
-// that had nothing else pending renders as its latest version again, and the settlement the close
-// and the reopen left owed writes no version. That holds because no settlement ran while the
-// issue was closed: the settle delay here is an hour, and nothing resumes the documents. A
-// settlement on the closed issue would have saved the blocks resolved, and the reopen's
-// settlement would then write a version with them open again.
+// A reopen takes the withdrawn blocks' `state="resolved"` off again, as a version keeps an open
+// ask's block with no state (keptAskState), so a document that had nothing else pending renders
+// as its latest version again, and the settlement the close and the reopen left owed writes no
+// version. That holds because no settlement ran while the issue was closed: the settle delay here
+// is an hour, and nothing resumes the documents. A settlement on the closed issue would have saved
+// the blocks resolved, and the reopen's settlement would then write a version with them open
+// again.
 func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 	service, original := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	ctx := context.Background()
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock)
@@ -600,7 +514,7 @@ func TestSettlingAnIssuesDocumentsRefusesToRunInsideATransaction(t *testing.T) {
 // WriteIssueAskStates writes only inside a transaction a caller joined.
 func TestWritingIssueAskStatesNeedsAJoinedTransaction(t *testing.T) {
 	service, _ := newTestService(t)
-	if _, err := service.WriteIssueAskStates(context.Background(), "DOC-1", nil, model.Actor{Kind: "user", ID: "carol"}, true); !errors.Is(err, errUnjoined) {
+	if err := service.WriteIssueAskStates(context.Background(), "DOC-1", nil, model.Actor{Kind: "user", ID: "carol"}, true); !errors.Is(err, errUnjoined) {
 		t.Fatalf("an unjoined write = %v, want errUnjoined", err)
 	}
 }
@@ -615,29 +529,26 @@ func withdrawnAsk(ask model.Ask, closer model.Actor) model.Ask {
 
 // writeIssueAskStates runs WriteIssueAskStates for DOC-1 in a transaction of its own, as the issue
 // route does, and commits it.
-func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor model.Actor, markUnindexed bool) []BlockRef {
+func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor model.Actor, markUnindexed bool) {
 	t.Helper()
-	var marked []BlockRef
-	err := joinedWrite(service, func(ctx context.Context) (err error) {
+	err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		// The issue route holds the issue's owner lock before it writes any document.
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
-		marked, err = service.WriteIssueAskStates(ctx, "DOC-1", asks, actor, markUnindexed)
-		return err
+		return service.WriteIssueAskStates(ctx, "DOC-1", asks, actor, markUnindexed)
 	})
 	if err != nil {
 		t.Fatalf("write the issue's ask states: %v", err)
 	}
-	return marked
 }
 
-// documentText is the document's own markdown (Text), which the writes of an ask's state while
-// another build serves change (WriteIssueAskStates) and which holds no ask's state once the fleet
-// is one build: every caller compares it with stored bytes, a latest version or a document the
-// same write changed, never with the text an agent reads, which holds no ask's state at all and
-// answers each in its asks member (TextWithAsks).
+// documentText is the document's own markdown (Text), whose ask blocks hold what a version keeps of
+// each ask (keptAskState), which the writes of an ask's state change (WriteIssueAskStates): every
+// caller compares it with stored bytes, a latest version or a document the same write changed,
+// never with the text an agent reads, which holds no ask's state at all and answers each in its
+// asks member (TextWithAsks).
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
 	text, err := service.Text(context.Background(), artifactID)
@@ -696,33 +607,3 @@ func requireSettledAtLatestVersion(t *testing.T, service *Service, artifactID st
 		t.Fatalf("the settled document renders\n%s\nwant its latest version\n%s", text, latest)
 	}
 }
-
-// serveTwoBuilds registers in server_processes, the registry the document service reads the fleet
-// from (processes.Live), a live process of each of two builds for the rest of the test, as a roll
-// serves them: one of the release before, with the schema numbers a process of it registers
-// (baseSchemaVersion, baseSchemaCreatable), and one of this build, with its own; each at the owner
-// lock protocol both builds register (store.OwnerLockProtocol). The fleet guard reads a process
-// below this build's schema version as a build whose pages read an ask's state from its block
-// (anotherBuildServes), so the document service then keeps the server-owned attributes of each
-// ask block in step with its asks row (rollWindowAskAttributes) and writes an issue's close and
-// reopen into its asks' blocks (WriteIssueAskStates). A test's editor presents no
-// schema_creatable, so its creatable version is 1, at most the lowest version the fleet reads, and
-// its document socket stays writable beside the release before (schemaFleet.admits).
-func serveTwoBuilds(t *testing.T, database *store.Store) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour', $5),
-		       (gen_random_uuid(), 'this-release', $3, $4, now() + interval '1 hour', $5)
-	`, baseSchemaVersion, baseSchemaCreatable, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol); err != nil {
-		t.Fatalf("register a live process of each of two builds: %v", err)
-	}
-}
-
-// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: the base release's pmdoc/schema/blocks.json is version 4, and creates nothing
-// past it.
-const (
-	baseSchemaVersion   = 4
-	baseSchemaCreatable = 4
-)

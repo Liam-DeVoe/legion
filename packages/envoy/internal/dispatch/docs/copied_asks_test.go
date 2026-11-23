@@ -912,14 +912,12 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // it writes a copy's attributes into, naming the copy, its source ask, the source's document and
 // the state it shows, and never the question. A later settlement that leaves the copy's blocks as
 // they are logs nothing more, and one that shows a change of a source's state logs that block
-// again. The test writes them while another build serves (serveTwoBuilds), for its pages
-// (rollWindowAskAttributes); on a fleet of one build a copy keeps its provenance, and its source's
-// state where that is not open, alone (keptAskState).
+// again. Settlement writes into a copy what a version keeps of it (keptAskState): its provenance,
+// and its source's state, answerer and time where the source is not open.
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, original := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	asks := copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
@@ -1337,9 +1335,9 @@ func answerSource(ctx context.Context, service *Service, original string, source
 // which takes the project's copy lock and queues the copies' pending rows, then the answer or the
 // resolution through the one writer of an ask's answer state (Ledger.PlanSettle, WriteAskResolution:
 // on the ask's node, then its row), the source's block kept in step with it
-// (KeepAskBlockInStep: the roll window's attributes while another build serves, the ones a version
-// keeps on a fleet of one build) and the ask.answered or ask.resolved event, with what the answer
-// or the resolution states on the ask's node right after it, queued as a route joined to the
+// (KeepAskBlockInStep: the ones a version keeps) and the ask.answered or ask.resolved event, with
+// what the answer or the resolution states on the ask's node right after it, queued as a route
+// joined to the
 // ledger queues its own writes, and commits: the write phase writes the copies' pending rows first.
 // between, when set, runs while the write phase stands right after those rows, holding the copy
 // lock and the copies' pending rows: the batch waits there on a gate lock this helper holds

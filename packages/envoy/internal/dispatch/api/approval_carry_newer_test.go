@@ -105,23 +105,23 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 
 // Two builds serve one database during a release, and the version a human approved can hold an
 // element only the newer one knows: here an attribute on the ask block, which the newer
-// build's editor keeps on the block. While two builds serve, his answer is written into the block
-// for the release before's pages (docs' rollWindowAskAttributes), so settlement writes a version
-// of it, whose approval the attribute case would carry; but this build
-// cannot read the approved version, so it cannot decide whether the approval carries. Its
-// settlement writes no version, leaves his approval as it was and logs that a build that reads the
-// element must write the version. The newer build then writes the version, with the attribute its
-// editor keeps on the block, and carries his approval to it: the two differ in the block's
-// server-owned attributes alone.
+// build's editor keeps on the block. His answer writes its state, answerer and time into the block
+// (docs' keptAskState), so settlement writes a version of it, whose approval the attribute case
+// would carry; but this build cannot read the approved version, so it cannot decide whether the
+// approval carries. Its settlement writes no version, leaves his approval as it was and logs that
+// a build that reads the element must write the version. The newer build then writes the version,
+// with the attribute its editor keeps on the block, and carries his approval to it: the two differ
+// in the block's server-owned attributes alone.
 func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReadsIt(t *testing.T) {
 	logged := captureLog(t)
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
-	registerTwoBuilds(t, database)
+	// The issue is created with one room per document, whose pending settlement this test ages.
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Approved newer content", "Context\n\n"+regionAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
-	awaitVersionText(t, handler, issue.PrimaryArtifactID, "the block written in step with its open ask",
-		contains(`:::ask{#region urgency="low" multiple="false" state="open"}`))
+	awaitVersionText(t, handler, issue.PrimaryArtifactID, "the open ask's block, which a version keeps with no state",
+		contains(`:::ask{#region urgency="low" multiple="false"}`))
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	approved := latestVersion(t, database, issue.PrimaryArtifactID).Number
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", approved)

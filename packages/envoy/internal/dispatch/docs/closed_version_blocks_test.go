@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -102,39 +101,39 @@ func paragraphNode(id, body string) *pmdoc.Node {
 	return &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: id}, Children: []*pmdoc.Node{{Type: "text", Text: body}}}
 }
 
-// closedSpec is a spec whose paragraph cites CORE-2, beside an ask block no settlement has indexed.
+// closedSpec is a spec whose paragraph cites CORE-2, beside an ask block.
 const closedSpec = "Ship it after dispatch://CORE-2.\n\n:::ask{#region urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 
-// While another build serves (serveTwoBuilds), an issue's close, its final sweep and the repair
-// write ask blocks' states into the issue's documents and write no version, so such a document is
-// live ahead of its latest version until the settlement that saves those states writes the next
-// one. Meanwhile its windows are written from that version's own rendering (windowDocument), and a
+// An issue's close, its final sweep and the repair write ask blocks' states into the issue's
+// documents and write no version, so such a document is live ahead of its latest version until
+// the settlement that saves those states writes the next one: the close writes `state="resolved"`
+// into a withdrawn ask's block, which held no state while the ask was open (keptAskState).
+// Meanwhile its windows are written from that version's own rendering (windowDocument), and a
 // version behind only in ask states is matched whole: every block of it takes the id the live
 // document gives it, an untyped block included, and the ask block holds the version's text of it,
-// not the state the sweep wrote.
+// not the state the close wrote.
 func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *testing.T) {
 	database, service := blockIndexService(t)
-	serveTwoBuilds(t, database)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", closedSpec, "")
+	// The settlement indexes the ask block, and writes no version: the document renders as its
+	// version 1, the open ask's block holding no state.
+	settleCurrentGeneration(t, service, spec)
+	ask := blockAskOn(t, service, spec, "region")
 	if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'CORE-1'`); err != nil {
 		t.Fatalf("close CORE-1: %v", err)
 	}
-	// The close's final sweep, as the repair runs it, under the issue's owner lock: it writes resolved
-	// the ask block no settlement has indexed.
-	var marked []BlockRef
-	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+	// The close's write of its withdrawn ask's state, under the issue's owner lock, with the
+	// final sweep's write of every unindexed block.
+	closer := model.Actor{Kind: "user", ID: "carol"}
+	if err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("CORE-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
-		marked, err = service.WriteIssueAskStates(ctx, "CORE-1", nil, model.Actor{Kind: "user", ID: "carol"}, true)
-		return err
+		return service.WriteIssueAskStates(ctx, "CORE-1", []model.Ask{withdrawnAsk(ask, closer)}, closer, true)
 	}); err != nil {
 		t.Fatalf("write the closed issue's ask states: %v", err)
-	}
-	if want := []BlockRef{{ArtifactID: spec, BlockID: "region"}}; !reflect.DeepEqual(marked, want) {
-		t.Fatalf("the sweep marked %+v, want %+v", marked, want)
 	}
 	closeDocumentRoom(t, service, spec)
 	live, liveBlocks, err := service.TextWithBlocks(ctx, spec)
@@ -142,7 +141,7 @@ func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *te
 		t.Fatalf("read the live document: %v", err)
 	}
 	if !strings.Contains(live, `state="resolved"`) {
-		t.Fatalf("the sweep left live text %q, want the ask block resolved", live)
+		t.Fatalf("the close left live text %q, want the ask block resolved", live)
 	}
 
 	markdown, blocks := heldBlocksOf(t, service, spec)

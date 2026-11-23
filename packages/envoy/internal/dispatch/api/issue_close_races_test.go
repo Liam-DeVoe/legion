@@ -150,21 +150,19 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 // A decision resolved within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
 // resolution, which the settle delay of an hour keeps from running here. The repair's sweep of
-// that closed issue writes the copy from its source's row, as the close's own sweep does, so it
-// reads resolved without waiting for that settlement. A block holds its ask's state only while
-// another build serves, for that build's pages (docs' rollWindowAskAttributes), so the test
-// registers a process of each of two builds and reads the copy's live tree.
+// that closed issue writes the copy from its source's node, as the close's own sweep does, the
+// state a version keeps (docs' keptAskState), so it reads resolved without waiting for that
+// settlement; the test reads the copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
-	registerTwoBuilds(t, f.database)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
 	if resolved := resolveAsSession(t, f.handler, decision); resolved.Code != http.StatusOK {
 		t.Fatalf("resolve: status=%d body=%s", resolved.Code, resolved.Body.String())
 	}
 	closer := repairActor("session-closer")
 	closeWithoutWithdrawing(t, f, issue.Key, &closer, time.Now())
-	requireLiveTree(t, f.documents, copied, `#close-decision urgency="med" multiple="false" state="open" copied_from="`+decision+`"`)
+	requireLiveTree(t, f.documents, copied, `#close-decision urgency="med" multiple="false" copied_from="`+decision+`"`)
 
 	if repair := repairNow(t, f); repair.Withdrawn != 0 || repair.Restored != 0 || repair.Swept != 0 {
 		t.Fatalf("repair = %+v, want no ask withdrawn or restored and no unindexed block swept", repair)
@@ -174,17 +172,14 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 }
 
 // A decision answered after the close's settlement ran and before the close took the issue's row
-// is the order an answer released beside a close commits in when it wins. While another build
-// serves, the answer writes the decision's own block and marks its copy in the issue's other
-// document owed a settlement, which the settle delay of an hour keeps from running here, and the
-// close withdraws nothing of an ask already answered. The close's sweep writes the copy from its
-// source's row instead, as settlement keeps any copy in step with its source
-// (docs' rollWindowAskAttributes), so it reads answered, naming who answered and when, without
-// waiting for that settlement; the answer's words, which no write of the sweep weighs for size,
-// are left to the copy's own settlement (docs' answeredCopyWrite), which writes them once it
-// runs. The decision's own block is left as the answer route wrote it. A block holds its ask's
-// state only while another build serves, so the test registers a process of each of two builds and
-// reads the copy's live tree.
+// is the order an answer released beside a close commits in when it wins. The answer writes the
+// decision's own block and marks its copy in the issue's other document owed a settlement, which
+// the settle delay of an hour keeps from running here, and the close withdraws nothing of an ask
+// already answered. The close's sweep writes the copy from its source's node instead, as
+// settlement keeps any copy in step with its source (docs' keptAskState), so it reads answered,
+// naming who answered and when, without waiting for that settlement, and never holds the answer's
+// words, nor after the copy's own settlement. The decision's own block is left as the answer route
+// wrote it. The test reads the copy's live tree.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
@@ -196,7 +191,6 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 		wrapper.API = documents
 		return wrapper
 	})
-	registerTwoBuilds(t, database)
 	issue, decision, copied := decisionWithCopy(t, handler, documents)
 
 	var answered answeredDecision
@@ -215,27 +209,24 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the reopened issue's documents: %v", err)
 	}
-	requireLiveTree(t, documents, copied, `state="answered"`, `answered_by="alice"`, decisionSelected, `answer="`+decisionAnswer+`"`, `copied_from="`+decision+`"`)
+	requireKeptAnsweredCopy(t, documents, copied, decision)
 }
 
 // A decision answered within the settle delay before a release older than the withdrawal closed
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
 // answer, which the settle delay of an hour keeps from running here. The repair's sweep of that
-// closed issue writes the copy from its source's row, as the close's own sweep does, so it reads
+// closed issue writes the copy from its source's node, as the close's own sweep does, so it reads
 // answered, naming who answered and when, and leaves the decision's own block as the answer route
-// wrote it; the copy's own settlement then writes the answer's words, which the sweep leaves out
-// (docs' answeredCopyWrite). A block holds its ask's state only while another build serves (docs'
-// rollWindowAskAttributes), so the test registers a process of each of two builds and reads the
-// copy's live tree.
+// wrote it; the copy holds no answer's words, nor after its own settlement (docs' keptAskState).
+// The test reads the copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
-	registerTwoBuilds(t, f.database)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
 	answered := answerDecision(t, f.handler, f.database, issue.PrimaryArtifactID, decision)
 	closer := repairActor("session-closer")
 	closeWithoutWithdrawing(t, f, issue.Key, &closer, time.Now())
-	requireLiveTree(t, f.documents, copied, `#close-decision urgency="med" multiple="false" state="open" copied_from="`+decision+`"`)
+	requireLiveTree(t, f.documents, copied, `#close-decision urgency="med" multiple="false" copied_from="`+decision+`"`)
 
 	if repair := repairNow(t, f); repair.Withdrawn != 0 || repair.Restored != 0 || repair.Swept != 0 {
 		t.Fatalf("repair = %+v, want no ask withdrawn or restored and no unindexed block swept", repair)
@@ -244,7 +235,7 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 	if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the copy the sweep left owed: %v", err)
 	}
-	requireLiveTree(t, f.documents, copied, `state="answered"`, `answered_by="alice"`, decisionSelected, `answer="`+decisionAnswer+`"`, `copied_from="`+decision+`"`)
+	requireKeptAnsweredCopy(t, f.documents, copied, decision)
 }
 
 // A decision answered and settled before its issue's close has a copy reading the answer in full,
@@ -280,10 +271,6 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 // decisionAnswer is the text answerDecision answers closeDecision with, beside selecting Yes.
 const decisionAnswer = "Ship it this week."
 
-// decisionSelected is the selected attribute of a block answered as answerDecision answers, as a
-// document's markdown renders it: the selection's JSON, its quotes escaped.
-const decisionSelected = `selected="[&#x22;Yes&#x22;]"`
-
 // answeredDecision is what the answer route left of an answered decision: its ask's row as the
 // database stores it and the live text of the document its block is on.
 type answeredDecision struct {
@@ -308,10 +295,7 @@ func answerDecision(t *testing.T, handler http.Handler, database *store.Store, s
 
 // requireAnsweredDecisionAndCopy fails t unless decision's row, and its block on spec, are as the
 // answer route left them (answered), with no ask.resolved event, and its copy on copied reads
-// answered in its live tree (liveTree), as a sweep writes a copy of an answered ask while another
-// build serves: its answerer and the time, naming the source, and neither the selection nor the
-// answer, which the sweep weighs no room for and leaves to the copy's own settlement (docs'
-// answeredCopyWrite).
+// answered in its live tree as every write of a copy keeps it (requireKeptAnsweredCopy).
 func requireAnsweredDecisionAndCopy(t *testing.T, handler http.Handler, database *store.Store, documents *docs.Service, spec, decision, copied string, answered answeredDecision) {
 	t.Helper()
 	if row := askRowTexts(t, database, decision)[0]; row != answered.row {
@@ -323,6 +307,14 @@ func requireAnsweredDecisionAndCopy(t *testing.T, handler http.Handler, database
 	if live, _ := documentTexts(t, handler, spec); live != answered.spec {
 		t.Fatalf("spec %s live text:\n%s\nwant it as the answer left it:\n%s", spec, live, answered.spec)
 	}
+	requireKeptAnsweredCopy(t, documents, copied, decision)
+}
+
+// requireKeptAnsweredCopy fails t unless the copy of decision on copied opens its block in its live
+// tree (liveTree) as a version keeps a copy of an answered ask (docs' keptAskState): its answerer
+// and the time, naming the source, and neither the selection nor the answer.
+func requireKeptAnsweredCopy(t *testing.T, documents *docs.Service, copied, decision string) {
+	t.Helper()
 	if line := askDirective(t, liveTree(t, documents, copied), "close-decision"); !contains(`state="answered"`, `answered_by="alice"`, `answered_at="`,
 		`copied_from="`+decision+`"`)(line) || strings.Contains(line, "selected=") || strings.Contains(line, "answer=") {
 		t.Fatalf("copy %s opens its block %s, want it answered by alice, naming its source, without the selection or the answer", copied, line)

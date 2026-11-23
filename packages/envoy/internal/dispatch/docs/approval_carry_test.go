@@ -65,9 +65,9 @@ func withAttr(node *pmdoc.Node, name string, value any) *pmdoc.Node {
 	return node
 }
 
-// The blocks the pure tests of the carry's node test read: own, a decided block as the roll window
-// writes it from its row (ownDecided), and open, the block of an open row; ownBare and openBare are
-// the same blocks as a version written once the fleet is one build holds them, with none of the
+// The blocks the pure tests of the carry's node test read: own, a decided block as the release
+// before wrote it from its row (ownDecided), and open, the block of an open row; ownBare and
+// openBare are the same blocks as a version an upload wrote holds them, with none of the
 // server-owned attributes.
 const (
 	ownAnswered   = `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00.123456Z"`
@@ -95,15 +95,15 @@ func ownAndOpenRows() map[string]model.Ask {
 }
 
 // A block of the version just written agrees with its node, the row that projects it, when it
-// shows no answer state other than the row's: none at all, as every block of a version written
-// once the fleet is one build, or what the roll window keeps in step with the row - with the
-// answer's words, or without them where the document has no room for them, as the answer route
-// and settlement write such a block (rollWindowAskAttributesWithheld) and the release before
-// wrote it. A copy's provenance on a block of the document's own, a block settlement could not
-// read, and a state, answerer, time, selection or answer other than the row's each disagree, and
-// so does the block of a decided row that asks other wording than the row was decided on or that
-// settlement cannot read. An open row's body is free. A copy of another document's ask agrees with
-// its source the same way, its provenance among what the roll window keeps.
+// shows no answer state other than the row's: none at all, as a version an upload wrote holds, or
+// what the release before kept in step with the row - with the answer's words, or without them
+// where the document had no room for them (rollWindowAskWrite), the form every write of this
+// build keeps of an ask that is not open (keptAskState). A copy's provenance on a block of the
+// document's own, a block settlement could not read, and a state, answerer, time, selection or
+// answer other than the row's each disagree, and so does the block of a decided row that asks
+// other wording than the row was decided on or that settlement cannot read. An open row's body is
+// free. A copy of another document's ask agrees with its source the same way, its provenance among
+// what a version keeps.
 func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 	rows := ownAndOpenRows()
 	for name, test := range map[string]struct {
@@ -111,10 +111,10 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 		node   *pmdoc.Node
 		agrees bool
 	}{
-		"a decided block with none of the attributes":         {"own", askNodeOf(t, ownBare+ownBody), true},
-		"an open block with none of the attributes":           {"open", askNodeOf(t, openBare+openBody), true},
-		"a decided block as the roll window keeps it in step": {"own", askNodeOf(t, ownDecided+ownBody), true},
-		"an open block as the roll window keeps it in step":   {"open", askNodeOf(t, openDirective+openBody), true},
+		"a decided block with none of the attributes":    {"own", askNodeOf(t, ownBare+ownBody), true},
+		"an open block with none of the attributes":      {"open", askNodeOf(t, openBare+openBody), true},
+		"a decided block as the release before wrote it": {"own", askNodeOf(t, ownDecided+ownBody), true},
+		"an open block as the release before wrote it":   {"open", askNodeOf(t, openDirective+openBody), true},
 		// The document had no room for the answer's words: the block says who answered and when.
 		"a decided block with its answer left out for want of room": {"own", askNodeOf(t, ownWithheld+ownBody), true},
 		// An open row's question is still being written: its block may ask what the row does not yet.
@@ -150,7 +150,7 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 		}
 	}
 
-	// A copy of own on another document, as the roll window writes it from own's row, its
+	// A copy of own on another document, as the release before wrote it from own's row, its
 	// provenance after who answered and when; copyWords is the answer's words it holds beside them.
 	const source = "dispatch://TEST-1/artifact/source-md"
 	copyOf := ownAnswered + ` copied_from="own-ask" copied_from_document="` + source + `"`
@@ -160,7 +160,7 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 		agrees bool
 	}{
 		"a copy with none of the attributes":                   {askNodeOf(t, ownBare+ownBody), true},
-		"a copy as the roll window keeps it in step":           {askNodeOf(t, copyOf+copyWords+"}\n"+ownBody), true},
+		"a copy as the release before wrote it":                {askNodeOf(t, copyOf+copyWords+"}\n"+ownBody), true},
 		"a copy with its answer left out for want of room":     {askNodeOf(t, copyOf+"}\n"+ownBody), true},
 		"a copy showing another answerer, its answer left out": {askNodeOf(t, strings.Replace(copyOf, `answered_by="alice"`, `answered_by="bob"`, 1)+"}\n"+ownBody), false},
 		"a copy naming no source, its answer left out":         {askNodeOf(t, ownWithheld+ownBody), false},
@@ -173,11 +173,11 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 	}
 
 	// An older build answered own in a row that names no node, and the boot's backfill has not yet
-	// stated that answer on own's node, which still holds it open: every write on a fleet of one
-	// build writes a block's kept attributes from the node (keptAskState, onItsNode), which keep no
-	// state of an open ask, so a block showing what the node holds agrees, as one showing the row's
-	// does. A block showing a state neither holds disagrees, and so does `state="open"`, which no
-	// write of this build stores and the release before wrote only beside its own row's open state.
+	// stated that answer on own's node, which still holds it open: every write writes a block's
+	// kept attributes from the node (keptAskState, onItsNode), which keep no state of an open ask,
+	// so a block showing what the node holds agrees, as one showing the row's does. A block showing
+	// a state neither holds disagrees, and so does `state="open"`, which no write of this build
+	// stores and the release before wrote only beside its own row's open state.
 	behind := rows["own"]
 	behind.State, behind.Answer = asks.StateOpen, nil
 	for name, test := range map[string]struct {
@@ -362,7 +362,7 @@ func TestCarryVerdictCarriesTheReadingsOfDecisionsAndAnsweredAsks(t *testing.T) 
 	retyped := `:::decision{#r1 replaced="false"}` + "\nThe agent reads it as Friday.\n:::\n"
 	ownWithReading := `::::ask{#own urgency="low" multiple="false"}` + "\n" + strings.TrimSuffix(ownBody, ":::\n") + "\n" +
 		reading("r3", "The agent reads it as East.") + "::::\n"
-	// ownWithReadingDecided is ownWithReading as the roll window keeps it in step with own's row.
+	// ownWithReadingDecided is ownWithReading as the release before wrote it from own's row.
 	ownWithReadingDecided := ":" + ownDecided + strings.TrimPrefix(ownWithReading, `::::ask{#own urgency="low" multiple="false"}`+"\n")
 	answered := map[string]bool{"own": true}
 	parse := func(markdown string) *pmdoc.Node {
@@ -520,9 +520,9 @@ func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID strin
 // An agent on the document socket writes an ask block in the attributes only the server writes:
 // answered, by alice, who approved version 1. Its question is empty, so settlement cannot read it
 // and writes no row for it; it flags the block invalid in the live tree (the renderer writes no
-// `invalid` into markdown), and since the fleet is one build - no other build is registered - it
-// takes the forged attributes off the block, so version 2 holds none of the seven a version can
-// store and the live tree holds none of them either. The carry reads the rows and not the block:
+// `invalid` into markdown), and takes the forged attributes off the block, so version 2 holds none
+// of the seven a version can store and the live tree holds none of them either. The carry reads
+// the rows and not the block:
 // a node no row of this document backs refuses it, and alice's approval stays at version 1.
 func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
@@ -544,7 +544,7 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	}
 	for _, name := range storedAskAttributes() {
 		if value, held := forged.Attrs[name]; held {
-			t.Errorf("the forged block keeps %s=%v in the live tree, want none of the seven on a fleet of one build", name, value)
+			t.Errorf("the forged block keeps %s=%v in the live tree, want none of the seven", name, value)
 		}
 	}
 	var rows int
@@ -579,9 +579,8 @@ func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.
 }
 
 // answerBlockAs writes login's answer to the block ask blockID of artifactID as the answer route
-// writes it (settleAskAs): on the ask's node and its row, and into the block in step with them -
-// while another build serves (serveTwoBuilds) the answer's words among them, and on a fleet of one
-// build only the ones a version keeps, its state, answerer and time (R3).
+// writes it (settleAskAs): on the ask's node and its row, and into the block in step with them,
+// only the ones a version keeps, its state, answerer and time (R3).
 func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login string, selected []string) {
 	t.Helper()
 	person := model.Actor{Kind: "user", ID: login}
@@ -635,14 +634,13 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses. Another
-// build serves (serveTwoBuilds), so the answer is written into the block and the version without
-// the repeat differs from the approved one in the block's server-owned attributes alone, which
-// R10's case carries.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. The
+// answer's write keeps its state, answerer and time in the block (keptAskState), so the version
+// without the repeat differs from the approved one in the block's server-owned attributes alone,
+// which R10's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
-		serveTwoBuilds(t, database)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
@@ -663,15 +661,14 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	}
 }
 
-// On a fleet of one build, a version a write takes without settling the document first - a named
-// version, and the version an agent's edit takes at once - stores of the seven attributes a
-// version can store only what every version then keeps for the release before's readers
-// (keptAskState): the state, answerer and time, in step with the ask, though the live tree still holds what the roll window
-// wrote into an ask block: here bob's answer, words and all, given while the release before still
-// served. The named version differs from the one alice approved, which the release before's
-// settlement wrote with the open state, in those attributes alone, and every ask of it agrees with
-// its node, so her approval is carried to it by the case that compares the two without them
-// (attributeRemovalCase, R10).
+// A version a write takes without settling the document first - a named version, and the version
+// an agent's edit takes at once - stores of the seven attributes a version can store only what
+// every version keeps for the release before's readers (keptAskState): the state, answerer and
+// time, in step with the ask, though the live tree holds more: here bob's answer's selection,
+// which a document-socket peer put on the block after the answer route wrote it. The named version
+// differs from the one alice approved, which the release before's settlement wrote with the open
+// state, in those attributes alone, and every ask of it agrees with its node, so her approval is
+// carried to it by the case that compares the two without them (attributeRemovalCase, R10).
 func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesTheApproval(t *testing.T) {
 	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -695,34 +692,31 @@ func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesT
 		t.Run(write.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
-			// The release before serves beside this build while the ask opens, and its settlement
-			// writes the ask's state into the block, as this build's does for it.
-			serveTwoBuilds(t, service.store)
 			seedServiceText(t, service, artifactID, spec)
 			settleCurrentGeneration(t, service, artifactID)
-			approved := latestVersionMarkdown(t, service, artifactID)
-			if !strings.Contains(approved, `#ask-1 urgency="med" multiple="false" state="open"}`) {
-				t.Fatalf("the version written while the release before serves = %q, want the ask's block holding its open state", approved)
-			}
 			var number int
 			if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
 				t.Fatal(err)
 			}
+			// The version alice approves is the one the release before's settlement wrote, the
+			// ask's block holding its open state.
+			storedAsTheReleaseBeforeWroteIt(t, service.store, artifactID, number,
+				`#ask-1 urgency="med" multiple="false"}`, `#ask-1 urgency="med" multiple="false" state="open"}`)
 			approveStoredVersion(t, service.store, artifactID, number, "alice")
 
-			// Bob answers while the release before still serves: the roll window writes his answer,
-			// its options among it, into the live block.
+			// Bob answers, and a document-socket peer puts his answer's selection on the live
+			// block, which no write of this build puts there.
 			bob := model.Actor{Kind: "user", ID: "bob"}
 			at := time.Now().UTC()
 			change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
 			change.Who, change.At = bob, at
 			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+				firstAsk(tree).Attrs["selected"] = []string{"Yes"}
+				return tree
+			})
 			if selected := firstAsk(liveTree(t, service, artifactID)).Attrs["selected"]; !sameAskAttribute(selected, []string{"Yes"}) {
-				t.Fatalf("the live block after bob's answer holds selected %v, want the roll window's [Yes]", selected)
-			}
-			// The release before's last process leaves: the fleet is one build.
-			if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
-				t.Fatalf("remove the release before's process: %v", err)
+				t.Fatalf("the live block after the peer's edit holds selected %v, want [Yes]", selected)
 			}
 
 			if err := joinedWrite(service, func(ctx context.Context) error { return write.version(ctx, service, artifactID) }); err != nil {
@@ -761,17 +755,16 @@ func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesT
 
 // A carried approval is carried again by the next version it holds, and that carry's review names
 // the version the person approved, not the carried version between: alice approves the version
-// the release before's settlement wrote with the ask's open state; once the fleet is one build and
-// bob has answered, a named version drops the state and carries her approval (the server-owned
-// attributes' case), and a reading added under bob's answer carries it again (the reading case).
-// Each carry's reason opens with alice's own version, the one she approved (approvalOrigin), as
-// the Legion daemon's intake reads a carry by that opening (intake.CarriedApprovalReasonPrefix).
+// the release before's settlement wrote with the ask's open state; once bob has answered, a named
+// version drops the state and carries her approval (the server-owned attributes' case), and a
+// reading added under bob's answer carries it again (the reading case). Each carry's reason opens
+// with alice's own version, the one she approved (approvalOrigin), as the Legion daemon's intake
+// reads a carry by that opening (intake.CarriedApprovalReasonPrefix).
 func TestACarryOfACarriedApprovalNamesTheVersionThePersonApproved(t *testing.T) {
 	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	serveTwoBuilds(t, service.store)
 	seedServiceText(t, service, artifactID, spec)
 	settleCurrentGeneration(t, service, artifactID)
 	latest := func() int {
@@ -783,10 +776,9 @@ func TestACarryOfACarriedApprovalNamesTheVersionThePersonApproved(t *testing.T) 
 		return number
 	}
 	approved := latest()
+	storedAsTheReleaseBeforeWroteIt(t, service.store, artifactID, approved,
+		`#ask-1 urgency="med" multiple="false"}`, `#ask-1 urgency="med" multiple="false" state="open"}`)
 	approveStoredVersion(t, service.store, artifactID, approved, "alice")
-	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
-		t.Fatalf("remove the release before's process: %v", err)
-	}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	at := time.Now().UTC()
 	change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
@@ -868,17 +860,15 @@ func askOpeningLine(markdown, blockID string) string {
 	return ""
 }
 
-// While another build serves, the answer route and settlement write an answer's words into its
-// block only where the document has room for them; a block without room says who answered and
-// when, as the release before wrote such a block (rollWindowAskAttributesWithheld), and agrees
-// with its node. Alice approves the version the release before's settlement wrote of a document
-// some hundred bytes short of what one upload may hold, the ask's block holding its open state;
-// bob answers in 4,000 characters of words, which the document has no room for, so his answer is
-// written into the block without them, and the version settlement writes of it differs from the
-// one alice approved in the block's server-owned attributes alone. That version carries her
-// approval by R10's case, which its reason names alone, and the ask keeps bob's words whole. Read
-// against the write with the words alone, the block disagreed with its node, and bob's answer
-// superseded her approval.
+// An answer's words never enter its block: the answer route and settlement write who answered and
+// when (keptAskState), the form the release before wrote where its document had no room for the
+// words, and such a block agrees with its node. Alice approves the version the release before's
+// settlement wrote of a document some hundred bytes short of what one upload may hold, the ask's
+// block holding its open state; bob answers in 4,000 characters of words, which the document has
+// no room for, and the version settlement writes of his answer stays within what one upload may
+// hold and differs from the one alice approved in the block's server-owned attributes alone. That
+// version carries her approval by R10's case, which its reason names alone, and the ask keeps
+// bob's words whole.
 func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) {
 	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	// The prose leaves the document 1,000 bytes short of the cap: room for the block's state,
@@ -887,13 +877,11 @@ func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) 
 	words := strings.TrimSpace(strings.Repeat("words ", 4000/len("words ")))
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	serveTwoBuilds(t, service.store)
 	seedServiceText(t, service, artifactID, prose+"\n\n"+ask)
 	settleCurrentGeneration(t, service, artifactID)
 	approved := latestVersionNumber(t, service, artifactID)
-	if line := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1"); line != `:::ask{#ask-1 urgency="med" multiple="false" state="open"}` {
-		t.Fatalf("the version written while the release before serves holds the block %q, want it holding its open state", line)
-	}
+	storedAsTheReleaseBeforeWroteIt(t, service.store, artifactID, approved,
+		`:::ask{#ask-1 urgency="med" multiple="false"}`, `:::ask{#ask-1 urgency="med" multiple="false" state="open"}`)
 	approveStoredVersion(t, service.store, artifactID, approved, "alice")
 
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -927,39 +915,36 @@ func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) 
 }
 
 // A carry names each case the two versions differ by, and none they do not: alice approves the
-// version the release before's settlement wrote of a spec whose decision closes with a reading, its
-// ask answered and its block holding the answer whole, words and selection; once the fleet is one
-// build, a named version takes the selection off the block (it keeps the state, the answerer and
-// the time, keptAskState) and leaves the reading as it was. Both versions hold the reading, which
-// the reading case takes out of each, but they differ in the server-owned attributes alone, so the
-// review carried to the named version records R10's reason and no other, byte for byte. Named
-// after every case that took something out of either version, the reason said the readings had
-// changed too.
+// version the release before's settlement wrote of a spec whose decision closes with a reading,
+// its ask answered and its block holding the answer whole, words and selection; a named version
+// holds the block as every version keeps it, without the selection (it keeps the state, the
+// answerer and the time, keptAskState), and leaves the reading as it was. Both versions hold the
+// reading, which the reading case takes out of each, but they differ in the server-owned
+// attributes alone, so the review carried to the named version records R10's reason and no other,
+// byte for byte. Named after every case that took something out of either version, the reason
+// said the readings had changed too.
 func TestACarryOverReadingsThatStandUnchangedNamesTheAttributeRemovalAlone(t *testing.T) {
 	const reading = ":::reading{#r1}\nThe agent reads it as Friday.\n:::\n"
 	const spec = "Context\n\n::::decision{#d1}\nWe ship on Friday.\n\n" + reading + "::::\n\n" +
 		":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	serveTwoBuilds(t, service.store)
 	seedServiceText(t, service, artifactID, spec)
 	settleCurrentGeneration(t, service, artifactID)
 	answerBlockAs(t, service, artifactID, "ask-1", "bob", []string{"Yes"})
 	settleCurrentGeneration(t, service, artifactID)
 	approved := latestVersionNumber(t, service, artifactID)
-	answered := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1")
+	kept := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1")
 	if markdown := latestVersionMarkdown(t, service, artifactID); !strings.Contains(markdown, reading) ||
-		!strings.HasPrefix(answered, `:::ask{#ask-1 urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="`) ||
-		!strings.HasSuffix(answered, ` selected="[&#x22;Yes&#x22;]"}`) {
-		t.Fatalf("the version written while the release before serves = %q, want the decision's reading and the ask's block holding its answer whole", markdown)
+		!strings.HasPrefix(kept, `:::ask{#ask-1 urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="`) ||
+		!strings.HasSuffix(kept, `"}`) || strings.Contains(kept, "selected=") {
+		t.Fatalf("the version settlement wrote of bob's answer = %q, want the decision's reading and the ask's block holding the attributes a version keeps", markdown)
 	}
-	kept := strings.TrimSuffix(answered, ` selected="[&#x22;Yes&#x22;]"}`) + "}"
+	// The version alice approves is the one the release before's settlement wrote, the ask's block
+	// holding the answer whole.
+	storedAsTheReleaseBeforeWroteIt(t, service.store, artifactID, approved, kept, wholeAnswer(kept))
 	approveStoredVersion(t, service.store, artifactID, approved, "alice")
 
-	// The release before's last process leaves: the fleet is one build.
-	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
-		t.Fatalf("remove the release before's process: %v", err)
-	}
 	if err := joinedWrite(service, func(ctx context.Context) error {
 		_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
 		return err
@@ -982,40 +967,58 @@ func TestACarryOverReadingsThatStandUnchangedNamesTheAttributeRemovalAlone(t *te
 	}
 }
 
-// carrySpec is a one-ask document whose ask a person answers while the release before serves,
-// whose block the release before's settlement writes the answer into, words and selection.
+// carrySpec is a one-ask document whose ask a person answers (approvedWithTheWholeAnswer).
 const carrySpec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// approvedBeforeOneBuild seeds carrySpec into a new document while the release before serves
-// beside this build, settles it, has bob answer its ask and settles that, records alice's approval
-// of the version settlement wrote - its block holding the answer whole - with reason ("" for
-// none), and then has the release before's last process leave, so the fleet is one build and the
-// next version takes the answer's selection off the block (keptAskState). It answers the service,
-// the document and the version alice approved.
-func approvedBeforeOneBuild(t *testing.T, reason string) (*Service, string, int) {
+// approvedWithTheWholeAnswer seeds carrySpec into a new document, settles it, has bob answer its
+// ask and settles that, stores the version settlement wrote as the release before's settlement
+// wrote it - its block holding the answer whole, its selection among it - and records alice's
+// approval of that version with reason ("" for none), so the next version, which keeps no
+// selection (keptAskState), differs from it in the server-owned attributes alone. It answers the
+// service, the document and the version alice approved.
+func approvedWithTheWholeAnswer(t *testing.T, reason string) (*Service, string, int) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	serveTwoBuilds(t, service.store)
 	seedServiceText(t, service, artifactID, carrySpec)
 	settleCurrentGeneration(t, service, artifactID)
 	answerBlockAs(t, service, artifactID, "ask-1", "bob", []string{"Yes"})
 	settleCurrentGeneration(t, service, artifactID)
 	approved := latestVersionNumber(t, service, artifactID)
-	if line := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1"); !strings.Contains(line, ` state="answered" answered_by="bob" `) ||
-		!strings.HasSuffix(line, ` selected="[&#x22;Yes&#x22;]"}`) {
-		t.Fatalf("the version written while the release before serves holds the block %q, want it holding its answer whole", line)
+	line := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1")
+	if !strings.Contains(line, ` state="answered" answered_by="bob" `) || strings.Contains(line, "selected=") {
+		t.Fatalf("the version settlement wrote of bob's answer holds the block %q, want the attributes a version keeps", line)
 	}
+	storedAsTheReleaseBeforeWroteIt(t, service.store, artifactID, approved, line, wholeAnswer(line))
 	if _, err := service.store.Pool.Exec(context.Background(), `
 		insert into artifact_reviews (artifact_id, version, state, actor, reason)
 		values ($1, $2, 'approved', '{"kind":"user","id":"alice"}', nullif($3, ''))
 	`, artifactID, approved, reason); err != nil {
 		t.Fatalf("approve version %d as alice: %v", approved, err)
 	}
-	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
-		t.Fatalf("remove the release before's process: %v", err)
-	}
 	return service, artifactID, approved
+}
+
+// wholeAnswer is kept, the opener of an ask block bob answered Yes to as a version of this build
+// keeps it (keptAskState), with the selection the release before also wrote into it.
+func wholeAnswer(kept string) string {
+	return strings.TrimSuffix(kept, "}") + ` selected="[&#x22;Yes&#x22;]"}`
+}
+
+// storedAsTheReleaseBeforeWroteIt rewrites the stored markdown of version number of artifactID as
+// the release before's settlement wrote it, which kept every server attribute of an ask block in
+// step with its ask (rollWindowAskWrite with the answer's words): from, an opener as this build's
+// settlement wrote it (keptAskState), becomes to. It fails unless the version holds from.
+func storedAsTheReleaseBeforeWroteIt(t *testing.T, database *store.Store, artifactID string, number int, from, to string) {
+	t.Helper()
+	markdown := storedVersionMarkdown(t, database, artifactID, number)
+	if !strings.Contains(markdown, from) {
+		t.Fatalf("version %d = %q, want it holding %q", number, markdown, from)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`,
+		artifactID, number, strings.Replace(markdown, from, to, 1)); err != nil {
+		t.Fatalf("store version %d as the release before wrote it: %v", number, err)
+	}
 }
 
 // namedVersionByTheAgent names the live document as a version, as the agent's session, and
@@ -1049,7 +1052,7 @@ func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T)
 		{"a version before hers that only bob approved", "Carried forward from the approval of version 1: as I read it.", 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service, artifactID, approved := approvedBeforeOneBuild(t, test.reason)
+			service, artifactID, approved := approvedWithTheWholeAnswer(t, test.reason)
 			if test.bob > 0 {
 				approveStoredVersion(t, service.store, artifactID, test.bob, "bob")
 				// Bob's approval is older than alice's, whose approval is the newest review.
@@ -1072,13 +1075,13 @@ func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T)
 }
 
 // A version restoring the text of a version an approval was carried to says so: alice approves
-// version A, written while the release before serves; once the fleet is one build a named version
-// D drops the answer's selection and carries her approval; an edit of the prose supersedes it; and
+// version A, as the release before's settlement wrote it; a named version D drops the answer's
+// selection and carries her approval; an edit of the prose supersedes it; and
 // the edit undone restores D's text byte for byte, not A's. The approval carried to the restoring
 // version names the version alice approved and the version whose text it holds, D, which her
 // approval was carried to; said to hold A's text, the reason was false.
 func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) {
-	service, artifactID, approved := approvedBeforeOneBuild(t, "")
+	service, artifactID, approved := approvedWithTheWholeAnswer(t, "")
 	dropped := namedVersionByTheAgent(t, service, artifactID, "The state dropped")
 	if reason := approvedReasonAt(t, service, artifactID, dropped); reason != attributeRemovalReason(approved) {
 		t.Fatalf("the review carried to version %d reads %q, want %q", dropped, reason, attributeRemovalReason(approved))

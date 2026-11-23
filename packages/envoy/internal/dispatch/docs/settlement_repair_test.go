@@ -23,14 +23,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// While another build serves, settlement repairs an ask block's server-owned attributes - the
-// answer written into the block for the release before's pages (rollWindowAskAttributes) - into
-// the document as it stands when the repair is written, not into the tree settlement read before
-// its database work: a paragraph a browser edits in between keeps the edit, and the stored
-// document and the version the settlement writes hold both (LEGION-479).
+// Settlement repairs an ask block's server-owned attributes - the answer's state, answerer and
+// time, which a version keeps (keptAskState), written into the block of an ask a route answered on
+// its node alone - into the document as it stands when the repair is written, not into the tree
+// settlement read before its database work: a paragraph a browser edits in between keeps the edit,
+// and the stored document and the version the settlement writes hold both (LEGION-479).
 func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
@@ -48,7 +47,7 @@ func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 	}
 
 	want := ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
-		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n:::\n\nContext after.\n"
+		answer.At.Format(time.RFC3339Nano) + "\"}\nShip it?\n:::\n\nContext after.\n"
 	waitForDocumentText(t, service, artifactID, want)
 	waitForPersistedProofText(t, service.store, artifactID, want)
 	requireLatestVersionMarkdown(t, service, artifactID, want)
@@ -86,10 +85,10 @@ func TestSettlementStampVersionKeepsAnEditMadeAfterItsRead(t *testing.T) {
 // left, and its repair's write loaded the room again from the store - writes nothing into the
 // replacement: its version is read from the document it held, which would never get the repair.
 // The settlement the replacement's load arms versions the document with the repair (LEGION-479).
-// The repair is the answer settlement writes into the block while another build serves.
+// The repair is the answer's state, answerer and time settlement writes into the block
+// (keptAskState).
 func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
@@ -122,20 +121,19 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 	settleCurrentGeneration(t, service, artifactID)
 
 	want := ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
-		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n:::\n\nContext after.\n"
+		answer.At.Format(time.RFC3339Nano) + "\"}\nShip it?\n:::\n\nContext after.\n"
 	waitForDocumentText(t, service, artifactID, want)
 	waitForPersistedProofText(t, service.store, artifactID, want)
 	requireLatestVersionMarkdown(t, service, artifactID, want)
 }
 
-// A settlement that repairs a block - the answer it writes into the block while another build
-// serves - versions the document as it stands after its repairs, so the version holds an edit a
-// browser made during the settlement's database work. It credits that edit's author too: the
-// edit's own settlement finds the document already versioned and writes no version that could
-// credit them (LEGION-479).
+// A settlement that repairs a block - the answer's state, answerer and time it writes into the
+// block (keptAskState) - versions the document as it stands after its repairs, so the version
+// holds an edit a browser made during the settlement's database work. It credits that edit's
+// author too: the edit's own settlement finds the document already versioned and writes no
+// version that could credit them (LEGION-479).
 func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
@@ -168,10 +166,10 @@ func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 // An edit a browser makes after a repairing settlement has read the tree its version is rendered
 // from - while that version renders - is not in the version, so the version does not credit its
 // author. The version the edit's own settlement writes holds it and credits them (LEGION-479).
-// The repair is the answer settlement writes into the block while another build serves.
+// The repair is the answer's state, answerer and time settlement writes into the block
+// (keptAskState).
 func TestSettlementRepairCreditsNoAuthorOfAnEditMadeWhileItsVersionRenders(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
@@ -190,7 +188,7 @@ func TestSettlementRepairCreditsNoAuthorOfAnEditMadeWhileItsVersionRenders(t *te
 		t.Fatal("settlement never reached the window between its version's read and its render")
 	}
 	repaired := ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
-		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n:::\n\n"
+		answer.At.Format(time.RFC3339Nano) + "\"}\nShip it?\n:::\n\n"
 	requireLatestVersionMarkdown(t, service, artifactID, repaired+"Context before.\n")
 	repairVersion := latestVersionNumber(t, service, artifactID)
 	if authors := latestVersionAuthors(t, service, artifactID); slices.Contains(authors, bob) {
@@ -232,11 +230,10 @@ func latestVersionAuthors(t *testing.T, service *Service, artifactID string) []m
 // so the update is unstored when the repair is appended. The version never stands ahead of the
 // store - the stored updates through its doc_update_version fold to its text, whatever becomes of
 // the edit's own append - and the edit's own settlement finds the document already versioned
-// (LEGION-479). The repair is the answer settlement writes into the block while another build
-// serves.
+// (LEGION-479). The repair is the answer's state, answerer and time settlement writes into the
+// block (keptAskState).
 func TestSettlementStoresAnEditItsRepairedVersionHoldsBeforeTheRepair(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
@@ -254,7 +251,7 @@ func TestSettlementStoresAnEditItsRepairedVersionHoldsBeforeTheRepair(t *testing
 		t.Fatal("settlement never reached the window between its read and its repair")
 	}
 	want := ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
-		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n:::\n\nContext after.\n"
+		answer.At.Format(time.RFC3339Nano) + "\"}\nShip it?\n:::\n\nContext after.\n"
 	requireLatestVersionMarkdown(t, service, artifactID, want)
 	versioned := latestVersionNumber(t, service, artifactID)
 	assertStoredOrder(t, service, artifactID)
@@ -426,13 +423,12 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	}
 }
 
-// A settlement that both stamps block ids and repairs an ask block - the answer it writes into the
-// block while another build serves - writes two updates into the room, and the room's persistence
-// worker is handed each on its own. Both are held from it and released once each reaches it
-// (LEGION-479).
+// A settlement that both stamps block ids and repairs an ask block - the answer's state it writes
+// into the block (keptAskState) over the `state="open"` the release before wrote - writes two
+// updates into the room, and the room's persistence worker is handed each on its own. Both are
+// held from it and released once each reaches it (LEGION-479).
 func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 	service, artifactID := newTestService(t)
-	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
 	service.settleRoom(artifactID, 0)
@@ -759,9 +755,9 @@ func (pause *repairCommitPause) let() {
 }
 
 // answerBlockAsk answers the document's one indexed ask through the one writer of an ask's answer
-// state (asks.Settle), on its node and its row and nowhere in its document. While another build
-// serves (serveTwoBuilds) the block then disagrees with it until settlement repairs the block
-// (rollWindowAskAttributes); on a fleet of one build no byte of the block holds the answer.
+// state (asks.Settle), on its node and its row and nowhere in its document. The block then
+// disagrees with it until settlement repairs the block, writing the answer's state, answerer and
+// time into it (keptAskState).
 func answerBlockAsk(t *testing.T, service *Service, artifactID string) model.AskAnswer {
 	t.Helper()
 	answer := model.AskAnswer{User: "alice", Selected: []string{}, At: time.Now().UTC()}
