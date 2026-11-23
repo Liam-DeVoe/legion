@@ -185,3 +185,51 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 	// merge, and the issue is done and leaves the workflow".
 	assertTask(t, tasksOf(t, pool, engine, root.Key), "b", record.TaskRunning, atMerge)
 }
+
+// Only the retro of the task that ends the issue is held for the issues beneath it. Of a and b, each
+// `implementer` with no acceptance step, both merging, with LEGION-209 in the workflow beneath
+// LEGION-208: a passes its step while b implements, and its retro starts, with no hold and no
+// retro-held notice. a's retro passes and its pull request merges, so a is done. b passes its step:
+// b is the last task to finish, so it is held before its retro for the issues beneath, hold children,
+// with no retro started, and its owner is told once, in a retro-held notice naming the child.
+//
+// The fault it catches is an early task's retro held for a child, so a task that merges by itself
+// waits for the whole tree (its control: beneathRetro with no read of lastToFinish, the revision
+// before, which holds a).
+func TestOnlyTheLastTasksRetroIsHeldForTheIssuesBeneath(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedAAndB(t, pool, engine, root.Key, root.Generation, atStep(1), atStep(1), 45)
+
+	taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+	a := tasksOf(t, pool, engine, root.Key)["a"]
+	if a.State != record.TaskRunning || a.Place != atRetro || a.HoldReason != "" {
+		t.Fatalf("task a after its step passed is %s at %+v, hold %q, want running at its retro with no hold: b runs", a.State, a.Place, a.HoldReason)
+	}
+	if starts := actStarts(t, pool, root.Key, "a", record.PlaceRetro); starts != 1 {
+		t.Fatalf("the retro of a counts %d starts, want 1: a is not the last task to finish", starts)
+	}
+	if held := noticesOfKind(t, pool, root.Key, "retro-held"); len(held) != 0 {
+		t.Fatalf("the retro-held notices of %s = %+v, want none", root.Key, held)
+	}
+
+	taskMoves(t, pool, engine, root.Key, "a", TriggerRetroCompleted, "")
+	mustSpend(t, "the merge of a's pull request", applyFacts(t, pool, engine)("merged-a",
+		intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-a"}))
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskDone, atMerge)
+
+	taskMoves(t, pool, engine, root.Key, "b", TriggerImplementationReady, "")
+	b := tasksOf(t, pool, engine, root.Key)["b"]
+	if b.State != record.TaskHeld || b.Place != atRetro || b.HoldReason != record.HoldForChildren {
+		t.Fatalf("task b after its step passed is %s at %+v, hold %q, want held at its retro for the issues beneath", b.State, b.Place, b.HoldReason)
+	}
+	if starts := actStarts(t, pool, root.Key, "b", record.PlaceRetro); starts != 0 {
+		t.Fatalf("the retro of b counts %d starts, want none: it is held", starts)
+	}
+	held := noticesOfKind(t, pool, root.Key, "retro-held")
+	if want := retroHeldNotice(root.Key, []string{heldParentChild}).Reason; len(held) != 1 || held[0].Reason != want {
+		t.Fatalf("the retro-held notices of %s = %+v, want one: %q", root.Key, held, want)
+	}
+}
