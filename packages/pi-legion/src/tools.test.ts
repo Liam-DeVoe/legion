@@ -2303,8 +2303,10 @@ test("read_state's summary lists another claim of a role after the workers of it
   if (running === undefined || tester === undefined) {
     throw new Error("INFRA-100 lacks its tester");
   }
-  const token = "legion-acme-infra-100-tester";
-  running.otherClaims = [{ role: "tester", claim: { ...tester, token, state: "suspended" } }];
+  const claimToken = "legion-acme-infra-100-tester";
+  running.otherClaims = [
+    { role: "tester", claim: { ...tester, token: claimToken, state: "suspended" } },
+  ];
   const { daemon } = recordingDaemon({ state });
   const summary = await controllerTool(daemon, []).execute(
     "",
@@ -2316,7 +2318,7 @@ test("read_state's summary lists another claim of a role after the workers of it
   const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
   const under = text.split("\n").filter((line) => line.startsWith("  "));
   expect(under.at(-1)).toBe(
-    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"} claim ${token}`
+    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"} claim ${claimToken}`
   );
 });
 
