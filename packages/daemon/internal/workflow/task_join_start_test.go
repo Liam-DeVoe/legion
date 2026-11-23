@@ -96,7 +96,11 @@ func TestEachStartOfATaskWaitsForItsJoin(t *testing.T) {
 		seedTaskBranch(t, pool, root.Key, "c", "legion/"+root.Key+".c")
 
 		onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-			_, err := engine.startReady(ctx, tx, issue)
+			stored, err := engine.store.Plan(ctx, tx, issue.Key, issue.Generation)
+			if err != nil {
+				return err
+			}
+			_, err = engine.startReady(ctx, tx, issue, stored, "")
 			return err
 		})
 

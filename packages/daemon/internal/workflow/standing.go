@@ -99,9 +99,10 @@ func ownersText(text string) string {
 //
 // The phase the worker starts in is the phase of s's copy, which each caller has put there before
 // it composes the task, and s's walk is the walk of its task as the caller read it, after any move
-// of its task (moveTask). A run with plan rows whose line holds no place in that phase is
-// refused: no start of such a run names one, and a task that named none would read as an issue
-// with no plan rows.
+// of its task (moveTask). What the plan tells the step is read on s's plan, which the caller read
+// in its transaction, or the start read again once it gave the task its branch (startTaskCopy). A
+// run with plan rows whose line holds no place in that phase is refused: no start of such a run
+// names one, and a task that named none would read as an issue with no plan rows.
 func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope) (Standing, error) {
 	issue, w := s.issue, s.walk
 	var rows []record.PhaseRow
@@ -111,11 +112,7 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope) (Stan
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
 		}
-		stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-		if err != nil {
-			return Standing{}, err
-		}
-		if told, err = planToldOf(issue, stored, w.Task); err != nil {
+		if told, err = planToldOf(issue, s.plan, w.Task); err != nil {
 			return Standing{}, err
 		}
 	}

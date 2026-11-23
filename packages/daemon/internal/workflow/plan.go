@@ -85,29 +85,33 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver). The run is not carried, so the open pull requests of an earlier
 // run that no task of the plan holds close (closeEarlierPullRequests). Each task takes its branch
-// at its start (Engine.start, through startTaskCopy), which the one task of a plan of one passes in
-// the transition that follows, and it answers whether the plan holds several.
-func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+// at its start (Engine.start, through startTaskCopy), and it answers the plan the step settled,
+// which the gate's opening starts its ready tasks on (startReady): the generation's own rows as
+// read, which the step keeps as they are, else the rows it wrote, read again.
+func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (*record.StoredPlan, error) {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if stored == nil {
 		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
-			return false, err
+			return nil, err
 		}
 	}
 	if err := e.takeFirstPlan(ctx, tx, issue, stored, earlier); err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := e.closeEarlierPullRequests(ctx, tx, issue); err != nil {
-		return false, err
+		return nil, err
 	}
-	return stored != nil && len(stored.Tasks) > 1, nil
+	if stored != nil && stored.Version.Generation == issue.Generation {
+		return stored, nil
+	}
+	return e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 }
 
 // notCarriedComment is what the first step of a run that is not carried writes on each pull
@@ -231,12 +235,13 @@ func describeVersion(version record.PlanVersion) string {
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from the
 // walk of each of its tasks (walks), where the run's work starts: at the run's move out of
-// admitted (transition's TriggerGateOpened, which queues it on the walk it read, writePlanOn, and
-// gateOpened for a plan of several tasks), after the first step has settled the plan
-// (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new generation in
-// the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted, after the
-// carry has written its plan rows (record.Store.CarryPlan). A record key that is no issue key
-// writes nothing (recordsSteps), and reads no walk.
+// admitted (startReady at the gate's opening, after the first task's status, which queues it on the
+// plan it read, writePlanOn, and the transition's TriggerGateOpened for a run with no plan rows),
+// after a version of the plan taken once the work started (afterVersion), and at a hand-over's
+// carry, which re-admits an orphan at a new generation in the phase it ran in elsewhere (admit's
+// readmit), so that run never leaves admitted, after the carry has written its plan rows
+// (record.Store.CarryPlan). A record key that is no issue key writes nothing (recordsSteps), and
+// reads no walk.
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil

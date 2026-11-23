@@ -565,7 +565,7 @@ func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, s *TaskScope, role
 // with it.
 func (e *Engine) joinNeeds(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.Role) (bool, error) {
 	issue, w := s.issue, &s.walk
-	queued, err := e.startTaskCopy(ctx, tx, *s)
+	queued, err := e.startTaskCopy(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}
