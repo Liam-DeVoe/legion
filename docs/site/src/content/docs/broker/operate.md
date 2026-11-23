@@ -1769,6 +1769,34 @@ it to fewer people. The AWS counterpart is a policy of `secretsmanager:CreateSec
 `kms:GenerateDataKey` and `kms:Decrypt` through Secrets Manager on the agent-secrets key, and no
 name or owner condition, so both backends behave alike (unproved: no check runs this policy).
 
+## Changing the proxy's hosts
+
+Every intermediate Cipher's proxy signs with must permit exactly the names of the hosts the
+profiles file binds ([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). A pod
+refuses an intermediate with a name more or a name less. So a change that adds a bound host to the
+profiles file, or removes one, changes the names every intermediate must carry, and it follows
+two rules.
+
+- **On a pool (`BROKER_PROXY_CA_POOL`), apply the pool's issuance policy first, then roll the
+  pods.** The policy's permitted DNS names become the new hosts' names, and only then do pods start
+  with the new profiles file. A pod started on the new file while the policy still carries the old
+  names is refused its first intermediate (`its name constraints permit […]; want exactly the bound
+  hosts' names […]`) and is not ready, so the roll keeps the old pods. Apply both in one change:
+  the broker's Deployment depends on the policy, so the same apply updates the policy and then
+  rolls the pods. Between the two, an old pod that renews is refused the new names in the same way,
+  keeps signing with the intermediate it holds, and retries until the roll replaces it. So a roll
+  that stalls for longer than the 2 days a pod renews ahead leaves old pods with no intermediate.
+- **On a mounted intermediate (`BROKER_AIRLOCK_CA_CERT_FILE`), issue a new intermediate for the new
+  names at every host change.** A broker started on the new profiles file with the old
+  intermediate refuses to start. Today's self-signed root is not an intermediate, carries no name
+  constraints, and is exempt from this rule.
+
+The pod compares the names after it renders the profiles file's hosts as the certificate request
+asks for them (`requestedNames`): each host as written, with a `*.` pattern's `*.` removed, so
+`*.googleapis.com` is `googleapis.com`, never `.googleapis.com`. Case is ignored, and a name two
+hosts give appears once. Write the policy's names, or a mounted intermediate's name constraints,
+in that form, with no leading dot.
+
 ## Health and logs
 
 `GET /healthz` answers `200 {"status":"ok"}` while the broker can reach Postgres, and
