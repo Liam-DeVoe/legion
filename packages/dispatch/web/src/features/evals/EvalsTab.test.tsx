@@ -147,13 +147,29 @@ const test = (name: string, body: () => Promise<void>): void =>
     }
   });
 
-/** The tab at `search`, its project's daemon read answering `daemon` ("pending" never answers). */
+/** An eval's detail read as Dispatch answers it: its method, `docText`, and no declared chart. */
+function detailOf(docText: string | null): EvalDetailResponse {
+  return {
+    compare: COMPARE,
+    doc_text: docText,
+    freshness: { refresher_age_seconds: null, rows_updated_at: null },
+    items: [],
+    limit: 1,
+    offset: 0,
+    total: 1,
+    window: WINDOW,
+  };
+}
+
+/** The tab at `search`, its project's daemon read answering `daemon` ("pending" never answers),
+ *  and each eval's detail read answering no method and no declared chart. */
 function renderTab(daemon: LegionSetting | null | "pending" = DAEMON, search = "?window=28d") {
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(() =>
     daemon === "pending" ? Promise.withResolvers<never>().promise : Promise.resolve(daemon)
   );
   const listIssues = spyOn(api, "listIssues");
-  spies.push(getLegionDaemon, listIssues);
+  const getEval = spyOn(api, "getEval").mockResolvedValue(detailOf(null));
+  spies.push(getLegionDaemon, listIssues, getEval);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MemoryRouter initialEntries={[`/projects/ACME/evals${search}`]}>
@@ -162,7 +178,7 @@ function renderTab(daemon: LegionSetting | null | "pending" = DAEMON, search = "
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getLegionDaemon, listIssues };
+  return { getEval, getLegionDaemon, listIssues };
 }
 
 /** The page's live socket, once it has opened one, as Dispatch accepts it. */
@@ -610,23 +626,6 @@ const stateRows: [string, () => Promise<void>][] = [
     "painted, an open panel | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new method (D11a)",
     async () => {
       const user = userEvent.setup();
-      const reads: PromiseWithResolvers<EvalDetailResponse>[] = [];
-      const getEval = spyOn(api, "getEval").mockImplementation(() => {
-        const read = Promise.withResolvers<EvalDetailResponse>();
-        reads.push(read);
-        return read.promise;
-      });
-      spies.push(getEval);
-      const method = (docText: string): EvalDetailResponse => ({
-        compare: COMPARE,
-        doc_text: docText,
-        freshness: { refresher_age_seconds: null, rows_updated_at: null },
-        items: [],
-        limit: 1,
-        offset: 0,
-        total: 1,
-        window: WINDOW,
-      });
       const deploys = (version: number): EvalListItem => {
         const item = charted(evalItem("deploy-frequency", "delivery"), "deploys", "deploys", {
           deploys: 3,
@@ -634,7 +633,13 @@ const stateRows: [string, () => Promise<void>][] = [
         });
         return { ...item, definition: { ...item.definition, version } };
       };
-      renderTab();
+      const { getEval } = renderTab();
+      const reads: PromiseWithResolvers<EvalDetailResponse>[] = [];
+      getEval.mockImplementation(() => {
+        const read = Promise.withResolvers<EvalDetailResponse>();
+        reads.push(read);
+        return read.promise;
+      });
       const socket = await openSocket();
       const sub = await answerView(socket, "delivery", answer([deploys(1)]));
       await user.click(
@@ -642,7 +647,7 @@ const stateRows: [string, () => Promise<void>][] = [
       );
       const panel = screen.getByRole("dialog", { name: "deploy-frequency" });
       await waitFor(() => expect(reads).toHaveLength(1));
-      act(() => reads[0]?.resolve(method("Deploys a day, as version 1 counts them.")));
+      act(() => reads[0]?.resolve(detailOf("Deploys a day, as version 1 counts them.")));
       await waitFor(() =>
         expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
           "Deploys a day, as version 1 counts them."
@@ -657,7 +662,7 @@ const stateRows: [string, () => Promise<void>][] = [
           .getAllByRole("status")
           .map((line) => line.textContent)
       ).toContain("Reading the method…");
-      act(() => reads[1]?.resolve(method("Deploys a day, as version 2 counts them.")));
+      act(() => reads[1]?.resolve(detailOf("Deploys a day, as version 2 counts them.")));
       await waitFor(() =>
         expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
           "Deploys a day, as version 2 counts them."

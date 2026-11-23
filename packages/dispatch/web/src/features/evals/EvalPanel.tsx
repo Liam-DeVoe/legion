@@ -14,7 +14,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
-import { primarySeries } from "./chart-model";
+import { evalName, primarySeries } from "./chart-model";
 import { EvalRows } from "./EvalRows";
 import { type EvalsScope, useEvalsViews } from "./useEvalsViews";
 
@@ -24,12 +24,6 @@ const PANEL_ROWS = 50;
 /** Opens the panel of the eval a slug names, where a page draws one (the Evals tab); null on a
  *  page that draws none. */
 const OpenEvalPanel = createContext<((slug: string) => void) | null>(null);
-
-/** What an eval is called on the page: its name, or its slug where it has none (an eval its first
- *  reading registered). */
-export function evalName(item: EvalListItem): string {
-  return item.definition.name === "" ? item.definition.slug : item.definition.name;
-}
 
 /** A card's or a chart's title: inside a page that draws the number's panel, a button that opens
  *  the panel of the eval `slug` names; elsewhere, or with no eval, the title alone. */

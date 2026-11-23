@@ -5,6 +5,7 @@ import { QueryError } from "../../components/QueryError";
 import { textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
 import {
   type EvalsScope,
+  type EvalsViewSelect,
   type EvalsViewState,
   type EvalsViewStatus,
   useEvalsViews,
@@ -24,31 +25,32 @@ function sectionState(statuses: readonly EvalsViewStatus[]): SectionState {
 /**
  * One section of the Evals tab (dispatch://INFRA-2918/spec R2, R3, R5): its heading, and what its
  * own views answer, painted as each lands, whatever another section's views do. Each section reads
- * its views itself, so a delta of one view renders only the sections that read it. While a view
- * has not answered the section says so on a line of its own; a refused view shows its error with
- * Retry. What the section draws of its views is `children`'s (the target cards draw their cards,
- * each as its own view lands); a section that names none lists its evals by name, and reads "no
- * data" where its views answered none.
+ * its views itself, keeping of each page what it draws (`select`), so a delta of one view renders
+ * only the sections that draw something it moved. While a view has not answered the section says
+ * so on a line of its own; a refused view shows its error with Retry. What the section draws of
+ * its views is `children`'s (the target cards draw their cards, each as its own view lands).
  */
 export function EvalsSection({
   children,
   id,
   kinds,
   scope,
+  select,
   title,
 }: {
   /** Draws the section's views, each as it stands. */
-  children?: (views: readonly EvalsViewState[]) => ReactNode;
+  children: (views: readonly EvalsViewState[]) => ReactNode;
   id: string;
   /** The kinds of eval the section reads, each its own view. */
   kinds: readonly EvalKind[];
   scope: EvalsScope;
+  /** What the section keeps of each page; all of it where absent. */
+  select?: EvalsViewSelect;
   title: string;
 }): ReactNode {
   const headingId = useId();
-  const views = useEvalsViews(scope, kinds);
+  const views = useEvalsViews(scope, kinds, select);
   const state = sectionState(views.map((view) => view.status));
-  const items = views.flatMap((view) => view.items);
   return (
     <section
       aria-labelledby={headingId}
@@ -72,24 +74,7 @@ export function EvalsSection({
           {title}: loading…
         </p>
       ) : null}
-      {children === undefined ? (
-        <>
-          {state === "painted" && items.length === 0 ? (
-            <p className={`text-sm ${textMutedOnCanvas}`}>no data</p>
-          ) : null}
-          {items.length === 0 ? null : (
-            <ul className="flex flex-col gap-1 text-sm">
-              {items.map((item) => (
-                <li data-eval={item.definition.slug} key={item.id}>
-                  {item.definition.name}
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      ) : (
-        children(views)
-      )}
+      {children(views)}
     </section>
   );
 }
