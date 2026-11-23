@@ -171,13 +171,17 @@ func (r *ownerHoldRig) tellQueued(t *testing.T, want int) {
 //   - a relaunch into a fresh session while the owner-step is published, the listener forwarding
 //     it to the fresh session the outbox's read of the claim did not yet name, is told nothing
 //     more at that launch's ready: the mark names the session the listener named
-//     (notify.HTTPPublisher.PublishTo).
+//     (notify.HTTPPublisher.PublishTo);
+//   - a fresh session in the launch told the step, one the launch started after its resume of the
+//     session told failed, is told the step once: a mark that names a session is decided by it.
 //
 // The control is the catch-up as it stood (workflow's claimReady at its parent commit): it told
 // the step again at every ready where no owner-step was still queued, so the first two cases, the
 // ready after the fresh session's notice, and the last ready of the retry each queued one more;
-// and the mark of the claim the outbox read before the publish, which named the session the
-// relaunch left, so the last case's ready told the fresh session the step a second time.
+// the mark of the claim the outbox read before the publish, which named the session the
+// relaunch left, so the sixth case's ready told the fresh session the step a second time; and the
+// launch of the mark deciding a ready of that launch whatever session it ran in, so the last
+// case's fresh session was told nothing.
 func TestALaunchTellsTheOwnersStepAgainOnlyToASessionNotToldIt(t *testing.T) {
 	t.Run("a ready of the launch told the step", func(t *testing.T) {
 		r := newToldRig(t)
@@ -254,6 +258,17 @@ func TestALaunchTellsTheOwnersStepAgainOnlyToASessionNotToldIt(t *testing.T) {
 		r.ready(t, "ready:2", ownerHoldLaunch+1, false)
 		if queued := r.queuedOwnerSteps(t); len(queued) != 0 {
 			t.Fatalf("the ready of the fresh session the listener forwarded the step to queued %+v, want nothing: that session holds it", queued)
+		}
+	})
+
+	t.Run("a fresh session in the launch told the step", func(t *testing.T) {
+		r := newToldRig(t)
+		r.tell(t, stepOneTold(), 1)
+		// The launch's resume of the session failed, and the same launch started a fresh one.
+		r.relaunched(t, ownerHoldLaunch, "ses_fresh")
+		r.ready(t, "ready:1-fresh", ownerHoldLaunch, false)
+		if queued := r.queuedOwnerSteps(t); len(queued) != 1 {
+			t.Fatalf("the fresh session of the launch the step was told in queued %+v, want the owner-step once: the session told it is gone", queued)
 		}
 	})
 }
