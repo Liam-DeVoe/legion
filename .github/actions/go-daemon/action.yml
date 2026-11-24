@@ -24,24 +24,29 @@ description: >-
   package, the forced-order step's 10 in the last plain leg, and the race step's, the race-timeout
   input, in the race legs.
 
-  Everything here is what those steps need and nothing else: the job's Postgres service, through
-  LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and LEGION_E2E_PG_DSN - the daemon's unit tests'
-  store, the broker rig its cipher contract tests drive, and Stage 1's;
-  TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by the
-  testcontainers-backed NATS tests, classify's fuzz tests and the daemon's keptPropertyEnv; tmux,
-  jj, Oh My Pi and uv, each refused-without by a test of this module (the comment on each step
-  says which), and the NATS images those tests start; the CodeGraph CLI internal/workspace's
-  real-CLI warm-up test runs, installed with Bun from packages/daemon/docker/codegraph's own
-  lockfile, the worker image's pin of it; the user-namespace sysctl internal/launcher's
-  role-namespace tests need, which the race step runs; setup-go and the go-daemon cache restore,
-  this module's build cache; and gotestsum, which .github/scripts/go-test.sh runs each go test
-  under. Bun, but no workspace install: the tests of this module that need the workspace built, or
-  the repository's skills, are the plugin-pack job's, the daemon-live job's and the agent-harness
-  job's, and the race step skips them by name. The one Bun install here is the CodeGraph CLI's, in
-  its own directory, which is no workspace of the root manifest and reads neither bun.lock nor any
-  workspace's package.json, so the go-daemon filter names no root lockfile, no workspace manifest
-  and no skill, and a change to bun.lock or to one skill runs the plugin-pack and agent-harness
-  tests and no test of this job (dispatch://INFRA-1413, A4).
+  Everything here is what those steps need and nothing else, each in the legs whose steps need
+  it: the job's Postgres service, through LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
+  LEGION_E2E_PG_DSN - the daemon's unit tests' store, the broker rig its cipher contract tests
+  drive, and Stage 1's; TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and
+  LEGION_KEPT_PROPERTY_RUNS, read by the testcontainers-backed NATS tests, classify's fuzz tests and
+  the daemon's keptPropertyEnv; tmux, jj and Oh My Pi in every leg, each refused-without by a test
+  of this module (the comment on each step says which), and testnats.Image, which tests of both
+  kinds start; setup-go and the go-daemon cache restore, this module's build cache; and gotestsum,
+  which .github/scripts/go-test.sh runs each go test under. The plain legs alone take uv and the
+  CodeGraph CLI internal/workspace's real-CLI warm-up test runs, installed with Bun from
+  packages/daemon/docker/codegraph's own lockfile, the worker image's pin of it: their readers,
+  internal/runtime/sandbox and internal/workspace, are no race package. The race legs alone take
+  the two NATS images only internal/intake's and internal/daemon's tests start, and the
+  user-namespace sysctl internal/launcher's role-namespace tests need: all three are race
+  packages, and the plain legs' runs of internal/intake (the drain bound), internal/launcher (the
+  call-graph walk) and internal/testnats (the forced-order tests) start neither image and enter no
+  namespace. Bun, but no workspace install: the tests of this module that need the workspace
+  built, or the repository's skills, are the plugin-pack job's, the daemon-live job's and the
+  agent-harness job's, and the race step skips them by name. The one Bun install here is the
+  CodeGraph CLI's, in its own directory, which is no workspace of the root manifest and reads
+  neither bun.lock nor any workspace's package.json, so the go-daemon filter names no root
+  lockfile, no workspace manifest and no skill, and a change to bun.lock or to one skill runs the
+  plugin-pack and agent-harness tests and no test of this job (dispatch://INFRA-1413, A4).
 
   Each Go step runs through .github/scripts/go-test.sh, which names each test's result in the log
   and, in a merge group, runs a test that failed once more; its jsonfile and rerun report are
@@ -105,12 +110,15 @@ runs:
 
     # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
     # image ships, and refuse on GitHub Actions without one. The pin is read from .omp-pin, the
-    # repository's one copy of it, installed through the mise above (.github/actions/install-omp).
+    # repository's one copy of it, and the release archive is held to the worker image's digest
+    # (.github/actions/install-omp).
     - uses: ./.github/actions/install-omp
 
     # internal/runtime/sandbox's uv link-mode test needs the uv the worker image ships, which
-    # install-uv writes into LEGION_TEST_UV for every later step.
-    - uses: ./.github/actions/install-uv
+    # install-uv writes into LEGION_TEST_UV for every later step; a plain package, so the plain
+    # legs alone.
+    - if: inputs.race-timeout == ''
+      uses: ./.github/actions/install-uv
 
     # internal/workspace's TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli
     # runs the real CodeGraph CLI it finds on PATH, and refuses on GitHub Actions without one.
@@ -121,9 +129,13 @@ runs:
     # Node runtime bundled beside it, so a link in /usr/local/bin, which is on the runner's PATH,
     # puts it on PATH without a write to $GITHUB_PATH. The daemon gives every codegraph call it
     # makes DO_NOT_TRACK=1 itself (internal/workspace/codegraph.go, codegraphEnvironment), as the
-    # image's environment does, so the test's calls never phone home.
-    - uses: ./.github/actions/setup-bun
+    # image's environment does, so the test's calls never phone home. A plain package, so the
+    # plain legs alone; no test the race step runs needs Bun, since the tests of internal/daemon
+    # that run it are among those its -skip leaves to other jobs.
+    - if: inputs.race-timeout == ''
+      uses: ./.github/actions/setup-bun
     - name: Install the CodeGraph CLI
+      if: inputs.race-timeout == ''
       shell: bash
       working-directory: packages/daemon/docker/codegraph
       run: |
@@ -131,14 +143,20 @@ runs:
         sudo ln -s "$PWD/node_modules/@colbymchenry/codegraph-linux-x64/bin/codegraph" /usr/local/bin/codegraph
         command -v codegraph
 
-    # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
-    # for the one test of its refusal), and, for its grant test, Envoy's HubImage
-    # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+    # The daemon's NATS tests start testnats.Image (the hub's 2.15.1), pulled first for the reason
+    # the action gives; the race legs also pull SkippingImage (nats:2.10, for internal/intake's one
+    # test of its refusal) and, for internal/daemon's grant test, Envoy's HubImage
+    # (packages/envoy/testnatsimages), the two images no plain package starts.
     - name: Pull the NATS test container images
       uses: ./.github/actions/pull-test-images
       with:
         consts: |
           packages/daemon/internal/testnats/nats.go Image
+    - name: Pull the NATS test container images only the race packages start
+      if: inputs.race-timeout != ''
+      uses: ./.github/actions/pull-test-images
+      with:
+        consts: |
           packages/daemon/internal/testnats/nats.go SkippingImage
           packages/envoy/internal/testnats/nats.go HubImage
 
@@ -147,8 +165,9 @@ runs:
     # skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces with an
     # AppArmor sysctl, so the job turns it off on its throwaway runner (`|| true`: a runner
     # image without the key restricts nothing), and the unshare after it is the verdict that
-    # the restriction is gone.
+    # the restriction is gone. internal/launcher is a race package, so the race legs alone.
     - name: Allow unprivileged user namespaces (the launcher's role-namespace tests)
+      if: inputs.race-timeout != ''
       shell: bash
       run: |
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
