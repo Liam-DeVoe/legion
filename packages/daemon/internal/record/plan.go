@@ -143,9 +143,11 @@ type ReturnCounts struct {
 // held, "" for one whose agent's claim failed and for every task that is not held. StepWait and
 // StepWaitSince are what the step at a running task's place waits for and since when, nil where it
 // waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
-// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose merge
-// GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
-// where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
+// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose work
+// GitHub refused to merge as a conflict, into the branch the join of its needs is made on: its join
+// branch where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). The work of a
+// need that merged is the default branch's, so a conflict in the merge of the default branch names
+// each need whose work the default branch holds (StoredPlan.StartsFrom). JoinUnmerged says
 // GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
 // work there makes at a start again (SetJoinUnmerged). StartReason is why the step the task stands
 // at was started: a start again at its first step, or a move back to an earlier step
@@ -415,18 +417,14 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
-// MergingTask is the task of p whose work is the issue's that merges: the one task no task needs
-// (plan.Sinks), whatever the plan's count of tasks, and none (false) where the plan holds no task,
-// or more than one task no task needs, which plan.Supported refuses. It is the one rule every
-// reader of the task that merges reads by: the walk of each task (its retro and merge), the base of
-// a task's pull request (BaseOf) and the read of an issue's merge pull request (MergePullRequest).
-func (p *StoredPlan) MergingTask() (string, bool) {
-	tasks := make([]plan.Task, len(p.Tasks))
-	for i, row := range p.Tasks {
-		tasks[i] = plan.Task{ID: row.Task, Needs: row.Needs}
-	}
-	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
-		return sinks[0], true
+// OnlyTaskThatMerges is the one task of p that has a merge, done or to come (TasksThatMerge), and
+// none (false) where p holds no such task or more than one. It is what a reader takes for a fact
+// that no row ties to a task, whose work is the issue's own: a completion, a move back or a read
+// of a row raised before the plan, and a promotion whose role works no step. Where several tasks
+// merge, such a fact is of no one task, so it moves none.
+func (p *StoredPlan) OnlyTaskThatMerges() (string, bool) {
+	if tasks := p.TasksThatMerge(); len(tasks) == 1 {
+		return tasks[0], true
 	}
 	return "", false
 }
