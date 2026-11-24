@@ -1,19 +1,16 @@
 kind: Added
 body: |-
-  A later version of an owner's plan can change the text of a running task alone: Legion takes
-  it, the task goes on at its step, and every later start of the task holds the new text, a
-  resume, a start sent again to a fresh session, a later step, a return and the retro included.
+  A later version of an owner's plan can change the text of a running task alone. Legion takes
+  it, and the task goes on at its step. Every later start of the task holds the new text. That
+  covers a resume, a start sent again to a fresh session, a later step, a return and the retro.
   The running agent is sent nothing for the version. A version that removes a running task or
-  changes any other part of it is still refused. `register_plan` answers each running task's
-  step and the role whose agent works it (`running`, contract 235), and the retro's task now
-  holds the task's text. The owner's prompt puts a decision for an agent into its task's text.
-  On an issue that started on the project's default steps it goes into a document of the
-  owner's own, `owner-plan.md`, whose one block is the task `default`, and the planner's
-  `plan.md` stays as it is. A phase worker takes a newer `plan.md` that changes only the text of
-  the `plan_task` block its `Task:` line names for the owner's decision, which Legion gives to
-  each later start of the task, and sends the planner nothing for it. Any other change, one to a
-  block the planner wrote included, is still the planner's revision, which the worker tells the
-  planner of.
+  changes any other part of it is still refused. The answer of `register_plan` names each task's
+  running steps, each with the role whose agent works it (`running`, contract 235). The owner's
+  prompt puts a decision for an agent into the text of its task's block, in a later version of
+  `plan.md`. A phase worker takes a newer `plan.md` that changes only its own block's text, or
+  only blocks under another task, for the owner's decision. It sends the planner nothing for it,
+  and tells the planner of any other change. A task block names its parent, and Legion carries
+  out no task block under a task with no sub-owner.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: pr5204

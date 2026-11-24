@@ -9,7 +9,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 
 You choose which of Legion's steps each issue of your tree runs.
 An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
-The plan is the issue's `plan.md` document (`dispatch artifact` on the issue), or `owner-plan.md` on an issue that started on the project's default steps (below).
+The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
 ```markdown
@@ -52,6 +52,7 @@ A reason that ends `This release of Legion does not carry it out yet.` names a p
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
@@ -68,9 +69,8 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-An issue that started on the project's default steps is one whose plan in force, when its work started, was Legion's default, with no document.
-Its `plan.md` is the planner's: leave it as it is.
-On such an issue, write your plan, after a stop of the task `default` too, as a document of your own on the issue, `owner-plan.md`, and give each later version of yours as a version of that same document.
+After a stop of the task `default`, a `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
+The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
 ## Reading how plans went
 

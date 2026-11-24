@@ -16,18 +16,16 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 
 ## A decision for an agent
 
-Put each decision for an agent of a task into the task's text, in a later version of the plan.
+Put each decision for an agent into the text of its task's block, in a later version of `plan.md`.
+Then give that version with `register_plan`.
 Every later start of the task holds that text, a new session's start included.
 The agent at work now reads no new start.
-So when the answer of `register_plan` names the step the decision is for, in `running`, also send that step's agent the decision by message.
-On an issue that started on the project's default steps, the task is `default`, which no block of yours names.
-There `plan.md` is the planner's: leave it as it is.
-Create a document of your own on the issue, `owner-plan.md`, whose one task block is `:::plan_task{#default}`, with no `steps`, and whose text holds the decision, and give its id and version to `register_plan`.
-Legion takes that version while the task runs, and stops nothing.
-Give each later version of yours on that issue as a version of the same `owner-plan.md`: Legion refuses another document (`PLAN_DOCUMENT_CHANGED`).
+So when the answer names the step the decision is for as running, also send that step's agent the decision by message.
+Your role prompt says which block holds the text of the task `default`, and when a comment and a message take its place.
 An issue that started its work before Legion took plans has no task text.
 On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
-These rules hold also where a general skill offers another place for a decision: write no decision for an agent there, and keep no record of the work there.
+These rules hold also where a general skill offers another place for a decision.
+Write no decision for an agent there, and keep no record of the work there.
 The issue and its plan are the record of the work to be done.
 
 ## The notices
@@ -37,7 +35,6 @@ The issue and its plan are the record of the work to be done.
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
-  For the task `default`, give it as a version of your own `owner-plan.md`.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
   On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
   To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the default steps at their first step.
