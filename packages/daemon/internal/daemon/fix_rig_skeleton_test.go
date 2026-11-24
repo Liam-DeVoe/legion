@@ -604,7 +604,7 @@ func fixRigDaemonStates(ctx context.Context, pool *store.Pool, issue string) (ma
 // the daemon; its pull request's record; its reviewer's row; each processed_events row of an event
 // the walk sent or of a read the daemon built of GitHub; each check state the daemon holds;
 // Dispatch's check_states_owed rows of the issue; each check.state_changed Dispatch appended; each
-// read of a commit's check runs the fake GitHub answered and each read of the pull request the
+// read of a commit's check runs the fake GitHub answered and each request the daemon's GitHub
 // stand-in answered; each step-record, status, plan-record and fix-job outbox row of the issue, as
 // it appears and as it finishes; the issue's status and closed_at in Dispatch; Dispatch's head row
 // of the pull request; and the lines of the daemon's and Dispatch's logs that name a fact of the
@@ -619,7 +619,7 @@ type fixRigWatch struct {
 	processed                                              map[string]bool
 	states                                                 map[string]string
 	eventSeq                                               int64
-	checkReads, pullReads                                  int
+	checkReads, githubRequests                             int
 	outbox                                                 map[int64]string
 	daemonLog, dispatchLog                                 int
 	failed                                                 map[string]bool
@@ -706,10 +706,10 @@ func (w *fixRigWatch) poll() {
 		r.fact("check-runs-read", "read %d of the fake GitHub's check runs, at %s, of %s at %s: it served %s", w.checkReads,
 			read.At.UTC().Format("15:04:05.000"), read.Repo, read.SHA, strings.Join(served, ", "))
 	}
-	for _, read := range r.pulls.pullReads()[w.pullReads:] {
-		w.pullReads++
-		r.fact("pull-read", "read %d of GET /pulls/%d from the stand-in, at %s: it served %s", w.pullReads, r.number,
-			read.at.UTC().Format("15:04:05.000"), read)
+	for _, request := range r.pulls.requests()[w.githubRequests:] {
+		w.githubRequests++
+		r.fact("github-request", "request %d the daemon's GitHub stand-in answered, at %s: %s", w.githubRequests,
+			request.at.UTC().Format("15:04:05.000"), request)
 	}
 	w.daemonLog = w.logLines("daemon-log", r.logs.String(), w.daemonLog, fixRigDaemonLines)
 	w.dispatchLog = w.logLines("dispatch-log", r.dispatch.output.String(), w.dispatchLog, []string{"check states", "check_states"})
@@ -1036,9 +1036,10 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		r.fact("merger-launched", "the daemon launched %s", r.token(claim.RoleMerger))
 		merged := r.tick()
 		mergeSHA := scratchCIHead(r.key, "merge")
+		// GitHub merges first, as it does on github.com, and then sends the event.
+		r.pulls.merge(mergeSHA, merged)
 		id := r.publishPullRequest("closed", y, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA})
 		r.awaitProcessed(id)
-		r.pulls.merge(mergeSHA, merged)
 		r.waitPhase(phase.Done)
 		r.fact("done-in-daemon", "the record after the merge: %s", fixRigPullRequest(r.pullRequest()))
 	})
