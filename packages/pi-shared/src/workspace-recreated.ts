@@ -2,8 +2,8 @@
  * The notice a resumed agent gets when its role launcher found its workspace recreated since its
  * session was last written: `LEGION_WORKSPACE_RECREATED=true`, which the launcher sets on every
  * generation it starts (packages/daemon/internal/launcher, `WorkspaceRecreatedVariable`).
- * Provisioning built that workspace from the issue's branch as pushed, the repository's default
- * branch when nothing was, so what the session remembers doing there may be gone.
+ * Provisioning built that workspace from the issue's branch as pushed, or, when nothing was, from
+ * the base that branch started from, so what the session remembers doing there may be gone.
  *
  * The text and the identity of one process's notice live here because both harnesses tell a
  * worker the same thing (INFRA-220 D29): the Oh My Pi entry saves it as a custom message ahead of
@@ -65,7 +65,7 @@ export function workspaceRecreatedNotice(
     id: crypto.randomUUID(),
     content:
       `Your workspace was recreated since your last turn: it holds what was pushed to legion/${issue} ` +
-      "(the repository's default branch if nothing was), and anything you had not pushed is gone. " +
+      "(or, if nothing was, the base that branch started from), and anything you had not pushed is gone. " +
       "Before you continue, check the workspace against what you remember doing and re-read the " +
       `last handoff recorded on ${issue} with \`dispatch handoff-read --issue ${issue} --phase <phase>\` ` +
       "(plan, implement, test or review); Dispatch keeps it, whatever the workspace lost.",

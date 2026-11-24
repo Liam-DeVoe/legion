@@ -1285,7 +1285,7 @@ A record that is empty or not one RFC 3339 instant, which an init container kill
 the launcher logs it, takes the workspace as not recreated, and resumes.
 At session start a Legion session's plugin reads the variable and saves one message to the session, ahead of the next turn whatever starts it (a task, an Envoy event):
 `Your workspace was recreated since your last turn: it holds what was pushed
-to legion/<KEY> (the repository's default branch if nothing was), and anything you had not pushed
+to legion/<KEY> (or, if nothing was, the base that branch started from), and anything you had not pushed
 is gone. …` (`packages/pi-legion/src/workspace-recreated.ts`, a steer that starts no turn), with an id of its own process in the message's `details`.
 A prompt, the daemon's next task or a person's direct message that pi-envoy delivers as a user turn, first recovers a failed last turn, and Oh My Pi recovers an empty `length` stop by moving the branch back to that turn's parent, which takes the saved message off the branch with it.
 The plugin's `before_agent_start`, which runs after that recovery on either path, sends the message again when the branch no longer holds this process's copy, a notice an earlier recreation saved not counting, and the turn saves it after the prompt.
