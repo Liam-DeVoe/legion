@@ -31,9 +31,10 @@ func TestABundleOverTheReleasesBoundIsRefusedWithItsSize(t *testing.T) {
 	p := daemon.accept(t)
 	p.open(t)
 
-	// What this workspace bundles to, under a bound it fits: the save itself.
-	p.send(t, shimwire.BundleWorkspace{ID: "bundle-1", Issue: "INFRA-945", MaxBytes: 40 << 20, TimeoutMs: 120_000})
-	got, ok := p.next(t).(shimwire.BundleWorkspaceResult)
+	// What this workspace bundles to, under a bound it fits: the save itself. Neither save's
+	// budget is its subject, so each is far (farBudget), and its answer is read as far.
+	p.send(t, shimwire.BundleWorkspace{ID: "bundle-1", Issue: "INFRA-945", MaxBytes: 40 << 20, TimeoutMs: farBudget(t)})
+	got, ok := p.answer(t).(shimwire.BundleWorkspaceResult)
 	if !ok || !got.OK {
 		t.Fatalf("the shim answered %#v", got)
 	}
@@ -46,8 +47,8 @@ func TestABundleOverTheReleasesBoundIsRefusedWithItsSize(t *testing.T) {
 	}
 
 	// One byte under it: the save is built and then refused, with the size the daemon records.
-	p.send(t, shimwire.BundleWorkspace{ID: "bundle-2", Issue: "INFRA-945", MaxBytes: size - 1, TimeoutMs: 120_000})
-	got, ok = p.next(t).(shimwire.BundleWorkspaceResult)
+	p.send(t, shimwire.BundleWorkspace{ID: "bundle-2", Issue: "INFRA-945", MaxBytes: size - 1, TimeoutMs: farBudget(t)})
+	got, ok = p.answer(t).(shimwire.BundleWorkspaceResult)
 	if !ok {
 		t.Fatalf("the shim answered %#v", got)
 	}
