@@ -270,19 +270,26 @@ runs:
     # server, are Benchmarks, tools that no step runs (cmd/dispatch/store_census_test.go). Each
     # package runs only the tests the tag adds, its -run from .github/scripts/go-tagged-tests.sh,
     # for the reasons the natslive step's comment below gives.
+    # The base is a step of its own, written into $GITHUB_ENV, so the test step below holds no
+    # command substitution check-test-reach.sh's step reader does not read.
+    - name: Fetch the base the basebuild tests compare with
+      if: inputs.part == inputs.legs
+      shell: bash
+      env:
+        BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      run: |
+        if [ -z "$BASE" ]; then
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          BASE=$(git rev-parse HEAD^)
+        else
+          git fetch --no-tags --depth=1 origin "$BASE"
+        fi
+        echo "BASELINE_SHA=$BASE" >> "$GITHUB_ENV"
     - name: Test what the basebuild tag adds that needs no older build
       if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
-      env:
-        BASELINE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       run: |
-        if [ -z "$BASELINE_SHA" ]; then
-          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
-          BASELINE_SHA=$(git rev-parse HEAD^)
-        else
-          git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
-        fi
         bound=$(../../.github/scripts/go-tagged-tests.sh basebuild ./cmd/dispatch)
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-basebuild-dispatch.json" --packages ./cmd/dispatch/ -- -count=1 -timeout 5m -tags basebuild -run "$bound"
         routes=$(../../.github/scripts/go-tagged-tests.sh basebuild ./internal/dispatch/api)
