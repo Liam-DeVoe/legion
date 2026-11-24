@@ -108,59 +108,134 @@ func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	}
 }
 
-// The project's default steps of a new generation are named from the issue's earlier rows, so a
-// name a key held stays that key's, but they cannot be refused as an owner's version is. Generation
-// 1 ran `implementer tester:k reviewer:k`, key k named tester, whose claim records key k's session;
-// generation 2 runs the default steps, whose tester step takes the name tester all the same. So the
-// step is written with that claim's session to leave (record.PlanStep.LeaveSession), every start of
-// the tester's step carries it (record.SuperviseRequest.LeaveSession), and the issue and the
-// controller are told that the agent starts in a session of its own, which was key k's. No agent but
-// key k resumes key k's session. The implementer's step, whose name no key held, carries none.
-func TestTheDefaultStepsOfANewGenerationLeaveTheSessionOfAKeysName(t *testing.T) {
+// A name a key held stays that key's after a later version drops the key: version 1 names key k
+// tester, version 2 drops k and its step, which writes over the rows that showed k's name, and
+// version 3, whose tester step has no key, would take the name tester and so run in k's claim and
+// resume k's session. Version 3 is refused as a plan, 409 PLAN_REFUSED naming key k, before
+// anything is written: the name is read from the lasting record of the names keys held
+// (record.KeyNames, plan_key_names), since no plan_steps row shows it any more.
+func TestANameAKeyHeldStaysItsAfterAVersionDropsTheKey(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)
 	root := stepRoot(t, pool, phase.Admitted)
-	key := root.Key
-	mustTake(t, "version 1", apply(planID(key, 1, 1), ownersPlan(t, key, 1, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
-	keyed := claim.Token(token(t, key, claim.RoleTester))
-	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-		values ($1, 'legion', $2, $2, 'reviewer', 3, 'ses-key-k', '/sessions/ses-key-k.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
-		string(keyed), key); err != nil {
-		t.Fatalf("seed key k's claim: %v", err)
-	}
-	next := root
-	next.Generation = 2
-	seedIssue(t, pool, next)
-
+	key, gen := root.Key, root.Generation
+	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
 	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-	stored := planStandingOf(t, pool, engine, key, 2).plan
-	steps := stored.Steps[defaultTask]
-	if len(steps) < 2 || steps[1].Role != "tester" || steps[1].Agent != "tester" || steps[1].LeaveSession != "ses-key-k" || steps[0].LeaveSession != "" {
-		t.Fatalf("generation 2's default steps are %+v, want the tester's step named tester leaving key k's session ses-key-k, and the implementer's leaving none", steps)
+	if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, "a"); !slices.Equal(got, []claim.Agent{"implementer", "tester", "tester"}) {
+		t.Fatalf("the agents of version 1 = %q, want key k named tester", got)
 	}
-	starts := superviseRowsOf(t, pool, key, "start")
-	var tester, implementer []record.SuperviseRequest
-	for _, start := range starts {
-		switch start.Role {
-		case claim.RoleTester:
-			tester = append(tester, start)
-		case claim.RoleImplementer:
-			implementer = append(implementer, start)
-		}
+	if result := apply("stop-1", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's first stop was refused: %+v", result.Refusal)
 	}
-	if len(tester) != 1 || tester[0].LeaveSession != "ses-key-k" {
-		t.Fatalf("the tester's starts are %+v, want one carrying the session to leave, ses-key-k", tester)
+	mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+	if result := apply("stop-2", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's second stop was refused: %+v", result.Refusal)
 	}
-	for _, start := range implementer {
-		if start.LeaveSession != "" {
-			t.Fatalf("an implementer's start carries the session to leave %q, want none", start.LeaveSession)
-		}
+	before := planStandingOf(t, pool, engine, key, gen)
+	if got := agentsOfTask(before.plan, "a"); !slices.Equal(got, []claim.Agent{"implementer", "reviewer"}) {
+		t.Fatalf("the agents of version 2 = %q, want implementer and reviewer, and no row showing key k's name", got)
 	}
-	told := strings.Join(messageBodies(t, pool), "\n")
-	if !strings.Contains(told, "key k") || !strings.Contains(told, `"ses-key-k"`) {
-		t.Fatalf("the issue was told %q, want the tester's step's new session named, with key k and its session ses-key-k", told)
+
+	id := planID(key, gen, 3)
+	reason := intake.AgentUnnamed("a", 2, "tester", "k")
+	want := &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason.Reason,
+		Reasons: []plan.Refusal{reason}}
+	assertPlanRefusal(t, pool, engine, key, gen, id,
+		apply(id, ownersPlan(t, key, gen, 3, givenTask(t, "Build the widget.", "implementer", "tester", "reviewer"))), want, before)
+}
+
+// The project's default steps after a change of owner are named from the lasting record of the
+// names keys held, but they cannot be refused as an owner's version is. LEGION-209's first owner,
+// the architect of LEGION-208, gave `implementer tester:k reviewer:k`, key k named tester, whose
+// claim records key k's session; LEGION-209 is then admitted as a root of its own, its first step
+// passes over the earlier owner's plan and deletes its rows, and it runs the default steps, whose
+// tester step takes the name tester all the same. So the step is written with that claim's session
+// to leave (record.PlanStep.LeaveSession), its start carries it (record.SuperviseRequest's
+// LeaveSession), and the issue and the controller are told once that the agent starts in a session
+// of its own, which was key k's. The reviewer's step, whose name no key held, carries none.
+//
+// The issue's next run takes the default steps again under the same owner, and nobody is told a
+// second time. Where the claim still records key k's session, since no start of the tester ran to
+// leave it, the tester's step leaves it again; where the claim records a session of its own, the
+// tester's step leaves nothing.
+func TestTheDefaultStepsAfterAChangeOfOwnerLeaveTheSessionOfAKeysName(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session string
+		leaves  string
+	}{
+		{"the claim still records key k's session at the next run", "ses-key-k", "ses-key-k"},
+		{"the claim records a session of its own at the next run", "ses-own", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			engine.cfg.DefaultSteps = []plan.Step{{Role: "tester"}, {Role: "reviewer"}}
+			apply := applyFacts(t, pool, engine)
+			const key = "LEGION-209"
+			recordedAt(t, pool, key, "LEGION-208")
+			mustTake(t, "the first owner's version 1", apply(planID(key, 1, 1), ownersPlan(t, key, 1, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
+			named := claim.Token(token(t, key, claim.RoleTester))
+			if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+				values ($1, 'legion', $2, $2, 'reviewer', 3, 'ses-key-k', '/sessions/ses-key-k.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
+				string(named), key); err != nil {
+				t.Fatalf("seed key k's claim: %v", err)
+			}
+			recordedAt(t, pool, key, key)
+
+			firstStep(t, pool, engine, key)
+
+			steps := planStandingOf(t, pool, engine, key, 1).plan.Steps[defaultTask]
+			if len(steps) != 2 || steps[0].Role != "tester" || steps[0].Agent != "tester" || steps[0].LeaveSession != "ses-key-k" || steps[1].LeaveSession != "" {
+				t.Fatalf("the default steps after the change of owner are %+v, want the tester's step named tester leaving key k's session ses-key-k, and the reviewer's leaving none", steps)
+			}
+			var tester []record.SuperviseRequest
+			for _, start := range superviseRowsOf(t, pool, key, "start") {
+				if start.Role == claim.RoleTester {
+					tester = append(tester, start)
+				}
+			}
+			if len(tester) != 1 || tester[0].LeaveSession != "ses-key-k" {
+				t.Fatalf("the tester's starts are %+v, want one carrying the session to leave, ses-key-k", tester)
+			}
+			toldOnce := func(when string) {
+				t.Helper()
+				var told []string
+				for _, body := range messageBodies(t, pool) {
+					if strings.Contains(body, "key k") {
+						told = append(told, body)
+					}
+				}
+				if len(told) != 1 || !strings.Contains(told[0], `"ses-key-k"`) {
+					t.Fatalf("%s the issue was told %q, want once, naming key k and its session ses-key-k", when, told)
+				}
+				if got := noticesOf(t, pool, key, "session-lost"); len(got) != 1 {
+					t.Fatalf("%s the architect was told %+v, want one session-lost notice", when, got)
+				}
+				var controller int
+				if err := pool.QueryRow(t.Context(), `select count(*) from outbox where issue = $1 and kind = 'controller_notice' and payload->>'kind' = 'session-lost'`,
+					key).Scan(&controller); err != nil || controller != 1 {
+					t.Fatalf("%s the controller was told %d session-lost notices (%v), want one", when, controller, err)
+				}
+			}
+			toldOnce("after the first run's default steps,")
+
+			if _, err := pool.Exec(t.Context(), `update claims set session = $2 where token = $1`, string(named), tc.session); err != nil {
+				t.Fatalf("set the claim's session: %v", err)
+			}
+			next := issueOf(t, pool, engine, key)
+			next.Generation, next.Phase, next.Status = 2, phase.Admitted, "in_progress"
+			seedIssue(t, pool, next)
+
+			firstStep(t, pool, engine, key)
+
+			steps = planStandingOf(t, pool, engine, key, 2).plan.Steps[defaultTask]
+			if len(steps) != 2 || steps[0].Agent != "tester" || steps[0].LeaveSession != tc.leaves {
+				t.Fatalf("the next run's default steps are %+v, want the tester's step named tester leaving %q", steps, tc.leaves)
+			}
+			toldOnce("after the next run's default steps,")
+		})
 	}
 }
