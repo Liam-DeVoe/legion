@@ -277,8 +277,6 @@ $RECYCLE.BIN/
 
 # Playwright output (packages/dispatch e2e)
 packages/dispatch/e2e/test-results/
-# The reverse-order visual run's results (`e2e/visual-run.sh --output=e2e/test-results-reverse`).
-packages/dispatch/e2e/test-results-reverse/
 packages/dispatch/e2e/playwright-report/
 # The row map that `bun e2e/tools/row-map.ts --write` writes. Git does not keep it.
 packages/dispatch/e2e/row-map.md
