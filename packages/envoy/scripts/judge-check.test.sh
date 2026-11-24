@@ -3,8 +3,8 @@
 #
 # Proves, with no stack, no broker build and no Postgres, how judge-check.sh and
 # proxy-chain-check.sh start the stack and a broker of their own (lib/check-stack.sh, which both
-# source), and the one helper they, airlock-check.sh and dev-stack.sh start a process with
-# (lib/exec-env.sh's exec_with_env):
+# source), the one helper they, airlock-check.sh and dev-stack.sh start a process with
+# (lib/exec-env.sh's exec_with_env), and how judge-check.sh says a run's result:
 #   (a) start_extra_broker gives the broker exactly the stack broker's environment and the
 #       overrides it names, copied from a stand-in stack broker whose BROKER_DATABASE_URL holds a
 #       password, and that password is in no process's arguments: not the broker's own, and not
@@ -20,7 +20,9 @@
 #   (f) stack_start passes its options to dev-airlock.sh and reads its banner: every export, each
 #       broker's API and proxy address, pid and log, and the broker binary;
 #   (g) judge-check.sh and proxy-chain-check.sh each source lib/check-stack.sh and define none of
-#       its five functions themselves, so a copy that comes back is caught here.
+#       its five functions themselves, so a copy that comes back is caught here;
+#   (h) judge-check.sh's report says UNKNOWN, and fails, when the run evaluated no property, and
+#       counts a run with one property failing as failed.
 # The lib is sourced into this shell and its functions run here. Needs bash, jq and Linux's /proc.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -202,6 +204,33 @@ for script in judge-check.sh proxy-chain-check.sh; do
   copies="$(grep -cE '^(await|stack_start|broker_env|start_extra_broker|logged_addr)\(\) \{' "$script_dir/$script" || true)"
   check "$script defines none of the lib's five functions itself" test "$copies" = 0
 done
+
+# --- (h) judge-check.sh's result: a run that asserted nothing proved nothing. Its pass, fail,
+# assert and report are read out of the script and run in a subshell, apart from this test's
+# own. ---
+judge_report() { # <assert status>...: report's exit status and its last line
+  (
+    for name in pass fail assert report; do
+      definition="$(sed -n "/^${name}() {/,/^}/p" "$script_dir/judge-check.sh")"
+      [[ -n "$definition" ]] || { echo "judge-check.sh defines no ${name}()"; exit 0; }
+      eval "$definition"
+    done
+    # shellcheck disable=SC2034 # report reads each
+    CHECK_ID=test EXPECTED=() OBSERVED=() CONTROL=() VERDICTS=() PASSED=0 TOTAL=0
+    for status in "$@"; do assert "$status" "a property" "seen"; done
+    status=0
+    report >"$work/judge-report.out" || status=$?
+    echo "$status:$(tail -n1 "$work/judge-report.out")"
+  )
+}
+said="$(judge_report)"
+check "judge-check.sh's report says UNKNOWN and fails when the run evaluated no property" \
+  test "$said" = "1:check test: UNKNOWN (no property was evaluated)"
+[[ "$said" == "1:check test: UNKNOWN"* ]] || printf 'a run of no property: %s\n' "$said"
+check "judge-check.sh's report fails a run with one property of two failing" \
+  test "$(judge_report 0 1)" = "1:check test: failed (1 of 2)"
+check "judge-check.sh's report passes a run whose every property passed" \
+  test "$(judge_report 0 0)" = "0:check test: passed"
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'judge-check.test: %s failed\n' "$failed"

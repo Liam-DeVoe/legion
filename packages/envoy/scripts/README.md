@@ -221,7 +221,8 @@ verifying the chain the broker presented against the test root alone at that mom
 (`-attime`). A step that needs another broker starts one beside the stack's, with the stack
 broker's environment (`lib/exec-env.sh`), and points the two fronts at it. The stack's start, its
 banner reading and the extra-broker launch are `lib/check-stack.sh`, which `judge-check.sh`
-sources too; `judge-check.test.sh` tests that file, with no stack.
+sources too; `judge-check.test.sh` tests that file, with no stack, and that `judge-check.sh`'s
+report of a run that evaluated no property says `UNKNOWN` and fails.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/proxy-chain-check.sh [k27|k21|compat]
@@ -270,8 +271,9 @@ options that check's negative control asks for), runs the check's steps, runs th
 negative control, stops the stack, and prints a result block to paste into `dispatch
 result` — what the check expected, what this run observed and what the control did —
 then one `PASS:` or `FAIL:` line for each property the check's outcome sentence
-names and one for its control, and last `check <id>: passed` or `check <id>: failed
-(<n> of <m>)`.
+names and one for its control, and last `check <id>: passed`, `check <id>: failed
+(<n> of <m>)`, or `check <id>: UNKNOWN` when it evaluated no property, which fails too
+(`airlock-check.test.sh` runs that report on no property, with no stack).
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k3
