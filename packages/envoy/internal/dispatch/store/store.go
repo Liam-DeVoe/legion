@@ -57,7 +57,8 @@ const DSNSetting = "DATABASE_URL"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration. A URL
+// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
 // holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
 // itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
 // failure to parse, open or reach the database is named without the URL's password
@@ -81,6 +82,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
