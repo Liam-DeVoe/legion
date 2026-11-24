@@ -1344,7 +1344,10 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 //
 // PodUID, on the suspension a left pod's close queues after its launcher's clean read, is the pod
 // that read found clean (IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing,
-// read under the runtime's pod lock (internal/daemon's suspendIssue). "" binds no pod.
+// read under the runtime's pod lock (internal/daemon's suspendIssue). "" binds no pod. A release
+// before this field refuses a row that carries it (DisallowUnknownFields), so a rollback waits for
+// such rows to run too (docs/kubernetes.md, "Rolling back the release that keeps no saved
+// workspace").
 type IssueSuspend struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
@@ -1434,7 +1437,10 @@ func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundl
 // PodUID, on the teardown of a release whose launcher reads the workspace first, is the pod that
 // check reads (IssueWorkspaceCheck.PodUID): the teardown takes that pod or nothing, read under the
 // runtime's pod lock, and a pod that took its place since cancels the release (internal/daemon's
-// releaseIssue). "" binds no pod.
+// releaseIssue). "" binds no pod. A release before this field refuses a row that carries it
+// (DisallowUnknownFields), so a rollback waits for such rows to run, an issue_release row behind
+// its check among them (docs/kubernetes.md, "Rolling back the release that keeps no saved
+// workspace").
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
