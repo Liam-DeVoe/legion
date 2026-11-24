@@ -110,14 +110,17 @@ export type FootSelectors = Readonly<Record<string, string>>;
  *  `readFootElements` leaves out each one a page does not show. The selection bar is the one
  *  toolbar with no name: the new issue page's view row is a toolbar named by its controls. The
  *  live view's rows - its row of pickers and its switch lines - stand under its composer, outside
- *  `agent-composer`, in the box `AgentConversationPage` registers. The Agents page's sends stand
- *  above its composer in the stuck box `BroadcastFoot` registers on a wide screen, outside
- *  `Broadcast`; a page with no queued send shows none. The sweep (`e2e/foot-sweep.e2e.ts`) reads
- *  all of them; a row that reads one page takes the entries of that page from here. */
+ *  `agent-composer`, in the box `AgentConversationPage` registers. On a wide screen the Agents
+ *  page's composer, its queued sends above it, or both stand in the stuck box `BroadcastFoot`
+ *  registers, which the selector finds by either; on a narrow or short screen that box is
+ *  `display: contents`, has no box and shows nothing here, and the composer sticks by itself. The
+ *  sweep (`e2e/foot-sweep.e2e.ts`) reads all of them; a row that reads one page takes the entries
+ *  of that page from here. */
 export const FOOT_ELEMENTS = {
   "the selection bar": '[role="toolbar"]:not([aria-label])',
   "the broadcast composer": 'section[aria-label="Broadcast"]',
-  "the broadcast sends": 'div.sticky.bottom-0 > section[aria-label="Sends"]',
+  "the broadcast foot":
+    'div.sticky.bottom-0:has(> section[aria-label="Broadcast"], > section[aria-label="Sends"])',
   "the comment composer": 'form[aria-label="Comment composer"]',
   "the margin's sheet": 'aside[aria-label="Review panel"]',
   "the live view's composer": '[data-testid="agent-composer"]',
