@@ -162,6 +162,30 @@ test("a case with no source.kind loads as a session case", () => {
   );
 });
 
+// Catches: a written case's record of whether its context session ran jj refused, so the screen
+// cannot read it, or a case written before that record refused for lacking it.
+test("a written case's checkout loads with jj true, false or absent, and one whose jj is no boolean is refused", () => {
+  const base = alphaDir("base-checkout-jj");
+  const source = { ...f1Case().source, kind: "written" as const };
+  const checkout = {
+    repo: "acme/project",
+    commit: "fedcba9876543210",
+    root: "/work/acme/project",
+    cwd: "/work/acme/project",
+  };
+  const rows = [undefined, true, false].map((jj, n) => ({
+    ...f1Case(`c-jj-${n}`),
+    source,
+    checkout: jj === undefined ? checkout : { ...checkout, jj },
+  }));
+  expect(loadCases(caseFile("checkout-jj", rows), base)).toEqual(rows);
+  const odd = { ...f1Case("c-jj-odd"), source, checkout: { ...checkout, jj: "yes" } };
+  const file = caseFile("checkout-jj-odd", [odd]);
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-jj-odd (${file}:1) is not a case: checkout.jj`
+  );
+});
+
 test("a subagent's case, with its recorded system prompt and tools, loads; a context of another shape is refused", () => {
   const base = alphaDir("base-subagent");
   const c1 = f1Case("c-subagent");

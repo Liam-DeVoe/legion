@@ -11,6 +11,7 @@ import {
   READ_ONLY_TOOLS,
   readOnlyCall,
   removeOutsideLinks,
+  sandboxedBash,
 } from "./checkout";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
@@ -41,34 +42,43 @@ function linkedCopy(name: string): string {
 /** The guide of the made-up checkout. */
 const GUIDE = "# Guide\n\nRun the app.\n";
 
+/** Runs `git args` in `cwd` as a made-up user, with no configuration of this machine's: its output,
+ *  trimmed; a failure fails the test. */
+function gitIn(cwd: string, ...args: string[]): string {
+  const ran = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: cwd,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "Acme",
+      GIT_AUTHOR_EMAIL: "dev@acme.test",
+      GIT_COMMITTER_NAME: "Acme",
+      GIT_COMMITTER_EMAIL: "dev@acme.test",
+    },
+  });
+  expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
+  return ran.stdout.toString().trim();
+}
+
+/** Writes each file of `files` (its path to its text) under `dir`. */
+function writeFiles(dir: string, files: Record<string, string>): void {
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), text);
+  }
+}
+
 /** A git checkout of a made-up repository under `name`, as cli.ts's shared checkout is: docs/
- *  guide.md and src/app.py in one commit, checked out with a detached HEAD. */
-function gitCopy(name: string): string {
+ *  guide.md, src/app.py and the files `more` (each path to its text) in one commit, checked out
+ *  with a detached HEAD. */
+function gitCopy(name: string, more: Record<string, string> = {}): string {
   const dir = path.join(scratch, name);
-  mkdirSync(path.join(dir, "docs"), { recursive: true });
-  mkdirSync(path.join(dir, "src"), { recursive: true });
-  writeFileSync(path.join(dir, "docs", "guide.md"), GUIDE);
-  writeFileSync(path.join(dir, "src", "app.py"), "def main():\n    return 0\n");
-  const git = (...args: string[]) => {
-    const ran = Bun.spawnSync(["git", ...args], {
-      cwd: dir,
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: dir,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "Acme",
-        GIT_AUTHOR_EMAIL: "dev@acme.test",
-        GIT_COMMITTER_NAME: "Acme",
-        GIT_COMMITTER_EMAIL: "dev@acme.test",
-      },
-    });
-    expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
-    return ran.stdout.toString().trim();
-  };
-  git("init", "--quiet");
-  git("add", ".");
-  git("commit", "--quiet", "-m", "Add the guide");
-  git("checkout", "--quiet", "--detach", git("rev-parse", "HEAD"));
+  writeFiles(dir, { "docs/guide.md": GUIDE, "src/app.py": "def main():\n    return 0\n", ...more });
+  gitIn(dir, "init", "--quiet");
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "--quiet", "-m", "Add the guide");
+  gitIn(dir, "checkout", "--quiet", "--detach", gitIn(dir, "rev-parse", "HEAD"));
   return dir;
 }
 
@@ -463,6 +473,11 @@ test("a copy made a colocated jj repository answers jj st and jj root, and pwd, 
   const status = await text("jj st");
   expect(status).toEqual(expect.stringContaining("The working copy has no changes."));
   expect(status).toEqual(expect.stringContaining("Add the guide"));
+  // A jj answer reads the snapshot the colocation took and takes no lock of the working copy (the
+  // copy is read-only to it), so answers given at once are the same answer.
+  expect(
+    new Set(await Promise.all(Array.from({ length: 6 }, () => bashText(copy, "jj st"))))
+  ).toEqual(new Set([status]));
   expect(await text("jj workspace list")).toEqual(expect.stringMatching(/^default: /));
   expect(await text(`cd "$(git rev-parse --show-toplevel)" && pwd`, "docs")).toBe(`${ROOT}\n`);
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell command's own `${dir}`
@@ -574,4 +589,330 @@ test("a glob of a directory with no glob character lists it, one of a file answe
     text: "No matches found",
     isError: false,
   });
+}, 60_000);
+
+// The security review of the runner at dd14a587 found read-only calls that act or read outside the
+// copy; each is a row below, made from the review's own command.
+
+// Catches: a read-only call that sets a variable the shell or a program reads (`printf -vNAME`, the
+// name attached to `-v`), runs a substitution through bash's old arithmetic `$[…]`, writes or reads
+// a file through sed's commands, flags or options, runs a program or writes or reads a file
+// through an option of git, jj, tree, file or rg given in a cluster, attached or abbreviated, or
+// unsets the answers' own git or jj settings.
+test("readOnlyCall refuses printf -vNAME, $[…], sed's w, W, e, r and R commands and s flags, its in-place option in every spelling and -f, the options of git, jj, tree, file and rg that run a program or write or read a file, clustered, attached or abbreviated, and an unset of the answers' git or jj settings; it still takes the read-only forms beside them", () => {
+  for (const command of [
+    // printf -v with the name attached.
+    "printf -vPATH .",
+    "printf -vGIT_CONFIG_GLOBAL vendor.gitconfig; git status",
+    "printf -vIFS / && cat src/app.py",
+    // $[…], which runs the substitution a variable it reads holds.
+    "x='a[$(id)]'; echo $[x]",
+    "echo $[1 + 2]",
+    // sed: commands and flags that run a program or write or read a file, -i, -f.
+    "sed -n 'r /etc/hostname' src/app.py",
+    "sed -n '1R /etc/hostname' src/app.py",
+    "sed -n '$!W copy.txt' src/app.py",
+    "sed -n 'p;w copy.txt' src/app.py",
+    "sed -n 's/a/b/w copy.txt' src/app.py",
+    "sed -n 's/main/id/e' src/app.py",
+    "sed -n 's/a/b/gpw copy.txt' src/app.py",
+    "sed -n '1e id' src/app.py",
+    "sed -n '/x/{p;r /etc/hostname\n}' src/app.py",
+    "sed -n -e 1p -e 'w copy.txt' src/app.py",
+    "sed --quiet --expression='$r /etc/hostname' src/app.py",
+    "sed -n --e '1r /etc/hostname' src/app.py",
+    "sed -ni p src/app.py",
+    "sed -n -i.bak p src/app.py",
+    "sed -n --in-place p src/app.py",
+    "sed -n --in p src/app.py",
+    "sed -n --in-pl=.bak p src/app.py",
+    "sed -n -f script.sed src/app.py",
+    "sed -nf script.sed src/app.py",
+    "sed -n --fi=script.sed src/app.py",
+    // git and jj options that run a program or write or read a file.
+    "git grep -Oid main",
+    "git grep -nOid main",
+    "git grep -nO main",
+    "git grep --open-files-in-pager=id main",
+    "git grep --open=id main",
+    "git grep --op main",
+    "git log --out=copy.txt",
+    "git diff --ext",
+    "git diff --no-ind src docs",
+    "git log --show-signature -1",
+    "git log --show-sig -1",
+    "git log --format=%G? -1",
+    "git show --pretty=format:%GS",
+    "jj diff --too rm",
+    "jj log --config-f=jj.toml",
+    "jj --conf ui.pager=less log",
+    // tree, file and rg in clusters, attached or abbreviated.
+    "tree -ao out.txt",
+    "tree -Lo 2 out.txt",
+    "tree -R -H . -L 1",
+    "file -bC",
+    "file --comp",
+    "file -m magic src/app.py",
+    "file -bmmagic src/app.py",
+    "file --magic=magic src/app.py",
+    "file -f names.txt",
+    "file -z src/app.py",
+    "file --uncompress src/app.py",
+    "file -p src/app.py",
+    "rg --pre sh main",
+    "rg --pr=sh main",
+    "rg --pre-glob '*' --pre sh main",
+    "rg -z main",
+    "rg -nz main",
+    "rg --search-zip main",
+    "rg --hostname-bin=id main",
+    // The answers' own git and jj settings.
+    "unset GIT_CONFIG_COUNT",
+    "unset GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0",
+    "unset JJ_CONFIG",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: false,
+    });
+  }
+  for (const command of [
+    "printf -v line %s a",
+    "printf -- -v",
+    "sed -n '/def main/,/^$/p' src/app.py",
+    "sed -n '/error/p' src/app.py",
+    "sed -n '/^w/p;s/x/y/p' src/app.py",
+    "sed -ne 5p src/app.py",
+    "sed -n -e 1p -e '$p' src/app.py",
+    "sed --quiet 10q src/app.py",
+    "sed -nE '/a|b/{p;q}' src/app.py",
+    "sed -n '$=' src/app.py",
+    "sed -n '1~2p' src/app.py",
+    "sed -n '/x/a\\\nnote' src/app.py",
+    "git grep -e -O main",
+    "git log -SOAuth",
+    "git grep --or -e a -e b",
+    "git diff --no-ext-diff",
+    "git diff --output-indicator-new=+",
+    "git log --format=%s -1",
+    "jj diff --to @",
+    "jj log --color=never -r @",
+    "tree -L 2 -a src",
+    "file -b src/app.py",
+    "rg -tpy main",
+    "rg -e -z src",
+    "env -0 -u ACME_TOOLS_PIN",
+    "env -",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: true,
+    });
+  }
+});
+
+// Catches: a path through a symbolic link of the checkout that resolves inside it, so that
+// removeOutsideLinks keeps it, and then `..`: the kernel walks the `..` from the link's target, so
+// the path read as written stays in the checkout while the walk leaves the copy (the review's
+// `l/../x` and `l/../../..`).
+test("a bash path through a link that stays inside the copy, then .., is not answered where the kernel's walk of it leaves the copy; a path through the same links that stays inside is answered", async () => {
+  const dir = path.join(scratch, "walk");
+  writeFiles(dir, { "docs/guide.md": GUIDE });
+  writeFiles(path.join(scratch, "walk-outside"), { "secret.txt": `${SECRET}\n` });
+  mkdirSync(path.join(dir, "docs", "a", "b"), { recursive: true });
+  symlinkSync(".", path.join(dir, "self"));
+  symlinkSync("../../..", path.join(dir, "docs", "a", "b", "up"));
+  expect(removeOutsideLinks(dir)).toEqual([]);
+  const copy = { dir, root: ROOT, cwd: ROOT, git: false };
+  for (const [command, cwd] of [
+    ["cat self/../walk-outside/secret.txt", undefined],
+    ["cat docs/a/b/up/../walk-outside/secret.txt", undefined],
+    [`cat ${ROOT}/self/../walk-outside/secret.txt`, undefined],
+    ["ls self/..", undefined],
+    ["grep -r x self/../walk-outside", undefined],
+    ["cat ../walk-outside/secret.txt", "self"],
+  ] as const) {
+    const answer = await bashText(copy, command, cwd);
+    expect({ command, answer }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("through a symbolic link of the checkout") },
+    });
+  }
+  expect(await bashText(copy, "cat self/docs/guide.md docs/a/b/up/docs/guide.md")).toBe(
+    GUIDE + GUIDE
+  );
+}, 60_000);
+
+// Catches: jj, run in a copy that is no jj repository, finding a jj repository in a directory above
+// the copy (the issue's workspace) and answering from it.
+test("a jj command in a copy that is no jj repository, inside a directory that is one, answers as jj does outside any repository", async () => {
+  const above = path.join(scratch, "jj-above");
+  mkdirSync(above, { recursive: true });
+  const made = Bun.spawnSync([Bun.which("jj") ?? "jj", "git", "init"], {
+    cwd: above,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: above },
+  });
+  expect({ code: made.exitCode, err: made.stderr.toString() }).toMatchObject({ code: 0 });
+  const copy = { dir: gitCopy("jj-above/copy"), root: ROOT, cwd: ROOT, git: true };
+  for (const command of ["jj root", "jj st"]) {
+    const answer = await answerCall(copy, "bash", { command }, "hashline");
+    expect({ command, answer }).toEqual({
+      command,
+      answer: {
+        text: expect.stringMatching(/^Error: There is no jj repo in "\."\n/),
+        isError: true,
+      },
+    });
+    expect(JSON.stringify(answer)).not.toContain(above);
+  }
+}, 60_000);
+
+// Catches: a git command of a copy fetched with no blobs (`--filter=blob:none`, as dd14a587's shared
+// checkout was) fetching a blob it lacks from the commit's remote as it answers (`git show` of an
+// older commit), which reaches the network with the pod's credential.
+test("a git command in a copy that lacks an older commit's blob fetches nothing: the answer is git's error, and the copy still lacks the blob", async () => {
+  const work = path.join(scratch, "lazy-work");
+  writeFiles(work, { "docs/guide.md": "# Guide\n\nRun the old app.\n" });
+  gitIn(work, "init", "--quiet");
+  gitIn(work, "add", ".");
+  gitIn(work, "commit", "--quiet", "-m", "Write the first guide");
+  const older = gitIn(work, "rev-parse", "HEAD:docs/guide.md");
+  writeFiles(work, { "docs/guide.md": GUIDE });
+  gitIn(work, "commit", "--quiet", "-am", "Add the guide");
+  const commit = gitIn(work, "rev-parse", "HEAD");
+  const server = path.join(scratch, "lazy-server.git");
+  gitIn(scratch, "clone", "--quiet", "--bare", work, server);
+  gitIn(server, "config", "uploadpack.allowFilter", "true");
+  gitIn(server, "config", "uploadpack.allowAnySHA1InWant", "true");
+  const dir = path.join(scratch, "lazy");
+  mkdirSync(dir, { recursive: true });
+  gitIn(dir, "init", "--quiet");
+  gitIn(dir, "remote", "add", "origin", server);
+  gitIn(dir, "fetch", "--quiet", "--depth=50", "--filter=blob:none", "origin", commit);
+  gitIn(dir, "checkout", "--quiet", "--detach", commit);
+  const holdsOlder = () =>
+    Bun.spawnSync(["git", "cat-file", "-e", older], {
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, GIT_NO_LAZY_FETCH: "1" },
+    }).exitCode === 0;
+  expect(holdsOlder()).toBe(false);
+  const copy = { dir, root: ROOT, cwd: ROOT, git: true };
+  const answer = await answerCall(
+    copy,
+    "bash",
+    { command: "git show HEAD~1:docs/guide.md" },
+    "hashline"
+  );
+  expect(answer).toMatchObject({ isError: true });
+  expect(JSON.stringify(answer)).not.toContain("old app");
+  expect(holdsOlder()).toBe(false);
+}, 60_000);
+
+// The negative control of verification v18's c-cases: calls the read-only rule counts as read-only,
+// run through the path every answered bash call runs through (`sandboxedBash`), as though the
+// rule's confinement had let each through, reach none of the pod's credentials and run nothing the
+// copy's tracked configuration names; and a call the rule refuses runs nothing.
+test("the negative control: cat of a key file, ls of the runner's home, env, and git in a copy whose tracked bare repository's config sets core.fsmonitor, each read-only by the rule, show no key, an empty home, no credential and run no fsmonitor; the copy is read-only and has no network; curl is refused and never run", async () => {
+  const keyDir = path.join(scratch, "gateway-key");
+  writeFiles(keyDir, { key: `${fixtureSecret("gwkey")}\n` });
+  const credentials = path.join(scratch, "control-credentials");
+  // Made-up credentials of the runner's own environment, which no answer may show.
+  const planted: Record<string, string> = {
+    GH_TOKEN: fixtureSecret("gh"),
+    GITHUB_TOKEN: fixtureSecret("github"),
+    DISPATCH_TOKEN_FILE: path.join(credentials, "dispatch", "token"),
+    ENVOY_TOKEN_FILE: path.join(credentials, "envoy", "token"),
+    AGENT_SECRETS_KEY_DIR: path.join(credentials, "keys"),
+    ACME_GATEWAY_KEY_DIR: keyDir,
+  };
+  const before = Object.fromEntries(Object.keys(planted).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, planted);
+  try {
+    const marker = path.join(scratch, "control-fsmonitor-ran");
+    const dir = gitCopy("control", {
+      "vendor/tool.git/HEAD": "ref: refs/heads/main\n",
+      "vendor/tool.git/config": `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ..\n\tfsmonitor = "touch ${marker}; false"\n`,
+      "vendor/tool.git/objects/keep": "",
+      "vendor/tool.git/refs/keep": "",
+    });
+    const copy = { dir, root: ROOT, cwd: ROOT, git: true };
+    const keyFile = path.join(keyDir, "key");
+    const home = process.env.HOME ?? "/root";
+    const calls = [`cat ${keyFile}`, `ls -A ${home}`, "env", "git -C vendor/tool.git status"];
+    for (const command of calls) {
+      expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+        command,
+        readOnly: true,
+      });
+    }
+    const ran = async (command: string) => {
+      const answer = await sandboxedBash(copy, command);
+      return "why" in answer ? answer : { output: answer.output, exitCode: answer.exitCode };
+    };
+    expect(await ran(`cat ${keyFile}`)).toEqual({
+      output: `cat: ${keyFile}: No such file or directory\n`,
+      exitCode: 1,
+    });
+    expect(await ran(`ls -A ${home}`)).toEqual({ output: "", exitCode: 0 });
+    // The pod's own model gateway key, where this machine has one: the answer is cat's error alone,
+    // so it holds no byte of the key, which this test never reads.
+    const gatewayKey = "/var/run/model-gateway-key/key";
+    if (existsSync(gatewayKey)) {
+      expect(await ran(`cat ${gatewayKey}`)).toEqual({
+        output: `cat: ${gatewayKey}: No such file or directory\n`,
+        exitCode: 1,
+      });
+    }
+    // env and git as a run answers them, the rule's confinement passing both.
+    const env = await answerCall(copy, "bash", { command: "env" }, "hashline");
+    const shown = "text" in env ? env.text : env.why;
+    expect(shown).toContain("PATH=");
+    for (const [name, value] of Object.entries(planted)) {
+      expect({ name, shown: shown.includes(name) || shown.includes(value) }).toEqual({
+        name,
+        shown: false,
+      });
+    }
+    expect(
+      await answerCall(copy, "bash", { command: "git -C vendor/tool.git status" }, "hashline")
+    ).toMatchObject({ isError: true });
+    expect(existsSync(marker)).toBe(false);
+    // The copy is read-only to a command, which has no network: a server on this machine's
+    // loopback hears nothing.
+    let heard = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => {
+        heard += 1;
+        return new Response("heard");
+      },
+    });
+    try {
+      const reached = await ran(`touch planted.txt; echo hi > /dev/tcp/127.0.0.1/${server.port}`);
+      expect(reached).toEqual({
+        output: expect.stringMatching(
+          /Read-only file system[\s\S]*(Connection refused|Network is unreachable)/
+        ),
+        exitCode: 1,
+      });
+    } finally {
+      server.stop(true);
+    }
+    expect({ heard, planted: existsSync(path.join(dir, "planted.txt")) }).toEqual({
+      heard: 0,
+      planted: false,
+    });
+    // A call the rule refuses runs nothing.
+    const curl = "curl -s https://gateway.example.test/v1/messages";
+    expect(readOnlyCall("bash", { command: curl })).toBe(false);
+    expect(await answerCall(copy, "bash", { command: curl }, "hashline")).toEqual({
+      why: "its command is not read-only",
+    });
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 }, 60_000);

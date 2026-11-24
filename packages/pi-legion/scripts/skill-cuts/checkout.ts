@@ -7,33 +7,45 @@
  * `;` or line ends of pipelines joined by `&&` or `||` of commands joined by pipes, each command a
  * simple one, a subshell `( … )` or a group `{ …; }`, every simple command among them, and every
  * one inside a command substitution (`$(…)`, or a backtick with no `\` in it), one of
- * READ_ONLY_PROGRAMS (`commandReadsOnly`): `cd`, `cat`, `head`, `tail`, `ls`, `find` with none of
- * FIND_ACTIONS (`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`,
- * `-fprintf`, `-fls`), `grep`, `rg` without `--pre`, `wc`, `sed` with `-n` and with no `-i` and no
- * `w`, `W` or `e` command, `nl`, `stat`, `file` without `-C`, `tree` without `-o`, `pwd`, `true`,
- * `echo`, `printf` (its `-v` naming a variable an assignment may set), `env` with no command
- * (options that print the environment, `-u NAME`, then assignments), `unset` (of no variable of
- * UNSET_PROTECTED: PATH, HOME, PWD, GIT_OPTIONAL_LOCKS), `export`, an assignment `NAME=value`
- * alone or before a command, `git` (with at most the global options `-C <dir>`, `--no-pager` and
- * `-P`) whose subcommand is one of READ_ONLY_GIT (`log`, `show`, `diff`, `status`, `grep`,
- * `ls-files`, `blame`, `rev-parse`), `worktree list`, `remote` (alone, `-v`, `show`, `get-url`)
- * or `branch` with no name (alone, `-a`, `-r`, `-v`, `--list`, `--show-current`), with no
- * `--output`, `-O`, `--open-files-in-pager`, `--ext-diff` or `--no-index` (with which `git diff`
- * reads files outside the repository), or `jj` (`jjReadsOnly`) `status`, `st`, `log`, `show`,
- * `diff`, `root`, `file show`, `bookmark list` or `workspace list`, with no `--tool`, `--config`,
- * `--config-toml` or `--config-file` (each may run a program). An assignment, `export` or `printf
- * -v` sets no variable of PROTECTED_NAME (one that picks a program, a library, a configuration or
- * a directory: PATH, HOME, IFS, CDPATH, PAGER, every GIT_*, JJ_*, LD_*, XDG_*, BASH*, …); each
+ * READ_ONLY_PROGRAMS (`commandReadsOnly`): `cd` (naming a directory), `cat`, `head`, `tail`,
+ * `ls`, `find` with none of FIND_ACTIONS (`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`,
+ * `-fprint`, `-fprint0`, `-fprintf`, `-fls`), `grep`, `rg`, `wc`, `sed` with `-n` and a script
+ * that only reads (`sedReadsOnly`), `nl`, `stat`, `file`, `tree`, `pwd`, `true`, `echo`, `printf`
+ * (its `-v NAME` or `-vNAME` naming a variable an assignment may set), `env` with no command
+ * (ENV_PRINTS: options that print the environment, `-u NAME`, then assignments), `unset` (of no
+ * variable of UNSET_PROTECTED: PATH, HOME, PWD, GIT_OPTIONAL_LOCKS, and the answers' git and jj
+ * settings GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n, GIT_CONFIG_SYSTEM and
+ * JJ_CONFIG), `export`, an assignment `NAME=value` alone or before a command, `git` (with at most
+ * the global options `-C <dir>`, `--no-pager` and `-P`) whose subcommand is one of READ_ONLY_GIT
+ * (`log`, `show`, `diff`, `status`, `grep`, `ls-files`, `blame`, `rev-parse`), `worktree list`,
+ * `remote` (alone, `-v`, `show`, `get-url`) or `branch` with no name (alone, `-a`, `-r`, `-v`,
+ * `--list`, `--show-current`), or `jj` (`jjReadsOnly`) `status`, `st`, `log`, `show`, `diff`,
+ * `root`, `file show`, `bookmark list` or `workspace list`. Every program's options are read by one
+ * rule (`parseOptions`, as GNU's getopt_long reads them): a short option attached to its value
+ * (`-vNAME`) or in a cluster (`-nO<cmd>`, `-ni`, `-bC`), and a long option by any start of its
+ * name that git or getopt takes (`--in` for `--in-place`, `--open` for `--open-files-in-pager`).
+ * So the call is not read-only that gives, by any of those spellings, an option that runs a
+ * program, writes a file or reads one no word names: sed's `-i`/`--in-place` and `-f`/`--file`
+ * (and a script with an `e`, `r`, `R`, `w` or `W` command, or an `s` with an `e` or `w` flag,
+ * `sedScriptReadsOnly`); git's of GIT_RUNS (`--output`, `-O`, `--open-files-in-pager`,
+ * `--ext-diff`, `--no-index`, `--show-signature`) or a format's `%G` (which runs gpg); and the
+ * options of PROGRAM_OPTIONS: rg's `--pre`, `--pre-glob`, `-z`/`--search-zip` and
+ * `--hostname-bin`, tree's `-o` and `-R`, file's `-C`/`--compile`, `-m`/`--magic-file`,
+ * `-f`/`--files-from`, `-p`/`--preserve-date`, `-z`, `-Z` and `--uncompress`, jj's `--tool`,
+ * `--config`, `--config-toml` and `--config-file`. An assignment, `export` or `printf -v` sets no
+ * variable of PROTECTED_NAME (one that picks a program, a library, a configuration or a
+ * directory: PATH, HOME, IFS, CDPATH, PAGER, every GIT_*, JJ_*, LD_*, XDG_*, BASH*, …); each
  * affects only the call's own shell. A variable's expansion (`$NAME`, `${NAME}`) is one of a
  * variable the command assigns before it, or of HOME, PATH or PWD. A word of `find`, `rg`, `tree`,
- * `file`, `sed`, `git` or `jj` (whose options may write or run a program) takes one known value
- * (`walkScript`: a literal, or an expansion of a value the command assigned, quoted or holding no
- * blank or glob character). A redirection to a file anywhere makes the call not read-only (a
- * redirection to `/dev/null`, a copy of one stream into another such as `2>&1`, and a read of a
- * file with `<` are none). So do a process substitution, an arithmetic expansion or command, any
- * other expansion (`$?`, `$1`, `${X:-y}`, `$'…'`), a command run in the background (`&`), a
- * heredoc or herestring, a comment, a program named by its path or an expansion, and any other
- * command.
+ * `file`, `sed`, `git`, `jj` or `printf` (whose options may write, run a program or set a
+ * variable) takes one known value (`walkScript`: a literal, or an expansion of a value the
+ * command assigned, quoted or holding no blank or glob character). A redirection to a file
+ * anywhere makes the call not read-only (a redirection to `/dev/null`, a copy of one stream into
+ * another such as `2>&1`, and a read of a file with `<` are none). So do a process substitution,
+ * an arithmetic expansion (`$((…))`, and bash's old `$[…]`, which runs the substitutions a
+ * variable it reads holds) or command, any other expansion (`$?`, `$1`, `${X:-y}`, `$'…'`), a
+ * command run in the background (`&`), a heredoc or herestring, a comment, a program named by its
+ * path or an expansion, and any other command.
  *
  * **The answers** (`answerCall`): a written case's run (replay.ts's checkout rounds) answers a
  * read-only call from a copy of its context session's checkout (`CheckoutCopy`: the copy's
@@ -47,15 +59,35 @@
  * UnansweredRead): the run is made again, never judged on that call.
  *
  * **Confinement.** The calls are the model's, run on this machine, so none may read a file outside
- * the copy. cli.ts removes from each shared checkout, as it makes it, every symbolic link that resolves
- * outside it or not at all (`removeOutsideLinks`), so `cat` of a link, `grep -R`, `rg --follow`,
- * `find -L` and a `read` follow no link out; the runner therefore refuses no option that follows
- * links. Beside that, a `read`, `grep` or `glob` whose target resolves outside the copy is not
- * answered (`leavesCopy`), and a `bash` command is not answered when a word of it may lead outside
- * (`escapes`: a word whose expansion the runner cannot place inside the checkout, a brace
- * expansion, `~`, `.git`, an absolute path off the root, a relative one that leaves the root from
- * any directory a `cd` before it may have moved to, an option's attached path that does) or would
- * show a value of the runner's (`$HOME`, `$PATH`).
+ * the copy. cli.ts removes from each shared checkout, as it makes it, every symbolic link that
+ * resolves outside it or not at all (`removeOutsideLinks`), so `cat` of a link, `grep -R`, `rg
+ * --follow`, `find -L` and a `read` follow no link out; the runner therefore refuses no option
+ * that follows links. Beside that, a `read`, `grep` or `glob` whose target resolves outside the
+ * copy is not answered (`leavesCopy`), and a `bash` command is not answered when a word of it may
+ * lead outside (`escapes`: a word whose expansion the runner cannot place inside the checkout, a
+ * brace expansion, `~`, `.git`, an absolute path off the root, a relative one that leaves the root
+ * from any directory a `cd` before it may have moved to, an option's attached path that does, a
+ * path that the kernel's walk of it in the copy takes out of it, through a link that stays inside
+ * followed by `..` (`walksInCopy`), and a `cd` that names no directory) or would show a value of
+ * the runner's (`$HOME`, `$PATH`).
+ *
+ * **The sandbox.** The rule decides which calls are answered; it does not make running them safe.
+ * So each answered `bash` command, and each jj command of a copy's colocation, runs in a sandbox
+ * of the copy (`runSandboxed`): new user, mount, network, process and host-name namespaces
+ * (`unshare`); only the copy of the machine's disk, read-only, at CHECKOUT_MOUNT (`/mnt/checkout`),
+ * the command's working directory the session's mapped into it, and the session's checkout root
+ * mapped to that path in the command and back in its output (`sandboxedBash`); an empty, read-only
+ * file system over each tree that holds the pod's credentials (`hiddenPaths`: `/run`, `/var/run`,
+ * `/home`, `/root`, `/legion`, `/tmp`, `/var/tmp`, `/dev/shm`, the operator's configuration, the
+ * runner's home, and each directory a variable of the runner's environment ending in `_FILE`,
+ * `_DIR` or `_HOME` names, the model gateway's key, the Dispatch token, Envoy's and gh's
+ * configuration, the secrets broker's keys and the store's address among them); no network; no
+ * capability (so nothing it runs can unmount what hides a directory); an environment of only what
+ * it needs (SANDBOX_ENV: PATH, a fixed LANG, an empty HOME, no system or global git configuration,
+ * GIT_CONFIG through GIT_CONFIG_COUNT: no fsmonitor, no hooks, a bare repository used only where
+ * named, no transport, no pager; GIT_OPTIONAL_LOCKS=0; jj's SANDBOX_JJ_CONFIG, which names no
+ * external tool); a time limit, past which every process it started is ended, and an output cap.
+ * An answer whose sandbox cannot be made is not given.
  *
  * - `read` (keys `path`, `i`): a whole read by path that resolves (cases.ts's `resolvedReadPath`,
  *   against the session's working directory) to a file under the checkout's root, in the form
@@ -110,32 +142,32 @@
  *   list joined by commas or blanks, a base outside the root, one pattern (or every pattern of a
  *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt), and
  *   more matches than `limit` (200 when absent).
- * - `bash` (keys `command`, `cwd`, `timeout`, `i`): the command run in the copy (its working
- *   directory the session's mapped into the copy; the checkout's root in the command mapped to
- *   the copy, and the copy's path, as given and as its real path, back to the root in the
- *   output), by `bash -c` with its standard error joined to its output, an environment of its own
- *   (`shellEnvironment`: no variable of the runner's; PATH the system's and the directory of the
- *   runner's jj; HOME `/nonexistent`, so no file of the repository is read as the user's git or jj
- *   configuration even where the command unsets GIT_CONFIG_GLOBAL; git's system and global
- *   configuration none), within BASH_TIME_LIMIT_MS; its text as Oh My Pi's bash tool gives it
- *   (bash.ts lines 765-922): the output as printed, `(no output, exit code 0)` or `(no output)`
- *   for none, `Wall time: <s> seconds` after it when the run took a second or more, and `Command
- *   exited with code <n>` after it, an error, when it failed. Oh My Pi's bash interceptor is off
- *   at its default settings (exec/settings.ts lines 170-180), so no command is blocked. Its git
- *   commands run on the copy's own history: the copy is the shared checkout of the commit (cli.ts's
- *   `sharedCheckout`: a fetch of the commit 50 commits deep with no blobs, checked out with a
- *   detached HEAD), so `git log` shows at most 50 commits and then the shallow boundary, and `git
- *   status` names no branch (and shows each link removed as deleted); git runs with
- *   GIT_OPTIONAL_LOCKS=0, so `git status` writes no index into the shared checkout. Its jj
- *   commands run on the copy too: where the context session ran jj, cli.ts made the copy a
- *   colocated jj repository (`colocateJj`), so they answer as in a jj workspace at the commit;
- *   where it ran none, as jj does in a checkout that is no jj repository (`There is no jj repo`).
- *   Not answered: a git or jj command where the copy is GitHub's tarball instead (the fetch
- *   failed: `CheckoutCopy.git` false), a jj command where the copy could not be made a jj
- *   repository (`CheckoutCopy.jj` a why) or the runner has no jj, a command a word of which may
- *   lead outside the copy (`escapes`), an output past 50 KB (`tools.artifactSpillThreshold`, which
- *   Oh My Pi elides) or with a line past 768 characters (`tools.outputMaxColumns`), an output of
- *   1,000 characters or more of a command Oh My Pi's minimizer rewrites
+ * - `bash` (keys `command`, `cwd`, `timeout`, `i`): the command run in the sandbox of the copy
+ *   (above; its working directory the session's mapped into the copy; the checkout's root in the
+ *   command mapped to CHECKOUT_MOUNT, and that path and the copy's own, as given and as its real
+ *   path, back to the root in the output), by `bash -c` with its standard error joined to its
+ *   output, within BASH_TIME_LIMIT_MS; its text as Oh My Pi's bash tool gives it (bash.ts lines
+ *   765-922): the output as printed, `(no output, exit code 0)` or `(no output)` for none, `Wall
+ *   time: <s> seconds` after it when the command (from when its sandbox was made) took a second
+ *   or more, and `Command exited with code <n>` after it, an error, when it failed. Oh My Pi's
+ *   bash interceptor is off at its default settings (exec/settings.ts lines 170-180), so no
+ *   command is blocked. Its git commands run on the copy's own history: the copy is the shared
+ *   checkout of the commit (cli.ts's `sharedCheckout`: a fetch of the commit 50 commits deep with
+ *   the blobs of each, checked out with a detached HEAD), so `git log` shows at most 50 commits and
+ *   then the shallow boundary, and `git status` names no branch (and shows each link removed as
+ *   deleted); git runs with GIT_OPTIONAL_LOCKS=0, so `git status` writes no index, and with no
+ *   transport, so a blob a copy lacks is not fetched (the answer is git's error). Its jj commands
+ *   run on the copy too: where the context session ran jj, cli.ts made the copy a colocated jj
+ *   repository (`colocateJj`), so they answer as in a jj workspace at the commit, each with
+ *   `--ignore-working-copy` (the snapshot the colocation took, no lock taken, nothing written);
+ *   where it ran none, as jj does in a checkout that is no jj repository (`There is no jj repo`),
+ *   since the sandbox shows no directory above the copy. Not answered: a git or jj command where
+ *   the copy is GitHub's tarball instead (the fetch failed: `CheckoutCopy.git` false), a jj
+ *   command where the copy could not be made a jj repository (`CheckoutCopy.jj` a why) or the
+ *   runner has no jj, a command a word of which may lead outside the copy (`escapes`), a command
+ *   whose sandbox cannot be made, an output past 50 KB (`tools.artifactSpillThreshold`, which Oh My
+ *   Pi elides) or with a line past 768 characters (`tools.outputMaxColumns`), an output of 1,000
+ *   characters or more of a command Oh My Pi's minimizer rewrites
  *   (crates/pi-shell/src/minimizer/engine.rs lines 16-125: a command of MINIMIZED_PROGRAMS in a
  *   command with no pipe), and a run past the time limit.
  * - `find` and `ls`: no capture declares them, so they are not answered.
@@ -143,8 +175,8 @@
 import { readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileTag, type PathRows, pathAnswer, pathRangeAnswer, readRange, shownPath } from "./arms";
-import { insideRoot, resolvedReadPath, textLines } from "./cases";
-import { eachChunk, firstLine, textOf, timeLimit } from "./common";
+import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
+import { eachChunk, firstLine, timeLimit } from "./common";
 
 /** The tools whose every call is read-only. */
 export const READ_ONLY_TOOLS = ["read", "grep", "glob", "find", "ls"] as const;
@@ -208,8 +240,169 @@ const JJ_VALUE_OPTIONS: Readonly<Record<string, true>> = {
   "--at-operation": true,
   "--color": true,
 };
-/** jj's options that run a program or read a configuration that may (`ui.diff-formatter`). */
-const JJ_RUNS = /^--(tool|config|config-toml|config-file)(=|$)/;
+/** How a program reads its options (`parseOptions`, the one rule of every program's options):
+ *  `flags`, its short options that take no value (read only where `strict`); `values`, those that
+ *  take one (the rest of their word, else the next word); `optional`, those whose value is only the
+ *  rest of their word (sed's `-i[SUFFIX]`); `long`, its long options, each with whether it takes a
+ *  value (`required`: after its `=`, else the next word; `optional`: after its `=` only);
+ *  `inOrder`, whether its first operand ends its options (bash's builtins, `env`); `strict`,
+ *  whether a short option it does not have, or a long one that names none or several of its own,
+ *  makes the words unread, as the program refuses them. A program that is not strict lists only
+ *  the options the read-only rule must find, and those whose value it must not take for an option;
+ *  any other is read as an option of no value, so no word it takes as a value escapes the check. */
+interface OptionSpec {
+  readonly flags?: string;
+  readonly values: string;
+  readonly optional?: string;
+  readonly long: Readonly<Record<string, "none" | "required" | "optional">>;
+  readonly inOrder?: true;
+  readonly strict?: true;
+}
+/** sed's options (GNU sed 4.9): `-e`/`--expression` gives a script, `-f`/`--file` a script file,
+ *  `-i`/`--in-place` edits the files given. */
+const SED_OPTIONS: OptionSpec = {
+  flags: "bnrsuzE",
+  values: "efl",
+  optional: "i",
+  long: {
+    expression: "required",
+    file: "required",
+    "in-place": "optional",
+    "line-length": "required",
+    "null-data": "none",
+    "zero-terminated": "none",
+    quiet: "none",
+    silent: "none",
+    "regexp-extended": "none",
+    separate: "none",
+    sandbox: "none",
+    debug: "none",
+    posix: "none",
+    "follow-symlinks": "none",
+    unbuffered: "none",
+    binary: "none",
+    help: "none",
+    version: "none",
+  },
+  strict: true,
+};
+/** bash's `printf`: `-v NAME` (or `-vNAME`) sets the variable NAME to what it prints. */
+const PRINTF_OPTIONS: OptionSpec = { values: "v", long: {}, inOrder: true, strict: true };
+/** env's options (GNU coreutils 9): those of ENV_PRINTS print the environment; any other, with a
+ *  command or not, is none a read-only call gives. */
+const ENV_OPTIONS: OptionSpec = {
+  flags: "iv0",
+  values: "aCSu",
+  long: {
+    "ignore-environment": "none",
+    null: "none",
+    unset: "required",
+    chdir: "required",
+    "split-string": "required",
+    argv0: "required",
+    debug: "none",
+    "block-signal": "optional",
+    "default-signal": "optional",
+    "ignore-signal": "optional",
+    "list-signal-handling": "none",
+    help: "none",
+    version: "none",
+  },
+  inOrder: true,
+  strict: true,
+};
+/** The options of env that print the environment, less the variables `-u` names. */
+const ENV_PRINTS = ["i", "0", "u", "ignore-environment", "null", "unset"];
+/** The options of git's read-only subcommands that run a program, write a file or read one no
+ *  word names: `--output=<file>` (log, show, diff), `-O` (`git grep -O[<pager>]` runs the pager on
+ *  the files found; log, show and diff read an order file), `--open-files-in-pager`, `--ext-diff`
+ *  (a diff program), `--no-index` (`git diff` of files outside the repository) and
+ *  `--show-signature` (runs gpg); git takes any start of a long option's name that is no other's. */
+const GIT_RUNS = ["O", "output", "open-files-in-pager", "ext-diff", "no-index", "show-signature"];
+/** git's long options GIT_RUNS names, for their abbreviations. */
+const GIT_LONG: OptionSpec["long"] = {
+  output: "required",
+  "open-files-in-pager": "optional",
+  "ext-diff": "none",
+  "no-index": "none",
+  "show-signature": "none",
+};
+/** The short options of each read-only git subcommand that take a value, so a letter of a value is
+ *  no option: grep's pattern, file, context and count; log's, show's and diff's pickaxe (`-S`,
+ *  `-G`), log's and show's count (`-n`), log's and blame's range (`-L`), blame's revisions file. */
+const GIT_VALUES: Readonly<Record<string, string>> = {
+  grep: "efABCm",
+  log: "SGnL",
+  show: "SGn",
+  diff: "SG",
+  blame: "LS",
+};
+/** The options of the other read-only programs that run a program, write a file, or read a file
+ *  outside the checkout that no word of the command names (`runs`), and how each reads its options
+ *  (`spec`): rg's preprocessor (`--pre`, `--pre-glob`), decompressors (`-z`, `--search-zip`) and
+ *  host-name program (`--hostname-bin`); tree's output file (`-o`) and its runs of itself that write
+ *  one in each directory (`-R`); file's compiled magic (`-C`, `--compile`), magic files (`-m`,
+ *  `--magic-file`, a list), list of files (`-f`, `--files-from`), access times (`-p`,
+ *  `--preserve-date`) and decompressors (`-z`, `-Z`, `--uncompress`, `--uncompress-noreport`);
+ *  jj's diff tool (`--tool`) and configurations (`--config`, `--config-toml`, `--config-file`,
+ *  which may name a tool; `--to` is one of jj's own, not an abbreviation of `--tool`). */
+const PROGRAM_OPTIONS: Readonly<
+  Record<string, { readonly spec: OptionSpec; readonly runs: readonly string[] }>
+> = {
+  rg: {
+    spec: {
+      values: "ABCdeEfgjmMrtT",
+      long: {
+        pre: "required",
+        "pre-glob": "required",
+        "search-zip": "none",
+        "hostname-bin": "required",
+      },
+    },
+    runs: ["pre", "pre-glob", "z", "search-zip", "hostname-bin"],
+  },
+  tree: { spec: { values: "", long: {} }, runs: ["o", "R"] },
+  file: {
+    spec: {
+      values: "efFmP",
+      long: {
+        compile: "none",
+        "magic-file": "required",
+        "files-from": "required",
+        "preserve-date": "none",
+        uncompress: "none",
+        "uncompress-noreport": "none",
+      },
+    },
+    runs: [
+      "C",
+      "m",
+      "f",
+      "p",
+      "z",
+      "Z",
+      "compile",
+      "magic-file",
+      "files-from",
+      "preserve-date",
+      "uncompress",
+      "uncompress-noreport",
+    ],
+  },
+  jj: {
+    spec: {
+      values: "",
+      long: {
+        tool: "required",
+        config: "required",
+        "config-toml": "required",
+        "config-file": "required",
+        to: "required",
+      },
+    },
+    runs: ["tool", "config", "config-toml", "config-file"],
+  },
+};
 /** The actions of `find` that run a command or write a file. */
 const FIND_ACTIONS: Readonly<Record<string, true>> = {
   "-exec": true,
@@ -229,13 +422,10 @@ const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PROTECTED_NAME =
   /^(PATH|HOME|PWD|OLDPWD|CDPATH|IFS|ENV|SHELLOPTS|GLOBIGNORE|PS4|PROMPT_COMMAND|SHELL|TMPDIR|PAGER|MANPAGER|EDITOR|VISUAL|MAGIC|RIPGREP_CONFIG_PATH|GCONV_PATH|LOCPATH|NLSPATH|GLIBC_TUNABLES|TERMINFO|TERMINFO_DIRS|(BASH|GIT_|JJ_|LD_|DYLD_|XDG_|LESS)\w*)$/;
 /** The variables `unset` may not unset: with no PATH the shell runs a program of the checkout's,
- *  and the others are the answers' own (`shellEnvironment`). */
-const UNSET_PROTECTED: Readonly<Record<string, true>> = {
-  PATH: true,
-  HOME: true,
-  PWD: true,
-  GIT_OPTIONAL_LOCKS: true,
-};
+ *  and the others are the answers' own (SANDBOX_ENV: git's configuration through
+ *  GIT_CONFIG_COUNT, jj's through JJ_CONFIG). */
+const UNSET_PROTECTED =
+  /^(PATH|HOME|PWD|GIT_OPTIONAL_LOCKS|GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|SYSTEM|PARAMETERS)|JJ_CONFIG)$/;
 /** The shell's own variables a read-only command may expand without assigning them. */
 const SHELL_OWN: Readonly<Record<string, true>> = { HOME: true, PATH: true, PWD: true };
 /** The read-only programs that open no file their words name. */
@@ -297,8 +487,8 @@ class Untaken extends Error {}
 
 /** `command` parsed, or undefined when it holds a shell form the read-only rule does not take: a
  *  background `&`, a heredoc or herestring, a process substitution, a comment, an arithmetic
- *  expansion or command, an expansion other than `$NAME`, `${NAME}`, `$(…)` and a backtick with no
- *  `\` in it, `;;`, `|&`, or a quote left open. */
+ *  expansion (`$((…))`, `$[…]`) or command, an expansion other than `$NAME`, `${NAME}`, `$(…)` and
+ *  a backtick with no `\` in it, `;;`, `|&`, or a quote left open. */
 function parseScript(command: string): Script | undefined {
   let at = 0;
   const fail = (): never => {
@@ -461,7 +651,9 @@ function parseScript(command: string): Script | undefined {
         at += 1 + name.length;
         return;
       }
-      // A special parameter, or (unquoted) `$'…'` or `$"…"`.
+      // A special parameter, bash's old arithmetic expansion `$[…]` (which, as `$((…))`, runs the
+      // substitutions a variable it reads holds), or (unquoted) `$'…'` or `$"…"`.
+      if (next === "[") fail();
       if (next !== undefined && (/[0-9?#@*!$-]/.test(next) || (!quoted && `'"`.includes(next)))) {
         fail();
       }
@@ -696,8 +888,14 @@ function changeState(command: SimpleCommand, state: ShellState, maybe: boolean, 
     }
   } else if (program === "unset" && !texts.includes("-f")) {
     for (const name of texts) if (name !== undefined && NAME.test(name)) set(name, new Set([""]));
-  } else if (program === "printf" && texts[0] === "-v" && texts[1] !== undefined) {
-    set(texts[1], undefined);
+  } else if (program === "printf") {
+    const name = printfTarget(
+      args.map((word) => {
+        const held = valuesOf(word, state, walk);
+        return held?.size === 1 ? [...held][0] : undefined;
+      })
+    );
+    if (name !== undefined && name !== "") set(name, undefined);
   } else if (program === "cd") {
     const target = args.find((word) => !(literal(word) ?? "").startsWith("-"));
     const values = target === undefined ? undefined : valuesOf(target, state, walk);
@@ -715,6 +913,276 @@ function harmlessRedirect({ op, target }: { op: string; target: string }): boole
   return target === "/dev/null";
 }
 
+/** One option a program's words give: every name it may be (a short option's letter; a long
+ *  option's own name, or each name of the program's own it is the start of), and its value. */
+interface GivenOption {
+  readonly names: readonly string[];
+  readonly value?: string;
+}
+
+/** The options and the operands of a program's words `words` (each undefined where its value is
+ *  not known), read by `spec` as GNU's getopt_long reads them: the one rule of every program's
+ *  options. A word `-abc` is a cluster of short options, each letter one, and a letter that takes
+ *  a value takes the rest of the word (`-vNAME`, `-nO<cmd>`), else the next word; a word
+ *  `--name[=value]` is the long option it names or, where none is that name, each of the
+ *  program's own long options that start with it (git and getopt take any start of a name that
+ *  is no other's); `--` ends the options of a program that is strict or reads them in order, while
+ *  a program that is not strict is read on past it (a `--` may be a value the spec does not know
+ *  of); a strict program's first operand ends its options where it reads them in order. Undefined
+ *  where a word read as a possible option is not known, or the strict program refuses them. */
+function parseOptions(
+  words: readonly (string | undefined)[],
+  spec: OptionSpec
+): { options: GivenOption[]; operands: (string | undefined)[] } | undefined {
+  const options: GivenOption[] = [];
+  const operands: (string | undefined)[] = [];
+  // The next word, as an option's value: undefined (unread) where there is none or it is unknown.
+  const valueAfter = (at: number): { value: string } | "none" | undefined => {
+    if (at + 1 >= words.length) return "none";
+    const value = words[at + 1];
+    return value === undefined ? undefined : { value };
+  };
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at];
+    if (word === undefined) return undefined;
+    if (word === "--") {
+      if (spec.strict !== true && spec.inOrder !== true) continue;
+      operands.push(...words.slice(at + 1));
+      break;
+    }
+    if (word.startsWith("--")) {
+      const equals = word.indexOf("=");
+      const name = word.slice(2, equals < 0 ? undefined : equals);
+      const names = Object.hasOwn(spec.long, name)
+        ? [name]
+        : Object.keys(spec.long).filter((each) => each.startsWith(name));
+      if (spec.strict === true && names.length !== 1) return undefined;
+      const takes = names.length === 1 ? spec.long[names[0] ?? ""] : "none";
+      let value = equals < 0 ? undefined : word.slice(equals + 1);
+      if (value !== undefined && takes === "none" && spec.strict === true) return undefined;
+      if (value === undefined && takes === "required") {
+        const next = valueAfter(at);
+        if (next === undefined || (next === "none" && spec.strict === true)) return undefined;
+        if (next !== "none") {
+          value = next.value;
+          at++;
+        }
+      }
+      options.push({
+        names: names.length === 0 ? [name] : names,
+        ...(value === undefined ? {} : { value }),
+      });
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      for (let letter = 1; letter < word.length; letter++) {
+        const short = word[letter] ?? "";
+        const rest = word.slice(letter + 1);
+        if (spec.values.includes(short)) {
+          let value: string | undefined = rest;
+          if (rest === "") {
+            const next = valueAfter(at);
+            if (next === undefined || (next === "none" && spec.strict === true)) return undefined;
+            value = next === "none" ? undefined : next.value;
+            if (next !== "none") at++;
+          }
+          options.push({ names: [short], ...(value === undefined ? {} : { value }) });
+          break;
+        }
+        if (spec.optional?.includes(short) === true) {
+          options.push({ names: [short], ...(rest === "" ? {} : { value: rest }) });
+          break;
+        }
+        if (spec.strict === true && !(spec.flags ?? "").includes(short)) return undefined;
+        options.push({ names: [short] });
+      }
+      continue;
+    }
+    operands.push(word);
+    if (spec.inOrder === true) {
+      operands.push(...words.slice(at + 1));
+      break;
+    }
+  }
+  return { options, operands };
+}
+
+/** Whether `options` give one of `names`, under any name each may be. */
+function givesAny(options: readonly GivenOption[], names: readonly string[]): boolean {
+  return options.some((option) => option.names.some((name) => names.includes(name)));
+}
+
+/** The variable bash's `printf` sets with its words `values` (`-v NAME`, `-vNAME`), "" where it
+ *  sets none, or undefined where its options are not read (PRINTF_OPTIONS). */
+function printfTarget(values: readonly (string | undefined)[]): string | undefined {
+  const parsed = parseOptions(values, PRINTF_OPTIONS);
+  if (parsed === undefined) return undefined;
+  return parsed.options.find((option) => option.names.includes("v"))?.value ?? "";
+}
+
+/** Whether the sed script `script` (GNU sed 4.9's grammar: commands joined by `;` or line ends, in
+ *  `{ }` blocks, each after at most two addresses, a number, `$`, `first~step`, `/regex/` or
+ *  `\cregexc` with its `I` and `M` flags, `+N` or `~N`, and `!`; `#` comments) runs no program and
+ *  reads or writes no file: each command is one of `=`, `d`, `D`, `F`, `g`, `G`, `h`, `H`, `n`,
+ *  `N`, `p`, `P`, `x`, `z`, `l`, `L`, `q`, `Q` (with a number), `:`, `b`, `t`, `T`, `v` (with a
+ *  label), `a`, `i`, `c` (their text to the line's end, a `\` carrying it on), `y`, or `s` with no
+ *  flag but `g`, `p`, `i`, `I`, `m`, `M` and a number; so no `e`, `r`, `R`, `w` or `W` command, and
+ *  no `e` or `w` flag of `s`. A regex or a replacement ends at its delimiter, a `\` taking the
+ *  character after it (GNU's match_slash); one a line end cuts is refused, as sed refuses it. */
+function sedScriptReadsOnly(script: string): boolean {
+  let at = 0;
+  const peek = () => script[at];
+  const blanks = () => {
+    while (peek() === " " || peek() === "\t") at++;
+  };
+  const digits = () => {
+    while (/[0-9]/.test(peek() ?? "")) at++;
+  };
+  // Past the next `delim` that no `\` takes.
+  const through = (delim: string): boolean => {
+    while (at < script.length) {
+      const ch = script[at++];
+      if (ch === "\n") return false;
+      if (ch === "\\") at++;
+      else if (ch === delim) return true;
+    }
+    return false;
+  };
+  // A delimiter after `s` or `y`, `\c` or `/` of an address.
+  const delimiter = (): string | undefined => {
+    const ch = script[at++];
+    return ch === undefined || ch === "\n" || ch === "\\" ? undefined : ch;
+  };
+  const address = (second: boolean): "none" | "taken" | "refused" => {
+    const ch = peek();
+    if (ch !== undefined && /[0-9]/.test(ch)) {
+      digits();
+      if (peek() === "~") {
+        at++;
+        digits();
+      }
+      return "taken";
+    }
+    if (ch === "$") {
+      at++;
+      return "taken";
+    }
+    if (ch === "/" || ch === "\\") {
+      at++;
+      const delim = ch === "/" ? "/" : delimiter();
+      if (delim === undefined || !through(delim)) return "refused";
+      while (peek() === "I" || peek() === "M") at++;
+      return "taken";
+    }
+    if (second && (ch === "+" || ch === "~")) {
+      at++;
+      if (!/[0-9]/.test(peek() ?? "")) return "refused";
+      digits();
+      return "taken";
+    }
+    return "none";
+  };
+  // The end of a command: blanks, then a `;` or a line end (taken), or a `}`, a `#` or the end.
+  const ended = (): boolean => {
+    blanks();
+    const ch = peek();
+    if (ch === ";" || ch === "\n") at++;
+    return ch === undefined || ch === ";" || ch === "\n" || ch === "}" || ch === "#";
+  };
+  for (;;) {
+    while (" \t\n;".includes(peek() ?? "x")) at++;
+    if (peek() === undefined) return true;
+    if (peek() === "#") {
+      while (peek() !== undefined && peek() !== "\n") at++;
+      continue;
+    }
+    const first = address(false);
+    if (first === "refused") return false;
+    blanks();
+    if (first === "taken" && peek() === ",") {
+      at++;
+      blanks();
+      if (address(true) !== "taken") return false;
+    }
+    blanks();
+    while (peek() === "!") {
+      at++;
+      blanks();
+    }
+    const command = script[at++];
+    switch (command) {
+      case "{":
+        continue;
+      case "}":
+      case "=":
+      case "d":
+      case "D":
+      case "F":
+      case "g":
+      case "G":
+      case "h":
+      case "H":
+      case "n":
+      case "N":
+      case "p":
+      case "P":
+      case "x":
+      case "z":
+        if (!ended()) return false;
+        continue;
+      case "l":
+      case "L":
+      case "q":
+      case "Q":
+        blanks();
+        digits();
+        if (!ended()) return false;
+        continue;
+      case ":":
+      case "b":
+      case "t":
+      case "T":
+      case "v":
+        blanks();
+        while (peek() !== undefined && !" \t\n;}".includes(peek() ?? "")) at++;
+        if (!ended()) return false;
+        continue;
+      case "a":
+      case "i":
+      case "c":
+        while (at < script.length && script[at] !== "\n") at += script[at] === "\\" ? 2 : 1;
+        continue;
+      case "s":
+      case "y": {
+        const delim = delimiter();
+        if (delim === undefined || !through(delim) || !through(delim)) return false;
+        if (command === "s") while (/[gpiImM0-9]/.test(peek() ?? "")) at++;
+        if (!ended()) return false;
+        continue;
+      }
+      default:
+        return false;
+    }
+  }
+}
+
+/** Whether the sed command of `values` (the words after `sed`) only reads: `-n` (or `--quiet`,
+ *  `--silent`), no `-i` in any spelling (`-i`, `-i.bak`, `-ni`, `--in-place`, `--in`, …), no `-f`
+ *  or `--file` (a script the rule cannot read), and a script (its `-e` and `--expression` scripts
+ *  joined by line ends, else its first operand) that `sedScriptReadsOnly` takes. */
+function sedReadsOnly(values: readonly string[]): boolean {
+  const parsed = parseOptions(values, SED_OPTIONS);
+  if (parsed === undefined) return false;
+  const { options, operands } = parsed;
+  if (givesAny(options, ["i", "in-place", "f", "file"])) return false;
+  if (!givesAny(options, ["n", "quiet", "silent"])) return false;
+  const given = options.flatMap((option) =>
+    option.names.includes("e") || option.names.includes("expression") ? [option.value ?? ""] : []
+  );
+  const script = given.length > 0 ? given.join("\n") : operands[0];
+  return script !== undefined && sedScriptReadsOnly(script);
+}
+
 /** Whether the git command of `args` (the words after `git`) only reads (see the file's header). */
 function gitReadsOnly(args: readonly string[]): boolean {
   let at = 0;
@@ -729,11 +1197,10 @@ function gitReadsOnly(args: readonly string[]): boolean {
   }
   const subcommand = args[at];
   const rest = args.slice(at + 1);
-  const writes = rest.some(
-    (arg) =>
-      /^(--output(=|$)|-O|--open-files-in-pager|--ext-diff)/.test(arg) || arg === "--no-index"
-  );
-  if (writes) return false;
+  const parsed = parseOptions(rest, { values: GIT_VALUES[subcommand ?? ""] ?? "", long: GIT_LONG });
+  // A format's `%G` (`%G?`, `%GS`, …) verifies a commit's signature, which runs gpg.
+  if (parsed === undefined || givesAny(parsed.options, GIT_RUNS)) return false;
+  if (rest.some((arg) => arg.includes("%G"))) return false;
   switch (subcommand) {
     case "worktree":
       return rest[0] === "list";
@@ -750,7 +1217,7 @@ function gitReadsOnly(args: readonly string[]): boolean {
 
 /** Whether the jj command of `args` (the words after `jj`) only reads (see the file's header). */
 function jjReadsOnly(args: readonly string[]): boolean {
-  if (args.some((arg) => JJ_RUNS.test(arg))) return false;
+  if (!optionsRead("jj", args)) return false;
   const named: string[] = [];
   for (let at = 0; at < args.length; at++) {
     const arg = args[at] ?? "";
@@ -762,26 +1229,31 @@ function jjReadsOnly(args: readonly string[]): boolean {
   return (READ_ONLY_JJ as readonly string[]).includes(command);
 }
 
-/** Whether `env`'s words `args` run no command: options that print the environment, then
- *  assignments. */
+/** Whether `program` (one of PROGRAM_OPTIONS) with the words `values` gives none of its options
+ *  that run a program, write a file or read one no word names. */
+function optionsRead(program: string, values: readonly string[]): boolean {
+  const options = PROGRAM_OPTIONS[program];
+  if (options === undefined) return false;
+  const parsed = parseOptions(values, options.spec);
+  return parsed !== undefined && !givesAny(parsed.options, options.runs);
+}
+
+/** Whether `env`'s words `args` run no command: options of ENV_PRINTS (`-u`'s value a name), then
+ *  assignments (after a first `-`, which is `-i`). */
 function envReadsOnly(args: readonly Word[]): boolean {
-  let assigned = false;
-  for (let at = 0; at < args.length; at++) {
-    const word = args[at] ?? [];
-    const text = literal(word);
-    if (assignmentOf(word) !== undefined) {
-      assigned = true;
-      continue;
-    }
-    if (assigned || text === undefined) return false;
-    if (text === "-u" || text === "--unset") {
-      at++;
-      if (!NAME.test(literal(args[at] ?? []) ?? "")) return false;
-    } else if (!/^(-0|--null|-i|--ignore-environment|-|-u\w+|--unset=\w+)$/.test(text)) {
-      return false;
-    }
+  // An assignment is an operand whose value need not be known.
+  const parsed = parseOptions(
+    args.map((word) => (assignmentOf(word) === undefined ? literal(word) : "=")),
+    ENV_OPTIONS
+  );
+  if (parsed === undefined) return false;
+  for (const { names, value } of parsed.options) {
+    if (names.length !== 1 || !ENV_PRINTS.includes(names[0] ?? "")) return false;
+    if ((names[0] === "u" || names[0] === "unset") && !NAME.test(value ?? "")) return false;
   }
-  return true;
+  return args
+    .slice(args.length - parsed.operands.length)
+    .every((word, n) => assignmentOf(word) !== undefined || (n === 0 && literal(word) === "-"));
 }
 
 /** Whether the read-only program `program` with `args` (each word and its one value, undefined
@@ -800,11 +1272,9 @@ function commandReadsOnly(
     case "find":
       return known(values) && values.every((arg) => !Object.hasOwn(FIND_ACTIONS, arg));
     case "rg":
-      return known(values) && values.every((arg) => arg !== "--pre" && !arg.startsWith("--pre="));
     case "tree":
-      return known(values) && values.every((arg) => arg !== "-o");
     case "file":
-      return known(values) && values.every((arg) => arg !== "-C" && arg !== "--compile");
+      return known(values) && optionsRead(program, values);
     case "git":
       return known(values) && gitReadsOnly(values);
     case "jj":
@@ -816,30 +1286,18 @@ function commandReadsOnly(
         (name) =>
           name === "-v" ||
           name === "-f" ||
-          (name !== undefined && NAME.test(name) && !Object.hasOwn(UNSET_PROTECTED, name))
+          (name !== undefined && NAME.test(name) && !UNSET_PROTECTED.test(name))
       );
     case "export":
       return args.every(
         ({ word }) => literal(word) === "-p" || settable(assignmentOf(word)?.name ?? literal(word))
       );
-    case "printf":
-      return (
-        args.length === 0 ||
-        (values[0] !== undefined && (values[0] !== "-v" || settable(values[1])))
-      );
-    case "sed": {
-      if (!known(values)) return false;
-      const flags = values.filter((arg) => arg.startsWith("-"));
-      const quiet = flags.some(
-        (arg) => arg === "--quiet" || arg === "--silent" || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(arg)
-      );
-      const inPlace = flags.some((arg) => arg.startsWith("--in-place") || /^-[a-zA-Z]*i/.test(arg));
-      const writes = values.some(
-        (arg) =>
-          !arg.startsWith("-") && (/[wW]\s+\S/.test(arg) || /(^|[^\\a-zA-Z])e(\s|;|}|$)/.test(arg))
-      );
-      return quiet && !inPlace && !writes;
+    case "printf": {
+      const name = printfTarget(values);
+      return name === "" || settable(name);
     }
+    case "sed":
+      return known(values) && sedReadsOnly(values);
     default:
       return true;
   }
@@ -975,33 +1433,361 @@ export interface Unanswered {
   readonly why: string;
 }
 
-/** The directories a `bash` answer's shell finds its programs in, before the runner's jj's. */
-const SYSTEM_PATH = ["/usr/local/bin", "/usr/bin", "/bin"];
-/** The home directory of a `bash` answer's shell: outside the copy and on no machine, so no file
- *  the repository holds (a `.gitconfig`, a `.jjconfig.toml`) is read as the user's
- *  configuration, even where the command unsets GIT_CONFIG_GLOBAL. */
-const NO_HOME = "/nonexistent";
+/** Where an answer's sandbox (`runSandboxed`) mounts the copy, read-only: each command an answer
+ *  runs sees the copy at this one path, which the answer maps to the session's checkout root and
+ *  back (`sandboxedBash`). */
+const CHECKOUT_MOUNT = "/mnt/checkout";
+/** The sandbox's home directory: empty, on the sandbox's own read-only file system, so no file the
+ *  repository holds (a `.gitconfig`, a `.jjconfig.toml`) is read as the user's configuration, even
+ *  where the command unsets GIT_CONFIG_GLOBAL. */
+const SANDBOX_HOME = "/mnt/home";
+/** The sandbox's jj configuration (JJ_CONFIG, and `--config-file` on jj's command line, which
+ *  outranks a repository's own): no pager, jj's default diff formatter, no signature verified (gpg
+ *  or ssh) and no file-system monitor, so no jj command runs a program. */
+const SANDBOX_JJ_CONFIG = "/mnt/jj.toml";
+/** SANDBOX_JJ_CONFIG's text. */
+const JJ_CONFIG_TEXT = `[ui]
+paginate = "never"
+diff-formatter = ":color-words"
+show-cryptographic-signatures = false
 
-/** The environment a `bash` answer runs in, and the copy's colocation (`colocateJj`): none of the
- *  runner's variables; its PATH SYSTEM_PATH then the directory of the runner's jj (`jj`, from the
- *  runner's PATH), its home NO_HOME, git's system and global configuration none, its pagers
- *  `cat`, and GIT_OPTIONAL_LOCKS=0, so `git status` writes no index into the shared checkout. */
-function shellEnvironment(jj: string | undefined): Record<string, string> {
-  const jjDir = jj === undefined ? undefined : path.dirname(jj);
-  const dirs =
-    jjDir === undefined || SYSTEM_PATH.includes(jjDir) ? SYSTEM_PATH : [...SYSTEM_PATH, jjDir];
-  return {
-    PATH: dirs.join(":"),
-    HOME: NO_HOME,
-    LANG: "C.UTF-8",
-    TERM: "dumb",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_SYSTEM: "/dev/null",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_PAGER: "cat",
-    PAGER: "cat",
-    GIT_OPTIONAL_LOCKS: "0",
+[fsmonitor]
+backend = "none"
+`;
+/** git's configuration in each answer, through GIT_CONFIG_COUNT (which outranks every file of the
+ *  repository's): no file-system monitor and no hooks, a bare repository used only where a command
+ *  names it (so a directory of the checkout laid out as one, its `config` its own, is refused), no
+ *  transport (so no lazy fetch of a blob from the commit's remote), and no pager. */
+const GIT_CONFIG: readonly (readonly [string, string])[] = [
+  ["core.fsmonitor", "false"],
+  ["core.hooksPath", "/dev/null"],
+  ["safe.bareRepository", "explicit"],
+  ["protocol.allow", "never"],
+  ["core.pager", "cat"],
+];
+/** The environment an answer runs in, and the copy's colocation (`colocateJj`), the same for each:
+ *  none of the runner's variables; its PATH the sandbox's jj wrapper (`/mnt/bin`, `runSandboxed`),
+ *  then the system's; its home SANDBOX_HOME; a fixed LANG; git's system and global configuration
+ *  none, GIT_CONFIG, its pagers `cat`, and GIT_OPTIONAL_LOCKS=0, so `git status` writes no index;
+ *  jj's configuration SANDBOX_JJ_CONFIG. */
+const SANDBOX_ENV: Readonly<Record<string, string>> = {
+  PATH: "/mnt/bin:/usr/local/bin:/usr/bin:/bin",
+  HOME: SANDBOX_HOME,
+  LANG: "C.UTF-8",
+  TERM: "dumb",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_PAGER: "cat",
+  PAGER: "cat",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_CONFIG_COUNT: String(GIT_CONFIG.length),
+  ...Object.fromEntries(
+    GIT_CONFIG.flatMap(([key, value], n) => [
+      [`GIT_CONFIG_KEY_${n}`, key],
+      [`GIT_CONFIG_VALUE_${n}`, value],
+    ])
+  ),
+  JJ_CONFIG: SANDBOX_JJ_CONFIG,
+};
+
+/** The trees no answer sees, each under an empty, read-only file system: the pod's run-time
+ *  mounts (`/run`, `/var/run`: the model gateway's key, the secrets broker's keys, gh's and the
+ *  owners' GitHub configuration, the Dispatch token, the store's address), the home directories,
+ *  the issue volume (`/legion`), the temporary directories, shared memory and the operator's
+ *  configuration. */
+const HIDDEN_TREES = [
+  "/run",
+  "/var/run",
+  "/home",
+  "/root",
+  "/legion",
+  "/tmp",
+  "/var/tmp",
+  "/dev/shm",
+  "/etc/legion-operator",
+];
+/** A variable of the runner's environment whose name says it names a file (`…_FILE`: the Dispatch
+ *  and Envoy tokens, Envoy's configuration, the store's address, the private names' rules) or a
+ *  directory (`…_DIR`, `…_HOME`: gh's configuration, the secrets broker's keys, the owners'
+ *  tokens): each such directory, a file's own, is hidden too, wherever it is. */
+const NAMES_A_PATH = /_(FILE|DIR|HOME)$/;
+/** The paths the sandbox runs from: no directory that is one of them or holds one is hidden; a file
+ *  a variable names in such a directory is hidden alone (where the kernel cannot mount over a file,
+ *  as gVisor's cannot, the sandbox is then not made, and no command runs). */
+const SANDBOX_NEEDS = [
+  "/bin",
+  "/sbin",
+  "/lib",
+  "/lib64",
+  "/usr/bin",
+  "/usr/sbin",
+  "/usr/lib",
+  "/usr/local/bin",
+  "/etc",
+  "/dev",
+  "/proc",
+  "/mnt",
+];
+
+/** What an answer's sandbox hides, from the runner's environment `env`: HIDDEN_TREES, the runner's
+ *  home directory (HOME), and each directory or file a variable of NAMES_A_PATH names (none under
+ *  /mnt, all of which the sandbox's own /mnt hides), each as its real path, those not there left
+ *  out (nothing is there to hide), and none under another (whose hiding hides it), in path order
+ *  (`paths`); and the runner's home as its real path (`home`), made again, empty, inside the one of
+ *  `paths` that holds it (`homeTree`). */
+function hiddenPaths(env: Readonly<Record<string, string | undefined>>): {
+  readonly paths: string[];
+  readonly home: string;
+  readonly homeTree: string;
+} {
+  const real = (target: string): string | undefined => {
+    try {
+      return realpathSync(target);
+    } catch {
+      return undefined;
+    }
   };
+  const found = new Set<string>();
+  const named = Object.entries(env).filter(([name]) => NAMES_A_PATH.test(name) || name === "HOME");
+  for (const [name, value] of [...HIDDEN_TREES.map((tree) => ["", tree] as const), ...named]) {
+    if (value === undefined || !path.isAbsolute(value)) continue;
+    const file = name.endsWith("_FILE");
+    const dir = real(file ? path.dirname(value) : value);
+    if (dir === undefined || dir === "/mnt" || dir.startsWith("/mnt/")) continue;
+    if (dir !== "/" && !SANDBOX_NEEDS.some((need) => need === dir || need.startsWith(`${dir}/`))) {
+      found.add(dir);
+    } else if (file) found.add(path.join(dir, path.basename(value)));
+  }
+  const sorted = [...found].sort();
+  const paths = sorted.filter(
+    (each, n) => !sorted.slice(0, n).some((other) => each.startsWith(`${other}/`))
+  );
+  const home = env.HOME === undefined || !path.isAbsolute(env.HOME) ? "" : (real(env.HOME) ?? "");
+  const homeTree =
+    home === "" ? "" : (paths.find((each) => home === each || home.startsWith(`${each}/`)) ?? "");
+  return { paths, home, homeTree };
+}
+
+/** `target` as a mount table names it: a blank, a tab, a line end and a backslash in octal. */
+function mountName(target: string): string {
+  return target.replace(/[\\ \t\n]/g, (ch) => `\\${ch.charCodeAt(0).toString(8).padStart(3, "0")}`);
+}
+
+/** The sandbox's making, in bash, run as the root of its own user namespace (`runSandboxed`): its
+ *  own file system at /mnt; then, in one `mount -a` of a mount table of its own, the copy bound at
+ *  CHECKOUT_MOUNT (read-only unless `rw`), the directory of the runner's jj bound read-only at
+ *  /mnt/jj, and an empty, read-only file system over each hidden directory and /dev/null over each
+ *  hidden file (`hiddenPaths`, each with its name in the table; one the sandbox's user can neither
+ *  enter nor read, as `/root`, needs none, since no command of it can either); the runner's home
+ *  made again, empty, in the one that holds it, made read-only after; the jj wrapper at
+ *  /mnt/bin/jj, SANDBOX_HOME and SANDBOX_JJ_CONFIG, then /mnt made read-only; a host name of its
+ *  own; then SANDBOX_READY, and the command, from the working directory in the copy, its standard
+ *  error joined to its output, with no capability (setpriv), so it can neither unmount what hides a
+ *  directory nor mount anything, nor gain one. A step that fails says which on standard error, and
+ *  no command runs. */
+const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9
+shift 9
+fail() { printf '%s\\n' "$1" >&2; exit 125; }
+command -v setpriv >/dev/null || fail "find setpriv"
+mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
+mkdir /mnt/checkout /mnt/home /mnt/bin /mnt/jj || fail "make its directories"
+homemounted=
+{
+  if [ "$mode" = ro ]; then
+    printf '%s /mnt/checkout none bind,ro 0 0\\n' "$copyfs"
+  else
+    printf '%s /mnt/checkout none bind 0 0\\n' "$copyfs"
+  fi
+  if [ -n "$jjfs" ]; then printf '%s /mnt/jj none bind,ro 0 0\\n' "$jjfs"; fi
+  while [ $# -gt 1 ]; do
+    each=$1 target=$2
+    shift 2
+    if [ -d "$each" ]; then
+      [ -x "$each" ] || continue
+      if [ "$each" = "$hometree" ]; then
+        homemounted=1
+        printf 'checkout-sandbox-hidden %s tmpfs mode=0755 0 0\\n' "$target"
+      else
+        printf 'checkout-sandbox-hidden %s tmpfs ro,mode=0755 0 0\\n' "$target"
+      fi
+    elif [ -r "$each" ]; then
+      printf '/dev/null %s none bind,ro 0 0\\n' "$target"
+    fi
+  done
+} > /mnt/fstab || fail "write its mount table"
+mount -a -T /mnt/fstab || fail "mount the copy and hide the directories that hold the pod's credentials"
+: > /mnt/fstab
+if [ -n "$homemounted" ]; then
+  { mkdir -p "$home" && mount -o remount,ro "$hometree"; } || fail "make the runner's home again, empty"
+fi
+if [ -n "$jjfs" ]; then
+  { printf '%s' "$wrapper" > /mnt/bin/jj && chmod 0755 /mnt/bin/jj; } || fail "write jj's wrapper"
+fi
+printf '%s' "$jjconfig" > /mnt/jj.toml || fail "write jj's configuration"
+mount -o remount,ro /mnt || fail "make its /mnt read-only"
+hostname checkout 2>/dev/null
+cd -P "/mnt/checkout/$cwd" || fail "enter the working directory"
+unset PWD OLDPWD
+printf 'ready\\n' >&2
+exec env -u SHLVL -u _ setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- bash --noprofile --norc -c "{ $command
+} 2>&1" 2>/dev/null
+`;
+
+/** What SANDBOX_SETUP says, alone, on standard error once the sandbox is made, as its command
+ *  starts: the command's wall time starts there. */
+const SANDBOX_READY = "ready\n";
+
+/** What a command run in the sandbox gave: its output, its exit code and its wall time. */
+interface SandboxRun {
+  readonly output: Buffer;
+  readonly exitCode: number;
+  readonly wallTimeMs: number;
+}
+
+/**
+ * Runs `command` (bash's text, the copy at CHECKOUT_MOUNT in it) in a sandbox of the copy `dir`, as
+ * each command that answers a call, and each jj command of the copy's colocation, runs: `unshare`'s
+ * new user (the runner's user its root), mount, network, process and host-name namespaces, made by
+ * SANDBOX_SETUP (the copy alone of the machine's disk mounted, at CHECKOUT_MOUNT, read-only unless
+ * `writable`; an empty, read-only file system over each tree that holds the pod's credentials,
+ * `hiddenPaths`; no network; no capability), from `cwd` (the working directory's path in the copy,
+ * "" for its root), in SANDBOX_ENV, its jj the runner's (found on its PATH) through a wrapper that
+ * gives it SANDBOX_JJ_CONFIG and, unless `writable`, `--ignore-working-copy` (so no jj answer takes
+ * the working copy's lock or snapshots it: each answers from the snapshot the colocation took).
+ * Ended, with every process it started, once `limitMs` pass (SIGKILL; `--kill-child` ends the
+ * namespace's first process, and the kernel the rest), and once its output passes OUTPUT_BYTES.
+ * Its output (standard error joined to it), exit code and wall time (from when the sandbox is
+ * made); else why none: no `unshare`, a sandbox not made, the time limit or the output cap.
+ */
+async function runSandboxed(
+  dir: string,
+  {
+    command,
+    cwd,
+    writable,
+    limitMs,
+  }: { command: string; cwd: string; writable: boolean; limitMs: number }
+): Promise<SandboxRun | Unanswered> {
+  const unshare = Bun.which("unshare");
+  if (unshare === null) return { why: "the runner has no unshare, so it runs no command" };
+  const jjFound = Bun.which("jj");
+  const jj = jjFound === null ? undefined : realpathSync(jjFound);
+  const wrapper =
+    jj === undefined
+      ? ""
+      : `#!/bin/sh\nexec /mnt/jj/${path.basename(jj)}${writable ? "" : " --ignore-working-copy"} --config-file ${SANDBOX_JJ_CONFIG} "$@"\n`;
+  const hidden = hiddenPaths(process.env);
+  const child = Bun.spawn(
+    [
+      unshare,
+      "--user",
+      "--map-root-user",
+      "--mount",
+      "--net",
+      "--pid",
+      "--fork",
+      "--uts",
+      "--mount-proc",
+      "--kill-child",
+      "--",
+      "bash",
+      "--noprofile",
+      "--norc",
+      "-c",
+      SANDBOX_SETUP,
+      "sandbox",
+      mountName(realpathSync(dir)),
+      writable ? "rw" : "ro",
+      cwd,
+      jj === undefined ? "" : mountName(path.dirname(jj)),
+      wrapper,
+      JJ_CONFIG_TEXT,
+      hidden.home,
+      hidden.homeTree,
+      command,
+      ...hidden.paths.flatMap((each) => [each, mountName(each)]),
+    ],
+    { env: SANDBOX_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+  );
+  const limit = timeLimit({ kill: () => child.kill("SIGKILL") }, limitMs);
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let over = false;
+  let said = "";
+  let ready: number | undefined;
+  const decoder = new TextDecoder();
+  await Promise.all([
+    eachChunk(child.stderr, limit, (chunk) => {
+      said += decoder.decode(chunk, { stream: true });
+      if (ready === undefined && said.endsWith(SANDBOX_READY)) ready = performance.now();
+    }),
+    eachChunk(child.stdout, limit, (chunk) => {
+      if (over) return;
+      bytes += chunk.length;
+      if (bytes > OUTPUT_BYTES) {
+        over = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      chunks.push(chunk);
+    }),
+  ]);
+  const exitCode = await child.exited;
+  const ended = performance.now();
+  limit.clear();
+  if (limit.timedOut()) return { why: `it ran past the ${limitMs / 1000} s limit` };
+  if (over) return { why: `its output passes the ${OUTPUT_BYTES} bytes Oh My Pi shows whole` };
+  if (ready === undefined || said !== SANDBOX_READY) {
+    return {
+      why: `the sandbox could not be made: ${firstLine(said.replace(SANDBOX_READY, "")) || "it started no command"}`,
+    };
+  }
+  return { output: Buffer.concat(chunks), exitCode, wallTimeMs: ended - ready };
+}
+
+/** Runs the `bash` command `command` as each answered one runs (`runSandboxed`), from the session's
+ *  working directory `cwd`: the session's checkout root in it mapped to CHECKOUT_MOUNT, and in its
+ *  output that path, and the copy's own (as given and as its real path), mapped back to the root.
+ *  Its output, exit code and wall time, or why none. Exported for checkout.test.ts's negative
+ *  control, which runs through it commands that the read-only rule refuses. */
+export async function sandboxedBash(
+  copy: CheckoutCopy,
+  command: string,
+  cwd = copy.cwd
+): Promise<{ output: string; exitCode: number; wallTimeMs: number } | Unanswered> {
+  const ran = await runSandboxed(copy.dir, {
+    command: command.split(copy.root).join(CHECKOUT_MOUNT),
+    cwd: insideRoot(copy.root, cwd) ?? "",
+    writable: false,
+    limitMs: BASH_TIME_LIMIT_MS,
+  });
+  if ("why" in ran) return ran;
+  const real = realpathSync(copy.dir);
+  const output = [CHECKOUT_MOUNT, real, copy.dir].reduce(
+    (text, own) => text.split(own).join(copy.root),
+    ran.output.toString("utf8")
+  );
+  return { output, exitCode: ran.exitCode, wallTimeMs: ran.wallTimeMs };
+}
+
+/** A word `jj` of a shell command, where a program's name stands. */
+const JJ_WORD = /(^|[\s;&|(`])jj(?=$|[\s;&|)`])/;
+
+/** Whether `messages`, a session's messages, hold a `bash` call that runs jj (a word `jj` of its
+ *  command, JJ_WORD): that session's checkout was a jj workspace. build.ts records it on a written
+ *  case, from its context session's whole transcript (cases.ts's `checkout.jj`); cli.ts reads a
+ *  written case's own messages for it where the case has no such record. */
+export function messagesRunJj(messages: Case["messages"]): boolean {
+  return messages.some((message) =>
+    (message.content ?? []).some((block) => {
+      const input =
+        block.type === "toolCall" && block.name === "bash" ? block.arguments : undefined;
+      const command =
+        typeof input === "object" && input !== null ? Reflect.get(input, "command") : "";
+      return typeof command === "string" && JJ_WORD.test(command);
+    })
+  );
 }
 
 /** The longest one jj command of a copy's colocation may run: its snapshot reads every file of the
@@ -1011,29 +1797,26 @@ const JJ_TIME_LIMIT_MS = 1_800_000;
 /** Makes the copy `dir` (a git checkout at its commit, its outside links removed) a colocated jj
  *  repository, as cli.ts makes the shared checkout of a session that ran jj: `jj git init
  *  --colocate`, then `jj status`, whose snapshot of the working copy (each link removed seen as
- *  deleted) is taken here, once, so that no answer's jj command writes to the copy. Each runs with
- *  the runner's jj in the answers' environment (`shellEnvironment`). True when made; else why not,
- *  with the `.jj` it made removed. */
+ *  deleted) is taken here, once, so that each answer's jj command (`--ignore-working-copy`) reads
+ *  that snapshot and writes nothing. Each runs in the answers' sandbox (`runSandboxed`), the copy
+ *  writable there, with the runner's jj. True when made; else why not, with the `.jj` it made
+ *  removed. */
 export async function colocateJj(dir: string): Promise<true | Unanswered> {
-  const jj = Bun.which("jj") ?? undefined;
-  if (jj === undefined) return { why: "jj is not on the runner's PATH" };
-  for (const args of [["git", "init", "--colocate"], ["status"]]) {
-    const child = Bun.spawn([jj, ...args], {
-      cwd: dir,
-      env: shellEnvironment(jj),
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "pipe",
+  if (Bun.which("jj") === null) return { why: "jj is not on the runner's PATH" };
+  for (const command of ["jj git init --colocate", "jj status"]) {
+    const ran = await runSandboxed(dir, {
+      command,
+      cwd: "",
+      writable: true,
+      limitMs: JJ_TIME_LIMIT_MS,
     });
-    const limit = timeLimit(child, JJ_TIME_LIMIT_MS);
-    const [stderr, code] = await Promise.all([textOf(child.stderr, limit), child.exited]);
-    limit.clear();
-    if (code !== 0 || limit.timedOut()) {
+    if ("why" in ran || ran.exitCode !== 0) {
       rmSync(path.join(dir, ".jj"), { recursive: true, force: true });
-      const said = limit.timedOut()
-        ? `it ran past ${JJ_TIME_LIMIT_MS / 1000} s`
-        : firstLine(stderr).split(dir).join(".");
-      return { why: `jj ${args.join(" ")} failed: ${said}` };
+      const said =
+        "why" in ran
+          ? ran.why
+          : firstLine(ran.output.toString("utf8")).split(CHECKOUT_MOUNT).join(".");
+      return { why: `${command} failed: ${said}` };
     }
   }
   return true;
@@ -1551,6 +2334,32 @@ function optionValue(word: string): string {
   return slash < 0 ? "" : word.slice(slash);
 }
 
+/** Whether the path `rest` (relative, as written), taken from the session's directory `from`
+ *  (inside the root), stays in the copy as the kernel walks it there: from the copy's own directory
+ *  at `from`, each part that is there has its symbolic links followed (realpath, one part at a
+ *  time), `..` is the parent of where that got, and the first part that is not there ends the walk
+ *  (the kernel goes no further, so the rest is read as written). So `l/../x`, through a link `l` of
+ *  the checkout to its root, goes to the copy's parent, which the path read as written, `x`, does
+ *  not show. */
+function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
+  const real = realpathSync(copy.dir);
+  const parts = [...(insideRoot(copy.root, from) ?? "").split("/"), ...rest.split("/")];
+  let at = real;
+  for (const [n, part] of parts.entries()) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") at = path.dirname(at);
+    else {
+      try {
+        at = realpathSync(path.join(at, part));
+      } catch {
+        return insideRoot(real, path.resolve(at, ...parts.slice(n))) !== undefined;
+      }
+    }
+    if (insideRoot(real, at) === undefined) return false;
+  }
+  return true;
+}
+
 /** Why the simple command `command` at `state` may reach a file outside the session's checkout or
  *  show a value of the runner's in place of the session's, or undefined (see `escapes`). */
 function escapeFault(
@@ -1573,6 +2382,9 @@ function escapeFault(
     }
   }
   const program = first === undefined ? undefined : literal(first);
+  if (program === "cd" && args.every((word) => (literal(word) ?? "").startsWith("-"))) {
+    return "its cd names no directory, so it goes to $HOME, which is the runner's";
+  }
   const reaches = program !== undefined && !Object.hasOwn(NO_PATH_PROGRAMS, program);
   for (const word of [...(reaches ? args : []), ...command.redirects.map((each) => each.target)]) {
     const text = wordText(word);
@@ -1594,6 +2406,12 @@ function escapeFault(
       if (fulls.some((full) => insideRoot(copy.root, full) === undefined)) {
         return `${text} is outside the session's checkout ${copy.root}`;
       }
+      const walked = value.startsWith("/")
+        ? [{ from: copy.root, rest: insideRoot(copy.root, value) }]
+        : state.cwds.map((from) => ({ from, rest: value }));
+      if (walked.some(({ from, rest }) => rest === undefined || !walksInCopy(copy, from, rest))) {
+        return `${text} leads, through a symbolic link of the checkout and .. after it, outside the checkout`;
+      }
     }
   }
   return undefined;
@@ -1610,8 +2428,10 @@ function escapeFault(
  *  the runner's), an absolute one not under the root, a relative one that leaves the root from
  *  any of those directories, or an option's value (after its `=`, or from its first `/` or `~`
  *  where it has none) that does so. Any other variable's expansion (`$HOME`, `$PATH`) would show
- *  the runner's value. Symbolic links are not followed here: the copy holds none that leaves it
- *  (`removeOutsideLinks`). */
+ *  the runner's value, and a `cd` that names no directory goes to $HOME, the runner's. The copy
+ *  holds no symbolic link that leaves it (`removeOutsideLinks`), and each path is walked as the
+ *  kernel walks it in the copy (`walksInCopy`), so a link that stays inside, followed by `..`,
+ *  cannot lead out; an absolute path must name the root as written. */
 function escapes(copy: CheckoutCopy, cwd: string, script: Script): string | undefined {
   const walk: Walk = {
     check: (command, state) => escapeFault(copy, command, state, walk),
@@ -1658,14 +2478,13 @@ async function bashAnswer(
       why: "the copy is GitHub's tarball of the commit, which holds no history: the fetch of the commit failed",
     };
   }
-  const jj = Bun.which("jj") ?? undefined;
   if (programs.includes("jj")) {
     if (copy.jj !== undefined && copy.jj !== true) {
       return {
         why: `the copy could not be made a colocated jj repository, so no jj command is answered: ${copy.jj.why}`,
       };
     }
-    if (jj === undefined) return { why: "jj is not on the runner's PATH" };
+    if (Bun.which("jj") === null) return { why: "jj is not on the runner's PATH" };
   }
   let cwd = copy.cwd;
   if (typeof input.cwd === "string") {
@@ -1677,41 +2496,16 @@ async function bashAnswer(
   }
   const leads = escapes(copy, cwd, script);
   if (leads !== undefined) return { why: leads };
-  const real = realpathSync(copy.dir);
-  const localCwd = path.join(real, insideRoot(copy.root, cwd) ?? "");
-  if (!statSync(localCwd, { throwIfNoEntry: false })?.isDirectory()) {
+  const localCwd = path.join(realpathSync(copy.dir), insideRoot(copy.root, cwd) ?? "");
+  if (
+    !statSync(localCwd, { throwIfNoEntry: false })?.isDirectory() ||
+    !walksInCopy(copy, cwd, "")
+  ) {
     return { why: `its working directory ${cwd} is no directory of the checkout` };
   }
-  const mapped = command.split(copy.root).join(real);
-  const started = performance.now();
-  const child = Bun.spawn(["bash", "--noprofile", "--norc", "-c", `{ ${mapped}\n} 2>&1`], {
-    cwd: localCwd,
-    env: shellEnvironment(jj),
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  const limit = timeLimit(child, BASH_TIME_LIMIT_MS);
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  let over = false;
-  await eachChunk(child.stdout, limit, (chunk) => {
-    bytes += chunk.length;
-    if (bytes > OUTPUT_BYTES) {
-      over = true;
-      child.kill();
-      return;
-    }
-    chunks.push(chunk);
-  });
-  const exitCode = await child.exited;
-  limit.clear();
-  const wallTimeMs = performance.now() - started;
-  if (limit.timedOut()) return { why: `it ran past the ${BASH_TIME_LIMIT_MS / 1000} s limit` };
-  if (over) return { why: `its output passes the ${OUTPUT_BYTES} bytes Oh My Pi shows whole` };
-  // The copy's path, as its real path and as given, becomes the session's checkout root.
-  const own = Buffer.concat(chunks).toString("utf8").split(real).join(copy.root);
-  const output = copy.dir === real ? own : own.split(copy.dir).join(copy.root);
+  const ran = await sandboxedBash(copy, command, cwd);
+  if ("why" in ran) return ran;
+  const { output, exitCode, wallTimeMs } = ran;
   if (output.split("\n").some((line) => line.length > BASH_COLUMNS)) {
     return { why: `a line of its output passes the ${BASH_COLUMNS} characters Oh My Pi shows` };
   }

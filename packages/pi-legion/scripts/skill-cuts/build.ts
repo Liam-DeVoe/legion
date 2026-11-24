@@ -644,6 +644,7 @@ import {
   textLines,
   URL_TARGET,
 } from "./cases";
+import { messagesRunJj } from "./checkout";
 import {
   commandRetries,
   configFrom,
@@ -7838,6 +7839,16 @@ async function writtenContext(
   if (!installsCutCopy(profiled.profile, run.skill, run.cut.repo)) {
     return drop("not-cut-copy", notInstalled(run));
   }
+  // Whether the session ran jj: the whole message of each of its bash calls, read again (a light
+  // message keeps no call's command).
+  const ranJj = messagesRunJj(
+    t.items.flatMap((item, index) =>
+      item.slim.content?.some((block) => block.type === "toolCall" && block.name === "bash") ===
+      true
+        ? [t.message(index)]
+        : []
+    )
+  );
   return {
     store,
     hash,
@@ -7855,7 +7866,7 @@ async function writtenContext(
     reads: shown,
     profiled,
     digest,
-    checkout: writtenCheckout(profiled.profile, dirs.cwd),
+    checkout: writtenCheckout(profiled.profile, dirs.cwd, ranJj),
     listing: {
       listed: listedNames(profiled),
       recorded: rebuilt.init?.systemPrompt,
@@ -8015,14 +8026,15 @@ async function chooseContext(
 
 /** A written case's `checkout` (cases.ts): the session repository and commit of the context
  *  session's profile (`sessionRepository`), the checkout's root (the working directory `cwd` less
- *  its path in the checkout, the profile's `workingDirectory`) and `cwd`; undefined when the
- *  profile names no session repository, or the session no working directory. */
-function writtenCheckout(profile: Profile, cwd: string | undefined): Case["checkout"] {
+ *  its path in the checkout, the profile's `workingDirectory`), `cwd`, and whether the session ran
+ *  jj (`jj`); undefined when the profile names no session repository, or the session no working
+ *  directory. */
+function writtenCheckout(profile: Profile, cwd: string | undefined, jj: boolean): Case["checkout"] {
   const repo = profile.sessionRepository;
   if (repo === undefined || cwd === undefined) return undefined;
   const rel = profile.workingDirectory ?? "";
   const root = rel === "" ? cwd : cwd.endsWith(`/${rel}`) ? cwd.slice(0, -(rel.length + 1)) : "";
-  return root === "" ? undefined : { repo: repo.repo, commit: repo.commit, root, cwd };
+  return root === "" ? undefined : { repo: repo.repo, commit: repo.commit, root, cwd, jj };
 }
 
 /** The most paths of a checkout's tree the written-case reader is given whole: a larger tree, or
@@ -8790,7 +8802,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
             : [
                 {
                   item: `${WRITTEN_EVIDENCE}checkout ${chosen.checkout.repo} at ${chosen.checkout.commit}`,
-                  source: `the context session's working directory ${chosen.checkout.cwd} is in a checkout of ${chosen.checkout.repo} rooted at ${chosen.checkout.root} (its profile's session repository and the working directory's path in it), at the commit its project was read at: a run of the case answers its read-only calls from that commit (cases.ts's checkout)`,
+                  source: `the context session's working directory ${chosen.checkout.cwd} is in a checkout of ${chosen.checkout.repo} rooted at ${chosen.checkout.root} (its profile's session repository and the working directory's path in it), at the commit its project was read at: a run of the case answers its read-only calls from that commit (cases.ts's checkout); ${chosen.checkout.jj === true ? "a bash call of the context session ran jj, so its checkout was a jj workspace, and the copy a run answers from is a colocated jj repository" : "no bash call of the context session ran jj"}`,
                 },
               ]),
           { item: `${WRITTEN_EVIDENCE}context session ${contextName}`, source: how },

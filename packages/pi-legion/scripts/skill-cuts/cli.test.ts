@@ -4820,18 +4820,18 @@ describe("behaviour: a replay's reads of skill files", () => {
     );
   }, 120_000);
 
-  /** A made-up repository acme/proj of one commit holding `files` and the symbolic links `links`
-   *  (each path to its target), as `--repos <dir>/acme/proj.git` gives it to a written case's clone;
-   *  that `--repos` directory and the commit. */
+  /** A made-up repository acme/proj holding `files` and the symbolic links `links` (each path to its
+   *  target) in its last commit, after a commit of `earlier` where given (each path to its text), as
+   *  `--repos <dir>/acme/proj.git` gives it to a written case's fetch, whose server, as GitHub's,
+   *  takes a filter of the objects it sends; that `--repos` directory and the last commit. */
   const gitRepository = (
     dir: string,
     files: Record<string, string>,
-    links: Record<string, string> = {}
+    links: Record<string, string> = {},
+    earlier?: Record<string, string>
   ): { repos: string; commit: string } => {
     const repos = path.join(dir, "repos");
     const work = path.join(dir, "proj-work");
-    writeSkill(work, files);
-    for (const [link, target] of Object.entries(links)) symlinkSync(target, path.join(work, link));
     const git = (cwd: string, ...args: string[]) => {
       const ran = Bun.spawnSync(["git", ...args], {
         cwd,
@@ -4849,23 +4849,40 @@ describe("behaviour: a replay's reads of skill files", () => {
       expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
       return ran.stdout.toString().trim();
     };
+    mkdirSync(work, { recursive: true });
     git(work, "init", "--quiet");
+    if (earlier !== undefined) {
+      writeSkill(work, earlier);
+      git(work, "add", ".");
+      git(work, "commit", "--quiet", "-m", "Write the first guide");
+    }
+    writeSkill(work, files);
+    for (const [link, target] of Object.entries(links)) symlinkSync(target, path.join(work, link));
     git(work, "add", ".");
     git(work, "commit", "--quiet", "-m", "Add the guide");
     const commit = git(work, "rev-parse", "HEAD");
-    git(dir, "clone", "--quiet", "--bare", work, path.join(repos, "acme", "proj.git"));
+    const bare = path.join(repos, "acme", "proj.git");
+    git(dir, "clone", "--quiet", "--bare", work, bare);
+    git(bare, "config", "uploadpack.allowFilter", "true");
     return { repos, commit };
   };
 
   // Catches: a written case run with no copy of its checkout, so its agent is judged on its first
   // look at the work; a git command answered from no history; a session case answered from a
-  // checkout it does not have; or a checkout made again for each case or stage of one commit (a
-  // large repository's checkout takes minutes and gigabytes).
-  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it, and record the round; a session case's runs are judged on that reply", async () => {
+  // checkout it does not have; a checkout made again for each case or stage of one commit (a large
+  // repository's checkout takes minutes and gigabytes); or a checkout fetched with no blobs, whose
+  // git command of an older commit then fetches one from the remote as it answers.
+  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it with the blobs of its commits, and record the round; a session case's runs are judged on that reply", async () => {
     const base = scenario("checkout-rounds", LOSS_SKILL(), [{ id: "c04" }]);
-    // The made-up repository acme/proj, one commit, as `--repos` gives it to the fetch.
+    // The made-up repository acme/proj, two commits, as `--repos` gives it to the fetch.
     const guide = "# Guide\n\nRun the app.\n";
-    const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
+    const first = "# Guide\n\nRun the old app.\n";
+    const { repos, commit } = gitRepository(
+      base.dir,
+      { "docs/guide.md": guide },
+      {},
+      { "docs/guide.md": first }
+    );
     const checkout = { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" };
     const written = ["w00", "w01"].map((id): Case => ({ ...makeWrittenCase(id), checkout }));
     const cases = [...base.cases, ...written];
@@ -4935,7 +4952,7 @@ describe("behaviour: a replay's reads of skill files", () => {
       }
     }
     // A run of a second or more says its wall time, as Oh My Pi's bash does.
-    const expected = `[docs/guide.md#${snapshotTag(guide)}]\n1:# Guide\n2:\n3:Run the app.\n---\nAdd the guide\n`;
+    const expected = `[docs/guide.md#${snapshotTag(guide)}]\n1:# Guide\n2:\n3:Run the app.\n---\nAdd the guide\nWrite the first guide\n`;
     expect(answered.length).toBeGreaterThan(0);
     for (const text of answered) {
       expect(text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")).toBe(expected);
@@ -4956,45 +4973,36 @@ describe("behaviour: a replay's reads of skill files", () => {
     const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
     expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
     expect(readFileSync(path.join(checkouts, commit, "docs", "guide.md"), "utf8")).toBe(guide);
+    // It holds the blobs of its commits, the earlier one's among them, with no fetch to come.
+    expect(
+      JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
+    ).toMatchObject({ git: true, depth: 50, blobs: true });
+    const shown = Bun.spawnSync(["git", "cat-file", "-p", "HEAD~1:docs/guide.md"], {
+      cwd: path.join(checkouts, commit),
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir, GIT_NO_LAZY_FETCH: "1" },
+    });
+    expect({ code: shown.exitCode, text: shown.stdout.toString() }).toEqual({
+      code: 0,
+      text: first,
+    });
   }, 120_000);
 
-  // Catches: a jj command of a written case whose session ran jj answered with an error that
-  // session never saw (the copy no jj repository), one of a session that ran none answered as in a
-  // jj workspace, a checkout made again to add jj, or an answer that names the cache's copy in
-  // place of the session's paths.
-  test("the shared checkout is made a colocated jj repository once a written case whose session ran jj needs it, recorded in its marker and that case's stage; jj, git and pwd answer at the session's paths, and no answer names the copy", async () => {
+  // Catches: a jj command of a written case whose context session ran jj answered with an error
+  // that session never saw (the copy no jj repository; the defect: the screen looked for a jj call
+  // in the case's own history, which holds only the task and the skill's read), one of a session
+  // that ran none answered as in a jj workspace, a checkout made again to add jj, an answer that
+  // names the cache's copy in place of the session's paths, or a jj answer that takes the working
+  // copy's lock, which answers at once race on.
+  test("the shared checkout is made a colocated jj repository once a written case whose checkout records that its context session ran jj needs it, recorded in its marker and that case's stage; jj, git and pwd answer at the session's paths, and no answer names the copy", async () => {
     const base = scenario("checkout-jj", LOSS_SKILL(), [{ id: "c04" }]);
     const guide = "# Guide\n\nRun the app.\n";
     const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
     const root = "/work/acme/proj";
     const checkout = { repo: "acme/proj", commit, root, cwd: root };
-    // w00's session ran no jj; w01's ran `jj st`, its result in its history.
-    const ranJj = (c: Case): Case => ({
-      ...c,
-      messages: [
-        ...c.messages,
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "written_jj",
-              name: "bash",
-              arguments: { command: `cd ${root} && jj st` },
-            },
-          ],
-        },
-        {
-          role: "toolResult",
-          toolCallId: "written_jj",
-          toolName: "bash",
-          content: [{ type: "text", text: "The working copy has no changes." }],
-        },
-      ],
-    });
+    // w00's context session ran no jj; w01's did, as the written build records it on the case.
     const written = [
-      { ...makeWrittenCase("w00"), checkout },
-      ranJj({ ...makeWrittenCase("w01"), checkout }),
+      { ...makeWrittenCase("w00"), checkout: { ...checkout, jj: false } },
+      { ...makeWrittenCase("w01"), checkout: { ...checkout, jj: true } },
     ];
     const cases = [...base.cases, ...written];
     writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);

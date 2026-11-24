@@ -4969,11 +4969,13 @@ test("build-cases --written --written-answer drops a task that treats a missing 
   );
   expect(summary.drops).toEqual({ "written-missing-path": 1 });
   const [c] = loadCases(out, old);
+  // The context session ran no jj.
   expect(c?.checkout).toEqual({
     repo: "acme/proj",
     commit: SHA,
     root: "/home/dev/src/proj",
     cwd: "/home/dev/src/proj",
+    jj: false,
   });
   expect(
     c?.messages.flatMap((message) =>
@@ -4984,6 +4986,78 @@ test("build-cases --written --written-answer drops a task that treats a missing 
   expect(items).toContain(`written case: task 2 of --written-answer ${answer}`);
   expect(items).toContain("written case: treats CLAUDE.md as there");
   expect(items).toContain(`written case: checkout acme/proj at ${SHA}`);
+}, 60_000);
+
+// Catches: a written case whose context session ran jj recorded as one that ran none (its own
+// history, the task and the skill's read, holds no jj call), so its runs answer its jj calls as jj
+// does in a checkout that is no jj repository, an error that session never saw.
+test("build-cases --written records on the case's checkout whether its context session ran jj: a session with a bash call of jj status records jj true, and its evidence says so", async () => {
+  const file = "/sessions/proj-jj.jsonl";
+  const text = sessionText("proj-jj", (lines) => {
+    workingDirectory("/home/dev/src/proj")(lines);
+    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
+    const call = {
+      type: "message",
+      id: "b0b0b001",
+      timestamp: "2026-11-20T01:59:45.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "toolu_jj",
+            name: "bash",
+            arguments: { command: "cd /home/dev/src/proj && jj status" },
+          },
+        ],
+      },
+    };
+    const result = {
+      type: "message",
+      id: "b0b0b002",
+      timestamp: "2026-11-20T01:59:45.100Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "toolu_jj",
+        toolName: "bash",
+        isError: false,
+        content: [{ type: "text", text: "The working copy has no changes." }],
+      },
+    };
+    insertAfter(lines, prompt, call);
+    insertAfter(lines, call, result);
+  });
+  const store = changedStore("proj-jj", (files) => {
+    (files.store_a ?? {})[file] = text;
+  });
+  const out = path.join(scratch, "written-jj", "cases.jsonl");
+  const answer = writtenAnswerFile("written-jj", [
+    {
+      ...WRITTEN_TASK,
+      task: "Add a test of the farm, as CLAUDE.md asks.",
+      existing: ["CLAUDE.md"],
+    },
+  ]);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    `store_a:${fileHash(file)}`,
+    "--written-answer",
+    answer
+  );
+  args[args.indexOf("--config") + 1] = store;
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  expect(c?.checkout).toEqual({
+    repo: "acme/proj",
+    commit: SHA,
+    root: "/home/dev/src/proj",
+    cwd: "/home/dev/src/proj",
+    jj: true,
+  });
+  expect(
+    c?.evidence?.find((each) => each.item === `written case: checkout acme/proj at ${SHA}`)?.source
+  ).toContain("a bash call of the context session ran jj, so its checkout was a jj workspace");
 }, 60_000);
 
 // Catches: a written-case reader given only the root's entries of a large checkout, so it cannot see

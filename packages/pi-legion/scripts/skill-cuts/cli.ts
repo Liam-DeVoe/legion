@@ -397,7 +397,13 @@ import {
   Thinking,
   textLines,
 } from "./cases";
-import { type CheckoutCopy, colocateJj, readOnlyCall, removeOutsideLinks } from "./checkout";
+import {
+  type CheckoutCopy,
+  colocateJj,
+  messagesRunJj,
+  readOnlyCall,
+  removeOutsideLinks,
+} from "./checkout";
 import {
   configFrom,
   fileDigests,
@@ -3032,7 +3038,10 @@ async function runStage(
   if (caseKind(c) === "written" && c.checkout !== undefined) {
     const { repo, commit, root, cwd } = c.checkout;
     try {
-      const ranJj = sessionRanJj(c.messages);
+      // Whether the context session ran jj, as the written build recorded it from that session's
+      // transcript (`checkout.jj`); a case written before that record is read by the rule of its
+      // time, a jj call among its own messages.
+      const ranJj = c.checkout.jj ?? messagesRunJj(c.messages);
       const shared = await sharedCheckout(r, repo, commit, ranJj);
       const { git, depth, removedLinks, jj } = shared.marker;
       // A copy whose colocation failed answers the jj commands of a session that ran none as a
@@ -3092,8 +3101,8 @@ async function runStage(
   }
 }
 
-/** The longest one git command of a shared checkout's making may run: the checkout of a large
- *  commit fetches its blobs then (a repository of 115,950 files took 547 s). */
+/** The longest one git command of a shared checkout's making may run: the fetch of a large
+ *  commit's history with its blobs, or its checkout (a repository of 115,950 files took 547 s). */
 const GIT_TIME_LIMIT_MS = 1_800_000;
 /** The depth of a shared checkout's history (`git fetch --depth`): `git log` in it shows at most
  *  this many commits, then the shallow boundary. */
@@ -3117,9 +3126,11 @@ async function runGit(args: readonly string[]): Promise<{ code: number; stderr: 
 
 /** What a shared checkout's marker records (`sharedCheckout`), written last, once it is made:
  *  whether it is a git checkout (else GitHub's tarball of the commit, with why the git one failed),
- *  the depth of its history, the symbolic links removed from it, whether it is a colocated jj
- *  repository, and the seconds and the bytes its making took. */
+ *  the depth of its history, whether it holds the blobs of each commit of it (`blobs`; absent on a
+ *  git checkout fetched before with none, which is made again), the symbolic links removed from
+ *  it, whether it is a colocated jj repository, and the seconds and the bytes its making took. */
 const CheckoutMarker = SharedCheckout.extend({
+  blobs: z.literal(true).optional(),
   seconds: z.number().nonnegative(),
   bytes: z.int().nonnegative(),
   why: z.string().optional(),
@@ -3129,23 +3140,6 @@ type CheckoutMarker = z.infer<typeof CheckoutMarker>;
 /** The last ask of this process for each shared checkout, by `<cache dir>\0<repo>@<commit>`: the
  *  next ask waits for it, since a process never waits for its own lock. */
 const sharedCheckouts = new Map<string, Promise<unknown>>();
-
-/** A word `jj` of a shell command, where a program's name stands. */
-const JJ_WORD = /(^|[\s;&|(`])jj(?=$|[\s;&|)`])/;
-
-/** Whether `messages`, a context session's history, hold a `bash` call that runs jj (a word `jj`
- *  of its command): the session's checkout was a jj workspace. */
-function sessionRanJj(messages: Case["messages"]): boolean {
-  return messages.some((message) =>
-    (message.content ?? []).some((block) => {
-      const input =
-        block.type === "toolCall" && block.name === "bash" ? block.arguments : undefined;
-      const command =
-        typeof input === "object" && input !== null ? Reflect.get(input, "command") : "";
-      return typeof command === "string" && JJ_WORD.test(command);
-    })
-  );
-}
 
 /** The bytes of every file under `dir`, its links counted as links. */
 function bytesUnder(dir: string): number {
@@ -3162,16 +3156,18 @@ function bytesUnder(dir: string): number {
  * read-only calls from (replay.ts's checkout rounds), at `<cacheDir>/checkouts/<repo>/<commit>`,
  * read-only once made, and never removed by a stage; and its marker. It is made once, for every
  * run that shares the cache: `git init`, `git remote add origin <r.gitRemote(repo)>`, `git fetch
- * --depth=CHECKOUT_DEPTH --filter=blob:none origin <commit>` and `git checkout --detach <commit>`
- * (a whole blobless clone of a large repository's history takes longer than a stage); where one of
- * them fails, the repository at the commit read into the cache (context.ts's `repositoryTree`:
- * GitHub's tarball through `gh`, or `--repos`' directory) copied there, whose git commands are not
- * answered. Then every symbolic link that resolves outside it, or nowhere, is removed (checkout.ts's
- * `removeOutsideLinks`); where `jj` (the case's session ran jj), the git checkout is made a
- * colocated jj repository (checkout.ts's `colocateJj`), or the marker records why not; and its
- * marker (`<commit>.ready.json`, CheckoutMarker) is written last, so a half-made checkout is never
- * used. A git checkout made before a case whose session ran jj asked for it is made a colocated jj
- * repository then, once, its marker written again. A lock (`<commit>.lock`, `<pid>`, made whole by
+ * --depth=CHECKOUT_DEPTH origin <commit>`, which brings the blobs of each of those commits (an
+ * answer runs with no network, checkout.ts's sandbox, so it could fetch no blob the checkout
+ * lacked), and `git checkout --detach <commit>`; where one of them fails, the repository at the
+ * commit read into the cache (context.ts's `repositoryTree`: GitHub's tarball through `gh`, or
+ * `--repos`' directory) copied there, whose git commands are not answered. Then every symbolic
+ * link that resolves outside it, or nowhere, is removed (checkout.ts's `removeOutsideLinks`);
+ * where `jj` (the case's session ran jj), the git checkout is made a colocated jj repository
+ * (checkout.ts's `colocateJj`), or the marker records why not; and its marker
+ * (`<commit>.ready.json`, CheckoutMarker) is written last, so a half-made checkout is never used.
+ * A git checkout fetched before with no blobs (its marker records none) is made again. A git
+ * checkout made before a case whose session ran jj asked for it is made a colocated jj repository
+ * then, once, its marker written again. A lock (`<commit>.lock`, `<pid>`, made whole by
  * a link) keeps a second run from making it at once: a run that finds the lock of a live process
  * waits for the marker; one that finds the lock of a process that runs no more (or its own pid,
  * which no call of its own holds) removes the lock and the half-made checkout and makes it again.
@@ -3208,8 +3204,11 @@ async function makeSharedCheckout(
     existsSync(markerFile)
       ? CheckoutMarker.parse(JSON.parse(readFileSync(markerFile, "utf8")))
       : undefined;
-  // A made checkout serves the ask unless it asks for jj of a git checkout not yet colocated.
-  const serves = (marker: CheckoutMarker) => !jj || !marker.git || marker.jj !== undefined;
+  // A made checkout serves the ask when it holds its commits' blobs (or is the tarball) and,
+  // where the ask is for jj, is a colocated jj repository (or is no git checkout).
+  const whole = (marker: CheckoutMarker) => !marker.git || marker.blobs === true;
+  const serves = (marker: CheckoutMarker) =>
+    whole(marker) && (!jj || !marker.git || marker.jj !== undefined);
   for (;;) {
     const found = madeMarker();
     if (found !== undefined && serves(found)) return { dir, marker: found };
@@ -3245,7 +3244,7 @@ async function makeSharedCheckout(
       const started = performance.now();
       const seconds = () => Math.round((performance.now() - started) / 100) / 10;
       const made = madeMarker();
-      if (made !== undefined) {
+      if (made !== undefined && whole(made)) {
         if (serves(made)) continue;
         const marker = { ...made, jj: await colocateJj(dir) };
         writeWhole(markerFile, json(marker));
@@ -3257,13 +3256,20 @@ async function makeSharedCheckout(
         );
         return { dir, marker };
       }
+      if (made !== undefined) {
+        say(
+          r,
+          `the checkout ${dir} was fetched with no blobs, which no answer may fetch now: it is made again`
+        );
+      }
+      rmSync(markerFile, { force: true });
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true });
       let why: string | undefined;
       for (const step of [
         ["init", "--quiet"],
         ["remote", "add", "origin", r.gitRemote(repo)],
-        ["fetch", "--quiet", `--depth=${CHECKOUT_DEPTH}`, "--filter=blob:none", "origin", commit],
+        ["fetch", "--quiet", `--depth=${CHECKOUT_DEPTH}`, "origin", commit],
         ["checkout", "--quiet", "--detach", commit],
       ]) {
         const ran = await runGit(["-C", dir, ...step]);
@@ -3286,6 +3292,7 @@ async function makeSharedCheckout(
       const marker: CheckoutMarker = {
         git: why === undefined,
         depth: why === undefined ? CHECKOUT_DEPTH : null,
+        ...(why === undefined ? { blobs: true as const } : {}),
         removedLinks,
         ...(colocated === undefined ? {} : { jj: colocated }),
         seconds: seconds(),
