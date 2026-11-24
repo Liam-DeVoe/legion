@@ -35,18 +35,27 @@ function importedSubpaths(tree: string): Set<string> {
   return subpaths;
 }
 
-test("build:dispatch writes the file of every contracts subpath the dashboard and the proof editor import", async () => {
-  const manifest = JSON.parse(readFileSync(`${contracts}package.json`, "utf8")) as {
-    exports: Record<string, { default: string }>;
-  };
-  const imported = [...new Set(importers.flatMap((tree) => [...importedSubpaths(tree)]))].sort();
-  expect(imported).toContain(".");
-  const unexported = imported.filter((subpath) => manifest.exports[subpath] === undefined);
-  expect(unexported).toEqual([]);
+test(
+  "build:dispatch writes the file of every contracts subpath the dashboard and the proof editor import",
+  async () => {
+    const manifest = JSON.parse(readFileSync(`${contracts}package.json`, "utf8")) as {
+      exports: Record<string, { default: string }>;
+    };
+    const imported = [...new Set(importers.flatMap((tree) => [...importedSubpaths(tree)]))].sort();
+    expect(imported).toContain(".");
+    const unexported = imported.filter((subpath) => manifest.exports[subpath] === undefined);
+    expect(unexported).toEqual([]);
 
-  const written = new Set(await buildInto(contracts, "build:dispatch", scratch()));
-  const missing = imported
-    .map((subpath) => ({ subpath, file: underDist(manifest.exports[subpath].default) }))
-    .filter(({ file }) => !written.has(file));
-  expect(missing).toEqual([]);
-}, 60_000);
+    const written = new Set(await buildInto(contracts, "build:dispatch", scratch()));
+    const missing = imported
+      .map((subpath) => ({ subpath, file: underDist(manifest.exports[subpath].default) }))
+      .filter(({ file }) => !written.has(file));
+    expect(missing).toEqual([]);
+  },
+  {
+    // This row drives one `bun run build:dispatch` child, which buildInto starts and nothing else
+    // bounds; it bundles four entries in well under a second, so the minute is what stops a build
+    // that hangs, as packages/contracts' own entry-point test bounds the same build.
+    timeout: 60_000,
+  }
+);
