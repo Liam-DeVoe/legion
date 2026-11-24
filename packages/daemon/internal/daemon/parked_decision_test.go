@@ -266,9 +266,9 @@ func TestAParkedDecisionIsPublishedOnTheControllersRoleTopic(t *testing.T) {
 	noticeTree(t, pool, records, true)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
-	registerControllerSession(t, pool, "legion", "ses_controller")
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
-	publisher.holds("ses_controller")
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 	decision := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))

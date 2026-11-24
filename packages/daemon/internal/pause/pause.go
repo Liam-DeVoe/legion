@@ -130,7 +130,7 @@ type Options struct {
 	Store *store.Store
 	// Records marks the rows the pause holds with the pause at its resume, and reads them for the
 	// resume's log (record.Postgres.MarkPauseHeldRows), and reads whether a controller is
-	// registered (record.Postgres.ControllerRegistered).
+	// registered (record.Postgres.ControllerSession).
 	Records *record.Postgres
 	// Project is the project's Dispatch key ("LEGION"), the spelling of project_pauses and of the
 	// outbox (internal/store/pause.go). The project token is derived from it where one is read.
@@ -489,8 +489,8 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 	}
 	var registered bool
 	if err := store.TransactWith(ctx, s.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		registered, err = s.records.ControllerRegistered(ctx, tx, s.project)
+		session, err := s.records.ControllerSession(ctx, tx, s.project)
+		registered = session != ""
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("pause %s: %w", s.project, err)

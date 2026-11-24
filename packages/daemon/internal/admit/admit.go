@@ -486,8 +486,8 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // no controller ran is told at a later pass instead of being marked told and lost
 // (tellStalledTrees). Every other caller has nothing to record and drops the answer.
 func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string, dueAt time.Time) (bool, error) {
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return false, err
 	}
 	of, from := "", claim.Role("")
@@ -3134,8 +3134,8 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 	if err != nil || len(stalls) == 0 {
 		return false, err
 	}
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return false, err
 	}
 	return a.store.ArchitectStallsUntold(ctx, tx, stallMarks(stalls))

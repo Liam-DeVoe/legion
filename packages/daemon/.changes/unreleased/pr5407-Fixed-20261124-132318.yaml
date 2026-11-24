@@ -6,8 +6,7 @@ body: |-
     outbox, with no time bound, and it is published to the next live holder. Before, the daemon
     published it to `notifications.legion.<project>.controller`, and a controller session that was
     away long enough for its role claim to be freed never got the notices published while it was
-    away. Under `controller: operator`, a controller the daemon launched at an earlier boot no
-    longer holds a notice back.
+    away.
 time: 2026-11-24T13:23:18Z
 custom:
     Issue: pr5407

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,15 +19,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// controllerRoleTopic is the role topic of project legion's controller,
-// notifications.role.legion-<project>-controller (notify.RoleTopicPrefix and
-// claim.ControllerToken), written out so that a change of either is a change this test reads.
-const controllerRoleTopic = "notifications.role.legion-legion-controller"
+// legionController is project legion's controller role (claim.ControllerToken), and
+// controllerRoleTopic its role topic, notifications.role.legion-<project>-controller
+// (notify.RoleTopicPrefix and claim.ControllerToken), written out so that a change of either is a
+// change these tests read.
+const (
+	legionController    = "legion-legion-controller"
+	controllerRoleTopic = "notifications.role." + legionController
+)
 
 // R2 (d) of dispatch://INFRA-1585: a controller notice row waits while no session holds the
 // controller role, and while the registered controller session holds it but the listener reads it
@@ -43,7 +43,7 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	registerControllerSession(t, pool, "legion", "ses_controller")
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
@@ -127,138 +127,130 @@ func TestATickAndATreeStalledNoticeGoToTheControllersRoleTopic(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	registerControllerSession(t, pool, "legion", "ses_controller")
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
 	listener.answer("ses_controller", "live")
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
+	var keys []string
 	for _, row := range []record.OutboxRow{
 		mustOutboxRow(t, "LEGION", record.ControllerNotice{Kind: record.TickNotice}, clock),
 		mustOutboxRow(t, "LEGION-1", record.ControllerNotice{Kind: record.TreeStalledNotice, Reason: "the tree of LEGION-1 has not moved"}, clock),
 	} {
 		enqueueOutbox(t, pool, records, row)
+		var id int64
+		if err := pool.QueryRow(context.Background(), "select id from outbox where issue = $1", row.Issue).Scan(&id); err != nil {
+			t.Fatalf("read the id of %s's row: %v", row.Issue, err)
+		}
+		keys = append(keys, row.Issue+" "+record.OutboxKey(id))
 	}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
 		notices: notify.New(server.URL, ""), project: "legion", now: func() time.Time { return clock }}
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the outbox: %v", err)
 	}
-	var messages []string
+	var messages, published []string
 	for _, p := range listener.publishes() {
 		if p.Topic != controllerRoleTopic {
 			t.Fatalf("published %q to %s, want every controller notice on %s", p.Message, p.Topic, controllerRoleTopic)
 		}
 		messages = append(messages, p.Message)
+		_, issue, _ := strings.Cut(p.Message, " on ")
+		published = append(published, issue+" "+p.DedupeKey)
 	}
 	slices.Sort(messages)
 	if want := []string{"tick on LEGION", "tree-stalled on LEGION-1"}; !slices.Equal(messages, want) {
 		t.Fatalf("published %v, want %v on %s", messages, want, controllerRoleTopic)
+	}
+	slices.Sort(published)
+	if slices.Sort(keys); !slices.Equal(published, keys) {
+		t.Fatalf("published under the keys %v, want each notice under its own row's key, %v", published, keys)
 	}
 	if rows := outboxRows(t, pool); rows != 0 {
 		t.Fatalf("%d outbox rows once both were published, want none", rows)
 	}
 }
 
-// R2 (f): the controller's role topic follows the deployment's controller mode (heldTopic). Under
-// `controller: operator` the role is the operator's own controller's, so a launched controller
-// claim an earlier boot retired (stopLaunchedController), whose session another claim holds,
-// holds no controller notice back: it is published once the operator's registered session holds
-// the role live. Under `controller: daemon` the launched claim is the project's controller, so a
-// notice waits while that claim records a session it does not hold, and is published while it
-// holds its own.
+// The registered-session half of controllerHolds: a controller notice waits while the live holder
+// of the controller role is a session other than the one the daemon records as its registered
+// controller, logs the wait naming both sessions, and publishes nothing. A session that holds the
+// role but is not the registered controller (one an older `legion controller start` left, or one
+// the operator started beside it) is not the controller the notice is for.
 //
-// The controls are main's code, which publishes every one of them to the controller topic; and
-// heldTopic holding the controller's role topic under either mode, which holds the notice under
-// `controller: operator` too.
-func TestTheControllerRoleTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
+// The control (the pull request records the run): controllerHolds reading the state alone, `if
+// state != notify.StateLive`, publishes the notice to the other session.
+func TestAControllerNoticeWaitsWhileTheRolesLiveHolderIsNotTheRegisteredSession(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	notice := func(t *testing.T) record.OutboxRow {
-		row := mustOutboxRow(t, "LEGION-941", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
-		row.ID = 99
-		return row
-	}
-	t.Run("controller: operator, a retired launched claim not holding its session", func(t *testing.T) {
-		t.Parallel()
-		listener, runner := controllerRoleRig(t, false, "ses_operator", supervise.StateRetired, "ses_controller")
-		if err := runner.execute(ctx, notice(t)); err != nil {
-			t.Fatalf("the controller notice under controller: operator = %v, want it published to the operator's controller", err)
-		}
-		if got, want := listener.publishedTopics(), []string{controllerRoleTopic}; !slices.Equal(got, want) {
-			t.Fatalf("published to %v, want %v: the operator's controller holds the role", got, want)
-		}
-	})
-	t.Run("controller: daemon, its claim not holding its session", func(t *testing.T) {
-		t.Parallel()
-		listener, runner := controllerRoleRig(t, true, "ses_controller", supervise.StateReady, "ses_controller")
-		err := runner.execute(ctx, notice(t))
-		if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
-			t.Fatalf("the controller notice = %v, want a wait on the gate's refusal", err)
-		}
-		if got := listener.publishedTopics(); len(got) != 0 {
-			t.Fatalf("published to %v while the daemon's controller claim records a session it does not hold", got)
-		}
-	})
-	t.Run("controller: daemon, its claim holding its session", func(t *testing.T) {
-		t.Parallel()
-		listener, runner := controllerRoleRig(t, true, "ses_controller", supervise.StateReady)
-		if err := runner.execute(ctx, notice(t)); err != nil {
-			t.Fatalf("the controller notice while the daemon's controller claim holds its session = %v, want it published", err)
-		}
-		if got, want := listener.publishedTopics(), []string{controllerRoleTopic}; !slices.Equal(got, want) {
-			t.Fatalf("published to %v, want %v: the controller claim holds its own session", got, want)
-		}
-	})
-}
-
-// controllerRoleRig is an outbox of project legion, `controller: daemon` when launched, whose
-// store records registered as the project's controller session and whose listener names that
-// session the role's live holder. Its supervisor holds the launched controller's claim, on
-// session ses_controller in state, and each of taken is a session another claim, legion-943's
-// implementer, recorded first.
-func controllerRoleRig(t *testing.T, launched bool, registered string, state supervise.ClaimState, taken ...string) (*controllerRoleListener, *outbox) {
-	t.Helper()
-	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	registerControllerSession(t, pool, "legion", registered)
+	records := record.NewStore()
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	listener := newControllerRoleListener()
-	listener.answer(registered, "live")
+	listener.answer("ses_other", "live")
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	claims := sup.deps.Store.(*outboxClaimStore)
-	holder := mustClaimToken(t, "LEGION-943", claim.RoleImplementer)
-	for _, s := range taken {
-		if _, err := claims.HoldSessions(ctx, "legion", holder, supervise.RecordedHolds(s, "")); err != nil {
-			t.Fatalf("hold %s for %s, the claim that recorded it first: %v", s, holder, err)
-		}
+	clock := time.Now().UTC()
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, clock))
+	var logged syncBuffer
+	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+		notices: notify.New(server.URL, ""), project: "legion", now: func() time.Time { return clock }}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
 	}
-	if _, _, err := sup.Create(ctx, supervise.Claim{Token: claim.ControllerToken("legion"), Role: claim.RoleController, Session: "ses_controller",
-		State: state, Project: "legion", Generation: 1, SessionFile: "/sessions/ses_controller.jsonl"}, ""); err != nil {
-		t.Fatalf("create the launched controller's claim: %v", err)
+	if got := listener.publishedTopics(); len(got) != 0 {
+		t.Fatalf("published to %v while the role's live holder is ses_other and the registered controller ses_controller, want nothing", got)
 	}
-	runner := newOutbox(pool, record.NewStore(), &outboxDispatch{}, notify.New(server.URL, ""), sup, nil, nil, nil, nil,
-		"legion", "LEGION", t.TempDir(), "", nil, nil, launched, quietLogger())
-	return listener, runner
+	if rows := outboxRows(t, pool); rows != 1 {
+		t.Fatalf("%d outbox rows, want the notice's row kept", rows)
+	}
+	text := logged.String()
+	if strings.Contains(text, "level=ERROR") || !strings.Contains(text, `msg="outbox row waits"`) ||
+		!strings.Contains(text, "ses_controller") || !strings.Contains(text, "ses_other") {
+		t.Fatalf("logged %q, want one wait naming the registered session ses_controller and the holder ses_other, and no error", text)
+	}
 }
 
-// registerControllerSession records session as the registered controller of the project token
-// project, as `legion controller start`'s mint and the session's registration leave the record.
-func registerControllerSession(t *testing.T, pool *store.Pool, project, session string) {
-	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
+// The no-registration half of controllerHolds: with no controller registered, a controller notice
+// waits, and its wait stays at DEBUG past waitWarnAttempts, where a wait on a registered
+// controller turns into a warning: the liveness sweep already says no controller is registered
+// (controllerNotRegistered), and each waiting row would otherwise repeat it every minute. The
+// listener names a live holder, so a wait the registration did not decide would publish.
+//
+// The control (the pull request records the run): the wait on no registration made a plain wait
+// rather than a routine one (routineWaiting) logs the row's eighth attempt at WARN.
+func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	listener := newControllerRoleListener()
+	listener.answer("ses_controller", "live")
+	server := httptest.NewServer(listener)
+	t.Cleanup(server.Close)
+	clock := time.Now().UTC()
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, clock))
+	if _, err := pool.Exec(context.Background(), "update outbox set attempts = $1", waitWarnAttempts); err != nil {
+		t.Fatalf("age the row to attempt %d: %v", waitWarnAttempts, err)
 	}
-	defer st.Close()
-	generation, err := st.MintController(ctx, project, []byte("capability"))
-	if err != nil {
-		t.Fatalf("mint the controller capability: %v", err)
+	var logged syncBuffer
+	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})), pool: pool,
+		dispatchProject: "LEGION", records: records, notices: notify.New(server.URL, ""), project: "legion", now: func() time.Time { return clock }}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
 	}
-	if ok, err := st.RegisterController(ctx, project, generation, session, []byte("secret"), time.Now(), 0); err != nil || !ok {
-		t.Fatalf("register %s as the controller = %t, %v", session, ok, err)
+	if got := listener.publishedTopics(); len(got) != 0 {
+		t.Fatalf("published to %v with no controller registered, want nothing", got)
+	}
+	if rows := outboxRows(t, pool); rows != 1 {
+		t.Fatalf("%d outbox rows, want the notice's row kept", rows)
+	}
+	var waits []string
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(line, `msg="outbox row waits"`) {
+			waits = append(waits, line)
+		}
+	}
+	if len(waits) != 1 || !strings.Contains(waits[0], "level=DEBUG") || !strings.Contains(waits[0], "waits for a controller to register") {
+		t.Fatalf("logged the waits %q, want one at DEBUG naming the missing registration at attempt %d", waits, waitWarnAttempts)
 	}
 }
 

@@ -686,9 +686,9 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateSuspended, "ses_arch")
 	var logged bytes.Buffer
-	registerControllerSession(t, pool, "legion", "ses_controller")
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
-	publisher.holds("ses_controller")
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 		project: "legion", now: time.Now}
 	notice := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}

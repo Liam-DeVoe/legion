@@ -2427,21 +2427,6 @@ func (s *Postgres) ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) 
 	return nil
 }
 
-func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error) {
-	// The controllers row is keyed by the project token `legion controller start` mints under
-	// (api/controller.go), and registered is controller.Record.Registered's rule: a session holds
-	// the current capability.
-	token, err := claim.ProjectToken(project)
-	if err != nil {
-		return false, err
-	}
-	var registered bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from controllers where project = $1 and session <> '')", token).Scan(&registered); err != nil {
-		return false, fmt.Errorf("read whether %s has a registered controller: %w", project, err)
-	}
-	return registered, nil
-}
-
 func (s *Postgres) ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {

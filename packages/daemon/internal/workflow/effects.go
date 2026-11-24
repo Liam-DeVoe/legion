@@ -324,7 +324,7 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 }
 
 // noticeWithController tells the architect that owns the issue and, in an outbox row of its own,
-// the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
+// the project's controller: the two publishes retry apart, so a controller's role topic that keeps failing never sends
 // the architect the same notice again. Every hold is told this way, since the architect answers one
 // with a retry or an escalation to the controller, and so is the tree architect's own failed
 // claim, since every notice of the tree that no child's own architect takes reaches that architect.

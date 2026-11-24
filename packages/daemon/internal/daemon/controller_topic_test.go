@@ -57,7 +57,7 @@ func TestAHeldNoticeReachesTheControllersRoleTopicAndItsRetriesNeverResendTheArc
 		t.Fatal(err)
 	}
 	architectTopic, controllerTopic := notify.RoleTopicPrefix+string(architect), notify.RoleTopicPrefix+string(claim.ControllerToken(token))
-	recordControllerSession(t, cfg, token, "ses-controller")
+	registerProjectControllerAs(t, cfg.PostgresDSN, token, "ses-controller")
 	listener.holds(string(claim.ControllerToken(token)), "ses-controller")
 	// The registered controller is told the project's own wakes too (a tick, a free slot), so the
 	// refusals and the reads below are of the hold's notice alone.
@@ -163,7 +163,8 @@ func TestAHeldNoticeReachesTheControllersRoleTopicAndItsRetriesNeverResendTheArc
 }
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every
-// publish, but for the first refusals on a topic, which it answers 500 as a stream outage does
+// publish, but for the first refusals of one message on a topic (refuseFirstOf), which it answers
+// 500 as a stream outage does
 // (packages/envoy/cmd/listener/api.go publishHandler). Its role lookup (GET /v1/roles/<role>)
 // names the live holder a test gave a role (holds), and answers every other role as one no claim
 // names, as the listener's 404 does (writeRoleHolderError).
@@ -221,7 +222,7 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if l.refuse[published.Topic] > 0 && (l.refuseOnly[published.Topic] == "" || l.refuseOnly[published.Topic] == published.Message) {
+	if l.refuse[published.Topic] > 0 && l.refuseOnly[published.Topic] == published.Message {
 		l.refuse[published.Topic]--
 		l.refused = append(l.refused, published)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -230,13 +231,6 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	l.accepted = append(l.accepted, published)
 	_ = json.NewEncoder(w).Encode(map[string]string{})
-}
-
-// refuseFirst makes the listener refuse the next n publishes to topic.
-func (l *noticeListener) refuseFirst(topic string, n int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.refuse[topic] = n
 }
 
 // refuseFirstOf makes the listener refuse the next n publishes to topic that carry message.

@@ -3,6 +3,7 @@ package daemon
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -14,7 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A claim the boot could not suspend keeps its process, and that process keeps the Envoy role its
@@ -160,8 +163,72 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	}
 }
 
-// fakeRoleListener is the Envoy listener's role lookup as a forget asks it (supervise.Deps.
-// RoleHolder): the session each named role's claim names, live, and no holder for any other.
+// R2 (f) of dispatch://INFRA-1585: the controller's role topic follows the deployment's controller
+// mode (heldTopic, review round 15 of #4220). Under `controller: operator` the role is the
+// operator's own controller's, so a launched controller claim an earlier boot retired
+// (stopLaunchedController), whose session another claim holds, holds no controller notice back:
+// it is published once the operator's registered session holds the role live. Under `controller:
+// daemon` the launched claim is the project's controller, so a notice waits while that claim
+// records a session it does not hold, logged as a wait rather than as a failure, and is published
+// while it holds its own.
+//
+// The controls (the pull request records the runs): main's code, which publishes every one of them
+// to the controller topic, notifications.legion.legion.controller; heldTopic holding the
+// controller's role topic under either mode, which holds the notice under `controller: operator`
+// too; and controllerNotice answering the gate's refusal as a plain failure, which fails the wait
+// assertion.
+func TestTheControllerRoleTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	controller := claim.ControllerToken("legion")
+	notice := func(t *testing.T) record.OutboxRow {
+		row := mustOutboxRow(t, "LEGION-941", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
+		row.ID = 99
+		return row
+	}
+	t.Run("controller: operator, a retired launched claim not holding its session", func(t *testing.T) {
+		t.Parallel()
+		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{controllerSession: "ses_operator"}, []supervise.Claim{
+			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateRetired},
+		}, "ses_controller")
+		if err := runner.execute(ctx, notice(t)); err != nil {
+			t.Fatalf("the controller notice under controller: operator = %v, want it published to the operator's controller", err)
+		}
+		if got, want := publisher.topics(), []string{controllerRoleTopic}; !slices.Equal(got, want) {
+			t.Fatalf("published to %v, want %v: the operator's controller holds the role", got, want)
+		}
+	})
+	t.Run("controller: daemon, its claim not holding its session", func(t *testing.T) {
+		t.Parallel()
+		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true, controllerSession: "ses_controller"}, []supervise.Claim{
+			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateReady},
+		}, "ses_controller")
+		err := runner.execute(ctx, notice(t))
+		if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
+			t.Fatalf("the controller notice = %v, want a wait on the gate's refusal", err)
+		}
+		if got := publisher.topics(); len(got) != 0 {
+			t.Fatalf("published to %v while the daemon's controller claim records a session it does not hold", got)
+		}
+	})
+	t.Run("controller: daemon, its claim holding its session", func(t *testing.T) {
+		t.Parallel()
+		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true, controllerSession: "ses_controller"}, []supervise.Claim{
+			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateReady},
+		})
+		if err := runner.execute(ctx, notice(t)); err != nil {
+			t.Fatalf("the controller notice while the daemon's controller claim holds its session = %v, want it published", err)
+		}
+		if got, want := publisher.topics(), []string{controllerRoleTopic}; !slices.Equal(got, want) {
+			t.Fatalf("published to %v, want %v: the controller claim holds its own session", got, want)
+		}
+	})
+}
+
+// fakeRoleListener is the Envoy listener's role lookup (GET /v1/roles/<role>), as a forget asks it
+// (supervise.Deps.RoleHolder, through lookup) and as the outbox asks it before a controller notice
+// (outboxNotices.RoleHolder): the session each role a test named (holds) is held by, live, and no
+// holder for any other role. A test publisher embeds it for its role read.
 type fakeRoleListener struct {
 	mu      sync.Mutex
 	holders map[string]string
@@ -171,9 +238,24 @@ func (l *fakeRoleListener) lookup(_ context.Context, role string) (string, strin
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if session, ok := l.holders[role]; ok {
-		return session, "live", nil
+		return session, notify.StateLive, nil
 	}
 	return "", "", nil
+}
+
+// RoleHolder is lookup, as the outbox's publisher answers it (outboxNotices).
+func (l *fakeRoleListener) RoleHolder(ctx context.Context, role string) (string, string, error) {
+	return l.lookup(ctx, role)
+}
+
+// holds makes session the live holder of role, as its claim on the listener does.
+func (l *fakeRoleListener) holds(role, session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.holders == nil {
+		l.holders = map[string]string{}
+	}
+	l.holders[role] = session
 }
 
 // free is the role claim reaper taking role's claim: the listener names no holder of it.
@@ -184,11 +266,15 @@ func (l *fakeRoleListener) free(role string) {
 }
 
 // heldTopicsOptions is how heldTopicsRig builds its daemon: launched is `controller: daemon`,
-// roleHolder the supervisor's listener lookup (nil asks none), and log the outbox's (nil is quiet).
+// roleHolder the supervisor's listener lookup (nil asks none), log the outbox's (nil is quiet),
+// and controllerSession the project's registered controller session, which the rig records in a
+// store of its own and names the controller role's live holder at its publisher ("" records none,
+// and the outbox has no store).
 type heldTopicsOptions struct {
-	launched   bool
-	roleHolder func(ctx context.Context, role string) (string, string, error)
-	log        *slog.Logger
+	launched          bool
+	roleHolder        func(ctx context.Context, role string) (string, string, error)
+	log               *slog.Logger
+	controllerSession string
 }
 
 // heldTopicsRig is a supervisor with a machine for each of claims, in project legion at generation
@@ -199,10 +285,10 @@ func heldTopicsRig(t *testing.T, opts heldTopicsOptions, claims []supervise.Clai
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.RoleHolder = opts.roleHolder
-	store := sup.deps.Store.(*outboxClaimStore)
+	claimStore := sup.deps.Store.(*outboxClaimStore)
 	holder := mustClaimToken(t, "LEGION-943", claim.RoleImplementer)
 	for _, s := range taken {
-		if _, err := store.HoldSessions(ctx, "legion", holder, supervise.RecordedHolds(s, "")); err != nil {
+		if _, err := claimStore.HoldSessions(ctx, "legion", holder, supervise.RecordedHolds(s, "")); err != nil {
 			t.Fatalf("hold %s for %s, the claim that recorded it first: %v", s, holder, err)
 		}
 	}
@@ -213,6 +299,13 @@ func heldTopicsRig(t *testing.T, opts heldTopicsOptions, claims []supervise.Clai
 		}
 	}
 	publisher := &outboxPublisher{}
-	runner := newOutbox(nil, nil, &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
+	var pool *store.Pool
+	var records record.Store
+	if opts.controllerSession != "" {
+		pool, records = isolatedOutboxPool(t), record.NewStore()
+		registerProjectControllerAs(t, pool.Config().ConnString(), "LEGION", opts.controllerSession)
+		publisher.holds(legionController, opts.controllerSession)
+	}
+	runner := newOutbox(pool, records, &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
 	return sup, publisher, runner
 }

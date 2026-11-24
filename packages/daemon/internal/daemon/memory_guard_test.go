@@ -172,9 +172,9 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllersRoleT
 		t.Fatalf("the kill is applied as %d facts under memory-guard-kill:guard-c0de:3, want one", applied)
 	}
 
-	registerControllerSession(t, pool, "legion", "ses_controller")
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &outboxPublisher{}
-	publisher.holds("ses_controller")
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, project: "legion", now: time.Now}
 	for run := range 2 {
 		if err := runner.RunOnce(ctx); err != nil {

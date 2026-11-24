@@ -61,7 +61,7 @@ func TestTheIntakeGaveUpNoticeReachesTheControllersRoleTopic(t *testing.T) {
 	}
 
 	publisher := &outboxPublisher{}
-	publisher.holds("ses-controller")
+	publisher.holds(legionController, "ses-controller")
 	runner := &outbox{pool: pool, records: records, notices: publisher, project: token, dispatchProject: project, log: quietLogger(),
 		// Past the minute the notice waits for the give-ups after its first to join it.
 		now: func() time.Time { return gaveUpAt.Add(2 * time.Minute) }}

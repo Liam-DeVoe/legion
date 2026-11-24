@@ -729,8 +729,8 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 
 	// The controller's notice goes to its role topic once the registered controller session holds
 	// that role live (the outbox's controllerNotice).
-	registerControllerSession(t, r.pool, olderLauncherProject, "ses_controller")
-	r.notices.holds("ses_controller")
+	registerProjectControllerAs(t, r.pool.Config().ConnString(), olderLauncherProject, "ses_controller")
+	r.notices.holds(legionController, "ses_controller")
 	r.drain()
 
 	type text struct{ what, says string }

@@ -30,10 +30,10 @@ import (
 // cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept for the
 // role's next holder and recorded in kept, and without it that publish is refused as a keep:
 // false publish is, which is what a listener before #4079 answers a claim whose holder is gone.
-// Its role read is roleHolders': its holders of other roles are the topics of the publishes it
-// answers.
+// Its role read is fakeRoleListener's: the holders of the roles a test names (holds), and none of
+// any other, whose publishes it answers by absent.
 type holderPublisher struct {
-	roleHolders
+	fakeRoleListener
 	mu        sync.Mutex
 	absent    map[string]bool
 	keeps     bool
