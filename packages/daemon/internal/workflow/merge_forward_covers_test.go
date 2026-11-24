@@ -194,3 +194,43 @@ func TestTheAgentAskedToMergeThatWorksTheStepGetsTheAskAndItCoversTheHold(t *tes
 		})
 	}
 }
+
+// A covering message stands in for the one it covers whichever of the two its sender addresses
+// first (addressMergeForward): a review addressed after a landed to the same claim replaces that
+// landed, in its place, and carries it in Covers, as a review addressed before the landed does. The
+// callers address the covering message first today, so only this test drives the other order. The
+// control is a landed to another claim, which is sent whole, in the order given, beside the review.
+func TestACoveringMessageStandsInForTheOneItCoversInEitherOrder(t *testing.T) {
+	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+	reviewer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer))
+	landed := func(to claim.Token) mergeForwardSend {
+		return mergeForwardSend{step: record.MergeForwardLanded, to: roleRecipient{issue: "LEGION-208", role: claim.RoleAcceptance, row: "LEGION-208", claim: to}}
+	}
+	review := mergeForwardSend{step: record.MergeForwardReview, to: roleRecipient{issue: "LEGION-208", role: claim.RoleReviewer, row: "LEGION-208", claim: owner}}
+	covering := []sent{{step: record.MergeForwardReview, role: claim.RoleReviewer, claim: owner, covers: record.MergeForwardLanded}}
+	for _, tc := range []struct {
+		name  string
+		sends []mergeForwardSend
+		want  []sent
+	}{
+		{name: "the review first", sends: []mergeForwardSend{review, landed(owner)}, want: covering},
+		{name: "the landed first", sends: []mergeForwardSend{landed(owner), review}, want: covering},
+		{name: "control: the landed to another claim", sends: []mergeForwardSend{landed(reviewer), review},
+			want: []sent{{step: record.MergeForwardLanded, role: claim.RoleAcceptance, claim: reviewer},
+				{step: record.MergeForwardReview, role: claim.RoleReviewer, claim: owner}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			var got []record.MergeForwardMessage
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				got, err = engine.addressMergeForward(ctx, tx, "LEGION", tc.sends, nil)
+				return err
+			})
+			if !reflect.DeepEqual(sentOf(got), tc.want) {
+				t.Fatalf("the event sent %+v, want %+v", sentOf(got), tc.want)
+			}
+		})
+	}
+}
