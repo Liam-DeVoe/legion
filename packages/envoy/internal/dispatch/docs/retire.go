@@ -227,6 +227,22 @@ func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (b
 	return owner.Retired, nil
 }
 
+// retiredOutsideLiveWrite is whether the document artifactID is retired, for a write that holds no
+// live write to it yet: read under its owner's lock (retiredUnderOwnerLock), and false without a
+// read where the transaction holds its write to the document already, which read the document
+// standing under that lock (joinLiveWrite) and so no retirement passes before the transaction
+// ends. ProjectMark and RejectDeletedCommentSuggestion write nothing into a retired document by it.
+func retiredOutsideLiveWrite(ctx context.Context, artifactID string) (bool, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return false, errUnjoined
+	}
+	if joinedLiveWrite(ctx, artifactID) != nil {
+		return false, nil
+	}
+	return retiredUnderOwnerLock(ctx, tx, artifactID)
+}
+
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
 // causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused,
 // QueueNodes). The node keeps every other fact the store holds of it - its supertag, its

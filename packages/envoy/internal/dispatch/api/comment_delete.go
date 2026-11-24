@@ -9,7 +9,8 @@
 // of the reply but its own delete, written before this one - keep the preview they froze. The
 // delete's own comment.deleted, of a comment that is itself a reply, carries no text of the post
 // it answers (commentCorrectionPayload). A pending suggestion's proof is in the document itself,
-// so the same transaction rejects it before the clear, and where that reject takes an insert's
+// so the same transaction rejects it before the clear, except in a retired document, which keeps
+// it in its frozen text (docs.ErrRetiredDocumentKeepsText), and where that reject takes an insert's
 // words out of the document, writes the document's next version as its settlement would
 // (docs.SettleVersion), so every store built from the latest version is written without the words
 // before it commits. The document's history keeps them, as it keeps the words of every reject:
@@ -84,7 +85,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// its suggestion can never apply there and stays in its frozen text
 	// (docs.ErrRetiredDocumentKeepsText): the delete rejects nothing and writes no version, clears
 	// the suggestion off the row alone, and decides the quote by the stored kind as for an
-	// orphaned mark, with the anchor left as it stands.
+	// orphaned mark, recording no orphaning on the anchor, whose mark stays in the frozen text.
 	//
 	// An insert suggestion's mark wraps the text it inserted, so its anchor's quote is that text
 	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
