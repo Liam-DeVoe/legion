@@ -758,20 +758,30 @@ test("a record carrying keys no schema names at three depths is read, and read_r
 
 test("a root architect's handoff_complete is refused as unavailable before its own fields are checked, after any field it never takes", async () => {
   const root = runtime({ ...implementer, role: "architect" });
-  const refusal =
-    "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step";
+  const refusalOf = async (input: Record<string, unknown>): Promise<string> => {
+    const error = await executePhaseOp(root.ops, input).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+    expect(error).toBeInstanceOf(Error);
+    return (error as Error).message;
+  };
+  const refusals = new Set<string>();
   for (const input of [
     { op: "handoff_complete" },
     { op: "handoff_complete", summary: "x" },
     { op: "handoff_complete", summary: " ", verdict: "maybe" },
   ]) {
-    await expect(executePhaseOp(root.ops, input)).rejects.toThrow(new Error(refusal));
+    refusals.add(await refusalOf(input));
   }
-  await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
-    new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; ${refusal}`
-    )
-  );
+  // One refusal whatever the fields: none of them is checked.
+  expect(refusals.size).toBe(1);
+  const [unavailable = ""] = refusals;
+  // A field handoff_complete never takes is named first, before that same refusal.
+  const named = await refusalOf({ op: "handoff_complete", phase: "plan" });
+  expect(named).toContain('"phase"');
+  expect(named).not.toBe(unavailable);
+  expect(named.endsWith(unavailable)).toBeTrue();
   expect(root.routes).toEqual([]);
 });
 

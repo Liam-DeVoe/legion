@@ -17,7 +17,12 @@ test("fail prints FAIL and exits 1", () => {
     `${scriptFunctions(path)("fail")}\ncheck=done\nfail "a count cannot be read"`,
   ]);
   expect(run.exitCode).toBe(1);
-  expect(run.stdout.toString()).toBe("CHECK done: FAIL: a count cannot be read\n");
+  // One line, naming the check, FAIL and the words fail was given.
+  const out = run.stdout.toString();
+  expect(out.endsWith("\n") && !out.slice(0, -1).includes("\n")).toBeTrue();
+  for (const part of ["done", "FAIL", "a count cannot be read"]) {
+    expect(out).toContain(part);
+  }
 });
 
 test("no fail line says UNKNOWN", () => {

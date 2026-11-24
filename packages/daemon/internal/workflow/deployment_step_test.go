@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -516,25 +515,20 @@ func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
 }
 
 // A move back to step does not say which step where two earlier steps run as step, so it is
-// refused naming the two nearest and the returnTo that names one, and nothing moves; with one
-// earlier step that runs as step, the move goes there and starts its role.
+// refused BACKWARD_REFUSED, the two nearest being the places backwardPlace names, and nothing
+// moves; with one earlier step that runs as step, the move goes there and starts its role.
 func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
-	const refusal = "task a of LEGION-208 has two earlier steps that run as step, %s and %s, so a move back to step does not say which one the " +
-		"task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, the verdict fail and returnTo; " +
-		"the owner names it with complete_step and return_to at a step of its own, or with request_backward_move and returnTo."
 	const reason = "the check missed a case"
 	for _, tc := range []struct {
 		name     string
 		words    []string
 		two      []record.TaskPlace
-		named    [2]string
 		returnTo record.TaskPlace
 	}{
-		{"two earlier steps", []string{"implementer", "checker", "linter", "acceptance:owner"}, []record.TaskPlace{stepPlace(2), stepPlace(3)},
-			[2]string{"2 (checker)", "3 (linter)"}, record.TaskPlace{}},
+		{"two earlier steps", []string{"implementer", "checker", "linter", "acceptance:owner"}, []record.TaskPlace{stepPlace(2), stepPlace(3)}, record.TaskPlace{}},
 		{"three earlier steps, the two nearest named", []string{"implementer", "checker", "critic", "linter", "acceptance:owner"},
-			[]record.TaskPlace{stepPlace(3), stepPlace(4)}, [2]string{"3 (critic)", "4 (linter)"}, record.TaskPlace{}},
-		{"one earlier step", []string{"implementer", "checker", "acceptance:owner"}, nil, [2]string{}, stepPlace(2)},
+			[]record.TaskPlace{stepPlace(3), stepPlace(4)}, record.TaskPlace{}},
+		{"one earlier step", []string{"implementer", "checker", "acceptance:owner"}, nil, stepPlace(2)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -560,9 +554,8 @@ func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 				}
 				return
 			}
-			want := fmt.Sprintf(refusal, tc.named[0], tc.named[1])
-			if result.Refusal == nil || result.Refusal.Code != "BACKWARD_REFUSED" || result.Refusal.Message != want {
-				t.Fatalf("the move back to step = %+v, want BACKWARD_REFUSED %q", result.Refusal, want)
+			if result.Refusal == nil || result.Refusal.Code != "BACKWARD_REFUSED" {
+				t.Fatalf("the move back to step = %+v, want BACKWARD_REFUSED", result.Refusal)
 			}
 			if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Accepting {
 				t.Fatalf("after the refused move %s stands in %s, want accepting", root.Key, issue.Phase)

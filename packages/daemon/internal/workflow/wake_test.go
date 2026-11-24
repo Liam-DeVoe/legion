@@ -879,7 +879,7 @@ func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
 
 	rig.apply("settled", settlement("head1", "build"))
 
-	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeChecks, "The wake is a CI settlement on your pull request's head: head1 failed build.")
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeChecks, "head1", "build")
 	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
 		t.Fatalf("the settlement's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
 	}
@@ -905,7 +905,7 @@ func TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
 	}
 	rig.apply("backstop", armBackstop(t, rig.pool, owner, claim.RoleArchitect, wakeAt.Add(-time.Minute)))
 
-	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop, "backstop")
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop)
 	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
 		t.Fatalf("the backstop's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
 	}

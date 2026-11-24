@@ -324,10 +324,16 @@ func (r *ownerStepsRig) returnsFiveTimes() {
 		prompts = r.hookPrompts()
 		return len(prompts) == len(want)
 	})
-	header := "Legion hook work-back on " + r.key + ": work went back from testing to implementing."
+	// The prompt of the fifth return names the hook, the issue, the move and the count, as
+	// record.HookPrompt.Message writes them from those values.
+	wantOpening, wantCount := hookParts(record.HookPrompt{Hook: "work-back", From: phase.Testing, To: phase.Implementing, Count: 5}.Message(r.key))
 	for _, role := range want {
-		if got := prompts[role]; len(got) != 1 || !strings.HasPrefix(got[0], header) || !strings.Contains(got[0], "Moves back this hook counts: 5.") {
+		got := prompts[role]
+		if len(got) != 1 {
 			t.Fatalf("the hook prompted %s's %s with %q, want one prompt of the fifth return from testing to implementing", r.key, role, got)
+		}
+		if opening, count := hookParts(got[0]); opening != wantOpening || count != wantCount {
+			t.Fatalf("the hook prompted %s's %s with %q, want the prompt of the fifth return from testing to implementing", r.key, role, got[0])
 		}
 	}
 	r.runStep("implementer", answerPass, phase.Testing)
@@ -709,19 +715,31 @@ func (r *ownerStepsRig) claimRecorded(token claim.Token) bool {
 	return recorded
 }
 
-// hookPrompts is every prompt of a hook the outbox has published to the topic of a worker's claim
-// of the walk's issue, by the claim's role.
+// hookPrompts is every prompt of the work-back hook the outbox has published to the topic of a
+// worker's claim of the walk's issue, by the claim's role: each message that opens as
+// record.HookPrompt.Message opens one of that hook on the walk's issue.
 func (r *ownerStepsRig) hookPrompts() map[claim.Role][]string {
 	r.t.Helper()
+	of, _, _ := strings.Cut(record.HookPrompt{Hook: "work-back"}.Message(r.key), ":")
 	prompts := map[claim.Role][]string{}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
 		for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.token(role))) {
-			if strings.HasPrefix(published.Message, "Legion hook ") {
+			if strings.HasPrefix(published.Message, of+":") {
 				prompts[role] = append(prompts[role], published.Message)
 			}
 		}
 	}
 	return prompts
+}
+
+// hookParts is the first line of a hook's prompt and the first sentence of its last paragraph, as
+// record.HookPrompt.Message writes them: the hook, the issue and the move, and the count that fired
+// the hook.
+func hookParts(message string) (string, string) {
+	opening, _, _ := strings.Cut(message, "\n")
+	paragraphs := strings.Split(message, "\n\n")
+	count, _, _ := strings.Cut(paragraphs[len(paragraphs)-1], ". ")
+	return opening, count
 }
 
 // taskOf is task a of the walk's issue at generation 1 as its plan_tasks row holds it: its state,

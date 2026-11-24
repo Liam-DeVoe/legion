@@ -106,16 +106,16 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "f", Reason: "task f names owner." + yet}}},
 		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
 			want: []Refusal{{Task: "f1", Reason: "task f1 names part_of." + yet}}},
-		{name: "two causes in one task", plan: withTask(Task{ID: "a", Needs: []string{"b"}, Merges: true, Steps: implementer}), want: []Refusal{
-			{Task: "a", Reason: "task a needs b." + yet},
-			{Task: "a", Reason: "task a names merges." + yet},
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Supported(tc.plan); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Supported =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
+	}
+	// Each cause of one task gets one reason of that task.
+	if got := Supported(withTask(Task{ID: "a", Needs: []string{"b"}, Merges: true, Steps: implementer})); len(got) != 2 || got[0].Task != "a" || got[1].Task != "a" {
+		t.Fatalf("Supported of a task with two causes = %+v, want two reasons of task a", got)
 	}
 
 	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer", "implementer:cd reviewer",

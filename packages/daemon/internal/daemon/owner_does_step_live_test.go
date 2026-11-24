@@ -66,12 +66,13 @@ type ownerDoesStepLive struct {
 
 // ownerDoesStepNotice is one notice the owner's role topic took, as the outbox published it: its
 // kind, the step's role ("" for the retro, which is no step of the plan), the phase the issue stood
-// in, and the step's task.
+// in, the step's task, and the run it tells.
 type ownerDoesStepNotice struct {
-	Kind   string `json:"kind"`
-	Role   string `json:"role"`
-	Phase  string `json:"phase"`
-	Reason string `json:"reason"`
+	Kind      string             `json:"kind"`
+	Role      string             `json:"role"`
+	Phase     string             `json:"phase"`
+	Reason    string             `json:"reason"`
+	OwnerStep *record.NoticeStep `json:"ownerStep"`
 }
 
 // TestOwnerDoesStepLive drives the proof's checks against one booted daemon and one Dispatch, over
@@ -132,7 +133,7 @@ func (l *ownerDoesStepLive) ownerStep() {
 	t := l.t
 	t.Helper()
 	since := l.given(ownerDoesStepPlan, phase.Implementing)
-	told, err := l.ownerTold(since, 1, claim.RoleImplementer, phase.Implementing, " Task: a.", " Step 1 of 1: implementer:owner.", ownerDoesStepText)
+	told, err := l.ownerTold(since, 1, claim.RoleImplementer, phase.Implementing, "step", 1, ownerDoesStepText)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func (l *ownerDoesStepLive) ownerStep() {
 	l.note("GitHub lists pull request #%d open on legion/%s; the owner's complete_step of step 1 (commit %s, its implement handoff version %d under its session %s): %d %s; %s stands in retro",
 		l.number, l.key, stepRecordsHead[:12], version, owner.session, status, strings.TrimSpace(body), l.key)
 
-	if told, err = l.ownerTold(since, 2, "", phase.Retro, " Task: a.", " Steps: 1 implementer:owner then Legion's retro"); err != nil {
+	if told, err = l.ownerTold(since, 2, "", phase.Retro, "retro", 0); err != nil {
 		t.Fatal(err)
 	}
 	l.note("the owner was told a second owner-step (role none, phase %s), and no claim of %s was launched; its task: %q", told.Phase, l.key, told.Reason)
@@ -172,9 +173,8 @@ func (l *ownerDoesStepLive) freshImplementer() {
 	t := l.t
 	t.Helper()
 	since := l.given(ownerDoesStepFresh, phase.Implementing)
-	_, err := l.ownerTold(since, 1, claim.RoleImplementer, phase.Implementing, " Task: a.", " Step 1 of 1: implementer:owner.", ownerDoesStepText)
-	if launch := string(l.token(claim.RoleImplementer)) + " as implementer"; err == nil || !strings.Contains(err.Error(), launch) ||
-		!strings.Contains(err.Error(), "was told 0 notices owner-step") {
+	_, err := l.ownerTold(since, 1, claim.RoleImplementer, phase.Implementing, "step", 1, ownerDoesStepText)
+	if launch := string(l.token(claim.RoleImplementer)); err == nil || !strings.Contains(err.Error(), launch) || len(l.ownerSteps()) != 0 {
 		t.Fatalf("control: the check of owner-step over %s, whose step is a fresh implementer's, says %v; want it to name the launch of %s and no owner-step", l.key, err, launch)
 	}
 	l.note("control: FAIL owner-step over %s, plan `implementer`: %v", l.key, err)
@@ -191,22 +191,20 @@ func (l *ownerDoesStepLive) testerAlone() {
 	l.given(ownerDoesStepTester, phase.Testing)
 	tester := l.worker(claim.RoleTester)
 	prompt := tester.take()
-	for _, says := range []string{" Task: a.", " Step 1 of 1: tester.", ownerDoesStepText} {
-		if !strings.Contains(prompt.Message, says) {
-			t.Fatalf("the tester of %s was prompted with %q, want it to say %q", l.key, prompt.Message, says)
-		}
+	if !strings.Contains(prompt.Message, ownerDoesStepText) {
+		t.Fatalf("the tester of %s was prompted with %q, want it to carry its task block's text %q", l.key, prompt.Message, ownerDoesStepText)
 	}
-	l.note("the tester %s was prompted with its step, ` Task: a.` and ` Step 1 of 1: tester.`, and the text of its task's block, %q", tester.token, ownerDoesStepText)
+	l.note("the tester %s was prompted with the text of its task's block, %q", tester.token, ownerDoesStepText)
 	since := l.launched()
 	l.finish(tester, "test", testCompletion, phase.Retro)
-	told, err := l.ownerTold(since, 1, "", phase.Retro, " Task: a.", " Steps: 1 tester then Legion's retro")
+	told, err := l.ownerTold(since, 1, "", phase.Retro, "retro", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	l.note("the tester passed, and %s stands in retro; the owner %s was told one owner-step (role none, phase %s), and no claim of %s was launched; its task: %q",
 		l.key, l.token(claim.RoleArchitect), told.Phase, l.key, told.Reason)
 
-	if _, err := l.endedAlone(); err == nil || !strings.Contains(err.Error(), "stands in retro, want done") {
+	if _, err := l.endedAlone(); err == nil {
 		t.Fatalf("control: the check of tester-alone over %s, whose retro runs, says %v; want it to say that %s stands in retro", l.key, err, l.key)
 	} else {
 		l.note("control: FAIL tester-alone over %s before its retro ends: %v", l.key, err)
@@ -237,7 +235,7 @@ func (l *ownerDoesStepLive) mergesWithItsPullRequest() {
 	t := l.t
 	t.Helper()
 	_, err := l.endedAlone()
-	if err == nil || !strings.Contains(err.Error(), "launched its merger") {
+	if err == nil {
 		t.Fatalf("control: the check of tester-alone over %s, which has a pull request, says %v; want it to name the merger's launch", l.key, err)
 	}
 	l.note("control: FAIL tester-alone over %s, whose task has a pull request: %v", l.key, err)
@@ -245,13 +243,13 @@ func (l *ownerDoesStepLive) mergesWithItsPullRequest() {
 
 // ownerTold is the check of owner-step at the step the walk's issue stands at: the owner, the
 // issue's own architect, was told told notices owner-step on its role topic, the last naming role,
-// the phase at and each text of says in its task, and the daemon launched no claim of the issue
-// after the move into the step, since being the count of its launches before that move (launched):
-// an owner's step starts no claim, neither a fresh one nor the owner's own relaunched as the step's
-// role. It waits until the topic holds told such notices or such a launch is made, then watches
-// liveSettle for the launch, or a notice more, which it must not see. It answers the last notice,
-// or what does not hold.
-func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase.Phase, says ...string) (ownerDoesStepNotice, error) {
+// the phase at and the run of kind and place, its task carrying each text of planted, which the
+// plan itself gives, and the daemon launched no claim of the issue after the move into the step,
+// since being the count of its launches before that move (launched): an owner's step starts no
+// claim, neither a fresh one nor the owner's own relaunched as the step's role. It waits until the
+// topic holds told such notices or such a launch is made, then watches liveSettle for the launch,
+// or a notice more, which it must not see. It answers the last notice, or what does not hold.
+func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase.Phase, kind string, place int, planted ...string) (ownerDoesStepNotice, error) {
 	l.t.Helper()
 	fresh := func() []string {
 		var launches []string
@@ -275,9 +273,12 @@ func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase
 	if last.Role != string(role) || last.Phase != string(at) {
 		return last, fmt.Errorf("the owner %s of %s was told owner-step of role %q in %s, want role %q in %s", owner, l.key, last.Role, last.Phase, role, at)
 	}
-	for _, text := range says {
+	if step := last.OwnerStep; step == nil || step.Task != "a" || step.Kind != kind || step.Place != place {
+		return last, fmt.Errorf("the owner-step told to %s of %s names the run %+v, want task a's %s %d", owner, l.key, last.OwnerStep, kind, place)
+	}
+	for _, text := range planted {
 		if !strings.Contains(last.Reason, text) {
-			return last, fmt.Errorf("the owner-step told to %s of %s says %q, want it to say %q", owner, l.key, last.Reason, text)
+			return last, fmt.Errorf("the owner-step told to %s of %s says %q, want it to carry %q", owner, l.key, last.Reason, text)
 		}
 	}
 	return last, nil

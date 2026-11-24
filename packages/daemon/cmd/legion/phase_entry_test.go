@@ -117,6 +117,9 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"tree":"LEGION-701","workers":{},"phaseEntry":3,"architectStalls":["took-nothing"]}`
 	for _, tc := range []struct {
 		name, issues, want string
+		// names and absent hold a case to the issues and roles the line names and does not name,
+		// where want, the whole line, is not this test's to hold.
+		names, absent []string
 	}{
 		{
 			name:   "three roles behind their entry, one the role of a running step, by issue key",
@@ -152,13 +155,13 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		{
 			name:   "an accepting a fresh agent works, beside one the owner works",
 			issues: `{"issues":{` + accepting + `}}`,
-			want:   "roles not given their phase entry, and roots a wake names: 1 — LEGION-600 acceptance: entry 3, given 1\n",
+			names:  []string{"LEGION-600 acceptance"},
+			absent: []string{"LEGION-601"},
 		},
 		{
 			name:   "roots at a step and a retro their owner works, each with an arm",
 			issues: `{"issues":{` + owners + `}}`,
-			want: "roles not given their phase entry, and roots a wake names: 2 — " +
-				"LEGION-700 architect: the architect's claim cannot be reached; LEGION-701 architect: the architect took nothing\n",
+			names:  []string{"LEGION-700 architect", "LEGION-701 architect"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,8 +179,18 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
 				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 			}
-			if !strings.Contains(out.String(), tc.want) {
+			if tc.want != "" && !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(out.String(), name) {
+					t.Fatalf("legion state printed %q, want it to name %q", out.String(), name)
+				}
+			}
+			for _, name := range tc.absent {
+				if strings.Contains(out.String(), name) {
+					t.Fatalf("legion state printed %q, want it to name no %q", out.String(), name)
+				}
 			}
 		})
 	}

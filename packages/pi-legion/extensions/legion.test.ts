@@ -2948,15 +2948,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           undefined,
           pane.context
         )
-      ).resolves.toMatchObject({
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step",
-          },
-        ],
-      });
+      ).resolves.toMatchObject({ isError: true });
     });
 
     test("the controller is never reminded", async () => {

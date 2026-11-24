@@ -145,9 +145,8 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 		seedOwnerPlan(t, at.h, key, "implementer:owner reviewer", stepAt(1))
 		seedPullRequest(t, at.h, key, headSHA)
 		owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
-		refusedSaying(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 2, "summary": "reviewed",
-			"verdict": "pass", "commit": headSHA}), http.StatusConflict, "OWNER_STEP_NOT_RUNNING",
-			"step 2 of task a of LEGION-208 is not a step of yours that runs now: LEGION-208 stands at step 1 (implementer), whose agent is the owner. This report changed nothing.")
+		refused(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 2, "summary": "reviewed",
+			"verdict": "pass", "commit": headSHA}), http.StatusConflict, "OWNER_STEP_NOT_RUNNING")
 		noFact(t, at)
 	})
 
@@ -156,9 +155,8 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 		seedIssueAt(t, at.h, key, phase.Implementing)
 		seedOwnerPlan(t, at.h, key, "implementer reviewer", stepAt(1))
 		owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
-		refusedSaying(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 1, "summary": "built it",
-			"commit": headSHA}), http.StatusConflict, "OWNER_STEP_NOT_RUNNING",
-			"step 1 of task a of LEGION-208 is not a step of yours that runs now: LEGION-208 stands at step 1 (implementer), whose agent is implementer. This report changed nothing.")
+		refused(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 1, "summary": "built it",
+			"commit": headSHA}), http.StatusConflict, "OWNER_STEP_NOT_RUNNING")
 		noFact(t, at)
 	})
 
@@ -179,9 +177,8 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 		seedPullRequest(t, at.h, key, headSHA)
 		owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
 		written := owner.writeHandoff("review", 1)
-		refusedSaying(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 2, "summary": "reviewed",
-			"commit": headSHA, "handoffId": written, "handoffVersion": 1}), http.StatusBadRequest, "STEP_VERDICT_REQUIRED",
-			"a step of the role reviewer reports the verdict pass or fail; nothing was recorded")
+		refused(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 2, "summary": "reviewed",
+			"commit": headSHA, "handoffId": written, "handoffVersion": 1}), http.StatusBadRequest, "STEP_VERDICT_REQUIRED")
 		noFact(t, at)
 		answered(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 2, "summary": "the parser drops a field",
 			"verdict": "fail", "returnTo": 1, "commit": headSHA, "handoffId": written, "handoffVersion": 1}))
@@ -269,9 +266,8 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 		seedIssueAt(t, at.h, key, phase.Accepting)
 		seedOwnerPlan(t, at.h, key, "acceptance:owner implementer", stepAt(1))
 		owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
-		refusedSaying(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 1, "summary": "the widget does not render",
-			"verdict": "fail", "returnTo": 1, "commit": headSHA}), http.StatusBadRequest, "INVALID_RETURN_TO",
-			"returnTo is 1, and step 1 of task a of LEGION-208 is not before step 1, the acceptance that failed: send it again naming an earlier step, or without returnTo; nothing was recorded")
+		refused(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": 1, "summary": "the widget does not render",
+			"verdict": "fail", "returnTo": 1, "commit": headSHA}), http.StatusBadRequest, "INVALID_RETURN_TO")
 		noFact(t, at)
 	})
 

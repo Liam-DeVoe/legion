@@ -113,8 +113,9 @@ func (r *ownerHoldRig) published() []string {
 	return kinds
 }
 
-// ownerStepStale is the line the executor logs for an owner-step that finished undelivered.
-const ownerStepStale = "outbox owner-step finished undelivered: its step no longer runs"
+// ownerStepStale is the line the executor logs for an owner-step that finished undelivered, the
+// code's own (ownerStepStaleLine), so that no test here holds its words.
+const ownerStepStale = ownerStepStaleLine
 
 // staleLines is each line of logged, a JSON log, that ownerStepStale is the message of, decoded.
 func staleLines(t *testing.T, logged string) []map[string]any {

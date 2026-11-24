@@ -125,15 +125,12 @@ func TestAHookPromptOfATesterOrAReviewerReachesTheAgentOfThatWorksStep(t *testin
 		// passes is the number of steps that pass before the checker's, the last of them.
 		passes int
 		// want names, for each role the firing prompts, the role whose step's claim its prompt names.
-		want     map[claim.Role]claim.Role
-		prompted string
+		want map[claim.Role]claim.Role
 	}{
 		{name: "coder auditor checker acceptance:owner", steps: []string{"coder", "auditor", "checker", "acceptance:owner"}, passes: 2,
-			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker", claim.RoleReviewer: "auditor"},
-			prompted: "implementer, tester, reviewer"},
+			want: map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker", claim.RoleReviewer: "auditor"}},
 		{name: "coder checker", steps: []string{"coder", "checker"}, passes: 1,
-			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker"},
-			prompted: "implementer, tester"},
+			want: map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

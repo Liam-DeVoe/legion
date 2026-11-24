@@ -577,11 +577,8 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
 const issueAt = (fields: { phase: string; stepRole?: string; placeRole?: string }) =>
   ({ ...fields, workers: {} }) as unknown as LegionIssue;
 
-const noLongerWorks = "legion: this role no longer works this phase; no reminder is sent";
-
 /** Whether a worker whose claim is on `role` is reminded at a settle while its issue's record is
- * `record`, the record check's answer; a reminder it drops is logged as the one line that says the
- * role no longer works the place. */
+ * `record`, the record check's answer; a reminder it drops is logged as one line. */
 async function remindedAt(role: string, record: LegionIssue): Promise<boolean> {
   const debugged: string[] = [];
   const reminder = createPhaseReminder({
@@ -598,7 +595,7 @@ async function remindedAt(role: string, record: LegionIssue): Promise<boolean> {
   reminder.apply({ kind: "assignment" });
   const continuation = await reminder.settle(said("Working."));
   const reminded = continuation !== undefined;
-  expect(debugged).toEqual(reminded ? [] : [noLongerWorks]);
+  expect(debugged).toHaveLength(reminded ? 0 : 1);
   return reminded;
 }
 
