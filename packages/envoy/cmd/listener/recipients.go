@@ -20,10 +20,10 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // recipientCounts is how many sessions, other than sender, a message published on topic is for,
 // as listenerwire.PublishResponse carries the two numbers: recipients is every session the topic
 // is for and connected how many of those are live now, a pointer each so that a count of zero is
-// sent as the number it is. A count is nil when a cache it is read from cannot be served, and the
-// publish route leaves each nil field out of its answer on its own, rather than send a number that
-// means something narrower than the one it names (plan D16). The counts read three caches, and
-// each is checked before it is read:
+// sent as the number it is. A count is nil when a cache it is read from cannot be served or the
+// send takes core NATS (below), and the publish route leaves each nil field out of its answer on
+// its own, rather than send a number that means something narrower than the one it names (plan
+// D16). The counts read three caches, and each is checked before it is read:
 //
 //   - the known-session store (session.KnownSessions.Opened: no store at all, one whose NATS grant
 //     does not open the bucket yet, one whose first read of the bucket has not completed, or one
@@ -60,15 +60,16 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // before any session is matched. It asks no subjects of its own: jetStream is the send's own
 // decision of its transport, which the publish route takes once (bus.Client.PublishTakesJetStream)
 // and publishes on (bus.Client.PublishAckOn), so the count and the send cannot read the deployed
-// subjects apart. A count that read the subjects the client last held again could say 0 for a
-// message the send then stores over JetStream, on a read made between the two that captures the
-// topic, or count sessions for one the send takes over core NATS. A publish the send takes over
-// core NATS, where no stream the client has read stores it and no consumer delivers it, answers
-// recipients 0, and connected 0 where the session copy can be served. The publish route refuses a
-// topic no stream subject captures once a read of the subjects that started after the request
-// asked agrees (bus.SubjectsAsk.Uncaptured), and publishes it where no such read could be made; a
-// session whose row or record follows the topic would then be counted for a message no consumer
-// receives.
+// subjects apart: a count that judged the transport again could count sessions for a message the
+// send takes over core NATS, on a read made between the two that captures the topic. A core
+// decision leaves both counts out, as a lane read that did not answer does. The route refuses a
+// topic no stream subject captures once a read made for the request agrees
+// (bus.SubjectsAsk.Uncaptured), so a core decision here means no read found it uncaptured: none
+// could be made, or the transport fell back to the subjects the client holds. Whether a stream
+// stores the message is then unknown: during a roll a newer build's subject can capture it, and a
+// core publish of a topic the stream captures is stored too (bus.Client.PublishTakesJetStream),
+// for a consumer whose filter holds the topic to deliver. So 0 could be false, and so could a
+// count of the sessions that follow the topic.
 //
 // connected is how many of those sessions the session registry holds a live entry for, by the
 // rule every reader of a session's age reads (session.SessionRegistry.Lookup, session.StateOf): an
@@ -85,15 +86,12 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // (store.Registry.ReadLaneHolders), the read a filter built from a stored row makes for it; a read
 // that did not answer or failed leaves both counts out, as a cache that cannot be served does.
 func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string, jetStream bool) (recipients, connected *int) {
-	if !d.known.Opened() || d.registry.Servable() != nil {
+	if !jetStream || !d.known.Opened() || d.registry.Servable() != nil {
 		return nil, nil
 	}
 	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
 	if d.sessions.Servable() == nil {
 		connected = new(int)
-	}
-	if !jetStream {
-		return new(int), connected
 	}
 	judged := recipientJudgment{subject: topic}
 	// A lane is a literal, so the lane the message is published on is the one lane whose holder

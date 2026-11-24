@@ -89,17 +89,18 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 	}
 }
 
-// A publish the stream does not store counts no recipient. The consumer filter built from a stored
-// row holds a topic no stream subject captures yet (filterTakes), so a session whose interest row
-// and known-session record follow such a topic has a consumer filtering on it, and a count that
-// judged the session's topics by that filter alone counted it: recipients 1 for a message that goes
-// over core NATS, which no stream stores and no consumer delivers. The publish route refuses such a
-// topic once a read of the deployed subjects that started after the request asked agrees
-// (bus.SubjectsAsk.Uncaptured), and counts it only where no such read could be made, so the row
-// asks the count itself (recipientCounts). The row first checks that the listener's client judges
-// the topic uncaptured and that the filter built from the row holds it, and fails as UNKNOWN
-// otherwise.
-func TestAPublishOnATopicNoStreamSubjectCapturesCountsNoRecipient(t *testing.T) {
+// A publish on a topic no stream subject captures, which the send takes over core NATS, leaves
+// both counts out. The consumer filter built from a stored row holds a topic no stream subject
+// captures yet (filterTakes), so a session whose interest row and known-session record follow
+// such a topic has a consumer filtering on it, and a count that judged the session's topics by
+// that filter alone counted it: recipients 1 for a message the send takes over core NATS, which no
+// stream the client has read stores. The publish route refuses such a topic once a read of the
+// deployed subjects that started after the request asked agrees (bus.SubjectsAsk.Uncaptured), and
+// counts it only where no such read could be made, so whether a stream stores the message is
+// unknown; the row asks the count itself (recipientCounts). The row first checks that the
+// listener's client judges the topic uncaptured, that the filter built from the row holds it and
+// that the send takes core NATS for it, and fails as UNKNOWN otherwise.
+func TestAPublishOnATopicNoStreamSubjectCapturesLeavesBothCountsOut(t *testing.T) {
 	const (
 		sessionID = "ses_uncaptured_follower"
 		topic     = "notifications.lxspec.probe.counted"
@@ -124,8 +125,12 @@ func TestAPublishOnATopicNoStreamSubjectCapturesCountsNoRecipient(t *testing.T) 
 	if !slices.Contains(filter, topic) {
 		t.Fatalf("UNKNOWN: the filter built from %s is %v, which does not hold it; the row needs a consumer filter that follows a topic no stream captures", topic, filter)
 	}
-	if recipients := countRecipientsOf(t, rig.deps, topic); recipients == nil || *recipients != 0 {
-		t.Fatalf("a publish on %s, which no stream stores, counts %v recipients with %s's interest row and known-session record naming it, want 0: the filter built from that row is %v, and no consumer receives the message", topic, countOrNone(recipients), sessionID, filter)
+	jetStream := rig.deps.client.PublishTakesJetStream(t.Context(), topic)
+	if jetStream {
+		t.Fatalf("UNKNOWN: the send's transport for %s is JetStream; the row needs a decision of core NATS", topic)
+	}
+	if recipients, connected := recipientCounts(t.Context(), rig.deps, topic, lostLaneSender, jetStream); recipients != nil || connected != nil {
+		t.Fatalf("a publish on %s, which the send takes over core NATS, counts %v recipients and %v connected with %s's interest row and known-session record naming it, want both left out: whether a stream stores the message is unknown, and the filter built from that row is %v", topic, countOrNone(recipients), countOrNone(connected), sessionID, filter)
 	}
 }
 
@@ -158,10 +163,10 @@ func retireStreamSubject(t *testing.T, js natsgo.JetStreamContext, subject strin
 // captures the topic, so the send goes over core NATS; a newer build's start then adds a subject
 // that captures it, and a read of the subjects takes that in before the count; and an operator
 // retires the subject again before the send, so no stream stores the message and no consumer
-// delivers it, as the decision said. The count is 0, the send has no acknowledgement, and the
-// stream holds nothing on the topic. The row drives the route's helpers in the route's order with
-// the subjects changed between them, since no seam of the route lets a test land a read there;
-// the client holds off its periodic reads of the subjects (bus.WithStreamSubjectsRefresh,
+// delivers it, as the decision said. Both counts are left out, the send has no acknowledgement,
+// and the stream holds nothing on the topic. The row drives the route's helpers in the route's
+// order with the subjects changed between them, since no seam of the route lets a test land a read
+// there; the client holds off its periodic reads of the subjects (bus.WithStreamSubjectsRefresh,
 // bus.WithKeepInterval), so the row's own reads are the only ones.
 //
 // A count that judged the transport again on the subjects the client last held
@@ -219,9 +224,9 @@ func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
 	}
 	retireStreamSubject(t, js, rollNewerSubject)
 
-	if recipients, _ := recipientCounts(ctx, rig.deps, topic, lostLaneSender, jetStream); recipients == nil || *recipients != 0 {
-		t.Fatalf("a publish on %s whose send takes core NATS, decided before a read of the subjects captured the topic, counts %v recipients with %s following it, want 0: the count did not take the send's decision, and no consumer receives the message",
-			topic, countOrNone(recipients), sessionID)
+	if recipients, connected := recipientCounts(ctx, rig.deps, topic, lostLaneSender, jetStream); recipients != nil || connected != nil {
+		t.Fatalf("a publish on %s whose send takes core NATS, decided before a read of the subjects captured the topic, counts %v recipients and %v connected with %s following it, want both left out: the count did not take the send's decision",
+			topic, countOrNone(recipients), countOrNone(connected), sessionID)
 	}
 	ack, err := client.PublishAckOn(ctx, listenerTestEnvelope(topic, "transport-decided-once"), jetStream)
 	if err != nil || ack != (bus.StoredAck{}) {

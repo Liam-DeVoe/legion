@@ -101,45 +101,52 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes (bus.Client.Publish, bus.Client.UsesCoreTransport): the stream stores the lane
-// of an agent subject and of a team topic, and a role lane's exception keeps core NATS, since no
-// stream subject captures it. Every fanout refusal took core NATS until team topics were stored,
-// which keeps nothing: the report of a team message reached only a reader subscribed at that
-// moment, where the stream's copy reaches a session's consumer whenever that session comes back.
-// origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
-// an exception on a lane a publish takes JetStream for then carries Nats-Msg-Id
+// own lane takes: the stream stores the lane of an agent subject and of a team topic, and a role
+// lane's exception keeps core NATS, since no stream subject captures it. Every fanout refusal took
+// core NATS until team topics were stored, which keeps nothing: the report of a team message
+// reached only a reader subscribed at that moment, where the stream's copy reaches a session's
+// consumer whenever that session comes back. With no origin it publishes through
+// bus.Client.Publish, which judges the lane's transport once itself (bus.Client.UsesCoreTransport,
+// bus.Client.PublishTakesJetStream). origin, when not empty, identifies the stored message the
+// exception is about (exceptionOrigin), and the lane is then judged once, as the publish's
+// transport judges it (bus.Client.PublishTakesJetStream), within exceptionLaneJudgement, and the
+// exception published on that answer: on a lane it takes JetStream for, under Nats-Msg-Id
 // exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
 // that message, each from its own durable, a lane only a newer build's subjects capture among
-// them. The lane is judged as the publish's transport judges it (bus.Client.PublishTakesJetStream),
-// within exceptionLaneJudgement: a lane the client's own subjects leave uncaptured takes JetStream
-// once a read of the deployed stream's subjects again captures it, so a lane only a read since the
-// client's last captures is stored under that one id too, rather than published through Publish
-// under the exception's own dedupe key, a second copy beside the one another listener stored under
-// the one-copy id. That judgement makes no read within the bus's 250 ms gap after the last one or
-// while another read younger than 2 s is in flight, and a read can fail: in each case the lane is
-// judged on the subjects the client holds, and an exception on a lane only a newer build's subjects
-// capture can still be that second copy.
+// them; on any other lane, over core NATS (bus.Client.PublishAckOn), never through Publish, whose
+// own judgement could answer otherwise on a read of the deployed stream's subjects landing between
+// the two. A lane the client's own subjects leave uncaptured takes JetStream once a read of those
+// subjects again captures it, so a lane only a read since the client's last captures is stored
+// under that one id too, rather than sent over core NATS, which the stream stores under no message
+// id: a second copy beside the one another listener stored under the one-copy id. That judgement
+// makes no read within the bus's 250 ms gap after the last one or while another read younger than
+// 2 s is in flight, and a read can fail: in each case the lane is judged on the subjects the
+// client holds, and an exception on a lane only a newer build's subjects capture can still be that
+// second copy.
 //
 // A clustered stream still storing another listener's copy refuses this one as still in process
 // under that publish (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a
 // failure (exceptionPublishInProcessLine).
 //
-// It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
-// publish's own bound and carries the original payload whatever its size.
+// It runs inside a delivery handler, which has no request deadline of its own, so each of its
+// publishes keeps the bus's own bound, which Publish sets and PublishStoredAs and PublishAckOn
+// take for a context with no deadline, and it carries the original payload whatever its size.
 func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
 	exception, err := deliveryExceptionEnvelope(item, reason, recipientSession, 0)
 	if err != nil {
 		return err
 	}
-	if origin != "" && exceptionTakesJetStream(client, exception.Topic) {
+	switch {
+	case origin == "":
+		err = client.Publish(exception)
+	case exceptionTakesJetStream(client, exception.Topic):
 		// One stored copy however many listeners raise it, each reading the same message from its
 		// own durable: they agree on the origin, where they would each mint their own message id.
-		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
-			return fmt.Errorf("publish delivery exception: %w", err)
-		}
-		return nil
+		err = client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin)
+	default:
+		_, err = client.PublishAckOn(context.Background(), exception, false)
 	}
-	if err := client.Publish(exception); err != nil {
+	if err != nil {
 		return fmt.Errorf("publish delivery exception: %w", err)
 	}
 	return nil

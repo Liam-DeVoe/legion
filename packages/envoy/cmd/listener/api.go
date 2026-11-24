@@ -1150,28 +1150,24 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 // to tell such a copy from one Dispatch's outbox kept under a key of its own.
 const publishDedupePrefix = "publish."
 
-// publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
-// envelope. A role
-// topic is forwarded to its holder, answered once confirmed or when
-// publishDeliveryWindow from the request's arrival has passed (sendToRole in
-// confirmed.go); a topic the stream captures is answered, with the counts of the sessions it is
-// for (recipientCounts), once the stream stored it, or, where the publish goes over core NATS in
-// a roll (bus.Client.PublishTakesJetStream), once the server took it, which the stream stores
-// just after; and any other
+// publishHandler rejects agent-targeted topics (must use /v1/messages/send instead) and the
+// listener's own lanes, the kept one and the session resume one, and sends the envelope. A role
+// topic is forwarded to its holder, answered once confirmed or when publishDeliveryWindow from the
+// request's arrival has passed (sendToRole in confirmed.go); a topic the stream captures is
+// answered once the stream stored it, with the counts of the sessions it is for (recipientCounts),
+// or, where the publish goes over core NATS in a roll (bus.Client.PublishTakesJetStream), once the
+// server took it, which the stream stores just after, with neither count; and any other
 // notifications. topic is refused by name, since nothing would store it for a session to read,
-// once bus.SubjectsAsk.Uncaptured agrees. An
-// explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
-// recognises); it is mutually exclusive with idempotency_key, may not begin
-// with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and
-// may not ride a dispatch envelope. Every host drops a repeat of any dispatch key
-// (contracts.DedupeKeyNamesTheUpstreamEvent), and Dispatch's outbox keys are
-// sequential (dispatch-<event id>), so a caller that chose one could make a
-// host drop the real event it names. Dispatch itself never needs this route's
-// key: its outbox publishes to the bus directly and its sends go through
-// /v1/messages/send, whose key is the listener's. Like the send route, it answers through record,
-// which writes this route's one line per request with the answer; a confirmed send answers through
-// it too.
+// once bus.SubjectsAsk.Uncaptured agrees. An explicit dedupe_key is used verbatim (a re-send a
+// receiver's own dedupe recognises); it is mutually exclusive with idempotency_key, may not begin
+// with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and may not ride a
+// dispatch envelope. Every host drops a repeat of any dispatch key
+// (contracts.DedupeKeyNamesTheUpstreamEvent), and Dispatch's outbox keys are sequential
+// (dispatch-<event id>), so a caller that chose one could make a host drop the real event it
+// names. Dispatch itself never needs this route's key: its outbox publishes to the bus directly
+// and its sends go through /v1/messages/send, whose key is the listener's. Like the send route, it
+// answers through record, which writes this route's one line per request with the answer; a
+// confirmed send answers through it too.
 //
 // A publish to a topic the stream captures that the stream answers as a duplicate - a repeat whose
 // dedupe key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), such as one under the
@@ -1317,13 +1313,10 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// fails - gives no refusal by name, since a refusal of a topic the stream does capture
 		// loses the message, and a publish of one it does not reaches nobody either way. A NATS
 		// user that may not read the stream refuses on the subjects it holds, which are all it
-		// will ever have. The transport the publish takes is judged once below, on the subjects
-		// that read kept (bus.Client.PublishTakesJetStream). The refusal comes before the sender
-		// limit's take, so such a publish keeps its 400 at any count.
-		// That judgement, the transport's, the sender stamp's read and the publish take this one
-		// deadline, derived from the caller's own context, so this route too answers a bus it
-		// cannot reach rather than spending the caller's attempt. A role send takes its own
-		// (publishDeliveryWindow).
+		// will ever have. The refusal comes before the sender limit's take, so such a publish keeps
+		// its 400 at any count. That judgement, the transport's, the sender stamp's read and the
+		// publish take this deadline from the caller's own context, so this route too answers a bus
+		// it cannot reach rather than spend the caller's attempt; a role send takes its own.
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		if d.client.ReachesNoSession(request.Topic) && d.client.AskDeployedSubjects().Uncaptured(ctx, request.Topic) {
@@ -1368,16 +1361,13 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
-		// The transport is decided once, on this route's deadline (bus.Client.PublishTakesJetStream),
-		// and the counts and the send both take that one answer: the send publishes on it
-		// (bus.Client.PublishAckOn), and the counts answer 0 for a publish it sends over core NATS.
-		// Each deciding on its own could read the deployed subjects apart, a read landing between
-		// the two, and count 0 for a message the stream stores or count sessions for one it does
-		// not. The counts are of the moment the message is published, and are read from memory
-		// alone for every topic but a controller notice lane, whose role claim they read once
-		// (recipientCounts), so taking them here costs any other publish below no JetStream
-		// request. Only this branch counts: a role send names its holder, and a refused topic
-		// reaches nobody.
+		// The send (bus.Client.PublishAckOn) and the counts take the transport's one judgement, on
+		// the subjects that read kept, so a read landing between cannot set them apart. A core
+		// answer leaves both counts out: no read for this request found the topic uncaptured, so
+		// whether a stream stores the message is unknown (recipientCounts). The counts are of the
+		// moment of the publish, read from memory alone but for a controller notice lane's role
+		// claim, read once, so they cost any other publish below no JetStream request. Only this
+		// branch counts: a role send names its holder, and a refused topic reaches nobody.
 		jetStream := d.client.PublishTakesJetStream(ctx, item.Topic)
 		recipients, connected := recipientCounts(r.Context(), d, item.Topic, item.SourceSession, jetStream)
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
