@@ -3542,7 +3542,7 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 238: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
+// 257: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
 // claim owns and the close of a left pod with no live claim delete a disk only after a read of its
 // workspace found nothing that origin does not hold, and no role process runs in such a pod to read
 // through, so the pod's launcher makes the read (internal/launcher's readWorkspace,
@@ -3580,14 +3580,14 @@ package api
 // R6's review fixes change how the launcher makes its read, and no shape of its wire: the read
 // runs jj in an environment and a home of its own, behind the workspace guards
 // (`workspace.GuardJJ`), keeping the commits the clone keeps visible. So they ride this entry too.
-// The number stays because no daemon or image of the read as this branch's first R6 head,
-// 7c0d8f35, made it was ever merged or released: an image probe that pairs by 238 finds only a
-// launcher of this entry's read. One durable shape did change between the two heads: a launcher's
-// workspace check row (`record.IssueWorkspaceCheck`, `launcher`) names no role now, and this
-// release's decode refuses one that names a role, as a daemon of 7c0d8f35 wrote it
-// (`record.DecodeOutboxPayload`). An upgrade from that head alone, such as a test deployment of
-// it, lets its outbox run dry of them first: `select count(*) from outbox where kind =
-// 'issue_bundle' and payload ? 'launcher'` prints 0.
+// The number did not move for them because no daemon or image of the read as this branch's first
+// R6 head, 7c0d8f35, made it was ever merged or released: an image probe that pairs by this
+// entry's number finds only a launcher of this entry's read. One durable shape did change between
+// the two heads: a launcher's workspace check row (`record.IssueWorkspaceCheck`, `launcher`) names
+// no role now, and this release's decode refuses one that names a role, as a daemon of 7c0d8f35
+// wrote it (`record.DecodeOutboxPayload`). An upgrade from that head alone, such as a test
+// deployment of it, lets its outbox run dry of them first: `select count(*) from outbox where
+// kind = 'issue_bundle' and payload ? 'launcher'` prints 0.
 //
 // R7's review fixes (GPT-6.1 Sol's and the Legion reviewer's reads of #5285 at 0259f8af, and
 // spec v23) ride this entry too, and move no contract: none of them changes a shape a plugin,
@@ -3601,14 +3601,15 @@ package api
 // act takes and the uid of its target (`takes`, `target_uid`), in the same unreleased migration;
 // `runtime.ActReader` and `runtime.TakenPod`'s new fields are calls inside this daemon's process;
 // and the workspace-taken and update-stalled notices change only in their words.
-// (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
-// at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
-// 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and
-// #5014, 237 by #5168 and #5169) and nothing at 238. This branch is stacked on #4869, which keeps
-// 217, so the merge of main that follows #4869 brings 218 and 219 in below this entry. The forward
-// merge of 2026-11-24 brought the base's 228 (#4590's) in below it. A reading of the head commit
-// of each of the 502 open pull requests, made between 2026-11-24T09:27:59Z and 09:36:50Z, found
-// 238 declared by this change's pull request alone (239 to 243 are declared by others), so this
-// entry kept 238. That is a reading and never the rule: read main's
-// own number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 238
+// (This entry took 238 at first, above main's 219 at 7cb1f229367c: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 493 open pull requests of this
+// repository, made between 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237
+// declared and nothing at 238. The forward merges of 2026-11-24 brought the base's 228 (#4590's)
+// and 232 (the turn-outcome report's) in below it. Main then reached 246 (#4960). A reading of
+// version.go at the head of each of the 473 open pull requests, which ended at
+// 2026-11-24T15:48Z, found main at 246 and, above it, 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164) declared, 247 to 249 held for a coordinated
+// change, and 256 taken by #5349's renumber at the same reading, so this entry moved to 257. That
+// is a reading and never the rule: read main's own number and every open head again at the next
+// forward merge rather than from this line.)
+const DaemonAPIVersion = 257
