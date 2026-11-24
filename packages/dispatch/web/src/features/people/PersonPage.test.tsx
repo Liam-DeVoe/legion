@@ -76,3 +76,60 @@ test("a node's line is drawn through the renderer, its marks drawn and a referen
     listPersonNodes.mockRestore();
   }
 });
+
+// The line is read with its own issue as the text's source: a role reference reads as the role
+// the issue its comment is on records, read by that issue.
+test("a role the line's issue records reads as that role, read by the issue its comment is on", async () => {
+  const listPersonNodes = spyOn(api, "listPersonNodes").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    person: "alice",
+    rows: [{ ...node, title: "Ask dispatch://role/legion-p-core-1-reviewer first." }],
+    total: 1,
+  });
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "a-reviewer",
+        title: "A reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  } as never);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], []);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/people/alice"]}>
+        <ReferenceNamesProvider>
+          <Routes>
+            <Route element={<PersonPage />} path="/people/:login" />
+          </Routes>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    const list = await view.findByRole("list", { name: "Person nodes" });
+    const [row] = within(list).getAllByRole("listitem");
+    if (row === undefined) throw new Error("the page drew no row for the node");
+    await waitFor(() => expect(row.textContent).toContain("Ask legion-p-core-1-reviewer first."));
+    expect(collaborators.mock.calls.map((call) => call[0])).toContain("CORE-1");
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    listPersonNodes.mockRestore();
+  }
+});
