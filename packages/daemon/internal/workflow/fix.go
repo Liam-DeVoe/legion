@@ -391,10 +391,11 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 
 // fixPushSentence is how a fix pushes, which its task says after the failures it holds: from its
 // own working copy, onto the head of the task's branch, taking each commit a step beside it names
-// as it stands.
+// as it stands. The copy goes under the working copy (`--insert-before @`), so it becomes `@-`,
+// the commit the push and the completion read; a copy `--onto @-` would be a sibling of `@`.
 const fixPushSentence = " Push only from this working copy, to the branch of the task; before you push, fetch the branch and rebase your commits onto its head where it moved. " +
 	"The other steps keep the task's working copy; a commit a step beside you names in its report is in this clone by its id: " +
-	"copy it onto your head with jj duplicate <commit> --onto @-, and never rebase or rewrite it, since another working copy stands on it."
+	"copy it onto your head with jj duplicate <commit> --insert-before @, and never rebase or rewrite it, since another working copy stands on it."
 
 // fixLines is what the task of a start of a step of issue's task, standing in issue.Phase on w,
 // says of a fix and of the task's CI: beside a fix that reads its job or runs, that the failure is
