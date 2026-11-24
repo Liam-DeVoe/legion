@@ -130,13 +130,18 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
-	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
-	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
-	// again, and a second receive finds done closed; a give-up once the row has failed is logged
-	// rather than failed again (failOnce).
+	// The stop runs once, through sync.Once.Do and not sync.OnceFunc: a give-up inside the stop
+	// ends its goroutine (runtime.Goexit, from testwait's t.Fatalf), which sync.OnceFunc turns into
+	// a panic with a nil argument that ends the whole test binary. Once.Do marks the stop done as
+	// the goroutine exits, so the cleanup's second call returns at once and the row fails once,
+	// by name; a give-up once the row has already failed is logged rather than failed again
+	// (failOnce).
+	var once sync.Once
 	p.stop = func() {
-		cancel()
-		testwait.Receive(failOnce{t}, name+"'s outbox stopping once its context ended", done)
+		once.Do(func() {
+			cancel()
+			testwait.Receive(failOnce{t}, name+"'s outbox Run to return once its context ended", done)
+		})
 	}
 	t.Cleanup(p.stop)
 	return p

@@ -1871,9 +1871,9 @@ func runDeps(t *testing.T, deps Deps) func() {
 	return runOn(t, New(deps))
 }
 
-// runOn runs outbox until the returned func stops it, which waits for Run to return. A test that
-// sets one of the outbox's own fields before it runs - its clock - builds it itself and calls
-// this.
+// runOn runs outbox until the returned func stops it, which waits for Run to return through the
+// shared wait, with no span of its own. A test that sets one of the outbox's own fields before it
+// runs - its clock - builds it itself and calls this.
 func runOn(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
