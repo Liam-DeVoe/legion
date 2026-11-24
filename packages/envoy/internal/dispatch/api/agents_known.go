@@ -97,7 +97,7 @@ const knownSessionIDMax = text.MaxTargetBytes
 // `id` at all, more than contracts.KnownSessionsMax of them (counted as sent, duplicates
 // included), a value that is no session id by text.IsSessionID, the rule every route that takes a
 // session id applies, and one longer than knownSessionIDMax. A parameter the route does not take
-// is read by nothing, as on every other read of the API, so it changes no answer (no_reach_test.go,
+// is read by nothing, so it changes no answer (no_reach_test.go,
 // TestTheStoreAddsNoReachAndNoReadChangesShape).
 func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {

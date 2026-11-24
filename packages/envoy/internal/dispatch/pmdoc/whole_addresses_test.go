@@ -39,9 +39,8 @@ func TestNoAutolinkStartsInsideAnAddress(t *testing.T) {
 		markdown string
 		want     string
 	}{
-		// The defect as it was reported, a person's login holding a dot, and a login holding a
-		// hyphen and a plus, each a bare paragraph, so the engine reads it too (the tester's rows,
-		// folded in from person_address_test.go).
+		// The defect as reported: a person's login holding a dot, and one holding a hyphen and a
+		// plus.
 		{"Ask dispatch://person/john.doe@example.com now.\n", `text "Ask dispatch://person/john.doe@example.com now."`},
 		{"Ask dispatch://person/a.b-c+d@x-y.test now.\n", `text "Ask dispatch://person/a.b-c+d@x-y.test now."`},
 		{"Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today.\n", `text "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today."`},

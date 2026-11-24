@@ -13,9 +13,8 @@ import (
 
 // personNodeTitleRunes is how much of a row's text the page shows: its first line, cut here so
 // the answer carries a title and not a whole comment, by refs.FirstLineWithin, which moves the cut
-// back to before a reference that crosses it (text.HeadRefs). Two cuts stay where the length puts
-// them, as text.HeadRefs says: a line that opens with a reference longer than the bound, which a
-// cut of nothing would tell a reader less of, and a bare address whose slug runs past the bound.
+// back before a reference that crosses it, except where text.HeadRefs says the cut by length
+// stands.
 const personNodeTitleRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it

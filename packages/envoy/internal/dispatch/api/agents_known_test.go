@@ -213,9 +213,8 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 
 // id is held to its rule before anything is read, each refusal 400 INVALID_QUERY naming it: a
 // value that is no session id, one byte longer than any reference in text names, no id at all,
-// and one more than the bound. A parameter the route does not take is read by nothing, so `ids`,
-// a misspelling, leaves the request with no id. Each bound itself is admitted, and so is the whole
-// API's session parameter.
+// and one more than the bound. Each bound itself is admitted, and so is the whole API's session
+// parameter.
 func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -226,27 +225,23 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 		overBound[index] = fmt.Sprintf("s-%d", index)
 	}
 	longest := strings.Repeat("s", knownSessionIDMax)
-	for name, refusal := range map[string]struct {
-		path  string
-		names string
-	}{
-		"a value holding whitespace":           {knownSessionsPath("s one"), "id"},
-		"a value holding a slash":              {knownSessionsPath("agent/s1"), "id"},
-		"an empty value":                       {knownSessionsPath(""), "id"},
-		"a value one byte past the longest id": {knownSessionsPath(knownTitled, longest+"s"), "id"},
-		"no id at all":                         {"/api/v1/agents/known", "id"},
-		"only the acting session":              {"/api/v1/agents/known?session=" + knownTitled, "id"},
-		"one id more than the bound":           {knownSessionsPath(overBound...), "id"},
-		"the parameter misspelled, so no id":   {"/api/v1/agents/known?ids=" + knownTitled, "id"},
+	for name, path := range map[string]string{
+		"a value holding whitespace":           knownSessionsPath("s one"),
+		"a value holding a slash":              knownSessionsPath("agent/s1"),
+		"an empty value":                       knownSessionsPath(""),
+		"a value one byte past the longest id": knownSessionsPath(knownTitled, longest+"s"),
+		"no id at all":                         "/api/v1/agents/known",
+		"only the acting session":              "/api/v1/agents/known?session=" + knownTitled,
+		"one id more than the bound":           knownSessionsPath(overBound...),
 	} {
 		t.Run(name, func(t *testing.T) {
-			response := dispatchRequest(t, handler, http.MethodGet, refusal.path, nil, "alice")
+			response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
 			body := decodeBody[refusalAnswer](t, response)
 			if response.Code != http.StatusBadRequest || body.Code != "INVALID_QUERY" {
 				t.Fatalf("status=%d body=%.400s, want 400 INVALID_QUERY", response.Code, response.Body.String())
 			}
-			if !strings.HasPrefix(body.Error, refusal.names+" ") {
-				t.Fatalf("refusal %.400q does not lead with the parameter %s", body.Error, refusal.names)
+			if !strings.HasPrefix(body.Error, "id ") {
+				t.Fatalf("refusal %.400q does not lead with the parameter id", body.Error)
 			}
 		})
 	}

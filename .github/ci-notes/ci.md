@@ -425,9 +425,8 @@ generators and its screenshot harness read. docs-site.yaml holds those steps, an
 both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
 builds and publishes main's site on the pushes this same list selects: its
 on.push.paths, which check-ci-filters.sh holds equal to this filter, so the list
-names all three workflow files. The docs job is selected like any other job, now that no run
-of ci.yaml is a push to main; docs-pages.yaml still builds and deploys main's site, on a push
-trigger of its own.
+names all three workflow files. The docs job is selected like any other job: no run of ci.yaml
+is a push to main.
 
 ## go_notices: lint's notices step: the Go packages it loads for every
 
