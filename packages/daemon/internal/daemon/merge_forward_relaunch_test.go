@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -189,6 +190,44 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 	machine.Wait()
 	drainAt(t, runner, 20*time.Minute, "a later attempt")
 	askToldOnce(t, pool, publisher, owedAsk, launch)
+}
+
+// A launch that resumes the session an earlier launch was told the ask in can be told the ask a
+// second time. The second ask names the same head, and its delivery changes nothing the daemon
+// holds: after the second row of the ask reaches the launch the first reached, the record's ask is
+// as the first left it, and the outbox holds no row more.
+func TestASecondAskOfTheSameHeadChangesNothingTheDaemonHolds(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := wokenByTheAsk(t)
+	comesUp(t, machine, true)
+	publisher.setAbsent()
+	drainAt(t, runner, 10*time.Minute, "the attempt that delivers the first ask")
+	recorded := func() record.PullRequest {
+		t.Helper()
+		var pr *record.PullRequest
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+			pr, err = runner.records.PullRequest(ctx, tx, "LEGION-208")
+			return err
+		}); err != nil || pr == nil {
+			t.Fatalf("read the pull request of LEGION-208: %+v, %v", pr, err)
+		}
+		return *pr
+	}
+	first, rows := recorded(), outboxRows(t, pool)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now()))
+	drainAt(t, runner, 20*time.Minute, "the attempt that delivers the second ask")
+	if _, delivered := publisher.snapshot(); len(delivered) != 2 || delivered[0].message != delivered[1].message {
+		t.Errorf("the implementer was told %d messages (%+v), want the same ask twice", len(delivered), delivered)
+	}
+	if second := recorded(); !reflect.DeepEqual(second.MergeForward, first.MergeForward) {
+		t.Errorf("after the second ask the record's ask is %+v, want it as the first ask left it, %+v", second.MergeForward, first.MergeForward)
+	}
+	if left := outboxRows(t, pool); left != rows {
+		t.Errorf("after the second ask the outbox holds %d rows of LEGION-208, want %d, as after the first", left, rows)
+	}
+	if first.MergeForward == nil || first.MergeForward.SentLaunch != machine.Claim().Generation {
+		t.Errorf("the first ask left the record's ask %+v, want it told launch %d", first.MergeForward, machine.Claim().Generation)
+	}
 }
 
 // implementersAsk is the record's ask of owedAskHead to the implementer, made in testing, as the
