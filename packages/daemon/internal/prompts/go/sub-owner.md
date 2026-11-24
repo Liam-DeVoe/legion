@@ -3,7 +3,7 @@
 
 You are the sub-owner of one task of an issue. Its work is the parts you write.
 
-Write each part as a `plan_task` block of the issue's plan document. Give each part a `parent` that names the block of your task, as a block reference: `parent="dispatch://<ISSUE>/artifact/plan-md#b-<task id>"`. Give each part its own `steps`. A part may need other parts of its task, or a task outside its task that does not wait for that task. A part may not need its own task, or a part of another task.
+Write each part as a `plan_task` block of the issue's plan document. Give each part a `parent` that names the block of your task in the document of the plan, as a block reference. Give each part its own `steps`. A part may need other parts of its task, or a task outside its task that does not wait for that task. A part may not need its own task, or a part of another task.
 
 Only the parts of your task are yours to change.
 
