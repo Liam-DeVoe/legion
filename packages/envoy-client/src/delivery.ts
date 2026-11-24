@@ -38,6 +38,7 @@ import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
+import { messageFor } from "./errors";
 import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
@@ -491,6 +492,11 @@ export type RenderInboundResult = {
    *  a host reads whole (`wholeCarriedBody`) before it renders the frame again with that body.
    *  Absent when the event carried the body whole, and from a render given that body. */
   readonly cutItem?: CarriedItem;
+  /** Why the card shows the payload as the text its sender sent rather than laid out: what the
+   *  card's encoder threw on the parsed value (one nested past the depth its recursion reaches).
+   *  Absent when the card lays the payload out. A host logs it once, with the message's id, for
+   *  a frame it shows. */
+  readonly payloadShownAsText?: string;
 };
 
 /** The pictures the text a Dispatch event brings embeds: a message's or comment's body, an opened
@@ -1439,6 +1445,43 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
 }
 
 /**
+ * The card's fields under `envoy:` as TOON: `shown`, then `after` (the note and the issues the
+ * render found), with the fields of `shown` the card holds and why it shows the payload as text.
+ *
+ * The card's TOON encoder recurses once per level of a value, so a payload nested some thousands
+ * of levels deep overflows the stack (an object chain 7,000 deep does in Bun 1.4.4). A throw out of
+ * `renderInbound` throws in every host's render and in the consumer's give-up alike, so the frame
+ * would go back to the stream on every delivery and nobody would be told of it. The payload is the
+ * text its sender sent, so the card shows it as that text in the field that lays it out
+ * (`payloadKey`: `message`, or a Dispatch frame's `dispatch`), `payloadShownAsText` says what the
+ * encoder threw, and the host takes the frame. That text is bounded as every message's is: by the
+ * frame, at most the hub's 1 MiB. A throw the payload is not behind is thrown as before.
+ */
+function encodeCardFields(
+  shown: Readonly<Record<string, unknown>>,
+  after: Readonly<Record<string, unknown>>,
+  payloadKey: "dispatch" | "message",
+  payload: string | undefined
+): {
+  readonly toon: string;
+  readonly shown: Readonly<Record<string, unknown>>;
+  readonly payloadShownAsText?: string;
+} {
+  try {
+    return { toon: encode({ envoy: { ...shown, ...after } }), shown };
+  } catch (error) {
+    if (payload === undefined || !(payloadKey in shown)) throw error;
+    // The payload's field keeps its place among the card's fields.
+    const asText = { ...shown, [payloadKey]: payload };
+    return {
+      toon: encode({ envoy: { ...asText, ...after } }),
+      shown: asText,
+      payloadShownAsText: messageFor(error),
+    };
+  }
+}
+
+/**
  * One inbound envelope's JSON as a card for the agent, with what the host does with it.
  *
  * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlocks`) for each part
@@ -1807,14 +1850,25 @@ export function renderInbound(
     ...(bodyNote === undefined ? {} : { body_note: bodyNote }),
   };
   const issues = unrecognised === undefined ? {} : { unrecognised };
-  let fields = encode({ envoy: { ...shownFields, ...issues } });
+  const payloadKey = dispatchRendered ? "dispatch" : "message";
+  const laidOut = encodeCardFields(shownFields, issues, payloadKey, envelope.payload);
+  let fields = laidOut.toon;
+  let payloadShownAsText = laidOut.payloadShownAsText;
   // The note names a session that the card's words name and its fields do not, as a message sent
   // to the wrong session names the one it was for. A session that a field names already, such as
-  // a Dispatch event's actor, is not named twice.
+  // a Dispatch event's actor, is not named twice. A payload the fields show as text is shown so
+  // again beside the note.
   const foreignSession = namedSessions.find((id) => !fields.includes(id));
   if (foreignSession !== undefined) {
     const note = `body names session ${foreignSession}`;
-    fields = encode({ envoy: { ...shownFields, note, ...issues } });
+    const noted = encodeCardFields(
+      laidOut.shown,
+      { note, ...issues },
+      payloadKey,
+      envelope.payload
+    );
+    fields = noted.toon;
+    payloadShownAsText ??= noted.payloadShownAsText;
   }
   // Each block's tag is chosen against the fields as well as the words of every block: the fields
   // hold other authors' words too (an ask's question, an issue's title in a catch-up).
@@ -1830,5 +1884,6 @@ export function renderInbound(
     ...(malformedDelivery ? { malformedDelivery: true as const } : {}),
     ...(pictures.length === 0 ? {} : { pictures }),
     ...(cutItem === undefined ? {} : { cutItem }),
+    ...(payloadShownAsText === undefined ? {} : { payloadShownAsText }),
   };
 }

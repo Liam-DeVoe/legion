@@ -91,6 +91,11 @@ the decision's answer block does not.
 `splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
 `decode` reads, and the blocks, and checks each tag against the rule.
 
+A payload the TOON encoder cannot lay out, such as one nested deeper than its recursion reaches,
+is shown as the text its sender sent, under `message` (or `dispatch`), and the result's
+`payloadShownAsText` holds what the encoder threw. Each host logs that once, with the message id,
+and takes the frame: a throw out of the renderer would fail every delivery of it.
+
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
