@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -31,8 +30,9 @@ import (
 // gives key a implementer again. The fault: version 3's implementer took implementer.
 //
 // A start the release before queued for a key's first step makes that step's claim when it runs,
-// after the upgrade, so it names the key (record.SuperviseRequest.Agent), and the claim it makes
-// records the key, as the claim of a start of this release does.
+// after the upgrade. The migration writes nothing into that start; the daemon reads its agent, the
+// key, from the steps (claim_agent_from_steps, which the migration defines and fills the claims
+// with), and the claim it makes records the key, as the claim of a start of this release does.
 //
 // The claim of a name only an agent with no key held, reviewer, records that agent, the agent of
 // step 2 (`step:2:t`), and a queued start of such a claim names it, so the next start of another
@@ -136,7 +136,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 		}
 	})
 
-	t.Run("a queued start of key b names it", func(t *testing.T) {
+	t.Run("the steps give key b's queued start its agent", func(t *testing.T) {
 		for token, want := range map[string]string{"legion-legion-legion-209-implementer": "key:b", "legion-legion-legion-209-reviewer": "step:2:t"} {
 			payloads := rowsAsText(t, st, `select payload::text from outbox where kind = 'supervise' and payload->>'claim' = '`+token+`'`)
 			if len(payloads) != 1 {
@@ -146,8 +146,11 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 			if err != nil {
 				t.Fatalf("decode the start of %s: %v", token, err)
 			}
-			if got := string(decoded.(record.SuperviseRequest).Agent); got != want {
-				t.Errorf("the start of %s names the agent %q, want %q", token, got, want)
+			if got := string(decoded.(record.SuperviseRequest).Agent); got != "" {
+				t.Errorf("the start of %s names the agent %q, want none: the migration writes no queued row", token, got)
+			}
+			if got := rowsAsText(t, st, `select coalesce(claim_agent_from_steps('LEGION-209', '`+token+`'), '')`); !slices.Equal(got, []string{want}) {
+				t.Errorf("the agent the steps give %s = %q, want %q, which the start that makes the claim records", token, got, want)
 			}
 		}
 	})
@@ -174,10 +177,11 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 // row with no key does not end a key's hold, so the rows name a later version's implementer
 // implementer-2, and the claims alone, which keep no name for key c, name it implementer.
 //
-// A queued start names an agent only where its claim is not made yet, LEGION-213's: the start
-// makes that claim and records the agent it names. A start of a claim that stands takes the session
-// that claim records, which the fill wrote from the same rows, so the fill writes nothing into it,
-// and a daemon of the release before that reads it finds the row as that release wrote it.
+// The migration writes no queued row: a daemon of the release before reads each one as that
+// release wrote it, whatever project it serves. A start that makes its claim, LEGION-213's, takes
+// its agent where the daemon reads it, from the same rule the migration fills the claims by
+// (claim_agent_from_steps), so key f; a start of a claim that stands takes the session that claim
+// records.
 //
 // The controls, each left as it was: the tree's architect, whose owner's rows hold no name;
 // LEGION-210's tester, whose key's row holds no name, as the first form of 20261117213545 left
@@ -217,9 +221,8 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 	} {
 		exec(releaseBeforesClaim, c[0], c[1], c[2])
 	}
-	// A queued start whose claim the start itself makes, LEGION-213's, takes its agent from the
-	// fill; a start of a claim that stands takes the session that claim records, so the fill
-	// writes nothing into it.
+	// The queued rows of the release before: a start whose claim the start itself makes,
+	// LEGION-213's, and starts and a suspend of claims that stand.
 	const keyStart = `{"op":"start","tree":"LEGION-213","role":"implementer","claim":"legion-legion-legion-213-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`
 	for _, row := range [][2]string{
 		{"LEGION-213", keyStart},
@@ -236,32 +239,26 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 		"legion-legion-legion-209-implementer=step:1:a", "legion-legion-legion-210-tester=", "legion-legion-legion-211-implementer=",
 		"legion-legion-legion-212-implementer=key:e",
 	}
-	wantStarts := []string{
-		"start legion-legion-legion-213-implementer key:f", "start legion-legion-legion-208-implementer ",
-		"start legion-legion-legion-209-implementer ", "suspend legion-legion-legion-209-implementer ",
-		"start legion-legion-legion-208-reviewer ",
-	}
+	payloads := rowsAsText(t, st, `select payload::text from outbox order by id`)
 	recorded := func(when string) {
 		t.Helper()
 		if got := rowsAsText(t, st, `select concat(token, '=', session_agent) from claims order by token`); !slices.Equal(got, wantClaims) {
 			t.Fatalf("the claims %s = %q, want %q", when, got, wantClaims)
 		}
-		if got := rowsAsText(t, st, `select concat(payload->>'op', ' ', payload->>'claim', ' ', payload->>'agent') from outbox order by id`); !slices.Equal(got, wantStarts) {
-			t.Fatalf("the queued supervise rows %s = %q, want %q", when, got, wantStarts)
+		if got := rowsAsText(t, st, `select payload::text from outbox order by id`); !slices.Equal(got, payloads) {
+			t.Fatalf("the queued supervise rows %s = %q, want each as the release before wrote it, %q", when, got, payloads)
 		}
-		var payload []byte
-		if err := st.Pool().QueryRow(ctx, `select payload - 'agent' from outbox order by id limit 1`).Scan(&payload); err != nil {
-			t.Fatalf("read the start of key f %s: %v", when, err)
+		for _, row := range rowsAsText(t, st, `select payload::text from outbox order by id`) {
+			var keys map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(row), &keys); err != nil {
+				t.Fatal(err)
+			}
+			if _, named := keys["agent"]; named {
+				t.Fatalf("the queued row %s %s names an agent, which the release before cannot decode", row, when)
+			}
 		}
-		var before, after map[string]any
-		if err := json.Unmarshal([]byte(keyStart), &before); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(payload, &after); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(before, after) {
-			t.Fatalf("the start of key f %s, without its agent, = %v, want %v: every other key kept", when, after, before)
+		if got := rowsAsText(t, st, `select coalesce(claim_agent_from_steps('LEGION-213', 'legion-legion-legion-213-implementer'), '')`); !slices.Equal(got, []string{"key:f"}) {
+			t.Fatalf("the agent the steps give LEGION-213's start %s = %q, want key:f", when, got)
 		}
 	}
 
