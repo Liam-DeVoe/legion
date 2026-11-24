@@ -7,6 +7,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -76,8 +77,8 @@ func TestTheSecondGroupTakesAChangeOfTheTextOfDefault(t *testing.T) {
 	holdsText(t, "implementer", takeText(implementer), was, now)
 
 	document := r.document("plan.md", textPlan("default", "", now))
-	if got := r.registeredRunning(document, 1)["default"]; got == nil || *got != (runningAct{Kind: "step", Place: 2, Role: string(claim.RoleImplementer)}) {
-		t.Fatalf("register_plan of %s's version 1 names default running at %+v, want step 2, the implementer", r.key, got)
+	if got, want := r.registeredRunning(document, 1)["default"], []runningAct{{Kind: "step", Place: 2, Role: string(claim.RoleImplementer)}}; !slices.Equal(got, want) {
+		t.Fatalf("register_plan of %s's version 1 names default running at %+v, want %+v: step 2, the implementer", r.key, got, want)
 	}
 	if got := r.planningRow(); got != secondGroup {
 		t.Fatalf("%s holds %+v after its owner's version 1, want it still in %+v", r.key, got, secondGroup)
