@@ -258,6 +258,37 @@ describe("GhRetries", () => {
     ]);
     expect(transientReason(cut)).toBe("body cut short");
   });
+
+  // Catches: a gh read whose HTTP/2 stream GitHub's end reset (`stream error: stream ID 1;
+  // CANCEL; received from peer`, gh's own stderr: the same recursive tree of 17,568,329 bytes,
+  // 2026-11-24) failing on its first try, as no transient failure, and stopping a screen.
+  test("a gh call whose answer's stream GitHub's end reset is sent again as a transient failure, stream reset, and its next try's answer is taken", async () => {
+    const reset = "stream error: stream ID 1; CANCEL; received from peer";
+    const slept: number[] = [];
+    const said: string[] = [];
+    const retries = new GhRetries(
+      { sleep: async (ms) => void slept.push(ms), err: (line) => void said.push(line) },
+      "behaviour screen"
+    );
+    let tries = 0;
+    const result = await retries.send(async () => {
+      tries += 1;
+      return tries === 1 ? { code: 1, stderr: `${reset}\n` } : { code: 0, stderr: "" };
+    });
+    expect({ tries, code: result.code, slept, record: retries.record() }).toEqual({
+      tries: 2,
+      code: 0,
+      slept: [5_000],
+      record: { "stream reset": 1 },
+    });
+    expect(said).toEqual([
+      `behaviour screen: a gh call failed (${reset}); sending it again in 5 s, retry 1 of 4`,
+    ]);
+    // Another stream and another code read the same.
+    expect(transientReason("stream error: stream ID 7; INTERNAL_ERROR; received from peer")).toBe(
+      "stream reset"
+    );
+  });
 });
 
 describe("eachChunk", () => {

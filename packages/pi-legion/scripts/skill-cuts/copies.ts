@@ -30,7 +30,8 @@
  *
  * A gh call that fails for a transient reason (gh's error is a TLS handshake failure or timeout, a
  * connection reset or refused, an unexpected EOF, a body cut short (`unexpected end of JSON input`:
- * gh read a large answer cut short), an i/o timeout, an HTTP 5xx, a name that did not resolve, a
+ * gh read a large answer cut short), a stream GitHub's end reset (`stream error: stream ID <n>;
+ * <code>; received from peer`), an i/o timeout, an HTTP 5xx, a name that did not resolve, a
  * broken pipe, or any other text that names a timeout) is sent again after 5, 15, 45 and 135 s, at
  * most 4 times more, by the rule build.ts's and context.ts's GitHub reads share (common.ts's
  * `GhRetries`): a REST read, a GraphQL batch and a code search alike. So a whole-tree read whose
