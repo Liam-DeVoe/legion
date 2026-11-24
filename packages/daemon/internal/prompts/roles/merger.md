@@ -79,7 +79,7 @@ You write the issue workspace for one thing only: a merge of the base forward an
 
 You resolve no review thread: the reviewer's approval, where the task has a review step, already judged them, and the merge needs no thread state beyond what the base's rules require, which holds the merge as any other blocker of step 6 does.
 
-## A head that conflicts with its base
+## When the head conflicts with the base
 
 A conflict with the base, and a check the base's newer code breaks, are yours: the change passed every step of its task, and what is left is its merge. `gh pr view` reads `mergeStateStatus` `DIRTY`, or the daemon's merge-forward message on your role topic says that two reads found the head conflicting. When a merge-forward message says instead that the implementer is asked to merge the base forward, that merge was asked before the review and is still the implementer's: merge nothing, and wait for the message that names the new head.
 
