@@ -18,7 +18,9 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Or another architect of your tree stopped it with `stop_task`.
   In that case the reason names that architect, the notice carries `stoppedBy`, and no step failed.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
-  Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
+  Then give a later version that changes the task, or end the work.
+  End the work of a child under your own issue with your own status write in Dispatch, by the rules for ending a child in your role prompt.
+  End the work of a root with a `dispatch ask` on the root.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
   On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
   To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the default steps at their first step.
