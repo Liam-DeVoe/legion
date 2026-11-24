@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1329,11 +1330,15 @@ func operatorHoldReason(held []supervise.Claim) string {
 
 // refusedReason is the reason the late-round notice gives for a round whose pod replacement the
 // runtime refused past the bound, through a process or by issue (replacePodForRound,
-// replaceIssuePodForRound), naming the runtime's error. The notice is stored and read by the
-// controller, so the refusal is kept in it as any far side's error text is
-// (storetext.FarSideError); the caller's error line logs it whole.
+// replaceIssuePodForRound), naming the runtime's error. The notice is stored, and the controller
+// reads its reason and publishes it, so the error is kept in it as any far side's error text is
+// (storetext.FarSideError, which applies storetext.FarSideText first) and goes in as data: one
+// quoted string (strconv.Quote), labelled as the runtime's, which no line or word of it can leave
+// (GPT-6.1 Sol's point 5 on #5285 at 0259f8af, as readError keeps a read's error). The caller's
+// error line logs it whole.
 func refusedReason(err error) string {
-	return boundPastReason + "The runtime refused the pod replacement: " + storetext.FarSideError(err.Error())
+	return boundPastReason + "The runtime refused the pod replacement. The error of the runtime, in quotes, is: " +
+		strconv.Quote(storetext.FarSideError(err.Error())) + "."
 }
 
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
