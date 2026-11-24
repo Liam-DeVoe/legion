@@ -240,7 +240,7 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		"LEGION-100": {State: api.WhyClaimStopped,
 			Reason: "Its phase is accepting and its tree's architect claim is stranded at suspended, so nothing will wake it."},
 		"LEGION-101": {State: api.WhyClaimStopped,
-			Reason: "Its phase is implementing and the implementer's claim is stranded at failed, so nothing will wake it."},
+			Reason: "Its phase is implementing and its implementer is stranded at failed, so nothing will wake it."},
 		"LEGION-200": {State: api.WhyWaiting,
 			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."},
 		// The member's own sentence and one clause more, because the line holds it and a link

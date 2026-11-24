@@ -579,7 +579,7 @@ func populatedState(t *testing.T) State {
 				// (`why`, api.WhyClaimStopped).
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
+					Reason: "Its phase is held and its implementer is stranded at failed, so nothing will wake it.",
 				},
 				// No architect claim of this root stands in the record, so the view carries no
 				// `architect`, and the work of its architect's entry has waited past the bound with
@@ -653,7 +653,7 @@ func populatedState(t *testing.T) State {
 				// that claim rather than its place in the queue.
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it.",
+					Reason: "Its phase is implementing and its implementer is stranded at suspended, so nothing will wake it.",
 				},
 			},
 			// LEGION-212's architect asked a person a question and handed the turn back, and the
@@ -688,7 +688,7 @@ func populatedState(t *testing.T) State {
 				// stopped claim is read before the line: that is the one answer it carries.
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it.",
+					Reason: "Its phase is awaiting_person and its tester is stranded at retired, so nothing will wake it.",
 				},
 				WaitingOn: &WaitingOnView{
 					Kind:       "ask",
