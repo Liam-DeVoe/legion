@@ -345,7 +345,7 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			if got := r.published(); len(got) != 0 {
 				t.Fatalf("the owner-step of step 2 published %v while the merge forward is open, want nothing", got)
 			}
-			if lines := loggedMessages(t, r.logged.String(), ownerStepStale); len(lines) != 0 {
+			if lines := loggedMessages(t, r.logged.String(), ownerStepStaleLine); len(lines) != 0 {
 				t.Fatalf("the owner-step of step 2 logged %d stale lines while the merge forward is open, want none: its run goes on", len(lines))
 			}
 

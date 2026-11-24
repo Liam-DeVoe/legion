@@ -133,16 +133,14 @@ func (r *ownerHoldRig) published() []string {
 	return topics
 }
 
-// ownerStepStale is the line the executor logs for an owner-step that finished undelivered, the
-// code's own (ownerStepStaleLine), so that no test here holds its words.
-const ownerStepStale = ownerStepStaleLine
-
-// staleUnread fails the test unless logged holds one line of a stale owner-step: the executor
-// decided the step no longer runs. What the slot was asked is each test's own check (slotCalls),
-// so no attribute of the line that depends on the order of the executor's reads is asserted.
+// staleUnread fails the test unless logged holds one line of a stale owner-step, the line the
+// executor logs for an owner-step that finished undelivered (ownerStepStaleLine, the code's own, so
+// that no test here holds its words): the executor decided the step no longer runs. What the slot
+// was asked is each test's own check (slotCalls), so no attribute of the line that depends on the
+// order of the executor's reads is asserted.
 func staleUnread(t *testing.T, logged, of string) {
 	t.Helper()
-	if lines := loggedMessages(t, logged, ownerStepStale); len(lines) != 1 {
+	if lines := loggedMessages(t, logged, ownerStepStaleLine); len(lines) != 1 {
 		t.Fatalf("the log holds %d lines of %s, want one:\n%s", len(lines), of, logged)
 	}
 }
