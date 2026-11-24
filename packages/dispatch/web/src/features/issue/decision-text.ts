@@ -55,19 +55,21 @@ export function ownTree(tree: DisplayTree | undefined): DisplayTree | undefined 
     : tree;
 }
 
+/** The block of a decision's own content that names it: the first that holds any words. */
+export function nameBlock(content: readonly DisplayTree[]): DisplayTree | undefined {
+  return content.find((node) => wordsOf(node).trim() !== "");
+}
+
 /** A decision's name as the server's read of a decision names it (`decisionread`'s Heading): the
- *  words of the first block of its own content that holds any, so a heading is named by its
- *  words and never by the `#` that marks it one. Read from the tree the server read the text
- *  into; for an answer that carried no reading, from the first line of its own markdown that
- *  holds anything but a directive's fence, its heading marker taken off. */
+ *  words of the first block of its own content that holds any (`nameBlock`), so a heading is
+ *  named by its words and never by the `#` that marks it one. Read from the tree the server read
+ *  the text into; for an answer that carried no reading, from the first line of its own markdown
+ *  that holds anything but a directive's fence, its heading marker taken off. */
 export function decisionName(tree: DisplayTree | undefined, text: string): string {
   const content = ownTree(tree)?.content;
   if (tree !== undefined && Array.isArray(content)) {
-    for (const node of content as DisplayTree[]) {
-      const words = wordsOf(node).trim();
-      if (words !== "") return words;
-    }
-    return "";
+    const block = nameBlock(content as DisplayTree[]);
+    return block === undefined ? "" : wordsOf(block).trim();
   }
   const line = ownWords(text)
     .split("\n")

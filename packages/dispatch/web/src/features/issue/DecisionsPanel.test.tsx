@@ -844,6 +844,31 @@ test("a converted decision is named by its first paragraph, which its body does 
   }
 });
 
+// An answer with no reading of its text names the decision by the first line of its markdown
+// (`decisionName`). A first paragraph that runs over two lines is more than that name, so the body
+// still draws the whole paragraph: hiding it would lose every line after the first.
+test("a decision with no reading whose first paragraph spans two lines keeps its words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ":::decision{#only}\nKeep a log for each run\nand rotate it weekly.\n\nA log is enough.\n:::\n",
+      text_tree: undefined,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Keep a log for each run"
+    );
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    expect(
+      within(waiting).getByText(/^Keep a log for each run\s+and rotate it weekly\.$/)
+    ).toBeDefined();
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the

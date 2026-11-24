@@ -43,6 +43,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   decisionName,
   isUnsureBlock,
+  nameBlock,
   ownTree,
   ownWords,
   plainParagraph,
@@ -63,9 +64,9 @@ type DrawnDecision = Pick<
   readonly links: readonly DecisionLink[];
 };
 
-/** One block of a decision's text below its heading, as a view draws one: the block's own text,
- *  the server's reading with that block alone in it where the answer carried one, and whether
- *  the block is the decision's doubt. */
+/** One block of a decision's text, or the doubt its node holds, as a view draws one: the block's
+ *  own text, the server's reading with that block alone in it where the answer carried one, and
+ *  whether the block is the decision's doubt. */
 interface DecisionBlock {
   /** This block's own text and no more of the decision's: what `MarkdownBody` shows where it
    *  can draw neither a tree nor a parse, and what the Change composer quotes. Where the answer
@@ -91,15 +92,17 @@ interface DecisionBlock {
   /** Whether the block is the paragraph that names the decision (`decisionName`): the card draws
    *  it as its heading and not in its body, and a Change still quotes it, as the issue page's
    *  Change does (`anchorQuote`). */
-  readonly name?: true;
+  readonly naming?: true;
 }
 
 /** The blocks of a decision whose answer carried no reading of its text: a pod of the build
  *  before this one serves none during a rolling deploy, and the markdown split the browser has
  *  always made is what draws the decision then, as every other view falls back to parsing. The
- *  first block names the decision where `named` is set, and is marked so unless it is a heading,
- *  which the split drops. */
-function markdownBlocks(text: string, named: boolean): DecisionBlock[] {
+ *  decision's name there is the first line of its markdown (`decisionName`), so the first block
+ *  names it only where that block is the name and nothing more: a first paragraph that runs
+ *  over more lines, or one that opens with a directive's fence, is drawn whole in the body. A
+ *  heading is dropped by the split, as before. */
+function markdownBlocks(text: string, name: string | undefined): DecisionBlock[] {
   return text
     .split(/\n\s*\n/)
     .map((block) => block.trim())
@@ -109,7 +112,7 @@ function markdownBlocks(text: string, named: boolean): DecisionBlock[] {
         ? []
         : [
             {
-              ...(named && index === 0 ? { name: true as const } : {}),
+              ...(index === 0 && markdown === name ? { naming: true as const } : {}),
               // The block's own markdown is its text here, the Change quote included: with no
               // reading there is nothing to flatten, and parsing the markdown in the browser to
               // build a quote is the reading a stored text's tree exists to spare every view. It
@@ -129,21 +132,21 @@ function markdownBlocks(text: string, named: boolean): DecisionBlock[] {
  *  text into: the top-level blocks of that tree are the paragraphs the markdown would have been
  *  split into, already divided, so the browser splits nothing and parses nothing. A heading is
  *  the decision's own, drawn by the card above its text, or one written inside it, which the
- *  markdown split dropped too. Where `named` is set, the first block that holds words names the
- *  decision (`decisionName`): a converted section's heading is such a paragraph, and it is marked
- *  so the card draws it once, as its heading. */
+ *  markdown split dropped too. Where `named` is set, the block that names the decision
+ *  (`nameBlock`, the rule `decisionName` names it by) is marked: a converted section's heading is
+ *  such a paragraph, and the card draws it once, as its heading. */
 function readDecisionBlocks(decision: DrawnDecision, named: boolean): readonly DecisionBlock[] {
   const tree = decision.text_tree;
   const content = tree?.content;
   if (tree === undefined || !Array.isArray(content)) {
-    return markdownBlocks(decision.text, named);
+    return markdownBlocks(decision.text, named ? decision.heading : undefined);
   }
   const nodes = content as DisplayTree[];
-  const name = named ? nodes.find((node) => wordsOf(node).trim() !== "") : undefined;
+  const name = named ? nameBlock(nodes) : undefined;
   return nodes
     .filter((node) => node.type !== "heading")
     .map((node) => ({
-      ...(node === name ? { name: true as const } : {}),
+      ...(node === name ? { naming: true as const } : {}),
       // What this block draws is the block alone, so its text is the words that block holds and
       // never the whole field's markdown: the field is passed beside it as the text the
       // references are read from (`MarkdownBody`'s `referenceText`), since a link's target and
@@ -385,7 +388,7 @@ function DecisionCard({
 }: {
   actions?: ReactNode;
   /** The blocks of this decision's text, the one that names it marked, read by the caller that
-   *  also quotes the first of them (`readDecisionBlocks`). */
+   *  also quotes the first of them its text holds (`entryBlocks`). */
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
   /** The document the decision is written in, the one its node stands in, which its `#id`s name
@@ -408,9 +411,10 @@ function DecisionCard({
           </Link>
         )}
       </h3>
-      {blocks.map((block, index) =>
+      {blocks.map((block, index) => {
         // The block that names the decision is drawn as its heading, above.
-        block.name ? null : block.plain ? (
+        if (block.naming) return null;
+        return block.plain ? (
           // The labels an answer chose, drawn as a body's paragraph draws its words.
           // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
           <div className={`${markdownClassName} max-w-none`} key={index}>
@@ -439,8 +443,8 @@ function DecisionCard({
             source={source}
             tree={block.tree}
           />
-        )
-      )}
+        );
+      })}
       {(decision.asks ?? []).map((ask) => (
         <Link
           className={`block text-sm ${linkText} ${linkHoverText}`}
@@ -595,12 +599,12 @@ export function DecisionsPanel({
   const view = useQuery(issueDecisionsQuery(issueKey, true));
   const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
   // Each decision beside the blocks of its text, read once per answer: a card draws them and
-  // the Change composer quotes the first of them, so a block is a new object only when the
-  // decisions were read again and a repaint of the tab repaints no body it already drew. The
-  // three lists below are this one reading filtered, never three readings of it. An ask is a
-  // decision once a person answered it; an open one is a question, and a declined one decided
-  // nothing. Each is written in the document the read names for it, or, where it names none, the
-  // one its own address names a block of (`decisionDocumentId`).
+  // the Change composer quotes the first of them its text holds (`entryBlocks`), so a block is
+  // a new object only when the decisions were read again and a repaint of the tab repaints no
+  // body it already drew. The three lists below are this one reading filtered, never three
+  // readings of it. An ask is a decision once a person answered it; an open one is a question,
+  // and a declined one decided nothing. Each is written in the document the read names for it,
+  // or, where it names none, the one its own address names a block of (`decisionDocumentId`).
   const rows = useMemo(() => {
     const documents = { artifacts, key: issueKey, primary_artifact_id: spec?.id ?? "" };
     return (view.data?.entries ?? [])
