@@ -3586,6 +3586,32 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
 // 257: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
@@ -3603,7 +3629,7 @@ package api
 // step does nothing; the reader passes over a field of an identity it does not know, so a field a
 // later release adds turns no step off. No shape of `GET /legion/v1/state` or of a request moves,
 // and this change adds no store migration; its records in contract-shapes.json and
-// request-shapes.json are 246's, written again at 257 by `-update`.
+// request-shapes.json are 250's, written again at 257 by `-update`.
 // (This entry moved from 230 to 247 at the forward merge of 2026-11-24 that brought in acade985,
 // where main carried 232, dispatch://INFRA-4508's entry above, and from 247 to 257 on 2026-11-24,
 // because open pull request #5384 declares 247 too. The architect of INFRA-3118 gave this change
@@ -3615,7 +3641,13 @@ package api
 // of the 142 open heads, of 476 open, that change this file or whose file list is cut short, made
 // between 16:02:14Z and 16:04:33Z, found 257 declared by this change alone (247 by #5384, 248 by
 // #3993 and #4065, 250 by #5365, 251 by #5307, 252 by #4540, 254 by #4432, 255 by #5164, 261 by
-// #5332), so this entry kept 257. This entry stood at 200, 202, 209, 212, 221, 225, 230 and 247
+// #5332), so this entry kept 257. #5285 then declared 257 too, from a reading that ended before
+// this change pushed it, and INFRA-3118's architect moved #5285 to 265. The forward merge of
+// 2026-11-24 that brought in 5df00e2f brought main's 250 (the entry above), and a reading of the
+// 139 open heads, of 488 open, that change this file or whose file list is cut short, made between
+// 17:52:33Z and 17:54:35Z, found 257 declared by this change alone (251 by #5307, 252 by #4540, 254
+// by #4432, 255 by #5164, 256 by #5349, 261 by #5332, 262 by #5204, 265 by #5285; #5399 declares no
+// constant), so this entry kept 257. This entry stood at 200, 202, 209, 212, 221, 225, 230 and 247
 // before. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
 const DaemonAPIVersion = 257
