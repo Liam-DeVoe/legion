@@ -190,6 +190,13 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
+	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
+	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
+	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
+	// parked launch's wake takes its start out of the gate at the end of that decision, naming
+	// that end, and disarms it (endPodPark).
+	TimerPodStart TimerKind = "pod_start"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -766,6 +773,8 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1129,6 +1138,19 @@ func fillTable(t *builder) {
 		[]ClaimState{StateSuspended, StateLaunching, StateFailed}, live...)
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
+
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// keeps the claim launching with no process, and every decision that moves the claim out of
+	// launching drops the parked launch's wake, and its end takes the start out of the gate for
+	// what it left of the claim and disarms this timer (endPodPark, after suspended, retire, and
+	// letGo, which a failure makes), so the grant reaches a launching claim alone. Its launch ends
+	// as any launch does: started and launching, failed, or launching again for a retry; or held
+	// by the pause's gate, where the project is paused at the grant (pauseGate).
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
+		StateSuspended, StateFailed, StateRetired)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
@@ -2716,8 +2738,12 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // claim: that suspension holds until
 // the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
-// failed claim is never resumed by rule. A claim recording a session it does not hold is not
-// resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
+// failed claim is never resumed by rule. A claim whose last launch its issue's pod refused is
+// refused while that pod stands (podStillRefuses), before its session is asked about, as resume
+// asks them: the refusal answers runtime.ErrAwaitsPodUpdate, on which an outbox start waits for the
+// pod (internal/daemon's start), whatever the session's own answer would have been. A claim
+// recording a session it does not hold is not resumed by rule either (resumeRefusal): it stays
+// suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2728,13 +2754,13 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, resume.Start); err != nil {
 		return err
 	}
-	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
-		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
-		return nil
-	}
 	if err := m.podStillRefuses(); err != nil {
 		m.log.Info("supervise: not resumed by rule: the pod that refused its last launch still stands", "rule", rule, "error", err)
 		return err
+	}
+	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
+		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
+		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
@@ -2757,7 +2783,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
 // its launch, which the wake pacing may park and a refused lifecycle recheck may leave
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
-// second time (launchNow) costs nothing.
+// second time (launchTries) costs nothing.
 //
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a

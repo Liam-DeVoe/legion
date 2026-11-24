@@ -28,6 +28,7 @@
 --   begin;
 --   update outbox set payload = payload - 'claim'
 --   where kind in ('supervise', 'issue_bundle', 'update_ask', 'hook_prompt', 'merge_forward', 'controller_notice') and payload ? 'claim';
+--   update outbox set payload = payload - 'refusedPod' where kind = 'supervise' and payload ? 'refusedPod';
 --   update claims set role = substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$')
 --   where role <> substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$');
 --   alter table plan_steps drop column if exists agent;
@@ -61,6 +62,11 @@
 -- then acts on the claim of the row's role, as it did, and keys a notice by its issue and role.
 -- Only the top-level key of those six kinds goes: a notice's update round names claims of its own
 -- under the same key, which that release reads.
+--
+-- The update of a queued start's `refusedPod` is owed to the release before as well. This release
+-- marks a start a refused launch queues with the pod whose refusal queued it
+-- (record.SuperviseRequest.RefusedPod), a key that release does not know and decodes strictly as it
+-- decodes `claim`, so the update takes it off each queued supervise row that carries it.
 --
 -- The update of claims is owed to the release before too. This release moves a claim to the role of
 -- the step its key works (supervise.Machine.Rerole writes claims.role), and the release before

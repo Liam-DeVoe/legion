@@ -74,13 +74,14 @@ func queueStart(t *testing.T, pool *pgxpool.Pool, start record.SuperviseRequest)
 }
 
 // wantOwedEntryStart fails t unless start is the tester's owed entry 3 of testing, naming the
-// tester's claim: the task its phases row stores, marked as a resend of that entry.
-func wantOwedEntryStart(t *testing.T, start record.SuperviseRequest) {
+// tester's claim: the task its phases row stores, marked as a resend of that entry, and marked with
+// pod, the pod whose refusal queued it (record.SuperviseRequest.RefusedPod).
+func wantOwedEntryStart(t *testing.T, start record.SuperviseRequest, pod string) {
 	t.Helper()
 	if start.Role != claim.RoleTester || start.Claim != refusedTesterClaim || start.Phase != phase.Testing || start.Entry != 3 ||
-		!strings.HasPrefix(start.Task, refusedTesterTask) || !start.ResendEntry {
-		t.Fatalf("the queued start is %+v, want the tester's owed entry 3 of testing naming %s, its stored task %q, marked as a resend of that entry",
-			start, refusedTesterClaim, refusedTesterTask)
+		!strings.HasPrefix(start.Task, refusedTesterTask) || !start.ResendEntry || start.RefusedPod != pod {
+		t.Fatalf("the queued start is %+v, want the tester's owed entry 3 of testing naming %s, its stored task %q, marked as a resend of that entry and with the refused pod %s",
+			start, refusedTesterClaim, refusedTesterTask, pod)
 	}
 }
 
@@ -140,7 +141,7 @@ func TestALaunchItsPodRefusedQueuesAStartWhereNoQueuedStartBringsTheClaimBack(t 
 				if len(got) != seeded+1 {
 					t.Fatalf("the report left the starts %+v, want one more than the %d queued before it: nothing queued brings the claim back", got, seeded)
 				}
-				wantOwedEntryStart(t, got[len(got)-1])
+				wantOwedEntryStart(t, got[len(got)-1], "pod-1")
 			}
 			reportRefusal(t, pool, engine, "pod-refused:legion-legion-legion-209-tester:2", token)
 			if again := queuedStarts(t, pool); len(again) != len(got) {
@@ -174,7 +175,7 @@ func TestARefusedLaunchOfTheRolesWorkerIsSentTheOwedEntryWhateverClaimItsRowName
 	if len(got) != 1 {
 		t.Fatalf("the report queued %+v, want one start", got)
 	}
-	wantOwedEntryStart(t, got[0])
+	wantOwedEntryStart(t, got[0], "pod-1")
 }
 
 // A refused launch of a claim of a role the deployment no longer defines, or of a claim that runs
@@ -250,15 +251,15 @@ func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testi
 		{name: "the tester's own step stopped", stand: stopped(phase.Testing)},
 		{name: "a member of a lingering tree", stand: member(&until)},
 		{name: "twin: a task stopped at the implementer's step", stand: stopped(phase.Implementing), want: func(t *testing.T, starts []record.SuperviseRequest) {
-			if len(starts) != 1 || starts[0].Role != claim.RoleTester || starts[0].Claim != token || starts[0].Phase != "" {
-				t.Fatalf("the report queued %+v, want one start of the tester's claim, of no phase", starts)
+			if len(starts) != 1 || starts[0].Role != claim.RoleTester || starts[0].Claim != token || starts[0].Phase != "" || starts[0].RefusedPod != "pod-1" {
+				t.Fatalf("the report queued %+v, want one start of the tester's claim, of no phase, marked with the refused pod pod-1", starts)
 			}
 		}},
 		{name: "twin: a member of a tree that does not linger", stand: member(nil), want: func(t *testing.T, starts []record.SuperviseRequest) {
 			if len(starts) != 1 {
 				t.Fatalf("the report queued %+v, want one start", starts)
 			}
-			wantOwedEntryStart(t, starts[0])
+			wantOwedEntryStart(t, starts[0], "pod-1")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,5 +328,31 @@ func TestARefusedLaunchQueuesTheStartOfTheClaimItIsOf(t *testing.T) {
 	}
 	if s := refusedStart("pod-refused:key-a", keyA); s.Claim != keyA || s.Phase != "" || s.Entry != 0 || s.ResendEntry {
 		t.Fatalf("the start a refusal of key a queued = %+v, want a start of no phase naming %s", s, keyA)
+	}
+}
+
+// The end of a start row of a claim whose last launch its pod refused (intake.RefusedStartEnded)
+// queues the claim's start where none stands, marked with the pod the claim's machine reported
+// refusing the claim when the row ended, which the fact carries: the end of that start then asks
+// again only once that pod no longer refuses the claim (the daemon outbox's startRowEnded). It
+// tells nobody: the refusal's own report did.
+func TestAStartTheEndOfARowQueuesIsMarkedWithThePodThatRefusesTheClaim(t *testing.T) {
+	token := claim.Token("legion-legion-legion-209-tester")
+	pool := migratedPool(t)
+	seedTestingIssue(t, pool, "LEGION-209")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Entry: 3, EntryTask: refusedTesterTask,
+		EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	if _, err := intake.ApplyFact(t.Context(), pool, "outbox", "refused-start-ended:legion-legion-legion-209-tester:7", intake.RefusedStartEnded{
+		Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Pod: "pod-2"}, engine, admissionStub{}); err != nil {
+		t.Fatalf("apply the end of the start row: %v", err)
+	}
+	got := queuedStarts(t, pool)
+	if len(got) != 1 {
+		t.Fatalf("the end of the start row queued %+v, want one start", got)
+	}
+	wantOwedEntryStart(t, got[0], "pod-2")
+	if posted, kinds := messageBodies(t, pool), controllerNoticeKinds(t, pool); len(posted) != 0 || len(kinds) != 0 {
+		t.Fatalf("the end of the start row told the issue %v and the controller %v, want nobody told", posted, kinds)
 	}
 }

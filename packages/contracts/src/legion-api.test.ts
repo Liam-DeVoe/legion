@@ -1812,6 +1812,40 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// A claim whose refused launch's fact the store has not taken carries `unrecordedRefusal` on the
+// operator routes (`api.OperatorClaim.UnrecordedRefusal`): when the first failed try failed, how
+// many tries have failed, and the last try's error. The daemon writes it only while such a fact
+// fails, and the schema must name it, since a key it does not name is stripped. A count below one
+// or an empty error, which the daemon never writes, is refused.
+test("an operator claim carries a refusal the store has not recorded", () => {
+  const listing = fixture("operator-claims.json") as {
+    claims: {
+      token: string;
+      unrecordedRefusal?: { since: string; attempts: number; error: string };
+    }[];
+  };
+  const testerClaim = "legion-legion-legion-211-tester";
+  const tester = listing.claims.find((claim) => claim.token === testerClaim);
+  if (tester === undefined) {
+    throw new Error(`operator-claims fixture lacks ${testerClaim}`);
+  }
+  const unrecorded = {
+    since: "2026-11-23T17:00:00Z",
+    attempts: 3,
+    error: `apply fact supervise/pod-refused:${testerClaim}:1: the database did not answer`,
+  };
+  tester.unrecordedRefusal = unrecorded;
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === testerClaim)
+      ?.unrecordedRefusal
+  ).toEqual(unrecorded);
+
+  tester.unrecordedRefusal = { ...unrecorded, attempts: 0 };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+  tester.unrecordedRefusal = { ...unrecorded, error: "" };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at

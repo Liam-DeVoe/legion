@@ -2,10 +2,12 @@ package supervise
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -121,4 +123,86 @@ func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStand
 		t.Fatalf("the resume once another pod stands = %v, want the claim launched", err)
 	}
 	h.wantCalls("Spawn", 2)
+}
+
+// RefusalStands answers the refusal of the claim's last launch while the pod that refused it still
+// stands, which the outbox holds a start on (internal/daemon's start), and nil once another pod
+// stands, which drops the refusal, as it answers nil for a claim no launch of which was refused. It
+// launches nothing and writes nothing of the claim.
+func TestRefusalStandsWhileThePodThatRefusedTheLaunchStands(t *testing.T) {
+	h := newHarness(t)
+	issue := h.claim().Issue
+	if err := h.m.RefusalStands(); err != nil {
+		t.Fatalf("a claim no launch of which was refused answered %v, want nil", err)
+	}
+	h.rt.ScriptIssuePod(issue, "pod-1")
+	h.rt.ScriptSpawn(fake.SpawnResult{Err: runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(testToken) + ": the pod pod-1 of " + issue + " was built without checker"}})
+	if err := h.handle(RequestSpawn{Claim: testToken}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the spawn answered %v, want the runtime's refusal", err)
+	}
+	writes := 0
+	h.store.onPut = func(Claim) { writes++ }
+
+	var awaits runtime.AwaitsPodUpdate
+	if err := h.m.RefusalStands(); !errors.As(err, &awaits) || awaits.Pod != "pod-1" {
+		t.Fatalf("while pod-1 stands the refusal answered %v, want pod-1's refusal, which is runtime.AwaitsPodUpdate", err)
+	}
+	h.rt.ScriptIssuePod(issue, "pod-2")
+	if err := h.m.RefusalStands(); err != nil {
+		t.Fatalf("once pod-2 stands the refusal answered %v, want nil", err)
+	}
+	if pod := h.m.RefusedPod(); pod != "" {
+		t.Fatalf("once pod-2 stands the claim is refused by %q, want the refusal dropped", pod)
+	}
+	h.wantCalls("Spawn", 1)
+	h.wantState(StateSuspended)
+	if writes != 0 {
+		t.Fatalf("asking whether the refusal stands wrote the claim %d times, want none", writes)
+	}
+}
+
+// The rule's resume of a claim whose last launch its pod refused is refused by that pod while it
+// stands, before the claim's session is asked about, as the operator's resume is (resume). A claim
+// that records a session it does not hold — another claim recorded it first — is refused the
+// rule's resume for that session too, but that refusal answers nil, and the outbox would then end
+// the start that asked while the pod still stands: the end of a start row of a refused claim asks
+// the workflow for its start again (internal/daemon's startRowEnded), and a start that ends the same
+// way asks again, at the database's speed. The pod's refusal answers runtime.ErrAwaitsPodUpdate,
+// which the start waits on. Nothing is launched and nothing of the claim is written. Once another
+// pod stands, the session is asked about, and the resume is refused for it as before.
+func TestARuleResumeOfARefusedClaimWaitsForItsPodWhateverItsSession(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	const session, file = "ses_other", "/legion/state/sessions/ses_other.jsonl"
+	refused := queuedClaim()
+	refused.Generation, refused.State, refused.SuspendedBy = 1, StateSuspended, SuspendedByDaemon
+	refused.Session, refused.SessionFile = session, file
+	h := newHarnessOf(t, refused)
+	if holders, err := h.store.HoldSessions(h.ctx, "legion", other, RecordedHolds(session, file)); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != other }) {
+		t.Fatalf("another claim's hold of the session = %v, %v; want every name its own", holders, err)
+	}
+	h.rt.ScriptIssuePod(refused.Issue, "pod-1")
+	h.m.mu.Lock()
+	h.m.refusedPod = "pod-1"
+	h.m.mu.Unlock()
+	writes := 0
+	h.store.onPut = func(Claim) { writes++ }
+
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "start row 7 of LEGION-209"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the rule's resume while pod-1 stands answered %v, want the pod's refusal, which is runtime.ErrAwaitsPodUpdate", err)
+	}
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 0)
+	if writes != 0 {
+		t.Fatalf("the refused resume wrote the claim %d times, want none", writes)
+	}
+
+	h.rt.ScriptIssuePod(refused.Issue, "pod-2")
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "start row 7 of LEGION-209"}); err != nil {
+		t.Fatalf("the rule's resume once pod-2 stands answered %v, want nil: the rule leaves a claim recording a session it does not hold suspended", err)
+	}
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 0)
+	if pod := h.m.RefusedPod(); pod != "" {
+		t.Fatalf("once pod-2 stands the claim is still refused by %q, want the refusal dropped", pod)
+	}
 }

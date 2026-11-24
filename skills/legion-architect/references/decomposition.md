@@ -18,14 +18,14 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the controller.
 
-- `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
+- `ISSUE_NOT_OWNED`: the move is another architect's, so send it to the architect above you.
 
 - `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed.
   Release again once it has closed, unless it is the tree's root.
 
 ## Creating children
 
-1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
+1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read no other spec.
    Cite no item number of another document and copy no text that does not apply to the child.
 
 2. Red-team the list with a fresh `task(agent="oracle")`, and `wait` for its verdict.
@@ -56,7 +56,7 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to each agent that has run and holds its plan: the agent of each planner step where its task names one, else of each implementer step, at `notifications.role.<token>` (below).
+- As a child's own architect, in the turn you file its children, send one `envoy_publish` to each agent that has run and holds its plan: each planner step's agent, else each implementer step's, at `notifications.role.<token>` (below).
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
   Send it even when you also stop the task or give a later plan: each such agent keeps its session and what it read of the whole issue.
 

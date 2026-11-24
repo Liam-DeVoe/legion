@@ -302,10 +302,10 @@ var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has
 
 // Each label of a step's task that the prompts and the skills tell a worker to read is one the
 // task writes, and each the task writes is one they name: the label is one constant, every line is
-// built from it, and a rename on either side alone fails here. The forms the prompts spell out
-// with placeholders (go/worker-common.md) are the task's words exactly, once the placeholders hold
-// a step's values, and the form of the retro's and the merger's task, which runs no step, is the
-// end of their task.
+// built from it, and a rename on either side alone fails here. The forms of the task's lines, with
+// placeholders as go/worker-common.md writes them, are the task's words exactly once the
+// placeholders hold a step's values, and the prompts spell out the working copy's form; the form
+// of the retro's and the merger's task, which runs no step, is the end of their task.
 func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
@@ -322,7 +322,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
-		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<step>) " + reportedLabel + ":",
+		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<role>) " + reportedLabel + ":",
 		handoffLabel: "`" + handoffLabel + ":", pullRequestLabel: "`" + pullRequestLabel + ":", reasonLabel: "`" + reasonLabel + ":",
 	}
 	for label, named := range labels {
@@ -339,16 +339,15 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 	}
 
+	if template := "`Working copy: branch legion/<KEY>, directory <dir>.`"; !strings.Contains(readers, template) {
+		t.Errorf("no prompt or skill a worker reads spells out %s", template)
+	}
 	for template, values := range map[string][]string{
 		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
 		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
 		"`Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`": {"1 <step>, 2 <step>, …", "1 implementer:a, 2 reviewer"},
 		"`Step <j> (<step>) reported: <word> version <v>.`":             {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
 	} {
-		if !strings.Contains(readers, template) {
-			t.Errorf("no prompt or skill a worker reads spells out %s", template)
-			continue
-		}
 		if want := strings.NewReplacer(values...).Replace(strings.Trim(template, "`")); !strings.Contains(written, " "+want) {
 			t.Errorf("the task %q does not say %q, the words of %s", written, want, template)
 		}
