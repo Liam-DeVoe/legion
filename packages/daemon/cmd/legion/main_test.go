@@ -1743,7 +1743,10 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. An issue's other claims
+// (`otherClaims`) are read too, and two claims of one role on one issue are named apart: the
+// role's own claim by its issue and role, and an agent named otherwise by its token beside them,
+// wherever the issue lists either claim.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1758,6 +1761,31 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
 	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
 		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// A plan of `implementer reviewer implementer` runs its third step in a second agent of the
+	// role, `implementer-2`, beside the role's own agent; the state lists one of the two under
+	// `workers` and the other under `otherClaims`, either way round.
+	const (
+		ownToken    = `"token":"legion-legion-legion-208-implementer",`
+		secondToken = `"token":"legion-legion-legion-208-implementer-2",`
+	)
+	secondOpen := `"step":{"at":"2026-09-23T01:20:00Z","turnStartedAt":"2026-09-23T01:18:00Z","tool":"bash",` +
+		`"callId":"toolu_impl2_5","argsBytes":96,"argsHash":"5d1e0b7a24c9f836","startedAt":"2026-09-23T01:20:00Z"}`
+	twoAgents := func(workerToken, workerStep, otherToken, otherStep string) string {
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"step","stepRole":"implementer","status":"in_progress",` +
+			`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
+			`"workers":{"implementer":{"claim":{` + workerToken + `"session":"ses_i","state":"working","pluginContract":0,` + workerStep + `},"rounds":1}},` +
+			`"otherClaims":[{"role":"implementer","claim":{` + otherToken + `"session":"ses_i2","state":"working","pluginContract":0,` + otherStep + `}}]}}`
+	}
+	const (
+		ownCall    = "LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\""
+		secondCall = "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2) \"bash toolu_impl2_5 since 2026-09-23T01:20:00Z\""
+	)
+	// The agent of a key, here the implementer's agent, holds the tester's role for a step of the
+	// plan while the tester's own agent also holds it: the state lists the tester's own claim
+	// under `workers` and the other under `otherClaims`, which the line names by its token.
+	keyed := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"testing","status":"in_progress",` +
+		`"workers":{"tester":{"claim":{"token":"legion-legion-legion-208-tester","session":"ses_t","state":"working","pluginContract":0,` + open + `},"rounds":1}},` +
+		`"otherClaims":[{"role":"tester","claim":{"token":"legion-legion-legion-208-implementer","session":"ses_k","state":"working","pluginContract":0,` + secondOpen + `}}]}}`
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1768,6 +1796,27 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
+		{
+			name:   "a second agent of the role in a call under otherClaims, the role's own agent's call ended",
+			issues: twoAgents(ownToken, ended, secondToken, secondOpen),
+			want:   "agents in a tool call: 1 — " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the second under otherClaims",
+			issues: twoAgents(ownToken, open, secondToken, secondOpen),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the role's own under otherClaims",
+			issues: twoAgents(secondToken, secondOpen, ownToken, open),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
+		{
+			name:   "an agent of another role's name holding the role under otherClaims",
+			issues: keyed,
+			want: "agents in a tool call: 2 — LEGION-208 tester \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"; " +
+				"LEGION-208 tester (claim legion-legion-legion-208-implementer) \"bash toolu_impl2_5 since 2026-09-23T01:20:00Z\"\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + `,"issues":` + tc.issues + "}"
@@ -1786,6 +1835,56 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told each update round an issue has open and every
+// claim of the issue in it, its other claims (`otherClaims`) among them: a pod's round is over
+// every claim of the pod, and a second agent of one role, such as `implementer-2`, holds a slot
+// of its own there, as does the agent of another role's name that holds a role for a step. Each
+// claim is named as the issue's other lines name it, by its role, and by its token beside it for
+// the claim of an agent not named for its role, so two claims of one role read apart; they are
+// listed by role and then by that name, with the head each reported when it answered.
+func TestPlainStateNamesEveryClaimOfAnIssueInAnUpdateRound(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	const round = "pod:0f3c8d21-5b47-4e90-9a16-2c7d5e8b40af"
+	claim := func(token, extra string) string {
+		return `{"token":"legion-legion-legion-208-` + token + `","session":"ses_` + token + `","state":"ready","pluginContract":0` + extra + `}`
+	}
+	inRound := `,"updateRound":"` + round + `"`
+	answered := func(head string) string { return inRound + `,"updateHead":"` + head + `"` }
+	issue := func(architect, implementer, tester, otherImplementer, otherTester string) string {
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"step","stepRole":"implementer","status":"in_progress",` +
+			`"architect":` + claim("architect", architect) + `,` +
+			`"workers":{"implementer":{"claim":` + claim("implementer", implementer) + `,"rounds":1},` +
+			`"tester":{"claim":` + claim("tester", tester) + `,"rounds":0}},` +
+			`"otherClaims":[{"role":"implementer","claim":` + claim("implementer-2", otherImplementer) + `},` +
+			`{"role":"tester","claim":` + claim("reviewer", otherTester) + `}]}}`
+	}
+	for _, tc := range []struct {
+		name, issues, want string
+	}{
+		{
+			name:   "every claim of the issue in the pod's round",
+			issues: issue(inRound, answered("a1b2c3d"), inRound, answered("5d1e0b7"), inRound),
+			want: "open update rounds: 1 — LEGION-208 on " + round + ": architect, implementer answered at \"a1b2c3d\", " +
+				"implementer (claim legion-legion-legion-208-implementer-2) answered at \"5d1e0b7\", tester, " +
+				"tester (claim legion-legion-legion-208-reviewer)\n",
+		},
+		{
+			name:   "only the second agent of a role in a round",
+			issues: issue("", "", "", inRound, ""),
+			want:   "open update rounds: 1 — LEGION-208 on " + round + ": implementer (claim legion-legion-legion-208-implementer-2)\n",
+		},
+		{name: "no claim in a round", issues: issue("", "", "", "", ""), want: "open update rounds: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := plainStateOf(t, "{"+daemon+`,"issues":`+tc.issues+"}")
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out, tc.want)
 			}
 		})
 	}
