@@ -227,7 +227,8 @@ func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue
 // A newer state of a check a CI job runs that says its job ended at the head without a pass
 // (ciJobFailed), where the state the daemon held there before said no such failure, is told to the
 // implementer at once, in the same transaction and in any phase (tellCIFailure): the failure does
-// not wait for the tester's or the reviewer's step to end, and it moves nothing.
+// not wait for the tester's or the reviewer's step to end, and it moves nothing. A task whose run
+// takes a fix hears of it from the fix rule instead (fixRule).
 //
 // While the issue is in testing and its tester has completed, the event decides the testing move
 // again (decideTesting), whatever head it names: an event at another head can still be the one the
@@ -313,8 +314,13 @@ func sameFailure(a, b record.CheckState) bool {
 // the open pull request on record, in its repository, is told: a head the pull request has left is
 // no head the implementer works on. It tells no other role, starts no implementer and moves
 // nothing, so the tester or the reviewer that works goes on. Linger holds a member of a closed tree
-// where it stood (record.TreeLingers), so nobody is told there, as tellChecks tells nobody.
+// where it stood (record.TreeLingers), so nobody is told there, as tellChecks tells nobody. A task
+// whose run takes a fix (record.PlanTask.FixesCI) is told nothing here: the fix rule (fixRule) gives
+// the failure to the step that holds it, or starts the fix, so the implementer hears it once.
 func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issue, state record.CheckState) error {
+	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
+		return err
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return err
