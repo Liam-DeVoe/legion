@@ -153,7 +153,8 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 	})
 }
 
-// 20261122120917 records on a claim from before it the agent the issue's plan rows give its name
+// 20261122120917 records on a claim from before it, where no start the release before kept
+// (step_starts) names the agent that ran on it last, the agent the issue's plan rows give its name
 // last: the agent of the latest row of the name in record.Postgres.PlanStepsOf's order, leaving
 // out the owner's rows and rows that hold no name, `key:<key>` where that row names a key and
 // `step:<place>:<task>` where it names none. Where that row names a key, it is the key
@@ -161,21 +162,22 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 // names its claims alone give them (record.KeySessionsOf), and a write that deletes the rows takes
 // no name from a key. On LEGION-208, key a's generation 1 row and key b's later generation 2 row
 // both hold implementer: the claim records key b, as NameAgents gives key b the name and key a
-// implementer-2, and the queued start of that claim, which names no agent, names key b. On
-// LEGION-212, a row with no key holds implementer and key e's later row holds it too: the claim
-// records key e, since an earlier row with no key takes no name from a later key. The claim
-// reviewer, a name only step 2's agent with no key held, records that agent, and the queued start
-// of that claim names it.
+// implementer-2. On LEGION-212, a row with no key holds implementer and key e's later row holds it
+// too: the claim records key e, since an earlier row with no key takes no name from a later key.
+// The claim reviewer, a name only step 2's agent with no key held, records that agent.
 //
 // On LEGION-209, key c's row holds implementer and a later row with no key holds it too: the rows
 // the release before left for `implementer:c` and then `implementer`, as it gave the name to the
-// agent with no key after key c's, on the claim key c's agent ran on. The claim records that agent
-// with no key, step 1's of generation 2, and the queued start of that claim names it, so that
-// agent, which may be the one the claim runs now, keeps the session the claim holds at its next
-// start, not a new one mid-step. There the record and NameAgents part: NameAgents still holds the
-// name for key c while key c's row stands, as a row with no key does not end a key's hold, so the
-// rows name a later version's implementer implementer-2, and the claims alone, which keep no name
-// for key c, name it implementer.
+// agent with no key after key c's, on the claim key c's agent ran on. With no start kept to say
+// which ran, the claim records that agent with no key, step 1's of generation 2. There the record
+// and NameAgents part: NameAgents still holds the name for key c while key c's row stands, as a
+// row with no key does not end a key's hold, so the rows name a later version's implementer
+// implementer-2, and the claims alone, which keep no name for key c, name it implementer.
+//
+// A queued start names an agent only where its claim is not made yet, LEGION-213's: the start
+// makes that claim and records the agent it names. A start of a claim that stands takes the session
+// that claim records, which the fill wrote from the same rows, so the fill writes nothing into it,
+// and a daemon of the release before that reads it finds the row as that release wrote it.
 //
 // The controls, each left as it was: the tree's architect, whose owner's rows hold no name;
 // LEGION-210's tester, whose key's row holds no name, as the first form of 20261117213545 left
@@ -199,6 +201,7 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 	seedPlanSteps(t, st, "LEGION-212", 1, [2]string{"implementer", ""})
 	seedPlanSteps(t, st, "LEGION-212", 2, [2]string{"implementer", "e"})
 	seedPlanSteps(t, st, "LEGION-210", 1, [2]string{"tester", "d"})
+	seedPlanSteps(t, st, "LEGION-213", 1, [2]string{"implementer", "f"})
 	exec(`update plan_steps set agent = role where agent_key <> 'owner' and issue <> 'LEGION-210'`)
 	const releaseBeforesClaim = `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -214,9 +217,13 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 	} {
 		exec(releaseBeforesClaim, c[0], c[1], c[2])
 	}
-	const keyStart = `{"op":"start","tree":"LEGION-208","role":"implementer","claim":"legion-legion-legion-208-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`
+	// A queued start whose claim the start itself makes, LEGION-213's, takes its agent from the
+	// fill; a start of a claim that stands takes the session that claim records, so the fill
+	// writes nothing into it.
+	const keyStart = `{"op":"start","tree":"LEGION-213","role":"implementer","claim":"legion-legion-legion-213-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`
 	for _, row := range [][2]string{
-		{"LEGION-208", keyStart},
+		{"LEGION-213", keyStart},
+		{"LEGION-208", `{"op":"start","tree":"LEGION-208","role":"implementer","claim":"legion-legion-legion-208-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`},
 		{"LEGION-209", `{"op":"start","tree":"LEGION-209","role":"implementer","claim":"legion-legion-legion-209-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`},
 		{"LEGION-209", `{"op":"suspend","tree":"LEGION-209","role":"implementer","claim":"legion-legion-legion-209-implementer","generation":1}`},
 		{"LEGION-208", `{"op":"start","tree":"LEGION-208","role":"reviewer","claim":"legion-legion-legion-208-reviewer","generation":1,"phase":"reviewing","entry":1,"task":"Review it."}`},
@@ -230,8 +237,9 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 		"legion-legion-legion-212-implementer=key:e",
 	}
 	wantStarts := []string{
-		"start legion-legion-legion-208-implementer key:b", "start legion-legion-legion-209-implementer step:1:a",
-		"suspend legion-legion-legion-209-implementer ", "start legion-legion-legion-208-reviewer step:2:a",
+		"start legion-legion-legion-213-implementer key:f", "start legion-legion-legion-208-implementer ",
+		"start legion-legion-legion-209-implementer ", "suspend legion-legion-legion-209-implementer ",
+		"start legion-legion-legion-208-reviewer ",
 	}
 	recorded := func(when string) {
 		t.Helper()
@@ -243,7 +251,7 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 		}
 		var payload []byte
 		if err := st.Pool().QueryRow(ctx, `select payload - 'agent' from outbox order by id limit 1`).Scan(&payload); err != nil {
-			t.Fatalf("read the start of key b %s: %v", when, err)
+			t.Fatalf("read the start of key f %s: %v", when, err)
 		}
 		var before, after map[string]any
 		if err := json.Unmarshal([]byte(keyStart), &before); err != nil {
@@ -253,7 +261,7 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(before, after) {
-			t.Fatalf("the start of key b %s, without its agent, = %v, want %v: every other key kept", when, after, before)
+			t.Fatalf("the start of key f %s, without its agent, = %v, want %v: every other key kept", when, after, before)
 		}
 	}
 
@@ -316,12 +324,15 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 // release before ran LEGION-208's generation 1, `implementer:a reviewer`, with key a's agent on the
 // claim implementer, and its generation 2, `implementer reviewer`, gave the name implementer to the
 // agent with no key of step 1, which ran on that claim after key a's agent. After the upgrade a new
-// owner's run deletes both plans (workflow's passOverEarlierOwners), and its plan, `planner
-// implementer reviewer`, gives implementer to a new agent with no key, the agent of step 2: no row
-// and no claim holds the name for anyone. That agent's start must find the claim's session another
-// agent's (supervise.Claim.SessionOfAnotherAgent), so it starts a session of its own rather than
-// the conversation the claim holds. The control: the agent of generation 2's step 1, which the
-// rows gave the name last, finds the session its own.
+// owner's run deletes both plans (workflow's passOverEarlierOwners), and a later version of its
+// plan, `planner implementer reviewer`, given after that deletion, is named from the rows that
+// stand then (workflow's versionRefusal reads PlanStepsOf), which hold no row of the name: it gives
+// implementer to a new agent with no key, the agent of step 2, and no row and no claim holds the
+// name for anyone. (The run's first step, planFirstStep, reads the rows before it deletes them, so
+// its own steps would still find key a's row; the test drives the later version.) That agent's start
+// must find the claim's session another agent's (supervise.Claim.SessionOfAnotherAgent), so it
+// starts a session of its own rather than the conversation the claim holds. The control: the agent
+// of generation 2's step 1, which the rows gave the name last, finds the session its own.
 func TestANewAgentGivenTheNameOfAClaimFromBeforeTheUpgradeStartsASessionOfItsOwn(t *testing.T) {
 	ctx := context.Background()
 	st := emptyStore(t)
@@ -390,4 +401,76 @@ func sessionAgentOfToken(t *testing.T, st *Store, token string) plan.AgentID {
 		t.Fatalf("the claims %s = %q, want one", token, got)
 	}
 	return plan.AgentID(got[0])
+}
+
+// A claim from before the upgrade records the agent that ran on it last, where the start the release
+// before kept for it (step_starts: the claim's token, the place, the moment and the start's record,
+// which names its generation) shows which, rather than the agent the plan's rows name last, which
+// may not have started. On each issue the release before ran generation 1, `implementer:c`, with
+// key c's agent on the claim implementer, and generation 2, `implementer`, which gave the name
+// implementer to the agent with no key of step 1.
+//
+// On LEGION-301 that agent had not started at the upgrade: the claim's latest start is
+// generation 1's, so the claim records key c. Key c, named again by a later version, resumes its
+// own session, and the agent with no key starts a session of its own. The fault: the claim
+// recorded the agent with no key (`step:1:a`), so key c's return started a fresh session and the
+// agent with no key would have taken key c's conversation.
+//
+// The controls: on LEGION-302 the latest start is generation 2's, so the claim records the agent
+// with no key; on LEGION-303 no start was kept, so the claim records the agent the rows name last,
+// the agent with no key too; on LEGION-304 the claim's latest start is at a place whose row now
+// holds another name, so that start names no agent the rows still show, and the claim records the
+// agent the rows name last rather than an older start's.
+func TestTheSessionAgentMigrationRecordsTheAgentThatRanLastOnAClaim(t *testing.T) {
+	ctx := context.Background()
+	st := emptyStore(t)
+	migrateThrough(t, st, claimSessionAgentVersion-1)
+	exec := func(statement string, args ...any) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	started := func(issue string, place int, generation int, at string) {
+		t.Helper()
+		token := "legion-legion-" + strings.ToLower(issue) + "-implementer"
+		exec(`insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
+			values ($1, 'a', 'step', $2::int, 1, $3::text, $4::text::timestamptz, 'ended', jsonb_build_object('task', 'a', 'step', $2::int, 'kind', 'step', 'agent', $3::text, 'generation', $5::int))`,
+			issue, place, token, at, generation)
+	}
+	for _, issue := range []string{"LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304"} {
+		first := [][2]string{{"implementer", "c"}}
+		if issue == "LEGION-304" {
+			first = append(first, [2]string{"reviewer", ""})
+		}
+		seedPlanSteps(t, st, issue, 1, first...)
+		seedPlanSteps(t, st, issue, 2, [2]string{"implementer", ""})
+		exec(`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ($1, 'legion', $2, $2, 'implementer', 2, 'ses', '', 'idle', 0, 0, 0, 0)`,
+			"legion-legion-"+strings.ToLower(issue)+"-implementer", issue)
+	}
+	exec(`update plan_steps set agent = role`)
+	started("LEGION-301", 1, 1, "2026-11-20T10:00:00Z")
+	started("LEGION-302", 1, 2, "2026-11-20T10:00:00Z")
+	started("LEGION-304", 1, 1, "2026-11-20T10:00:00Z")
+	started("LEGION-304", 2, 1, "2026-11-20T11:00:00Z")
+
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the agent of a claim's session: %v", err)
+	}
+	want := []string{
+		"legion-legion-legion-301-implementer=key:c", "legion-legion-legion-302-implementer=step:1:a",
+		"legion-legion-legion-303-implementer=step:1:a", "legion-legion-legion-304-implementer=step:1:a",
+	}
+	if got := rowsAsText(t, st, `select concat(token, '=', session_agent) from claims order by token`); !slices.Equal(got, want) {
+		t.Fatalf("the claims after the migration = %q, want %q", got, want)
+	}
+	held := supervise.Claim{SessionAgent: sessionAgentOfToken(t, st, "legion-legion-legion-301-implementer")}
+	if keyC := (plan.Agent{Key: "c"}).ID(); held.SessionOfAnotherAgent(keyC) {
+		t.Errorf("LEGION-301's claim records %q, so key c, named again, leaves its own session behind", held.SessionAgent)
+	}
+	if stepOne := plan.AgentOf("a", 1, plan.Step{Role: "implementer"}).ID(); !held.SessionOfAnotherAgent(stepOne) {
+		t.Errorf("LEGION-301's claim records %q, so the agent with no key, which never ran, takes key c's session", held.SessionAgent)
+	}
 }
