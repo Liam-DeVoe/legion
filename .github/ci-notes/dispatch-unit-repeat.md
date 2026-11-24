@@ -382,7 +382,7 @@ and asks whether its rows fail again in the order they failed in.
 The harness lane runs each round as two legs under the round's one seed: the tool's `--shard 1/2`,
 the Codex leg's test file `e2e/__tests__/outside-agent-codex.test.ts` alone, and `--shard 2/2`, the
 lane without it (the section above says how). The Codex file has a leg of its own because its 20
-runs alone take longer than the rest of the lane does: 9,386.4 to 9,428.0 s at `1582cf67`, against
+runs alone took longer than the rest of the lane did: 9,386.4 to 9,428.0 s at `1582cf67`, against
 6,731.1 s for the other 67 files in their worst order ("The harness lane's two legs, read at
 cbfa8cb7 and 1582cf67", above). In one leg with the rest, the Codex file's 20 runs end the leg,
 and they start when the seed's order of files reaches the file: after 822.3 to 1,158.2 s in run
@@ -397,12 +397,14 @@ ways were set aside: Bun 1.4.4's `--timings`, which can have `--parallel` start 
 first, does not do so while random order is on (measured on Bun 1.4.4 when the split was chosen);
 and a shorter Codex file is the work of pull request #5247, not of this workflow.
 
-The split lasts until the Codex file's runs are shorter. Pull request #5247 ("test(dispatch): the
+The split lasts until #4937 derives the budgets again. Pull request #5247 ("test(dispatch): the
 outside agent's legs end each local wait on its fact") ends each local wait of the Codex rows on
-the fact it waits for. Once it lands, #4937 ("ci: re-derive the repeat budgets once the
-outside-agent legs' waits end on their facts") reads the legs again and derives the budgets again
-by the rule, and the two legs fold back into one: the harness lane's `alone` in the tool's `lanes`
-goes, and with it the harness lane's second matrix row.
+the fact it waits for. It merged to `main` on 2026-11-24 (`42b2ad4d`), and in this pull request's
+run 45346135243 at `cd919fc2` each Codex leg's step took 29.6 to 31.8 minutes, against 38.7 to
+44.2 for the rest. #4937 ("ci: re-derive the repeat budgets once the outside-agent legs' waits
+end on their facts") reads the legs again and derives the budgets again by the rule, and the two
+legs fold back into one: the harness lane's `alone` in the tool's `lanes` goes, and with it the
+harness lane's second matrix row.
 
 ## A leg's deadline, and what a stopped leg names
 

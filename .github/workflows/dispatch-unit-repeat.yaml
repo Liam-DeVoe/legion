@@ -19,14 +19,15 @@ name: Dispatch unit suite repeated
 # derived.
 # why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-the-harness-lanes-two-legs-and-a-legs-seed
 #
-# Why the Codex file has a leg of its own. Its 20 runs alone take about 9,400 s, more than the
-# worst order of all the rest of the lane on a runner's 4 CPUs, about 6,700 s: in one leg with
-# the rest, every harness leg of run 45178675944, at 1582cf67, was stopped at its 7,800 s deadline
-# inside the Codex file, in its run 15 of 20, with no row failed. In a leg of its own, every
-# file's 20 runs stay in one Bun run of one leg, in Bun's random order. Pull request #5247
-# ("test(dispatch): the outside agent's legs end each local wait on its fact") shortens the Codex
-# file's runs, and #4937 ("ci: re-derive the repeat budgets once the outside-agent legs' waits end
-# on their facts") derives the budgets again after it: the two legs then fold back into one.
+# Why the Codex file has a leg of its own. Its 20 runs alone took about 9,400 s at 1582cf67, more
+# than the worst order of all the rest of the lane on a runner's 4 CPUs, about 6,700 s: in one
+# leg with the rest, every harness leg of run 45178675944, at 1582cf67, was stopped at its 7,800 s
+# deadline inside the Codex file, in its run 15 of 20, with no row failed. In a leg of its own,
+# every file's 20 runs stay in one Bun run of one leg, in Bun's random order. Pull request #5247
+# ("test(dispatch): the outside agent's legs end each local wait on its fact"), merged on
+# 2026-11-24, shortened the Codex file's runs, and #4937 ("ci: re-derive the repeat budgets once
+# the outside-agent legs' waits end on their facts") derives the budgets again: the two legs then
+# fold back into one.
 # why: .github/ci-notes/dispatch-unit-repeat.md#the-harness-lanes-two-legs
 #
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
@@ -204,8 +205,8 @@ jobs:
             step_minutes: 9 # 420 + 60 s kill-after + 60 s of slack = 540 s
             job_minutes: 11 # 9 + 2 x 44 s = 88 s, up to the next whole minute, 2
           # The harness lane's two legs, one row each. The Codex file alone sets shard 1's budgets;
-          # pull request #5247 shortens its runs, and #4937 derives the budgets again after it,
-          # when the two legs fold back into one.
+          # pull request #5247 shortened its runs (merged on 2026-11-24), and #4937 derives the
+          # budgets again, when the two legs fold back into one.
           # why: .github/ci-notes/dispatch-unit-repeat.md#the-harness-lanes-two-legs
           - lane: harness
             shard: 1
