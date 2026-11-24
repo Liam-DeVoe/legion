@@ -357,7 +357,8 @@ type recoverableSubscription struct {
 type Client struct {
 	Conn *nats.Conn
 	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
-	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
+	// without mu, which a caller holds while it waits for nats.go's lock (SubOK and CoreSubOK
+	// through subscriptionOK, and Close).
 	severable                   atomic.Pointer[severableConnection]
 	js                          nats.JetStreamContext
 	urls                        []string

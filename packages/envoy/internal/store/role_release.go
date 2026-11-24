@@ -399,8 +399,8 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	// receive loop ends only once it hears the term ended (cmd/listener's holderLoops), so a
 	// release the pass decided before the lease stepped down can reach the bucket after another
 	// pod may hold the lease. The revision alone refuses it there: the claim the role's next holder
-	// wrote since the scan moved the role past claim.Revision, and the bucket answers
-	// nats.ErrKeyExists (cmd/listener's
+	// wrote since the scan moved the role past claim.Revision, and the bucket refuses the Delete as
+	// a lost conditional write (bus.IsCASConflict; cmd/listener's
 	// TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClaim).
 	_, _, err := bus.BoundedOn(ctx, roles, func() (struct{}, error) {
 		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))

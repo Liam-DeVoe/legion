@@ -341,11 +341,10 @@ var stopGiveUpArmed atomic.Pointer[func()]
 // call finishes, even when the goroutine is descheduled past the wait. A call NATS has not answered
 // by then goes on, with a WARN line (callLeftRunning), and answered is false. That goroutine holds
 // nothing of the stop's; a call through the bus client that holds the client's own lock while it
-// reads nats.go's state (Connected, and DrainSubscription through it) holds that lock until nats.go
-// answers. Its failure is logged when it ends, with attrs; a connection already closed is how a call
-// that outlived the stop ends when the client closes at shutdown, and is logged as that rather than
-// as an error; a publish refused because the connection is reconnecting (ErrReconnectBufExceeded) is
-// logged at INFO.
+// reads nats.go's state holds that lock until nats.go answers. Its failure is logged when it ends,
+// with attrs; a connection already closed is how a call that outlived the stop ends when the client
+// closes at shutdown, and is logged as that rather than as an error; a publish refused because the
+// connection is reconnecting (ErrReconnectBufExceeded) is logged at INFO.
 func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T, answered bool) {
 	answers := make(chan T, 1)
 	go func() {

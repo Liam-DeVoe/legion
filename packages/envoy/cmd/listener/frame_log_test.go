@@ -1,8 +1,11 @@
 // The frames a row's sessions answered, and the exactly-once check the rows of the two-pod suite
-// end on. They are outside the multiprocess tag, so envoy-go's untagged unit run exercises the
-// check: the only CI lane of that tag runs the two-pod rows alone, and a guard no lane runs
-// guards nothing. The session stand-in that fills the log in, and the row helpers that read it,
-// are the tagged harness's (multiprocess_harness_test.go).
+// end on. They are outside the multiprocess tag, so envoy-go-race's untagged run of ./cmd/listener
+// exercises the check (envoy-go's unit step leaves that package out): the only CI lane of that tag
+// runs the two-pod rows alone, and a guard no lane runs guards nothing. envoy-go-race runs in the
+// merge queue, and on a pull request only under the label `full-ci` or `lane:envoy_go_race`
+// (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request). The session stand-in
+// that fills the log in, and the row helpers that read it, are the tagged harness's
+// (multiprocess_harness_test.go).
 
 package main
 

@@ -1555,11 +1555,11 @@ and so reads the same files.
 
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
-The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the outputs the slow suites run behind. On a pull request without that
-label each of those is `false` whether its paths matched or not, so a reader of the
-outputs alone cannot tell "the filter said no" from "the label is absent"; with this
-beside them ci-ok's report tells the two apart and says which
+The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<output>'))`) rewrites
+the outputs the slow suites run behind. On a pull request carrying neither that label nor
+the output's own `lane:<output>` label each of those is `false` whether its paths matched
+or not, so a reader of the outputs alone cannot tell "the filter said no" from
+"the label is absent"; with this beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
