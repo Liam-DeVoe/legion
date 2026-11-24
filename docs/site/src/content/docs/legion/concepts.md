@@ -523,12 +523,12 @@ Legion uses GitHub's own review mechanisms rather than labels:
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
-  phase the issue has already left is recorded as before. Where the task's reviewer step already
-  ran, the daemon asks the reviewer to read the merge (`git show --remerge-diff`) and approve the
-  new head by its SHA, or request changes. Where the task has more than one reviewer step, it asks
-  once the first has run, and asks the agent of the one that started last. A reviewer step still
-  to come reviews the new head when it runs. A merger that enters `merging` while that approval is
-  owed, or that made the merge, merges the new head only once the approval is on the pull request.
+  phase the issue has already left is recorded as before. Where a reviewer step of the task
+  already ran, the daemon asks the agent of the reviewer step that started last to read the merge
+  (`git show --remerge-diff`) and approve the new head by its SHA, or request changes. A reviewer
+  step still to come reviews the new head when it runs. A merger that enters `merging` while that
+  approval is owed, or that made the merge, merges the new head only once the approval is on the
+  pull request.
   A task with no reviewer step has no review to ask, and its merger goes on at the new head.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's

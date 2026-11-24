@@ -94,8 +94,7 @@ and a check the base's newer code breaks is the merger's to fix in that merge to
 When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
-Where the task has more than one reviewer step, it asks once the first has run, and asks the agent of the one that started last.
+Where a reviewer step of the task already ran, the daemon asks the agent of the reviewer step that started last to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
 A task with no reviewer step has no review to await.
