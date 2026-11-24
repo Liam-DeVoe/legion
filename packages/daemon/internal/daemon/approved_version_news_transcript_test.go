@@ -94,7 +94,7 @@ func (pick sessionsPick) arms(step sessionsStep) []string {
 }
 
 // plan is the plan of the runs the pick makes, as part two's driver prints it before its first
-// run, and in place of every run under -part-two-plan (TestRealSessionsTellAndAnswerANewVersionLive):
+// run, and in place of every run under -part-two-plan (BenchmarkRealSessionsTellAndAnswerANewVersion):
 // a line `plan step <word> <name> <arm>…` for each step the pick makes, in order, with each arm the
 // pick makes that step in, and then `plan runs <n>`, how many runs each arm makes of each step.
 // scripts/e2e/approved-version-news.sh reads part two's steps, arms and count of runs from these

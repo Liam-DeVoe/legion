@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for who gets a conflict once the work is past its review
 // (cybermonklabs/legion#4979): a pull request that conflicts with its base after the review is the
 // merger's to resolve, and nobody hands the issue back to the implementer for it. The issue stands
@@ -20,8 +18,8 @@
 // from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
 // and the daemon writes no in_progress status to Dispatch. Last, the merger's own
 // prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
-// hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// hold the one against the other. ci.yaml's daemon-live job runs it (.github/actions/daemon-live),
+// over the package's broker (workflowNATS) and the job's PostgreSQL.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
 // other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
@@ -43,8 +41,8 @@
 // (recordingLog). The store is read only for what no route shows: the pull request's record of the
 // conflict and of the merge forward.
 //
-// What the proof stands in for lies outside the change. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// What the proof stands in for lies outside the change. The broker is the package's test NATS
+// server (workflowNATS, through newLiveProof). GitHub is the harness's REST stand-in for the
 // issue's pull request (liveGitHub, in live_issue_proof_test.go), which answers the head
 // conflicting from the moment the driver says so, with the base's rules (conflictBaseRules). The
 // minute between the two reads is the daemon's own (workflow's conflictConfirmWait); no seam a

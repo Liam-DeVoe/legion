@@ -1,5 +1,3 @@
-//go:build e2e
-
 package daemon
 
 // approved_version_news_steps_live_test.go holds the bodies of part two's three steps

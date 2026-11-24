@@ -1,5 +1,3 @@
-//go:build e2e
-
 package daemon
 
 // approved_version_news_seed_live_test.go holds part one's seed of the approved-version-news live

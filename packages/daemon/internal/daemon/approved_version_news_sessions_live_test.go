@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The driver of part two of dispatch://INFRA-175's c-live: real Oh My Pi sessions, on the role
 // prompts this checkout composes and on the base commit's, answering a new version of a design.
 // Part one (approved_version_news_live_test.go) proves what the daemon sends; this part proves what
@@ -7,7 +5,8 @@
 // child's checks, or of a root's spec under `gates.design: off`, tells the workers holding the
 // phases the version changes with its own Envoy message and requests no approval, and a worker
 // told of an approved version moves its issue back when its work is stale and writes a comment
-// when it is current. scripts/e2e/approved-version-news.sh builds this driver with `-tags e2e`.
+// when it is current. scripts/e2e/approved-version-news.sh runs it as a benchmark, a tool
+// (BenchmarkRealSessionsTellAndAnswerANewVersion), which no job runs.
 //
 // Every part a session touches is the real one, built from this checkout or the pod's own. Each
 // pane is a real `omp --mode rpc` (LEGION_OMP_PATH) under the real `legion worker-shim`, started by
@@ -259,13 +258,30 @@ type sessionsLive struct {
 	evidence string
 }
 
-// TestRealSessionsTellAndAnswerANewVersionLive prints the plan of the steps, arms and count of runs
-// the pick names (pickSessions, sessionsPick.plan), by default each step three times in the head
-// arm and then, for off, three times in the base arm, and then runs them, unless -part-two-plan
-// asks for the plan alone. It stops at the first head run that does not pass: one
-// that failed its assertion, or one that stopped before it. It stops at a run of either arm that
-// the harness failed too (run). A run that -test.run leaves out is none of these.
-func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
+// BenchmarkRealSessionsTellAndAnswerANewVersion is part two, a tool and not a test:
+// scripts/e2e/approved-version-news.sh runs it with `-run '^$' -bench
+// '^BenchmarkRealSessionsTellAndAnswerANewVersion$' -benchtime=1x`, so it runs once, on a real
+// model, for a person deciding on the prompts, and no `go test` of the package runs it, since no
+// job passes -bench. Its runs share every helper of the package's live proofs, which each take a
+// *testing.T (liveProof, the daemon's, the waits of internal/testwait, which read the test's
+// deadline), and a benchmark has none: so it runs them as one test of its own through
+// testing.RunTests, the function `go test` runs a package's tests with, given a matcher that
+// takes it whatever -test.run says (the script's `^$`, which keeps every test out). A missing
+// model key fails it, as any fault of the runs does.
+func BenchmarkRealSessionsTellAndAnswerANewVersion(b *testing.B) {
+	every := func(string, string) (bool, error) { return true, nil }
+	if !testing.RunTests(every, []testing.InternalTest{{Name: "RealSessionsTellAndAnswerANewVersion", F: realSessionsTellAndAnswerANewVersion}}) {
+		b.Fatal("part two failed; its plan, its runs and the line of each are above")
+	}
+}
+
+// realSessionsTellAndAnswerANewVersion prints the plan of the steps, arms and count of runs the
+// pick names (pickSessions, sessionsPick.plan), by default each step three times in the head arm
+// and then, for off, three times in the base arm, and then runs them, unless -part-two-plan asks
+// for the plan alone. It stops at the first head run that does not pass: one that failed its
+// assertion, or one that stopped before it. It stops at a run of either arm that the harness
+// failed too (run).
+func realSessionsTellAndAnswerANewVersion(t *testing.T) {
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
 	if err != nil {
@@ -304,13 +320,13 @@ func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 
 // newSessionsLive starts what every run shares: natsd and the listener on it, Dispatch on that
 // broker, the `legion` and the two plugins built from this checkout in a profile of the run's
-// own, routed to the real model through the counting proxy. Unset, the key file skips the test:
-// only the script names one.
+// own, routed to the real model through the counting proxy. Unset, the key file fails the run:
+// the script names one, and a run without a model key measures nothing.
 func newSessionsLive(t *testing.T) *sessionsLive {
 	t.Helper()
 	keyFile := os.Getenv(sessionsKeyFileEnv)
 	if keyFile == "" {
-		t.Skipf("%s is unset, so there is no model key for a session; scripts/e2e/approved-version-news.sh names it", sessionsKeyFileEnv)
+		t.Fatalf("%s is unset, so there is no model key for a session; scripts/e2e/approved-version-news.sh names it", sessionsKeyFileEnv)
 	}
 	s := &sessionsLive{t: t, client: &http.Client{Timeout: 30 * time.Second}, omp: paneOMP(t)}
 	for name, into := range map[string]*string{

@@ -1,5 +1,3 @@
-//go:build e2e
-
 package daemon
 
 // approved_version_news_part_one_steps_live_test.go holds part one's steps of the
@@ -48,8 +46,7 @@ func (r *versionNewsLive) holdPhase(key string, want phase.Phase) {
 // awaitQueued waits for a task the daemon queued for c after mark that it has not sent, which is a
 // task waiting behind the turn c is in, and returns it. A task it sent into that turn fails the
 // run. In A2 its failure is the one-approval check's: `waited <bound> for a task queued for the
-// reviewer of <key> behind its open turn; last seen: …`. The script's negative control bites on
-// those words alone (control_failure in approved-version-news.sh), so change both together.
+// reviewer of <key> behind its open turn; last seen: …`.
 func (r *versionNewsLive) awaitQueued(c *versionNewsClaimant, mark time.Time) api.DeliveryView {
 	r.t.Helper()
 	var queued api.DeliveryView

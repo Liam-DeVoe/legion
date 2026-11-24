@@ -1,15 +1,13 @@
-//go:build e2e
-
 // The live proof's driver for the group of each new issue: a project declares the experiment
 // planning, whose arm a runs each issue as its owner gives it (plan owner) and whose arm b runs the
 // project's default steps (plan default). The whole daemon records the group each new issue is
 // drawn into, the operator reads it with the real `legion state`, the owner of an issue of a has
 // its plan taken, and the owner of an issue of b is answered PLAN_NOT_TAKEN.
-// scripts/e2e/experiment.sh builds this driver with `-tags e2e` and owns the nats-server and the
-// PostgreSQL it runs against.
+// ci.yaml's daemon-live job runs it (.github/actions/daemon-live), over the package's broker
+// (workflowNATS) and the job's PostgreSQL.
 //
 // Nothing of the draw's path is stood in for. Dispatch is the real server this checkout builds
-// (startScratchDispatchOn), on a database of its own, its events on the script's broker, which the
+// (startScratchDispatchOn), on a database of its own, its events on the package's broker, which the
 // daemon consumes, as the person's handover proof runs it (personHandoverRig). The daemon is the
 // whole daemon (run, through startDaemonWithin) with dispatch_url at that server. Each issue is
 // created and handed to Legion as the person's todo through Dispatch's API, as at the dashboard;
@@ -41,7 +39,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
 
 // experimentLive is one run of the proof: the person's handover rig with the daemon it boots, the
@@ -71,7 +68,7 @@ type experimentIssue struct {
 // the operator's line after the second boot shows.
 func TestExperimentLive(t *testing.T) {
 	fixtureenv.Live(t)
-	natsURL := testnats.URL(t)
+	natsURL := workflowNATS(t)
 	root := liveCLICheckout(t)
 	options := scratchDispatchOptions{natsURL: natsURL, root: root}
 	logDir := liveLogDir(t)

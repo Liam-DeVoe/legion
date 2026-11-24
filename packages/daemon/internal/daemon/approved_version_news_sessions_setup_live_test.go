@@ -1,5 +1,3 @@
-//go:build e2e
-
 package daemon
 
 // approved_version_news_sessions_setup_live_test.go holds part two's setup of the

@@ -394,7 +394,9 @@ jobs:
     services:
       postgres: *postgres-tcp
     steps:
-      - *checkout
+      # why: .github/ci-notes/ci.md#the-daemon-live-job
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
       - name: daemon-live
         uses: ./.github/actions/daemon-live
       - *report

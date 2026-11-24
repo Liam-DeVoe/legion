@@ -1,10 +1,9 @@
-//go:build e2e
-
 // The live proof's driver of an owner's plan: the owner of an issue writes its plan.md through the
 // real `dispatch` CLI and gives it to Legion with register_plan, and the whole daemon runs the steps
 // that plan names, in the order it names them and no other, then the retro and the merge, while an
-// issue whose owner gives no plan runs the project's default steps. scripts/e2e/owner-steps.sh
-// builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// issue whose owner gives no plan runs the project's default steps. ci.yaml's daemon-live job runs
+// it (.github/actions/daemon-live), over the package's broker (workflowNATS, through newLiveProof)
+// and the job's PostgreSQL.
 //
 // Nothing of the plan's path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the
@@ -121,7 +120,7 @@ func TestOwnerStepsLive(t *testing.T) {
 }
 
 // newOwnerStepsLive is the run a live driver of an owner's plan makes around its checks: the broker
-// the package's other tests take (newLiveProof), the checkout its script runs from and bun on PATH
+// the package's other tests take (newLiveProof), the checkout the package is in and bun on PATH
 // (liveCLICheckout), the rig over issues issues on a Dispatch this checkout builds, and the person's
 // CLI with a personal token Dispatch minted for that person.
 func newOwnerStepsLive(t *testing.T, issues int) *ownerStepsLive {

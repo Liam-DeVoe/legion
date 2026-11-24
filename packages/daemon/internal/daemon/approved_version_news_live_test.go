@@ -1,14 +1,12 @@
-//go:build e2e
-
 // The driver of part one of dispatch://INFRA-175's c-live: one approval request covers a root's
 // spec and its Verification document, and an approved new version of either reaches the worker
 // holding each affected issue's phase, naming what changed, without the daemon moving an issue or
-// stopping a turn. scripts/e2e/approved-version-news.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// stopping a turn. ci.yaml's daemon-live job runs it (.github/actions/daemon-live), over the
+// package's broker (workflowNATS) and the job's PostgreSQL.
 //
 // Nothing of the approval path is stood in for. Dispatch is the real server built from the
-// checkout the script names (testbuild.RootEnv), started by the package's own scratch helper with
-// its events on the script's broker, as startScratchDispatchWithNATS starts it, on a database of
+// checkout (testbuild.RootEnv, else the one this package is in), started by the package's own
+// scratch helper with its events on the package's broker, as startScratchDispatchWithNATS starts it, on a database of
 // its own on LEGION_TEST_PG_DSN's server, with header identity: the person `smoke` approves every
 // version through POST /api/v1/artifacts/{id}/reviews, and each tree's architect writes every new
 // version through Dispatch's own edit route and opens its approval request through
@@ -20,8 +18,8 @@
 // (shimwire frames) and calls the daemon's HTTP routes as the plugin does: registration,
 // readiness, grants, register_gate, handoff_complete and request_backward_move.
 //
-// What is stood in for lies outside the approval path. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is the package's repositoriesGitHub,
+// What is stood in for lies outside the approval path. The broker is the package's test NATS
+// server (workflowNATS). GitHub is the package's repositoriesGitHub,
 // which startDaemonWithin boots the daemon with: each repository with default branch main, and
 // every other request answered 404. Envoy's listener is the package's noticeListener, the two
 // Apps' tokens are workflowTokenRecorder's placeholders, and no agent runs: each claim is launched
@@ -53,13 +51,12 @@
 // names the issue, the field and both values. A schema without the table, which is a release from
 // before that record, is seeded and checked nothing there. The driver uses no Go symbol the change
 // adds: the start path's functions are main's own, and it reads and writes the told record in SQL
-// alone, so the script can build it against a base commit's daemon, which is the run's negative
-// control.
+// alone, so it builds against a base commit's daemon too.
 //
 // No session of part one runs the legion plugin or writes a transcript, so part one has no
 // contract refusal of the plugin to read, which part two fails a run on (sessionsContractRefusal).
 //
-// Every check prints `   assert <step>: <what held>` once it holds, which the script counts, and
+// Every check prints `   assert <step>: <what held>` once it holds, and
 // a check that does not hold prints `FAIL <step>: <what did not hold>` and ends the run. A failure
 // outside the checks, such as the harness's read of a daemon that died, prints the step's FAIL
 // line in words of no check (run). Every wait is bounded, and its failure names what it waited
@@ -83,8 +80,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -95,16 +90,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // The steps of part one, in the order they run: A2's approval of a new version is the run's first
 // one-approval step, on a tree that registers its spec alone, because a daemon from before the
 // change refuses A1's criteria registration under root-issues (GATE_STEP_NOT_CONFIGURED), and a
-// run that began there would end before any delivery was tested, so the negative control would
-// fail for a reason the change does not touch. The script counts each step's checks under these
-// names.
+// run that began there against such a daemon would end before any delivery was tested.
 const (
 	versionNewsA2  = "a2-the-reviewer-is-told-the-changed-sections"
 	versionNewsA1  = "a1-one-request-opens-both-rows"
@@ -221,14 +213,13 @@ func TestAnApprovedVersionReachesItsHolderLive(t *testing.T) {
 	r.run(versionNewsOff, r.off)
 }
 
-// newVersionNewsLive takes the package's broker (testnats), makes the stream the daemon's intake
-// consumes, and starts the run's Dispatch with its events on that broker.
+// newVersionNewsLive takes the package's broker with the stream the daemon's intake consumes
+// (workflowNATS), and starts the run's Dispatch with its events on that broker.
 func newVersionNewsLive(t *testing.T) *versionNewsLive {
 	t.Helper()
-	natsURL := testnats.URL(t)
-	// The checkout the script builds Dispatch from; unset (a plain `go test -tags e2e` in the
-	// package directory), the checkout four directories up. The driver binary runs from the
-	// caller's directory, which is why the script names it.
+	natsURL := workflowNATS(t)
+	// The checkout Dispatch is built from: the one testbuild.RootEnv names, else the checkout
+	// four directories above the package's, where go test runs it.
 	checkout := os.Getenv(testbuild.RootEnv)
 	if checkout == "" {
 		checkout = filepath.Join("..", "..", "..", "..")
@@ -240,13 +231,9 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 	r := &versionNewsLive{natsURL: natsURL, client: &http.Client{Timeout: 30 * time.Second}}
 	r.t = t
 	r.running = "setup"
-	js := workflowJetStream(t, natsURL)
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
-	r.js = js
+	r.js = workflowJetStream(t, natsURL)
 	// startScratchDispatchWithNATS's server, started through the options it wraps so that it runs
-	// in the checkout the script names and writes its log in the test's log directory
-	// (liveLogDir): the helper itself finds the checkout four directories above the working
-	// directory, which is the package's, and this binary runs from the caller's.
+	// in the checkout above and writes its log in the test's log directory (liveLogDir).
 	options := scratchDispatchOptions{natsURL: natsURL, root: checkout}
 	if dir := liveLogDir(t); dir != "" {
 		options.log = evidenceFile(t, filepath.Join(dir, "dispatch.log"))
@@ -432,8 +419,7 @@ func versionNewsVerification(check, words string) string {
 // run runs one step between its `== name` and `ok name` lines, and prints the step's FAIL line when
 // it stops on a failure that printed none of its own, so that every stopped step is named. That is
 // a failure outside the step's checks, such as the harness failing a read of a daemon that died,
-// and its line holds no check's words: the script's negative control bites only on the words of
-// A2's one-approval check (awaitQueued), so a harness failure there is no control.
+// and its line holds no check's words.
 func (r *versionNewsLive) run(name string, body func()) {
 	r.t.Helper()
 	r.running, r.named = name, false
@@ -445,7 +431,7 @@ func (r *versionNewsLive) run(name string, body func()) {
 	r.step(name, body)
 }
 
-// held prints one check of the step that held, which the script counts.
+// held prints one check of the step that held.
 func (r *versionNewsLive) held(format string, args ...any) {
 	fmt.Printf("   assert %s: %s\n", r.running, fmt.Sprintf(format, args...))
 }

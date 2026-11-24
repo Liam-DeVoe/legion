@@ -682,13 +682,26 @@ daemon-go race step skips them by name (check-ci-layout.sh's rule 22 holds the -
 
 ## The daemon-live job
 
-The ten whole-daemon live tests of the daemon's Go suite that
+The fifteen whole-daemon live tests of the daemon's Go suite that
 this job's -run names: each boots the whole daemon over
 this job's PostgreSQL and the package's test NATS server and drives it with no agent. They
-were the drivers of ten scripts under scripts/e2e, which no job of this router ran; they
+were the drivers of scripts under scripts/e2e, which no job of this router ran; they
 run here on each pull request and merge group whose paths select them, and the daemon-go race
 step skips them by name (check-ci-layout.sh's rule 22 holds the two lists). Not
 fail-open: their tests were in no job that `changes` failing runs.
+
+Five of them came from main after the layout (departure 11): the conflict past the review
+(conflict_merger_live_test.go, #4979), the owner's plan and its client
+(owner_steps_live_test.go and owner_steps_client_live_test.go, #4611), the group of each new
+issue (plan_experiment_live_test.go, #4930) and part one of the approved version's news
+(approved_version_news_live_test.go, #3995). Each lost its `e2e` tag and takes the package's
+broker (workflowNATS), and its script went. The client test builds the plugin of the release
+before from main's first-parent line, so the job checks out the whole history (`fetch-depth: 0`,
+departure 12): the test reads `origin/main` there and fetches nothing from GitHub. Part two of
+the approved version's news is a tool, BenchmarkRealSessionsTellAndAnswerANewVersion, which
+scripts/e2e/approved-version-news.sh runs and no job does. The package run's `-timeout 30m` and
+the job's 40 minutes hold the five until a dispatch run measures them; where the job's mean
+passes 22 minutes it splits into legs by explicit `-run` lists whose union rule 22 holds.
 
 ## The agent-harness job and its legs
 

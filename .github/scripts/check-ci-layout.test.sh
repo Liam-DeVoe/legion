@@ -197,7 +197,7 @@ root=$(fresh carriers)
 ci=$root/.github/workflows/ci.yaml
 replace "$ci" $'leg-verdict.sh \'envoy-go (1/3)\' \'envoy-go (2/3)\' \'envoy-go (3/3)\'\n' \
   $'leg-verdict.sh \'envoy-go (1/3)\' \'envoy-go (2/3)\' \'envoy-go (3/3)\'\n      - run: echo a fourth step\n'
-replace "$ci" $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: \'${{ toJSON(needs.changes) }}\', job-status: \'${{ job.status }}\'}}\n' \
+replace "$ci" $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n      - *report\n' \
   $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n'
 replace "$ci" $'  airlock-arm:\n' \
   "  plugin-pack-carrier:
@@ -207,11 +207,10 @@ replace "$ci" $'  airlock-arm:\n' \
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '\${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'plugin-pack / plugin-pack'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '\${{ toJSON(needs.changes) }}', job-status: '\${{ job.status }}'}}
+      - *report
 
   airlock-arm:
 "

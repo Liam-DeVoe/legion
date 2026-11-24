@@ -1,7 +1,7 @@
 name: Run the whole-daemon live tests
 description: >-
-  The steps of ci.yaml's daemon-live job: the ten whole-daemon live tests of internal/daemon that
-  this job's -run names, every test of the ten files that carry them. Each boots the whole daemon
+  The steps of ci.yaml's daemon-live job: the fifteen whole-daemon live tests of internal/daemon
+  that this job's -run names, every test of the files that carry them. Each boots the whole daemon
   through the function `legion start` calls,
   over the job's PostgreSQL and the package's test NATS server, and drives it through GitHub and
   Dispatch envelopes, its own HTTP routes and its worker stream, with no agent. The go-daemon race
@@ -11,7 +11,11 @@ description: >-
   scripts/e2e/completion-head.ts under bun, and step_records_live_test.go and
   plan_ratings_live_test.go the CLI, which load the installed workspace, the second also
   scripts/e2e/plan-ratings-read.sh, and with them in go-daemon a change to the lockfile or to the
-  CLI's sources would run the daemon's whole Go suite.
+  CLI's sources would run the daemon's whole Go suite. Five came from main's hosted scripts
+  (departure 11): conflict_merger_live_test.go, owner_steps_live_test.go,
+  owner_steps_client_live_test.go (which runs scripts/e2e/owner-steps-client.ts under bun and reads
+  main's history from the job's whole checkout), plan_experiment_live_test.go and part one of
+  approved_version_news_live_test.go.
 
   Everything here is what those tests need: the job's pgvector Postgres service and
   LEGION_TEST_PG_DSN, the store every daemon the tests boot migrates and runs on and the server the
@@ -76,11 +80,11 @@ runs:
 
     - uses: ./.github/actions/install-gotestsum
 
-    # The ten tests, by name, under gotestsum (.github/scripts/go-test.sh). This -run and the
+    # The fifteen tests, by name, under gotestsum (.github/scripts/go-test.sh). This -run and the
     # go-daemon race step's -skip name the same tests, which check-ci-layout.sh's rule 22 holds. The
-    # -timeout is the 20
-    # minutes each test had under the script that drove it, so a hung test prints the goroutine
-    # dump that names it before the runner cancels the job.
+    # -timeout of 30 minutes bounds the package's run of all fifteen, so a hung test prints the
+    # goroutine dump that names it before the job's 40 minutes cancel it; the five main's hosted
+    # scripts brought are not yet measured here (.github/ci-notes/ci.md#the-daemon-live-job).
     - name: Run the whole-daemon live tests
       shell: bash
       working-directory: packages/daemon
@@ -91,7 +95,7 @@ runs:
         # pull a test could fail on.
         TESTCONTAINERS_RYUK_DISABLED: "true"
         LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/daemon-live-logs
-      run: ../../.github/scripts/go-test.sh --jsonfile daemon-live-daemon-live-run.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictKeepsThePhaseAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestHandoffRecordsLive|TestPlanRatingsLive|TestReviewRangeLive|TestStepRecordsLive|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive)$'
+      run: ../../.github/scripts/go-test.sh --jsonfile daemon-live-daemon-live-run.json --packages ./internal/daemon/ -- -count=1 -timeout 30m -run '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictKeepsThePhaseAndTakesNoTurnOverLive|TestAConflictPastTheReviewIsTheMergersLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestAnApprovedVersionReachesItsHolderLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestExperimentLive|TestHandoffRecordsLive|TestOwnerStepsClientLive|TestOwnerStepsLive|TestPlanRatingsLive|TestReviewRangeLive|TestStepRecordsLive|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive)$'
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:

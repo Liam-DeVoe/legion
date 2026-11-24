@@ -1,11 +1,10 @@
-//go:build e2e
-
 // The live proof of the owner's plan through the plugin's own daemon client: the calls the `legion`
 // tool makes for register_plan, stop_task and handoff_complete, made by createLegionDaemonClient
 // (packages/pi-shared/src/daemon-client.ts) under bun, with grants minted by mintClaimGrant and the
 // completion sent by the phase op itself (executePhaseOp, legion-phase-ops.ts), against the whole
 // daemon booted as the owner's steps driver boots it (newOwnerStepsRig over a Dispatch this
-// checkout builds). scripts/e2e/owner-steps-client.sh builds this driver with `-tags e2e`; each
+// checkout builds). ci.yaml's daemon-live job runs it (.github/actions/daemon-live), from a
+// checkout that holds main's history (releaseBefore reads it there); each
 // call is one run of scripts/e2e/owner-steps-client.ts, which prints what the client answered or
 // threw.
 //
