@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -139,13 +140,17 @@ func stringOf(value *string) string {
 
 // WrittenText is what WriteDocumentText wrote: the document's markdown as the store renders it,
 // the version that holds it as its insert will leave it, that rendering read back by its own parse
-// (Ledger.ReadBackOf, nil when the write left none), and what the version moves in the reference
-// graph.
+// (Ledger.ReadBackOf, nil when the write left none), what the version moves in the reference
+// graph, and what its block index stated in the node and tuple store (Blocks). The index runs
+// before the event that records the version exists, and no tuple may be updated afterwards, so
+// the caller appends Blocks under that event, in the same transaction (graphstore.QueueCaused),
+// as every other writer of a version does (VersionResult.Blocks).
 type WrittenText struct {
 	Markdown string
 	Version  model.Version
 	ReadBack *pmdoc.Node
 	Changes  model.ReferenceChanges
+	Blocks   graphstore.Uncaused
 }
 
 // WriteDocumentText writes markdown as the whole text of the document artifactID and queues it as
@@ -161,8 +166,9 @@ type WrittenText struct {
 // and indexes the version's references. ctx is the context Join returned: every read runs in the
 // transaction it joined, and every write is queued on its ledger.
 //
-// It appends no event: an upload appends its own, after the approval moves a replacement makes,
-// and the eval registry appends the creation's.
+// It appends no event, and so states none of Blocks: an upload appends its own event, after the
+// approval moves a replacement makes, and the eval registry appends the creation's, and each
+// appends Blocks under it.
 func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown string, actor model.Actor, summary *string, created bool, precondition *model.EditPrecondition) (WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	tx, joined := txFromContext(ctx)
@@ -192,11 +198,11 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 	if err := RecordWrittenTaskProgress(ctx, tx, artifactID, readBack, stored); err != nil {
 		return WrittenText{}, err
 	}
-	changes, err := documents.IndexDocumentReferences(ctx, artifactID, version.Number, stored)
+	changes, blocks, err := documents.IndexDocumentReferences(ctx, artifactID, version.Number, stored)
 	if err != nil {
 		return WrittenText{}, err
 	}
-	return WrittenText{Markdown: stored, Version: version, ReadBack: readBack, Changes: changes}, nil
+	return WrittenText{Markdown: stored, Version: version, ReadBack: readBack, Changes: changes, Blocks: blocks}, nil
 }
 
 // CreateDocument creates a markdown document with no request behind it: it queues row's insert

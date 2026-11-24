@@ -56,6 +56,7 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // repository (storetest, pgmigratetest, legiontest), and no package a request reaches is named
 // that way.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {

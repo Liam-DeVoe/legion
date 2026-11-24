@@ -43,8 +43,7 @@ func TestCensusExemptsATriggerMigrationFromTheTableLimit(t *testing.T) {
 		{"the session titles trigger", sessionTitlesTrigger - 1, sessionTitlesTrigger, "events"},
 	} {
 		t.Run(migration.name, func(t *testing.T) {
-			store := openEmptyTestStore(t)
-			migrateThrough(t, store, migration.before)
+			store := openMigratedTestStore(t, migration.before)
 			report, err := census(context.Background(), store.Pool.Config().ConnString(),
 				migrationsThrough(t, migration.trigger), pgmigrate.CensusOptions{TableLimit: 1})
 			if err != nil {

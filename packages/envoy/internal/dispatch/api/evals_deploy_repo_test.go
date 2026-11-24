@@ -363,7 +363,7 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing(t *testing.T) {
 		for _, shape := range shapes {
 			answer, _ := r.read(t, shape)
 			if got, want := values(t, answer), move.want(shape); !slices.Equal(got, want) {
-				index := firstLine(got, want)
+				index := firstDifferingLine(got, want)
 				t.Errorf("under %s, %s states otherwise than it should, first at item %d of %d:\n\tgot  %s\n\twant %s",
 					move.repo, shape.name, index, len(want), lineAt(got, index), lineAt(want, index))
 			}
@@ -371,8 +371,8 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing(t *testing.T) {
 	}
 }
 
-// firstLine is the first index at which a and b differ.
-func firstLine(a, b []string) int {
+// firstDifferingLine is the first index at which a and b differ.
+func firstDifferingLine(a, b []string) int {
 	for index := range min(len(a), len(b)) {
 		if a[index] != b[index] {
 			return index

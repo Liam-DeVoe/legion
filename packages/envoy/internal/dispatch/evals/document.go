@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -127,7 +128,7 @@ func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string,
 	if err := s.queueDocumentEvent(w, artifact.ID, model.Event{
 		ArtifactID: &artifact.ID, Type: "artifact.created", Actor: actor,
 		Payload: docs.ArtifactCreatedEventPayload(artifact, written.Changes),
-	}); err != nil {
+	}, written.Blocks); err != nil {
 		return err
 	}
 	w.owesSettlement(artifact.ID)
@@ -137,17 +138,22 @@ func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string,
 // queueDocumentEvent queues event, an event of the document artifactID, on w's ledger: its append
 // (events.Broker.QueueAppend) and, in the same step, the stamp of the document's new reference
 // edges with its id (refs.QueueStamp), after the append so stamping never touches sequence
-// allocation, as api's queueStampedEvent queues a route's. The append takes the document's owner
-// lock again, which the write holds from its read phase (lockDocument), and the owner's row, in
-// the write phase. The event is filled in once the ledger's Commit has run that phase, and
-// published once the transaction has committed (committed).
-func (s *Store) queueDocumentEvent(w *writeTx, artifactID string, event model.Event) error {
+// allocation, as api's queueStampedEvent queues a route's. Right after them it appends what the
+// version's block index stated in the node and tuple store (blocks) under that event
+// (graphstore.QueueCaused over graphstore.LatestEvent), as api's storeArtifact and
+// commitArtifactVersionEvent do for an upload and an edit: the index ran in the read phase,
+// before the event existed, and no tuple may be updated once it is appended. The append takes the
+// document's owner lock again, which the write holds from its read phase (lockDocument), and the
+// owner's row, in the write phase. The event is filled in once the ledger's Commit has run that
+// phase, and published once the transaction has committed (committed).
+func (s *Store) queueDocumentEvent(w *writeTx, artifactID string, event model.Event, blocks graphstore.Uncaused) error {
 	appended := new(model.Event)
 	if err := w.ledger.Queue(func(b *store.WriteBatch) error {
 		if err := s.events.QueueAppend(b, event, func(written model.Event) { *appended = written }); err != nil {
 			return err
 		}
 		refs.QueueStamp(b, "artifact", artifactID)
+		graphstore.QueueCaused(b, blocks, graphstore.LatestEvent)
 		return nil
 	}); err != nil {
 		return err
@@ -282,7 +288,7 @@ func (s *Store) editDocument(ctx context.Context, w *writeTx, document evalsDocu
 	return s.queueDocumentEvent(w, document.id, model.Event{
 		ArtifactID: &document.id, Type: "artifact.version", Actor: actor,
 		Payload: docs.ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes),
-	})
+	}, written.Blocks)
 }
 
 // owesSettlement records that the transaction wrote artifactID, whose settlement is scheduled
