@@ -28,8 +28,8 @@ const placeholderLeft = "this request still carries a placeholder after the swap
 // order only once one has been found to carry one, so which placeholder a line names does not
 // depend on the run, and a request that carries none - every request the swap served - costs no
 // sort. The unescape is read last and only where it says something the query as written did not:
-// a query that holds no escape unescapes to itself, which has been read already, and one that
-// holds an escape is not unescaped at all once an earlier text has answered.
+// a query the unescape leaves as written has been read already, and one it changes is not
+// unescaped at all once an earlier text has answered.
 func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, values := range header {
 		for _, v := range values {
