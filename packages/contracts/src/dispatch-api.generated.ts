@@ -2793,7 +2793,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds and what it uses it for (slot_use), the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, why it waits and since when (waiting) and its place in the daemon's waiting line (waiting_place), its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue being in the map only through its tree; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -5672,9 +5672,12 @@ export interface components {
       priority: null | number;
       roles: string[] | null;
       slot: null | number;
+      slot_use: null | string;
       title: string;
       tree: string;
+      waiting: components["schemas"]["LegionBoardWaiting"] | null;
       waiting_on: components["schemas"]["LegionBoardWait"] | null;
+      waiting_place: null | number;
     };
     LegionBoardColumn: {
       cards: components["schemas"]["LegionBoardCard"][] | null;
@@ -5693,7 +5696,47 @@ export interface components {
         | "held";
       label: string;
     };
+    LegionBoardFacts: {
+      /** Format: date-time */
+      as_of: null | string;
+      /** Format: date-time */
+      closed_at: null | string;
+      growth: components["schemas"]["LegionBoardGrowth"] | null;
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: date-time */
+      opened_at: string;
+      review_rounds: number;
+      root_key: string;
+      /** Format: double */
+      slot_hours: number;
+      tree_depth: number;
+      /** Format: date-time */
+      updated_at: string;
+      waiting_reason: string;
+      /** Format: date-time */
+      work_first_at: null | string;
+      /** Format: double */
+      work_hours: number;
+      /** Format: date-time */
+      work_last_at: null | string;
+    };
+    LegionBoardGrowth: {
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: double */
+      slot_hours: number;
+      /** Format: double */
+      work_hours: number;
+      /** Format: double */
+      work_last_at: number;
+    };
     LegionBoardHeader: {
+      facts_cursor_age_seconds: null | number;
+      /** Format: date-time */
+      facts_updated_at: null | string;
       queue_length: number;
       /** Format: date-time */
       read_at: null | string;
@@ -5708,6 +5751,9 @@ export interface components {
       /** Format: date-time */
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
+      issues: {
+        [key: string]: components["schemas"]["LegionBoardFacts"];
+      } | null;
       project: string;
       settings: {
         [key: string]: unknown;
@@ -5717,6 +5763,12 @@ export interface components {
       /** Format: date-time */
       answered_at: null | string;
       kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionBoardWaiting: {
+      blocked_by: string[] | null;
+      reason: string;
       /** Format: date-time */
       since: null | string;
     };
@@ -15258,9 +15310,12 @@ export type LauncherCredentialsResponse = components["schemas"]["LauncherCredent
 export type LeadTime = components["schemas"]["LeadTime"];
 export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
 export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
+export type LegionBoardFacts = components["schemas"]["LegionBoardFacts"];
+export type LegionBoardGrowth = components["schemas"]["LegionBoardGrowth"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
