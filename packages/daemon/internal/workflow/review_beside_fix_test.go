@@ -137,10 +137,12 @@ func TestAPushOfTheFixReasksNoReview(t *testing.T) {
 	r.assertApprovalOfXDecided()
 	assertPhase(t, r.pool, phase.Testing)
 
+	// GitHub's answer that keeps an approval beside a fix waiting is one the fix does not cause:
+	// the head is behind its base (a blocked head beside a running fix ends the round).
 	t.Run("an approval of X that waits on GitHub's answer", func(t *testing.T) {
 		r := besideTheFix(t)
 		seedPR(t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42,
-			Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}, MergeState: record.MergeStateBlocked})
+			Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}, MergeState: record.MergeStateBehind})
 		r.reviewOf(1, "approved", fixHead)
 		r.reviewerCompletes()
 		assertPhase(t, r.pool, phase.Reviewing)
