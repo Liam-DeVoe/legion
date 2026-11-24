@@ -492,6 +492,66 @@ func TestABrokerDownAtTheStartStopsOnlyGitHubCalls(t *testing.T) {
 	}
 }
 
+// stallingWriter is a log sink whose writes of a line holding match block until free is called,
+// as a role's stderr does when nothing drains it; stalled is closed when the first such write
+// begins. Every other line is kept.
+type stallingWriter struct {
+	match   string
+	stalled chan struct{}
+	release chan struct{}
+	once    sync.Once
+	freed   sync.Once
+	lockedBuffer
+}
+
+func newStallingWriter(match string) *stallingWriter {
+	return &stallingWriter{match: match, stalled: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *stallingWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.match) {
+		w.once.Do(func() { close(w.stalled) })
+		<-w.release
+	}
+	return w.lockedBuffer.Write(p)
+}
+
+// free lets every stalled write through, once.
+func (w *stallingWriter) free() { w.freed.Do(func() { close(w.release) }) }
+
+// TestAStalledLogDoesNotHoldBackTheRevokeAtTheStop: when the forwarder's log stalls on the line
+// about a grant it just got (its stderr not drained), a stop still revokes that grant at once,
+// well inside the stop bound: the grant is held before any line about it is written, and the
+// revocation waits for the grant to be held, not for the line about it.
+//
+// The named reverts: put the grant in held only when the ask is published, after its log lines
+// (as at d377b67), and the grant is never revoked while the log stalls; have the stop wait for
+// the ask to end, and the revocation comes only when the stop bound runs out.
+func TestAStalledLogDoesNotHoldBackTheRevokeAtTheStop(t *testing.T) {
+	logs := newStallingWriter("holds a grant")
+	r := newRig(t, func(cfg *Config, _ *fakeBroker) { cfg.Log = slog.New(slog.NewTextHandler(logs, nil)) })
+	t.Cleanup(logs.free) // runs before the rig's own shutdown, which waits for the stop to end
+	select {
+	case <-logs.stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the forwarder wrote no line about a grant")
+	}
+	r.stop()
+	deadline := time.Now().Add(stopBound / 2)
+	for time.Now().Before(deadline) && !slices.Contains(r.broker.revokedIDs(), "g1") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if revoked := r.broker.revokedIDs(); !slices.Contains(revoked, "g1") {
+		t.Fatalf("the broker saw revocations %v %s into a stop while the log stalled; want g1 revoked at once", revoked, stopBound/2)
+	}
+	logs.free()
+	select {
+	case <-r.stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the forwarder did not stop once its log drained")
+	}
+}
+
 // TestAGrantInFlightAtTheStopIsRevokedWhenItLands: an ask the broker answers only after the
 // forwarder's stop began still lands a grant, and the stop waits for it, within its bound, and
 // revokes it.
@@ -578,20 +638,23 @@ func (b *lockedBuffer) String() string {
 
 // TestAGrantBindingAHostTheConfigLacksIsWarnedOf: at each grant the forwarder compares the hosts
 // the grant binds with the hosts it was told (Config.GitHubHosts, the deployment's github_hosts)
-// and logs one warning naming each host the grant binds that the configured list lacks, and the
-// key to change: such a host goes out directly before a later forwarder's first grant. A grant
-// whose hosts the list holds, a `*.` entry by its wildcard, logs no such warning.
+// and logs one warning naming each host the grant binds that the configured list does not cover,
+// and the key to change: such a host goes out directly before a later forwarder's first grant. A
+// configured `*.` entry covers every name under its domain, as it does when the forwarder routes
+// (bindsHost), so a host it covers is not warned of, and a host it does not cover still is.
 //
-// The named revert: drop the comparison from the keeper, and the grant with an extra host logs
-// nothing.
+// The named reverts: drop the comparison from the keeper, and the grant with an extra host logs
+// nothing; compare exact entries only, and the wildcard rows warn of api.github.com.
 func TestAGrantBindingAHostTheConfigLacksIsWarnedOf(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		configured []string
-		warned     bool
+		lacks      string // the warning's whole lacks field, "" for no warning
 	}{
-		{"the grant binds a host the config lacks", []string{"api.github.com", "github.com"}, true},
-		{"the config holds every host the grant binds", []string{"api.github.com", "github.com", "*.githubusercontent.com"}, false},
+		{"the grant binds a host the config lacks", []string{"api.github.com", "github.com"}, "lacks=[*.githubusercontent.com] "},
+		{"the config holds every host the grant binds", []string{"api.github.com", "github.com", "*.githubusercontent.com"}, ""},
+		{"a wildcard entry covers a host, and an uncovered one is still warned of", []string{"*.github.com", "github.com"}, "lacks=[*.githubusercontent.com] "},
+		{"wildcard entries cover every host the grant binds", []string{"*.github.com", "github.com", "*.githubusercontent.com"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
@@ -601,17 +664,17 @@ func TestAGrantBindingAHostTheConfigLacksIsWarnedOf(t *testing.T) {
 			})
 			r.awaitGrant()
 			r.shutdown()
-			lines := 0
+			var warnings []string
 			for _, line := range strings.Split(logs.String(), "\n") {
 				if strings.Contains(line, "binds hosts runtime.kubernetes.agent_secrets.github_hosts lacks") {
-					lines++
-					if !strings.Contains(line, "*.githubusercontent.com") || strings.Contains(line, "lacks=\"[api.github.com") {
-						t.Errorf("the warning %q does not name the one host the config lacks", line)
-					}
+					warnings = append(warnings, line)
 				}
 			}
-			if want := map[bool]int{true: 1, false: 0}[tc.warned]; lines != want {
-				t.Fatalf("%d warnings of a host the config lacks; want %d. Log:\n%s", lines, want, logs.String())
+			switch {
+			case tc.lacks == "" && len(warnings) != 0:
+				t.Fatalf("%d warnings of a host the config lacks; want none. Log:\n%s", len(warnings), logs.String())
+			case tc.lacks != "" && (len(warnings) != 1 || !strings.Contains(warnings[0], tc.lacks)):
+				t.Fatalf("warnings %q; want one holding %s. Log:\n%s", warnings, tc.lacks, logs.String())
 			}
 		})
 	}

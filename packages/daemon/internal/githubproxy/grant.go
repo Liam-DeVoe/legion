@@ -42,6 +42,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -196,25 +197,32 @@ type keeper struct {
 // errStopping is the answer to an ask the forwarder's stop came before.
 var errStopping = errors.New("the forwarder is stopping")
 
-// ask is one ask for a grant, which every caller that needs one while it runs joins.
+// ask is one ask for a grant, which every caller that needs one while it runs joins. landed is
+// closed once the ask's grant, if it got one, is in keeper.held, before any line about it is
+// written; done is closed once its outcome is published.
 type ask struct {
-	done  chan struct{}
-	grant *Grant
-	err   error
+	landed chan struct{}
+	done   chan struct{}
+	grant  *Grant
+	err    error
 }
 
-func newKeeper(open func() (Broker, error), names []string, reason string, githubHosts []string, ghDir, defaultOwner string, renames []ghrepo.Rename, renewBefore time.Duration, log *slog.Logger) *keeper {
-	return &keeper{open: open, names: names, reason: reason, githubHosts: githubHosts, ghDir: ghDir, defaultOwner: defaultOwner, renames: renames,
-		renewBefore: renewBefore, log: log, held: map[string]time.Time{}, changed: make(chan struct{})}
+// newKeeper is the keeper of a forwarder of cfg, which Listen has checked and given its defaults,
+// logging to log.
+func newKeeper(cfg Config, log *slog.Logger) *keeper {
+	return &keeper{open: cfg.Open, names: cfg.Secrets, reason: cfg.Reason, githubHosts: cfg.GitHubHosts, ghDir: cfg.GHDir,
+		defaultOwner: cfg.DefaultOwner, renames: cfg.Renames, renewBefore: cfg.RenewBefore, log: log,
+		held: map[string]time.Time{}, changed: make(chan struct{})}
 }
 
-// unconfiguredHosts are the hosts grant binds that the configured github_hosts lack, by exact
-// entry: such a host goes out directly before a later forwarder's first grant, where it should
+// unconfiguredHosts are the hosts grant binds that the configured github_hosts do not cover, as
+// the forwarder routes them (bindsHost: an exact entry, or a `*.` entry for every name under its
+// domain): such a host goes out directly before a later forwarder's first grant, where it should
 // wait for that grant, so each grant that binds one is warned of.
 func (k *keeper) unconfiguredHosts(grant *Grant) []string {
 	var lacking []string
 	for _, host := range grant.Hosts {
-		if !slices.ContainsFunc(k.githubHosts, func(configured string) bool { return strings.EqualFold(configured, host) }) {
+		if !bindsHost(k.githubHosts, host, "443") {
 			lacking = append(lacking, host)
 		}
 	}
@@ -304,7 +312,7 @@ func (k *keeper) askLocked(why string) (*ask, error) {
 		if k.stopping {
 			return nil, errStopping
 		}
-		k.asking = &ask{done: make(chan struct{})}
+		k.asking = &ask{landed: make(chan struct{}), done: make(chan struct{})}
 		go k.run(k.asking, why)
 	}
 	return k.asking, nil
@@ -321,20 +329,26 @@ func (a *ask) wait(ctx context.Context) (*Grant, error) {
 }
 
 // askBound bounds one ask: the request, its wait for a decision, the release and the bundle's
-// write. An agent-tier secret is granted at once, so most asks take one round trip.
+// write. An agent-tier secret is granted at once, so most asks are two broker calls, the request
+// and the release.
 const askBound = 50 * time.Second
 
-// run makes ask a, logs how it ended, and only then publishes the outcome (the current grant, the
+// run makes ask a. A grant goes into held at once, so a stop revokes it whatever the log does;
+// then run logs how the ask ended, and only then publishes the outcome (the current grant, the
 // last error, a.done), so every line about a grant is in the log before any caller can use that
 // grant or read that failure.
 func (k *keeper) run(a *ask, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), askBound)
 	defer cancel()
 	grant, err := k.ask(ctx)
+	if err == nil {
+		k.mu.Lock()
+		k.held[grant.ID] = grant.ExpiresAt
+		k.mu.Unlock()
+	}
+	close(a.landed)
 	switch {
 	case errors.Is(err, cipher.ErrNotEnrolled):
-		// The daemon enrolls the role's key once its agent has registered, so a forwarder started
-		// with the generation waits for it: said once, not at every second's look.
 		k.mu.Lock()
 		said := k.saidNotEnrolled
 		k.saidNotEnrolled = true
@@ -354,7 +368,6 @@ func (k *keeper) run(a *ask, why string) {
 	}
 	k.mu.Lock()
 	if err == nil {
-		k.held[grant.ID] = grant.ExpiresAt
 		k.current = grant
 	}
 	a.grant, a.err = grant, err
@@ -421,7 +434,7 @@ func (k *keeper) write(grant *Grant) error {
 		bundle.Dirs[account] = ghconfig.Render(placeholder, "proxy", grant.ExpiresAt)
 	}
 	if _, held := bundle.Dirs[bundle.Default]; !held {
-		accounts := slices.Sorted(maps.Keys(bundle.Dirs))
+		accounts := bundle.DirNames()
 		if k.defaultOwner != "" {
 			k.log.Warn("forwarder: the grant holds no account for GH_CONFIG_DIR's directory", "default", k.defaultOwner, "accounts", accounts)
 		}
@@ -432,7 +445,9 @@ func (k *keeper) write(grant *Grant) error {
 }
 
 // keep asks for the first grant, then the next one each time the current one nears its expiry,
-// until ctx ends; a failed ask is retried with a backoff from one second to thirty. An ask that
+// until ctx ends; a failed ask is retried with a backoff from one second to thirty, except while
+// the role's key awaits its enrollment, which comes seconds after the agent registers and is
+// looked for each second with no backoff, so the first grant follows it closely. An ask that
 // gets the current grant back — a broker from before it handed an automatic grant back only in
 // the first half of its life — is no new grant, and is asked again a minute later, or just past
 // that grant's expiry where that comes first, rather than at once.
@@ -444,7 +459,7 @@ func (k *keeper) keep(ctx context.Context) {
 		if previous != nil {
 			next = time.Until(previous.ExpiresAt.Add(-k.renewBefore))
 		}
-		if next > 0 && !sleep(ctx, next) {
+		if next > 0 && backoff.Sleep(ctx, next) != nil {
 			return
 		}
 		why := "the role's generation started"
@@ -454,19 +469,17 @@ func (k *keeper) keep(ctx context.Context) {
 		grant, err := k.obtain(ctx, why)
 		switch {
 		case errors.Is(err, cipher.ErrNotEnrolled):
-			// The enrollment comes seconds after the agent registers; it is looked for each
-			// second, so the first grant follows it closely, and no backoff grows meanwhile.
-			if !sleep(ctx, time.Second) {
+			if backoff.Sleep(ctx, time.Second) != nil {
 				return
 			}
 		case err != nil:
-			if ctx.Err() != nil || !sleep(ctx, wait) {
+			if ctx.Err() != nil || backoff.Sleep(ctx, wait) != nil {
 				return
 			}
 			wait = min(2*wait, 30*time.Second)
 		case previous != nil && grant.ID == previous.ID:
 			k.log.Warn("forwarder: the broker handed the expiring grant back rather than a new one", "grant", grant.ID)
-			if !sleep(ctx, min(time.Minute, time.Until(grant.ExpiresAt)+time.Second)) {
+			if backoff.Sleep(ctx, min(time.Minute, time.Until(grant.ExpiresAt)+time.Second)) != nil {
 				return
 			}
 		default:
@@ -475,55 +488,63 @@ func (k *keeper) keep(ctx context.Context) {
 	}
 }
 
-// sleep waits d, and reports false when ctx ended first.
-func sleep(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 // revokeHeld ends every grant the forwarder asked for that has not expired, within ctx: the
 // generation's end, when no call of the role's needs them. No ask starts once it began
-// (keeper.stopping), and it first waits, within ctx, for the ask in flight, whose grant the broker
-// may commit after the stop began, so that grant is revoked with the rest. An ask that outlives
-// ctx leaves its grant live until its own expiry, as a stop cut short does (see the package doc).
+// (keeper.stopping), and it first waits, within ctx, for the ask in flight to land its grant in
+// held (ask.landed, which comes before any line about that grant is written), so a grant the broker
+// commits after the stop began is revoked with the rest. An ask that outlives ctx leaves its grant
+// live until its own expiry, as a stop cut short does (see the package doc). Every line revokeHeld
+// writes comes after its revocations, so a log that stalls (a stderr nothing drains) holds none
+// of them back.
 func (k *keeper) revokeHeld(ctx context.Context) {
 	k.mu.Lock()
 	k.stopping = true
 	asking := k.asking
 	k.mu.Unlock()
+	outlived := false
 	if asking != nil {
 		select {
-		case <-asking.done:
+		case <-asking.landed:
 		case <-ctx.Done():
-			k.log.Warn("forwarder: an ask in flight outlived the stop; its grant, if one comes, lives to its expiry")
+			outlived = true
 		}
 	}
 	k.mu.Lock()
-	held := maps.Clone(k.held)
+	held := k.held
 	k.held = map[string]time.Time{}
 	k.mu.Unlock()
-	if len(held) == 0 {
-		return
-	}
-	broker, err := k.open()
-	if err != nil {
-		k.log.Warn("forwarder: could not revoke its grants at its stop", "grants", slices.Sorted(maps.Keys(held)), "err", err)
-		return
-	}
-	for _, id := range slices.Sorted(maps.Keys(held)) {
-		if time.Now().After(held[id]) {
-			continue
+	ids := slices.Sorted(maps.Keys(held))
+	var revoked []string
+	failed := map[string]error{}
+	var openErr error
+	if len(ids) > 0 {
+		if broker, err := k.open(); err != nil {
+			openErr = err
+		} else {
+			for _, id := range ids {
+				if time.Now().After(held[id]) {
+					continue
+				}
+				if err := broker.Revoke(ctx, id); err != nil {
+					failed[id] = err
+					continue
+				}
+				revoked = append(revoked, id)
+			}
 		}
-		if err := broker.Revoke(ctx, id); err != nil {
+	}
+	if outlived {
+		k.log.Warn("forwarder: an ask in flight outlived the stop; its grant, if one comes, lives to its expiry")
+	}
+	if openErr != nil {
+		k.log.Warn("forwarder: could not revoke its grants at its stop", "grants", ids, "err", openErr)
+	}
+	for _, id := range ids {
+		if err, ok := failed[id]; ok {
 			k.log.Warn("forwarder: could not revoke a grant at its stop", "grant", id, "err", err)
-			continue
 		}
+	}
+	for _, id := range revoked {
 		k.log.Info("forwarder: revoked a grant at its stop", "grant", id)
 	}
 }

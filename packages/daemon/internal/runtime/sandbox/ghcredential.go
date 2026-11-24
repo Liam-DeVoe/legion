@@ -122,8 +122,6 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// (refreshGitHubCredential).
 		repo, named := fetchRepository(pod)
 		for _, role := range kind.roles() {
-			// A role behind the broker's proxy holds no token to refresh: its forwarder renews its
-			// grant itself (githubproxy.go).
 			if r.proxiesGitHubIn(&pod.Spec, role) {
 				continue
 			}

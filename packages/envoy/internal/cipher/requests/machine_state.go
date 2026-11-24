@@ -874,9 +874,6 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	if err := lockLiveEnrollment(ctx, tx, enrollmentID); err != nil {
 		return Request{}, err
 	}
-	// Under the names' locks, a grant a concurrent ask wrote since the reuse read above sends this
-	// ask back to that read, which hands the grant over, so concurrent asks for the same names get
-	// one grant (reuseUnderLock).
 	if again, err := reuseUnderLock(ctx, tx, enrollmentID, sorted, lifetime, seen); err != nil {
 		return Request{}, err
 	} else if again {

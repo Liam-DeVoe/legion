@@ -195,13 +195,20 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 }()
 
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
-// runtime's own and the composed ones, and the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned).
+// runtime's own and the composed ones, the exchange identity's two where the deployment names an
+// exchange audience (exchangeOwned), and the proxy variables where it puts any role's GitHub
+// behind the broker's proxy (proxyOwned). Each set is built once, at init.
 func (r *Runtime) specOwned() map[string]bool {
-	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
-		return r.specOwnedWithProxy(runtimeOwnedComposedOrExchange)
+	exchange := r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != ""
+	switch {
+	case exchange && r.proxiesAnyGitHub():
+		return runtimeOwnedComposedExchangeOrProxy
+	case exchange:
+		return runtimeOwnedComposedOrExchange
+	case r.proxiesAnyGitHub():
+		return runtimeOwnedComposedOrProxy
 	}
-	return r.specOwnedWithProxy(runtimeOwnedOrComposed)
+	return runtimeOwnedOrComposed
 }
 
 // slackChannelsVariable is the project's slack_channels as the runtime tells the controller it
@@ -1067,8 +1074,6 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 			corev1.Volume{Name: roleVolume(stateVolume, role), VolumeSource: memory},
 		)
 		gh := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
-		// A role behind the proxy reads its gh bundle from its forwarder's own directory, so its
-		// gh volume projects nothing of its Secret, which holds no token (writeLauncherSecrets).
 		if len(ghItems) > 0 && !r.proxiesGitHubIn(nil, role) {
 			gh = corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName:  roleSecretName(l.name, role),

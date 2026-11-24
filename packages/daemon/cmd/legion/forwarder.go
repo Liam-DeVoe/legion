@@ -62,9 +62,10 @@ type forwarderFlags struct {
 	secrets, githubHosts, renames             []string
 }
 
-// runForwarder checks the flags, binds the address and serves until ctx ends. Every refusal names
-// the flag or variable at fault and exits 2 before anything listens; a broker that cannot be
-// reached is no refusal, since the forwarder asks again until it holds a grant.
+// runForwarder checks the flags, binds the address and serves until ctx ends. A flag or variable
+// the configuration refuses exits 2 with the usage, and a Config that githubproxy.Listen refuses
+// (a listen address that is no loopback one) or a listener that fails exits 1; a broker that
+// cannot be reached is no refusal, since the forwarder asks again until it holds a grant.
 func runForwarder(ctx context.Context, given forwarderFlags, getenv func(string) string, stderr io.Writer) int {
 	cfg, err := forwarderConfig(given, getenv)
 	if err != nil {

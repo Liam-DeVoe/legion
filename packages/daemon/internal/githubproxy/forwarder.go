@@ -103,7 +103,7 @@ func Listen(cfg Config) (*Forwarder, error) {
 	}
 	return &Forwarder{
 		cfg: cfg, listener: listener, log: log,
-		keeper: newKeeper(cfg.Open, cfg.Secrets, cfg.Reason, cfg.GitHubHosts, cfg.GHDir, cfg.DefaultOwner, cfg.Renames, cfg.RenewBefore, log),
+		keeper: newKeeper(cfg, log),
 	}, nil
 }
 
@@ -115,7 +115,8 @@ func (f *Forwarder) Current() *Grant { return f.keeper.Current() }
 
 // Serve keeps the role's grant and serves connections until ctx ends or the listener fails for
 // good, then closes the listener and revokes the grants it holds, within stopBound, and answers
-// the listener's failure, or nil.
+// the listener's failure, or nil. The revocation runs before Serve waits for its keeper goroutine
+// to end, so a log write that stalls in that goroutine holds no revocation back.
 func (f *Forwarder) Serve(ctx context.Context) error {
 	f.log.Info("forwarder: listening", "addr", f.listener.Addr().String(), "names", f.cfg.Secrets, "gh_dir", f.cfg.GHDir)
 	ctx, cancel := context.WithCancel(ctx)
@@ -144,10 +145,10 @@ func (f *Forwarder) Serve(ctx context.Context) error {
 		}
 		go f.serveConn(ctx, conn)
 	}
-	wg.Wait()
 	stop, stopped := context.WithTimeout(context.Background(), stopBound)
 	defer stopped()
 	f.keeper.revokeHeld(stop)
+	wg.Wait()
 	return failed
 }
 
@@ -182,12 +183,6 @@ func (f *Forwarder) serveConn(ctx context.Context, client net.Conn) {
 	}
 	grant := f.keeper.Current()
 	if grant == nil {
-		// Before the first grant no placeholder is in the role's files, and a host the GitHub kind
-		// does not bind (Config.GitHubHosts) needs none: it goes out at once, so a broker that is
-		// down or refuses the role's names stops only GitHub's calls. A call to one of the kind's
-		// hosts waits for the first grant while an ask can still bring it (keeper.awaitFirst),
-		// within the recovery bound, and is otherwise answered 503 with the failed ask's reason at
-		// once.
 		if !bindsHost(f.cfg.GitHubHosts, host, port) {
 			f.direct(client, reader, req.Host)
 			return
@@ -316,25 +311,22 @@ func connectThrough(grant *Grant, target string, bound time.Duration) (net.Conn,
 	return conn, resp, reader, nil
 }
 
-// splice copies both ways between the client and upstream until either side ends, sending what
-// each buffered reader already holds first.
+// splice copies both ways between the client and upstream until both directions end, sending
+// what each buffered reader already holds first, and half-closes each side once its source ends.
+// One direction runs in a goroutine of its own and the other in the caller's.
 func splice(client net.Conn, clientReader *bufio.Reader, upstream net.Conn, upstreamReader *bufio.Reader) {
 	var fromUpstream io.Reader = upstream
 	if upstreamReader != nil {
 		fromUpstream = upstreamReader
 	}
-	done := make(chan struct{}, 2)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_, _ = io.Copy(upstream, clientReader)
 		closeWrite(upstream)
-		done <- struct{}{}
 	}()
-	go func() {
-		_, _ = io.Copy(client, fromUpstream)
-		closeWrite(client)
-		done <- struct{}{}
-	}()
-	<-done
+	_, _ = io.Copy(client, fromUpstream)
+	closeWrite(client)
 	<-done
 }
 

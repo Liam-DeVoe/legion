@@ -102,7 +102,6 @@ func (s *shim) identity() (*shimwire.AgentSecretsHello, error) {
 		s.mu.Unlock()
 		s.log.Printf("[worker-shim] agent-secrets: key %s generated in %s", thumbprint, a.KeyDir)
 	}
-	// The forwarder asks for the role's grant with this key, so it starts once the key exists.
 	s.startForwarder()
 	token, err := readPodToken(a)
 	if err != nil {

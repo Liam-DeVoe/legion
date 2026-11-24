@@ -202,9 +202,9 @@ func (s *Session) Revoke(ctx context.Context, id string) error {
 	return err
 }
 
-// call sends one session call, its proof signed over method and the route without query, and
-// decodes a 2xx answer into into (nil reads nothing). Any other answer is the broker's refusal as
-// an *APIError.
+// call sends one session call, its proof signed over method and the route without query, reads
+// the answer within answerBytes, and decodes a 2xx answer into into, or decodes nothing where into
+// is nil. Any other answer is the broker's refusal as an *APIError.
 func (s *Session) call(ctx context.Context, method, path, query string, body []byte, into any) error {
 	proof, err := signSessionProof(s.Key, s.EnrollmentID, method, s.URL+path, time.Now())
 	if err != nil {

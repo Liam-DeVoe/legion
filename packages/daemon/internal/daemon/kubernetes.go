@@ -678,9 +678,6 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
 		opts.ControllerMemoryGuardKilled = kills.controllerKilled
-		// The rename rule a role's forwarder writes its bundle by, the App-token bundle's own
-		// (appauth.Route over the same served set and renames), so the two route one repository
-		// alike.
 		opts.GitHubRoute = func(repo ghrepo.Repository) (string, []ghrepo.Rename) {
 			return appauth.Route(served, renames, repo)
 		}

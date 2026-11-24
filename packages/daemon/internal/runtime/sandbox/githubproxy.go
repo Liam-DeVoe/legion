@@ -39,8 +39,8 @@ const gitHubForwarderFile = "github-forwarder.json"
 const forwarderPortBase = 12800
 
 // forwarderRoles are the roles a forwarder may serve, each the place its port is counted from:
-// every workflow role, then the controller.
-var forwarderRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// every launcher role, the workflow roles and then the controller (launcherRoles).
+var forwarderRoles = slices.Clone(launcherRoles)
 
 // forwarderAddress is the loopback address role's forwarder listens on, which its HTTPS_PROXY
 // names.
@@ -52,6 +52,21 @@ func forwarderAddress(role claim.Role) string {
 // (ghAgentEnv), which a launch spec may not set where the deployment puts any role there
 // (specOwned).
 var proxyOwned = map[string]bool{"HTTPS_PROXY": true, "https_proxy": true}
+
+// withProxyOwned is owned and proxyOwned together, built once per owned set.
+func withProxyOwned(owned map[string]bool) map[string]bool {
+	names := maps.Clone(owned)
+	maps.Copy(names, proxyOwned)
+	return names
+}
+
+// runtimeOwnedComposedOrProxy and runtimeOwnedComposedExchangeOrProxy are runtimeOwnedOrComposed
+// and runtimeOwnedComposedOrExchange with proxyOwned, what a launch spec may not set where the
+// deployment puts any role's GitHub behind the proxy (specOwned).
+var (
+	runtimeOwnedComposedOrProxy         = withProxyOwned(runtimeOwnedOrComposed)
+	runtimeOwnedComposedExchangeOrProxy = withProxyOwned(runtimeOwnedComposedOrExchange)
+)
 
 // proxiesGitHubIn is the one decision whether a generation of role started now in a pod reaches
 // GitHub through its forwarder: the generation holds the broker (enrollsIn), whose key the
@@ -142,13 +157,7 @@ func (r *Runtime) forwarderFile(l launch) string {
 	return string(encoded)
 }
 
-// specOwnedWithProxy is owned with proxyOwned where the deployment puts any role's GitHub behind
-// the proxy.
-func (r *Runtime) specOwnedWithProxy(owned map[string]bool) map[string]bool {
-	if r.agentSecrets == nil || len(r.agentSecrets.GitHub) == 0 {
-		return owned
-	}
-	names := maps.Clone(owned)
-	maps.Copy(names, proxyOwned)
-	return names
+// proxiesAnyGitHub is whether the deployment puts any role's GitHub behind the broker's proxy.
+func (r *Runtime) proxiesAnyGitHub() bool {
+	return r.agentSecrets != nil && len(r.agentSecrets.GitHub) > 0
 }

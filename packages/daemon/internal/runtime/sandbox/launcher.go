@@ -928,8 +928,6 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 		if !ok {
 			return false, nil
 		}
-		// A role behind the proxy records no default (writeLauncherSecrets): its GH_CONFIG_DIR is
-		// its forwarder's bundle's (launch.proxyDefault), and the pod's default is its other roles'.
 		if !r.proxiesGitHubIn(&pod.Spec, role) {
 			l.gitHubDefault = string(recorded)
 		}
@@ -1013,10 +1011,6 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	if l.enrolls(r) {
 		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--agent-secrets-bin", r.tools.AgentSecrets)
-		// A role behind the broker's proxy gets its forwarder (githubproxy.go): its flags travel
-		// as a file of the generation's own, which the shim reads and runs once the role's key
-		// exists. The decision is the pod's, as the enrollment's is, and it holds only where the
-		// pod enrols the role.
 		if l.proxiesGitHub() {
 			shim = append(shim, "--github-forwarder", dir+"/"+gitHubForwarderFile)
 		}

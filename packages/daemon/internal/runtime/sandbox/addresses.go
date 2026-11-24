@@ -503,10 +503,6 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	if !found {
 		return movedAddress{}, false
 	}
-	// A role the deployment now puts behind the broker's proxy reads its forwarder's bundle, and
-	// a pod whose gh volume still projects the role's App tokens from its Secret has drifted for
-	// that alone; one whose gh volume projects nothing was built behind the proxy and holds what a
-	// pod built now would.
 	if r.proxiesGitHubIn(nil, role) {
 		if projected.secret {
 			return movedAddress{where: name + " projects the role's App tokens", held: ghDirsName(ghOwnerDirs(projected.dirs)),

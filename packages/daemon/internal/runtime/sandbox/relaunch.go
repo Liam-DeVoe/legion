@@ -1310,8 +1310,6 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	held := make(map[claim.Role][]string, len(l.roles))
 	memo := appauth.NewBundles(r.gitHubCredential)
 	for _, role := range l.roles {
-		// A role behind the broker's proxy is minted nothing: its forwarder asks for its grant
-		// (githubproxy.go), its Secret records no default, and its gh volume projects nothing.
 		if r.proxiesGitHubIn(nil, role) {
 			bundles[role] = ghconfig.Bundle{}
 			continue
