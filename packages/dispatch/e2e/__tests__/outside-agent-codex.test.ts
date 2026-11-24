@@ -707,7 +707,8 @@ function unknownProblems(run: LegRun): string[] {
   return problems;
 }
 
-describe.skipIf(skipWithout(["bash", "bun"], "dispatch-ui"))("the Codex leg, against stand-ins", () => {
+const withoutBashAndBun = skipWithout(["bash", "bun"], "dispatch-ui");
+describe.skipIf(withoutBashAndBun)("the Codex leg, against stand-ins", () => {
   test(
     "C0-C7 pass where the release's provenance holds, and the session registers, reads, writes, receives and sends as the outside person, its two controls failing as they should",
     async () => {
@@ -1467,7 +1468,8 @@ describe("the Codex leg's provenance reads", () => {
   );
 });
 
-describe.skipIf(skipWithout(["bash"], "dispatch-ui"))("the leg's waits, on a clock only `sleep` moves", () => {
+const withoutBash = skipWithout(["bash"], "dispatch-ui");
+describe.skipIf(withoutBash)("the leg's waits, on a clock only `sleep` moves", () => {
   /** The leg's own `screen_text`, `answer_screen` and `drive`, cut from the leg as they stand, run
    *  in bash on a clock that only `sleep` and `pause` (a tenth of a second) move: `pane` and `tools`
    *  are bash commands that read `$clock`, the whole seconds passed, the pane's text and the stand-in
