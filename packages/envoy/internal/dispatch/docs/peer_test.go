@@ -3,11 +3,36 @@ package docs
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
+
+// heldRoomIdleTimeout is how long a room stays resident once idle on a service whose rooms a test
+// holds (holdRoomsResident): far above any test's run.
+const heldRoomIdleTimeout = time.Hour
+
+// holdRoomsResident keeps every room of service resident for the test's run, however slowly the
+// machine runs it. A test that reads or writes a room's document directly - a roomPeer applies its
+// updates to it, never through a ygo connection or Server.Apply - leaves ygo nothing that marks the
+// room in use, so ygo's idle sweep counts the room idle from its load and retires it after
+// roomIdleTimeout, a minute, while the test still holds its document. A loaded runner outlasts
+// that minute, and the room is then gone under the test: Server.GetDoc answers nil. ygo's sweeper
+// starts with the first room the service loads and reads the timeout on every pass from then on,
+// so the hold must come before any room loads, and it refuses a service that already holds one.
+// newRoomPeer refuses a service that is not held. The hold is a timeout and not a clock the test
+// moves: the sweep reads the wall clock inside ygo (provider/websocket/idle_sweep.go,
+// sweepIdleRooms), which no clock of the test's reaches.
+func holdRoomsResident(t *testing.T, service *Service) {
+	t.Helper()
+	if rooms := service.srv.Rooms(); len(rooms) > 0 {
+		t.Fatalf("hold the rooms resident before any room loads: the service already holds %d room(s), %v, "+
+			"and ygo's idle sweeper reads the timeout from the first one", len(rooms), rooms)
+	}
+	service.srv.RoomIdleTimeout = heldRoomIdleTimeout
+}
 
 // roomPeer is a browser's editor on a room: its own copy of the document, synced from the room
 // once, which sends the room the update each edit it makes leaves, as one of the room's connected
@@ -32,9 +57,15 @@ type roomPeer struct {
 
 // newRoomPeer connects a peer on conn to the room of artifactID, as actor, with its own copy of
 // the room's document. sent is the record of the updates the room has already been sent, shared
-// by the room's peers; a caller with one peer passes nil for a record of its own.
+// by the room's peers; a caller with one peer passes nil for a record of its own. The service's
+// rooms must be held resident (holdRoomsResident), or the room can idle out under the peer.
 func newRoomPeer(t *testing.T, service *Service, artifactID string, conn uint64, actor model.Actor, sent map[string]bool) *roomPeer {
 	t.Helper()
+	if timeout := service.srv.RoomIdleTimeout; timeout < heldRoomIdleTimeout {
+		t.Fatalf("a peer of %s on a service whose rooms idle out after %v: ygo's idle sweep retires the room "+
+			"under the peer once a run outlasts that; call holdRoomsResident(t, service) before its first room loads",
+			actor.ID, timeout)
+	}
 	if err := service.warmLiveDocument(t.Context(), artifactID); err != nil {
 		t.Fatalf("warm the room for %s: %v", actor.ID, err)
 	}
@@ -57,15 +88,15 @@ func (p *roomPeer) sync() {
 	}
 }
 
-// room is the room's document, which the peer reads and writes directly. A room no peer of ygo's
-// touches is retired by ygo's idle sweep after roomIdleTimeout, which a long test outlasts unless
-// it sets the server's RoomIdleTimeout before the room loads (stormRound); that ends the test here
-// by name.
+// room is the room's document. The service no longer holding the room fails the test by name:
+// a nil document would panic in ygo and end the test binary, every other test's result with it.
+// The failure reads the server's RoomIdleTimeout, which shows whether the rooms were held
+// (holdRoomsResident).
 func (p *roomPeer) room() *crdt.Doc {
 	p.t.Helper()
 	room := p.service.srv.GetDoc(p.artifactID)
 	if room == nil {
-		p.t.Fatalf("the room of %s is not resident (RoomIdleTimeout %v)", p.artifactID, p.service.srv.RoomIdleTimeout)
+		p.t.Fatalf("the room of %s is not resident (RoomIdleTimeout %v), so the peer has no room to sync from or send to", p.artifactID, p.service.srv.RoomIdleTimeout)
 	}
 	return room
 }

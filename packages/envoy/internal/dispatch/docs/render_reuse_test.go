@@ -732,24 +732,22 @@ func sortedIDs(ids map[string]struct{}) []string {
 	return slices.Sorted(maps.Keys(ids))
 }
 
-// newRenderReuseService is a service whose settlement waits an hour, with renders watched from
-// before the document is seeded with renderReuseDocument. No room holds the document yet.
+// newRenderReuseService is a service whose settlement waits an hour and whose rooms stay resident
+// for the test's run (holdRoomsResident), with renders watched from before the document is seeded
+// with renderReuseDocument. No room holds the document yet.
 //
-// ygo's idle sweep is kept away from the document's room for the whole test: the sweep retires a
-// room nobody holds after roomIdleTimeout of the wall clock inside ygo
-// (provider/websocket/idle_sweep.go), which no clock of the test's reaches, and these tests read
-// the room they wrote (renderShadow.check) and hold its updates across an open transaction. Under
-// load a test's steps outlasted the minute. The room was gone at the check ("no room is resident
-// to check"), or, retired while a transaction was open and a browser update was held at its
-// observer (holdPeerEdit), its persistence worker had stopped, so ygo stored that update on the
-// update's own goroutine (Server.persistStranded) and waited on the document's lock, which the
-// transaction waiting for that update held: the test hung until the binary's deadline. It is set
-// before the room loads, so before the sweep starts.
+// These tests read the room they wrote (renderShadow.check) and hold its updates across an open
+// transaction, and under load a test's steps outlasted ygo's idle minute. The room was gone at the
+// check ("no room is resident to check"), or, retired while a transaction was open and a browser
+// update was held at its observer (holdPeerEdit), its persistence worker had stopped, so ygo
+// stored that update on the update's own goroutine (Server.persistStranded) and waited on the
+// document's lock, which the transaction waiting for that update held: the test hung until the
+// binary's deadline.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, renderReuseDocument())
 	return service, artifactID, sh
@@ -1684,14 +1682,10 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	// Only to keep ygo's idle sweep away: the browser applies its updates to the room's document
-	// directly, never through a ygo connection or Server.Apply, so the sweep counts the room idle
-	// from its load and would retire it after roomIdleTimeout (a minute), which the script can
-	// outlast on a loaded machine (it ran 98 s under -race beside eight busy loops), leaving the
-	// browser no room (stormRound says the same). The sweep reads the wall clock inside ygo
-	// (provider/websocket/idle_sweep.go), so no clock of the test's reaches it; it reads the
-	// timeout when the first room starts it, so it is set before any room loads.
-	service.srv.RoomIdleTimeout = time.Hour
+	// The browser applies its updates to the room's document directly, so its rooms are held
+	// resident: the script can outlast ygo's idle minute on a loaded machine (it ran 98 s under
+	// -race beside eight busy loops).
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	document := typingDocument()
 	if len(document) < 390<<10 {
@@ -1796,6 +1790,7 @@ func TestRenderReuseABrowserTypingScript(t *testing.T) {
 func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "The typed paragraph opens the document.\n\nThe last paragraph closes it.\n")
 	browser := newRoomPeer(t, service, artifactID, 1, reuseBob, nil)
 	browser.editTree(insertBlocksAfter(t, "The typed paragraph",

@@ -83,13 +83,7 @@ func stormRound(t *testing.T, seed uint64, edits int) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	// Only to keep ygo's idle sweep away: the peers apply their updates to the room's document
-	// directly, never through a ygo connection or Server.Apply, so the sweep counts the room idle
-	// from its load and would retire it after roomIdleTimeout - which a seed on a loaded machine
-	// outlasts. The sweep reads the wall clock inside ygo (provider/websocket/idle_sweep.go), so no
-	// clock of the test's reaches it; it reads the timeout when the first room starts it, so it is
-	// set before any room loads.
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, stormDocument())
 	sent := map[string]bool{}
