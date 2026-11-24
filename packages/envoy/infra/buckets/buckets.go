@@ -636,10 +636,11 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 		if ctx.Err() != nil {
 			return stopped(ctx, stderr)
 		}
-		// A connection that drops during the create reports no server version, and the create's
-		// first read of it answers nats.go's own error for that, a server too old for a bucket: the
-		// run says what happened instead, whichever read met it.
-		if _, noVersion := bus.ServerVersion(conn); errors.Is(err, bus.ErrNoServerVersion) || noVersion != nil {
+		// A connection that drops during the create reports no server version, which the create
+		// classifies (bus.ErrNoServerVersion) at whichever read met it, so the run says what happened
+		// without reading the connection again, which could report a version a later reconnect
+		// restored and say "not created" after a STREAM.CREATE had already been sent.
+		if errors.Is(err, bus.ErrNoServerVersion) {
 			return noServerVersion(stderr, "KV_"+bucket+" is not created")
 		}
 		if !errors.Is(err, bus.ErrBucketExists) {

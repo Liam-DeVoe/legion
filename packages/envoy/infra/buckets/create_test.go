@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -691,23 +690,8 @@ func startHeldCreate(t *testing.T, holds string) *heldCreate {
 // stops waiting for it.
 const createInBus = "github.com/sjawhar/envoy/internal/bus.addBucketStream("
 
-// createGoroutines is the id of each goroutine running a bucket's create (createInBus), read from
-// one dump of every goroutine (goroutinetest.Traces).
-func createGoroutines(t *testing.T) []uint64 {
-	t.Helper()
-	var ids []uint64
-	for _, trace := range goroutinetest.Traces() {
-		if !strings.Contains(trace, createInBus) {
-			continue
-		}
-		id, err := strconv.ParseUint(strings.Fields(trace)[1], 10, 64)
-		if err != nil {
-			t.Fatalf("read the goroutine id of %q: %v", trace, err)
-		}
-		ids = append(ids, id)
-	}
-	return ids
-}
+// createGoroutines is the id of each goroutine running a bucket's create (createInBus).
+func createGoroutines() []uint64 { return goroutinetest.Running(createInBus) }
 
 // awaitCreatesEnded waits until each goroutine of ids has returned (goroutinetest.Live), so what
 // a create the run stopped waiting for sends has been sent, failing t after 30 s.
@@ -753,7 +737,7 @@ func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			run := startHeldCreate(t, c.holds)
-			creates := createGoroutines(t)
+			creates := createGoroutines()
 			if len(creates) == 0 {
 				t.Fatalf("no goroutine runs %s while the create's %s is held, so the wait for the create to end would wait for nothing", createInBus, c.holds)
 			}
@@ -789,7 +773,7 @@ func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 // is answered is counted there.
 func TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn(t *testing.T) {
 	run := startHeldCreate(t, "INFO")
-	creates := createGoroutines(t)
+	creates := createGoroutines()
 	run.held.let()
 	var code int
 	select {

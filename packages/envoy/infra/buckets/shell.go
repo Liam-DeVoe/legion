@@ -75,6 +75,7 @@ const (
 	maxWordCandidates  = 4096
 	maxCandidateLength = 4096
 	maxRereadBytes     = 1 << 20
+	maxTotalBytes      = 1 << 23
 	maxPrescanRounds   = 8
 	maxRereadDepth     = 4
 )
@@ -103,14 +104,22 @@ type shellReader struct {
 	// walked is each text read again, so none is read twice.
 	walked      map[string]bool
 	rereadBytes int
-	result      shellRead
+	// total is every byte of every value and candidate the read has built; past maxTotalBytes a
+	// 600-byte env can no longer grow the read without end, and the reading is bounded.
+	total  int
+	result shellRead
 }
 
 // add records a candidate text of a word, once.
 func (r *shellReader) add(candidate string) {
-	if !slices.Contains(r.result.candidates, candidate) {
-		r.result.candidates = append(r.result.candidates, candidate)
+	if slices.Contains(r.result.candidates, candidate) {
+		return
 	}
+	if r.spend(len(candidate)) {
+		r.bound("the total expansion")
+		return
+	}
+	r.result.candidates = append(r.result.candidates, candidate)
 }
 
 // bound records what stopped the reading, the first bound reached.
@@ -133,11 +142,18 @@ func (v *values) addValue(r *shellReader, value string) {
 	if slices.Contains(v.list, value) {
 		return
 	}
-	if len(v.list) >= maxNameCandidates || len(value) > maxCandidateLength {
+	if len(v.list) >= maxNameCandidates || len(value) > maxCandidateLength || r.spend(len(value)) {
 		r.bound("a name's values")
 		return
 	}
 	v.list = append(v.list, value)
+}
+
+// spend accounts n bytes of a value or candidate the read built, and reports whether the read has
+// built more than maxTotalBytes in all.
+func (r *shellReader) spend(n int) bool {
+	r.total += n
+	return r.total > maxTotalBytes
 }
 
 // squashHoles is text in a canonical form that names exactly the writers text names (markerRank):

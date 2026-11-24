@@ -5,7 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -299,14 +298,14 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 		return answer
 	}
 
-	before := createGoroutines(t)
+	before := goroutinetest.Running(createInBus)
 	ctx, cancel := context.WithCancel(t.Context())
 	release := make(chan struct{})
 	answer := open(ctx, release)
 	// The create the open leaves running once its context ends: each goroutine running the create
 	// step now that did not before the open. Goroutine ids are never reused.
 	var ours []uint64
-	for _, id := range createGoroutines(t) {
+	for _, id := range goroutinetest.Running(createInBus) {
 		if !slices.Contains(before, id) {
 			ours = append(ours, id)
 		}
@@ -352,23 +351,8 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 	}
 }
 
-// createGoroutines is the id of each goroutine running a bucket's create step, addBucketStream,
-// read from one dump of every goroutine (goroutinetest.Traces).
-func createGoroutines(t *testing.T) []uint64 {
-	t.Helper()
-	var ids []uint64
-	for _, trace := range goroutinetest.Traces() {
-		if !strings.Contains(trace, "github.com/sjawhar/envoy/internal/bus.addBucketStream(") {
-			continue
-		}
-		id, err := strconv.ParseUint(strings.Fields(trace)[1], 10, 64)
-		if err != nil {
-			t.Fatalf("read the goroutine id of %q: %v", trace, err)
-		}
-		ids = append(ids, id)
-	}
-	return ids
-}
+// createInBus is a bucket's create step, addBucketStream, as a goroutine's trace names it.
+const createInBus = "github.com/sjawhar/envoy/internal/bus.addBucketStream("
 
 // A create-only open answers with a handle only once the member answering has applied its create
 // (awaitBucketApplied): a clustered create is answered once the metadata group commits it, and a

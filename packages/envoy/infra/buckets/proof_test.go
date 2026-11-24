@@ -512,96 +512,42 @@ func TestAContainerWhoseEnvFromMaySetTheMapsVariablesBlocksWhatTheyCouldSelect(t
 // program, envoy-dispatch whose flags name the listener, which is no launcher, a launcher whose
 // variable the pod's env sets to another program, a shell expanding only variables its pod does not
 // set (its own, and TMPDIR), and a shell expanding its pod's own name, from a field of the pod.
-func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
-	pod := func(container fakeContainer) fakePod {
-		return fakePod{namespace: "envoy", name: "pod-launched", containers: []fakeContainer{container}}
-	}
-	const script = "ENVOY_MACHINE_ID=x exec envoy-listener"
-	listenerNote := func(named, through string) string {
-		return " (its command or args name " + named + ", run through " + through + ", which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)"
-	}
-	dispatchNote := func(named, through string) string {
-		return " (its command or args name " + named + ", run through " + through + ")"
-	}
-	unreadNote := func(expansion string) string {
-		return ` (its command or args expand "` + expansion + `", whose value the pod does not show, so it may start any writer)`
-	}
-	both := func(note string) map[string]string {
-		return map[string]string{bus.KnownSessionBucket: note, bus.CIStateBucket: note}
-	}
-	listenerBlocks := func(through string) map[string]string { return both(listenerNote("envoy-listener", through)) }
-	fromSecret := map[string]any{"name": "PROGRAM", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "launch", "key": "program"}}}
-	neither := []string{bus.KnownSessionBucket, bus.CIStateBucket}
-	for _, c := range []struct {
-		name      string
-		container fakeContainer
-		writes    []string
-		// blocks is each bucket the container blocks, and the note its blocker ends with.
-		blocks map[string]string
-		passes []string
-	}{
-		{"sh -c", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", script}},
-			bus.CopiedBuckets(), listenerBlocks(`"sh"`), nil},
-		{"bash -c", fakeContainer{Name: "app", Command: []string{"bash", "-c", script}},
-			bus.CopiedBuckets(), listenerBlocks(`"bash"`), nil},
-		{"sh -c with its script in args", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c"}, Args: []string{script}},
-			bus.CopiedBuckets(), listenerBlocks(`"sh"`), nil},
-		{"env", fakeContainer{Name: "app", Command: []string{"/usr/bin/env", "ENVOY_MACHINE_ID=x", "envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks(`"env"`), nil},
-		{"tini --", fakeContainer{Name: "app", Command: []string{"tini", "--", "/usr/local/bin/envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks(`"tini"`), nil},
-		{"dumb-init", fakeContainer{Name: "app", Command: []string{"/usr/bin/dumb-init", "envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks(`"dumb-init"`), nil},
-		{"args alone, under the image's entrypoint", fakeContainer{Name: "app", Args: []string{"envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks("the image's entrypoint"), nil},
-		{"sh -c running envoy-dispatch", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec /usr/local/bin/envoy-dispatch"}},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("envoy-dispatch", `"sh"`)}, []string{bus.KnownSessionBucket}},
-		{"tini -- envoy-dispatch", fakeContainer{Name: "app", Command: []string{"tini", "--", "envoy-dispatch"}},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("envoy-dispatch", `"tini"`)}, []string{bus.KnownSessionBucket}},
-		{"a listener by its env whose shell names envoy-dispatch", fakeContainer{Name: "app", Env: env("ENVOY_MACHINE_ID", "x"),
-			Command: []string{"/bin/sh", "-c", "exec /app/start --dispatch=http://envoy-dispatch:8080"}},
-			bus.CopiedBuckets(), map[string]string{bus.KnownSessionBucket: "", bus.CIStateBucket: dispatchNote("envoy-dispatch", `"sh"`)}, nil},
-		{`a shell running "$PROGRAM", its env setting PROGRAM to envoy-dispatch`, fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
-			Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote(`envoy-dispatch through "$PROGRAM", which the pod's env sets`, `"sh"`)}, []string{bus.KnownSessionBucket}},
-		{"a shell running ${PROGRAM}, its env setting PROGRAM from a Secret", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec ${PROGRAM} --serve"},
-			Env: []map[string]any{fromSecret}},
-			bus.CopiedBuckets(), both(unreadNote("${PROGRAM}")), nil},
-		{"a shell exporting ENVOY_MACHINE_ID and running a listener its env names", fakeContainer{Name: "app",
-			Command: []string{"/bin/sh", "-c", `export ENVOY_MACHINE_ID=gke ENVOY_WEBHOOKS=github; exec "$LISTENER"`}, Env: env("LISTENER", "/usr/local/bin/envoy-listener")},
-			bus.CopiedBuckets(), both(listenerNote("ENVOY_MACHINE_ID", `"sh"`)), nil},
-		{"[$(PROGRAM)], its env setting PROGRAM to envoy-dispatch", fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: ""}, []string{bus.KnownSessionBucket}},
-		{"[tini, --] with args [$(PROGRAM)], its env setting PROGRAM to envoy-listener", fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
-			Env: env("PROGRAM", "/usr/local/bin/envoy-listener")},
-			bus.CopiedBuckets(), listenerBlocks(`"tini"`), nil},
-		{"[$(PROGRAM)], its env setting PROGRAM from a Secret", fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: []map[string]any{fromSecret}},
-			bus.CopiedBuckets(), both(unreadNote("$(PROGRAM)")), nil},
-		{"args [$(APP_PROGRAM)] under the image's entrypoint, an envFrom source of prefix APP_ setting it", fakeContainer{Name: "app", Args: []string{"$(APP_PROGRAM)"},
-			EnvFrom: []map[string]any{{"prefix": "APP_", "configMapRef": map[string]any{"name": "launch"}}}},
-			bus.CopiedBuckets(), both(unreadNote("$(APP_PROGRAM)")), nil},
-		{"control: a launcher running another program", fakeContainer{Name: "app", Command: []string{"tini", "--", "nats-server", "--config", "/etc/nats/nats.conf"}},
-			nil, nil, neither},
-		{"control: a shell whose script names neither", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec nats-server --config /etc/nats/nats.conf"}},
-			nil, nil, neither},
-		{"control: envoy-dispatch whose flags name the listener", fakeContainer{Name: "app", Command: []string{"/usr/local/bin/envoy-dispatch", "--listener-url=http://envoy-listener:8080"}},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: ""}, []string{bus.KnownSessionBucket}},
-		{`control: a shell running "$PROGRAM", its env setting PROGRAM to another program`, fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
-			Env: env("PROGRAM", "/usr/local/bin/nats-server")},
-			nil, nil, neither},
-		{"control: [tini, --] with args [$(PROGRAM)], its env setting PROGRAM to another program", fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
-			Env: env("PROGRAM", "nats-server")},
-			nil, nil, neither},
-		{"control: a shell expanding only variables its pod does not set", fakeContainer{Name: "app",
-			Command: []string{"/bin/sh", "-c", `err=${TMPDIR:-/tmp}/run.err; for f in /etc/nats/*.conf; do test -r "$f"; done; exec nats-server 2>"$err"`}},
-			nil, nil, neither},
-		{"control: a shell expanding its pod's own name", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec nats-server --name "$POD"`},
-			Env: []map[string]any{{"name": "POD", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}}}},
-			nil, nil, neither},
-	} {
+// launcherRow is one pod a launcher-reading test runs: its labels (for a fieldRef that reads one),
+// its container, the buckets the container writes, each bucket it blocks with the note its blocker
+// ends with, and the buckets a recreate passes beside it.
+type launcherRow struct {
+	name      string
+	labels    map[string]string
+	container fakeContainer
+	writes    []string
+	blocks    map[string]string
+	passes    []string
+}
+
+// launcherListenerNote, launcherDispatchNote and launcherUnreadNote are the notes a blocker of a
+// launcher-started writer ends with (launchNote).
+func launcherListenerNote(named, through string) string {
+	return " (its command or args name " + named + ", run through " + through + ", which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)"
+}
+
+func launcherDispatchNote(named, through string) string {
+	return " (its command or args name " + named + ", run through " + through + ")"
+}
+
+func launcherUnreadNote(expansion string) string {
+	return ` (its command or args expand "` + expansion + `", whose value the pod does not show, so it may start any writer)`
+}
+
+// runLauncherRows runs each row as a subtest: the container writes exactly row.writes, a recreate of
+// each bucket it blocks is refused with code 1, the blocker's note, and no `deleted` line, and a
+// recreate of each bucket it passes exits 0.
+func runLauncherRows(t *testing.T, rows []launcherRow) {
+	t.Helper()
+	for _, c := range rows {
 		t.Run(c.name, func(t *testing.T) {
+			pod := fakePod{namespace: "envoy", name: "pod-launched", labels: c.labels, containers: []fakeContainer{c.container}}
 			var pods podList
-			if err := json.Unmarshal([]byte(podsJSON(t, pod(c.container))), &pods); err != nil {
+			if err := json.Unmarshal([]byte(podsJSON(t, pod)), &pods); err != nil {
 				t.Fatalf("decode the pod: %v", err)
 			}
 			container := pods.Items[0].Spec.Containers[0]
@@ -609,11 +555,11 @@ func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
 			if got := container.writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(c.writes))) {
 				t.Errorf("the container writes %v, want %v", got, c.writes)
 			}
-			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, pod(c.container))}}
+			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, pod)}}
 			for _, bucket := range slices.Sorted(maps.Keys(c.blocks)) {
 				code, stdout, stderr := recreateIn(t, w, bucket, "envoy")
-				if want := "runs container app, which writes " + bucket + c.blocks[bucket] + "\n"; code != 1 || !strings.Contains(stderr, want) {
-					t.Errorf("recreate of %s beside %s = %d, want 1 naming %q\n%s%s", bucket, c.name, code, want, stdout, stderr)
+				if want := "runs container app, which writes " + bucket + c.blocks[bucket] + "\n"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, "deleted") {
+					t.Errorf("recreate of %s beside %s = %d, want 1 naming %q and nothing deleted\n%s%s", bucket, c.name, code, want, stdout, stderr)
 				}
 			}
 			for _, bucket := range c.passes {
@@ -623,6 +569,76 @@ func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
+	const script = "ENVOY_MACHINE_ID=x exec envoy-listener"
+	both := func(note string) map[string]string {
+		return map[string]string{bus.KnownSessionBucket: note, bus.CIStateBucket: note}
+	}
+	listenerBlocks := func(through string) map[string]string { return both(launcherListenerNote("envoy-listener", through)) }
+	fromSecret := map[string]any{"name": "PROGRAM", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "launch", "key": "program"}}}
+	neither := []string{bus.KnownSessionBucket, bus.CIStateBucket}
+	runLauncherRows(t, []launcherRow{
+		{name: "sh -c", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", script}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"sh"`)},
+		{name: "bash -c", container: fakeContainer{Name: "app", Command: []string{"bash", "-c", script}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"bash"`)},
+		{name: "sh -c with its script in args", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c"}, Args: []string{script}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"sh"`)},
+		{name: "env", container: fakeContainer{Name: "app", Command: []string{"/usr/bin/env", "ENVOY_MACHINE_ID=x", "envoy-listener"}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"env"`)},
+		{name: "tini --", container: fakeContainer{Name: "app", Command: []string{"tini", "--", "/usr/local/bin/envoy-listener"}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"tini"`)},
+		{name: "dumb-init", container: fakeContainer{Name: "app", Command: []string{"/usr/bin/dumb-init", "envoy-listener"}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"dumb-init"`)},
+		{name: "args alone, under the image's entrypoint", container: fakeContainer{Name: "app", Args: []string{"envoy-listener"}},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks("the image's entrypoint")},
+		{name: "sh -c running envoy-dispatch", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec /usr/local/bin/envoy-dispatch"}},
+			writes: []string{bus.CIStateBucket}, blocks: map[string]string{bus.CIStateBucket: launcherDispatchNote("envoy-dispatch", `"sh"`)}, passes: []string{bus.KnownSessionBucket}},
+		{name: "tini -- envoy-dispatch", container: fakeContainer{Name: "app", Command: []string{"tini", "--", "envoy-dispatch"}},
+			writes: []string{bus.CIStateBucket}, blocks: map[string]string{bus.CIStateBucket: launcherDispatchNote("envoy-dispatch", `"tini"`)}, passes: []string{bus.KnownSessionBucket}},
+		{name: "a listener by its env whose shell names envoy-dispatch", container: fakeContainer{Name: "app", Env: env("ENVOY_MACHINE_ID", "x"),
+			Command: []string{"/bin/sh", "-c", "exec /app/start --dispatch=http://envoy-dispatch:8080"}},
+			writes: bus.CopiedBuckets(), blocks: map[string]string{bus.KnownSessionBucket: "", bus.CIStateBucket: launcherDispatchNote("envoy-dispatch", `"sh"`)}},
+		{name: `a shell running "$PROGRAM", its env setting PROGRAM to envoy-dispatch`, container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
+			Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
+			writes: []string{bus.CIStateBucket}, blocks: map[string]string{bus.CIStateBucket: launcherDispatchNote(`envoy-dispatch through "$PROGRAM", which the pod's env sets`, `"sh"`)}, passes: []string{bus.KnownSessionBucket}},
+		{name: "a shell running ${PROGRAM}, its env setting PROGRAM from a Secret", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec ${PROGRAM} --serve"},
+			Env: []map[string]any{fromSecret}},
+			writes: bus.CopiedBuckets(), blocks: both(launcherUnreadNote("${PROGRAM}"))},
+		{name: "a shell exporting ENVOY_MACHINE_ID and running a listener its env names", container: fakeContainer{Name: "app",
+			Command: []string{"/bin/sh", "-c", `export ENVOY_MACHINE_ID=gke ENVOY_WEBHOOKS=github; exec "$LISTENER"`}, Env: env("LISTENER", "/usr/local/bin/envoy-listener")},
+			writes: bus.CopiedBuckets(), blocks: both(launcherListenerNote("ENVOY_MACHINE_ID", `"sh"`))},
+		{name: "[$(PROGRAM)], its env setting PROGRAM to envoy-dispatch", container: fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
+			writes: []string{bus.CIStateBucket}, blocks: map[string]string{bus.CIStateBucket: ""}, passes: []string{bus.KnownSessionBucket}},
+		{name: "[tini, --] with args [$(PROGRAM)], its env setting PROGRAM to envoy-listener", container: fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
+			Env: env("PROGRAM", "/usr/local/bin/envoy-listener")},
+			writes: bus.CopiedBuckets(), blocks: listenerBlocks(`"tini"`)},
+		{name: "[$(PROGRAM)], its env setting PROGRAM from a Secret", container: fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: []map[string]any{fromSecret}},
+			writes: bus.CopiedBuckets(), blocks: both(launcherUnreadNote("$(PROGRAM)"))},
+		{name: "args [$(APP_PROGRAM)] under the image's entrypoint, an envFrom source of prefix APP_ setting it", container: fakeContainer{Name: "app", Args: []string{"$(APP_PROGRAM)"},
+			EnvFrom: []map[string]any{{"prefix": "APP_", "configMapRef": map[string]any{"name": "launch"}}}},
+			writes: bus.CopiedBuckets(), blocks: both(launcherUnreadNote("$(APP_PROGRAM)"))},
+		{name: "control: a launcher running another program", container: fakeContainer{Name: "app", Command: []string{"tini", "--", "nats-server", "--config", "/etc/nats/nats.conf"}},
+			passes: neither},
+		{name: "control: a shell whose script names neither", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec nats-server --config /etc/nats/nats.conf"}},
+			passes: neither},
+		{name: "control: envoy-dispatch whose flags name the listener", container: fakeContainer{Name: "app", Command: []string{"/usr/local/bin/envoy-dispatch", "--listener-url=http://envoy-listener:8080"}},
+			writes: []string{bus.CIStateBucket}, blocks: map[string]string{bus.CIStateBucket: ""}, passes: []string{bus.KnownSessionBucket}},
+		{name: `control: a shell running "$PROGRAM", its env setting PROGRAM to another program`, container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
+			Env: env("PROGRAM", "/usr/local/bin/nats-server")},
+			passes: neither},
+		{name: "control: [tini, --] with args [$(PROGRAM)], its env setting PROGRAM to another program", container: fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
+			Env: env("PROGRAM", "nats-server")},
+			passes: neither},
+		{name: "control: a shell expanding only variables its pod does not set", container: fakeContainer{Name: "app",
+			Command: []string{"/bin/sh", "-c", `err=${TMPDIR:-/tmp}/run.err; for f in /etc/nats/*.conf; do test -r "$f"; done; exec nats-server 2>"$err"`}},
+			passes: neither},
+		{name: "control: a shell expanding its pod's own name", container: fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec nats-server --name "$POD"`},
+			Env: []map[string]any{{"name": "POD", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}}}},
+			passes: neither},
+	})
 }
 
 // A writer's name a launcher's shell puts together blocks what that writer writes, as a name the
@@ -648,94 +664,101 @@ func TestAWriterNamedByTheShellsExpansionsBlocksWhatItWrites(t *testing.T) {
 		return append([]string{"/bin/sh", "-c", script}, positional...)
 	}
 	const composed = " as the shell reads them"
-	listenerNote := func(named, through string) string {
-		return " (its command or args name " + named + ", run through " + through + ", which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)"
-	}
-	dispatchNote := func(named, through string) string {
-		return " (its command or args name " + named + ", run through " + through + ")"
-	}
 	dispatchBlocks := func(note string) map[string]string { return map[string]string{bus.CIStateBucket: note} }
 	fromLabel := []map[string]any{{"name": "ROLE", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.labels['role']"}}}}
 	dispatchOnly := []string{bus.CIStateBucket}
 	sessionsOnly := []string{bus.KnownSessionBucket}
 	neither := []string{bus.KnownSessionBucket, bus.CIStateBucket}
+	runLauncherRows(t, []launcherRow{
+		{name: `exec "envoy-${ROLE}", its env setting ROLE to dispatch`,
+			container: fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: env("ROLE", "dispatch")},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: `exec "envoy-${ROLE}", ROLE from the pod's label role=dispatch`, labels: map[string]string{"role": "dispatch"},
+			container: fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: fromLabel},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: `PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"`,
+			container: fakeContainer{Name: "app", Command: shell(`PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"`)},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: "exec /usr/local/bin/envoy-$ROLE, its env setting ROLE to dispatch",
+			container: fakeContainer{Name: "app", Command: shell("exec /usr/local/bin/envoy-$ROLE"), Env: env("ROLE", "dispatch")},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: `exec "${DIR}/envoy-${ROLE}", its env setting DIR and ROLE`,
+			container: fakeContainer{Name: "app", Command: shell(`exec "${DIR}/envoy-${ROLE}"`), Env: env("DIR", "/usr/local/bin", "ROLE", "dispatch")},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: `exec "/usr/local/bin/envoy-$1", run as sh -c ... sh dispatch`,
+			container: fakeContainer{Name: "app", Command: shell(`exec "/usr/local/bin/envoy-$1"`, "sh", "dispatch")},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: `exec /usr/local/bin/envoy-"dispatch"`,
+			container: fakeContainer{Name: "app", Command: shell(`exec /usr/local/bin/envoy-"dispatch"`)},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: "exec /usr/local/bin/envoy-${ROLE:-dispatch}, ROLE unset by the pod",
+			container: fakeContainer{Name: "app", Command: shell("exec /usr/local/bin/envoy-${ROLE:-dispatch}")},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"sh"`)), passes: sessionsOnly},
+		{name: "env ROLE=dispatch sh -c 'exec envoy-$ROLE'",
+			container: fakeContainer{Name: "app", Command: []string{"/usr/bin/env", "ROLE=dispatch", "sh", "-c", "exec envoy-$ROLE"}},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch"+composed, `"env"`)), passes: sessionsOnly},
+		{name: `r='listener'; export DIR=/usr/local/bin; exec "$DIR/envoy-$r"`,
+			container: fakeContainer{Name: "app", Command: shell(`r='listener'; export DIR=/usr/local/bin; exec "$DIR/envoy-$r"`)},
+			writes:    bus.CopiedBuckets(), blocks: map[string]string{bus.KnownSessionBucket: launcherListenerNote("envoy-listener"+composed, `"sh"`), bus.CIStateBucket: launcherListenerNote("envoy-listener"+composed, `"sh"`)}},
+		{name: "a shell running $(hostname -f) beside an envFrom source of prefix host",
+			container: fakeContainer{Name: "app", Command: shell(`exec nats-server --name "$(hostname -f)"`), EnvFrom: []map[string]any{{"prefix": "host", "configMapRef": map[string]any{"name": "nats"}}}},
+			passes:    neither},
+		{name: "control: PROGRAM=envoy-dispatch whole",
+			container: fakeContainer{Name: "app", Command: shell(`PROGRAM=envoy-dispatch; exec "$PROGRAM"`)},
+			writes:    dispatchOnly, blocks: dispatchBlocks(launcherDispatchNote("envoy-dispatch", `"sh"`)), passes: sessionsOnly},
+		{name: `control: PROGRAM=nats-; PROGRAM=${PROGRAM}server; exec "$PROGRAM"`,
+			container: fakeContainer{Name: "app", Command: shell(`PROGRAM=nats-; PROGRAM=${PROGRAM}server; exec "$PROGRAM"`)},
+			passes:    neither},
+		{name: `control: exec "envoy-${ROLE}", its env setting ROLE to hub`,
+			container: fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: env("ROLE", "hub")},
+			passes:    neither},
+		{name: `control: exec "$1", run as sh -c ... sh nats-server`,
+			container: fakeContainer{Name: "app", Command: shell(`exec "$1"`, "sh", "nats-server")},
+			passes:    neither},
+	})
+}
+
+// The proof keeps the pod's value of a name beside every value the script gives it, and reads an
+// expansion against all of them, so a script that only might reassign a name still blocks the bucket
+// the pod's value writes (MUST-FIX 1), and a bash operator it does not evaluate blocks every bucket
+// (MUST-FIX 2, read as unread, never 'not a writer'). Each row checks the buckets the container
+// writes, with the pod's PROGRAM a dispatch writer.
+func TestTheProofReadsEveryValueAPodOrScriptGivesAName(t *testing.T) {
+	const dispatch = "/usr/local/bin/envoy-dispatch"
+	shell := func(script string) []string { return []string{"/bin/sh", "-c", script} }
 	for _, c := range []struct {
 		name      string
-		labels    map[string]string
 		container fakeContainer
 		writes    []string
-		// blocks is each bucket the container blocks, and the note its blocker ends with.
-		blocks map[string]string
-		passes []string
 	}{
-		{`exec "envoy-${ROLE}", its env setting ROLE to dispatch`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: env("ROLE", "dispatch")},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{`exec "envoy-${ROLE}", ROLE from the pod's label role=dispatch`, map[string]string{"role": "dispatch"},
-			fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: fromLabel},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{`PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"`, nil,
-			fakeContainer{Name: "app", Command: shell(`PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"`)},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{"exec /usr/local/bin/envoy-$ROLE, its env setting ROLE to dispatch", nil,
-			fakeContainer{Name: "app", Command: shell("exec /usr/local/bin/envoy-$ROLE"), Env: env("ROLE", "dispatch")},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{`exec "${DIR}/envoy-${ROLE}", its env setting DIR and ROLE`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec "${DIR}/envoy-${ROLE}"`), Env: env("DIR", "/usr/local/bin", "ROLE", "dispatch")},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{`exec "/usr/local/bin/envoy-$1", run as sh -c ... sh dispatch`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec "/usr/local/bin/envoy-$1"`, "sh", "dispatch")},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{`exec /usr/local/bin/envoy-"dispatch"`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec /usr/local/bin/envoy-"dispatch"`)},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{"exec /usr/local/bin/envoy-${ROLE:-dispatch}, ROLE unset by the pod", nil,
-			fakeContainer{Name: "app", Command: shell("exec /usr/local/bin/envoy-${ROLE:-dispatch}")},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"sh"`)), sessionsOnly},
-		{"env ROLE=dispatch sh -c 'exec envoy-$ROLE'", nil,
-			fakeContainer{Name: "app", Command: []string{"/usr/bin/env", "ROLE=dispatch", "sh", "-c", "exec envoy-$ROLE"}},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch"+composed, `"env"`)), sessionsOnly},
-		{`r='listener'; export DIR=/usr/local/bin; exec "$DIR/envoy-$r"`, nil,
-			fakeContainer{Name: "app", Command: shell(`r='listener'; export DIR=/usr/local/bin; exec "$DIR/envoy-$r"`)},
-			bus.CopiedBuckets(), map[string]string{bus.KnownSessionBucket: listenerNote("envoy-listener"+composed, `"sh"`), bus.CIStateBucket: listenerNote("envoy-listener"+composed, `"sh"`)}, nil},
-		{"a shell running $(hostname -f) beside an envFrom source of prefix host", nil,
-			fakeContainer{Name: "app", Command: shell(`exec nats-server --name "$(hostname -f)"`), EnvFrom: []map[string]any{{"prefix": "host", "configMapRef": map[string]any{"name": "nats"}}}},
-			nil, nil, neither},
-		{"control: PROGRAM=envoy-dispatch whole", nil,
-			fakeContainer{Name: "app", Command: shell(`PROGRAM=envoy-dispatch; exec "$PROGRAM"`)},
-			dispatchOnly, dispatchBlocks(dispatchNote("envoy-dispatch", `"sh"`)), sessionsOnly},
-		{`control: PROGRAM=nats-; PROGRAM=${PROGRAM}server; exec "$PROGRAM"`, nil,
-			fakeContainer{Name: "app", Command: shell(`PROGRAM=nats-; PROGRAM=${PROGRAM}server; exec "$PROGRAM"`)},
-			nil, nil, neither},
-		{`control: exec "envoy-${ROLE}", its env setting ROLE to hub`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec "envoy-${ROLE}"`), Env: env("ROLE", "hub")},
-			nil, nil, neither},
-		{`control: exec "$1", run as sh -c ... sh nats-server`, nil,
-			fakeContainer{Name: "app", Command: shell(`exec "$1"`, "sh", "nats-server")},
-			nil, nil, neither},
+		{"a conditional assignment keeps the pod's PROGRAM", fakeContainer{Name: "app", Env: env("PROGRAM", dispatch),
+			Command: shell(`[ -n "$CI" ] || PROGRAM=nats-server; exec "$PROGRAM"`)}, []string{bus.CIStateBucket}},
+		{"a prefix assignment on a command keeps the pod's PROGRAM", fakeContainer{Name: "app", Env: env("PROGRAM", dispatch),
+			Command: shell(`PROGRAM=/bin/true /opt/init.sh; exec "$PROGRAM"`)}, []string{bus.CIStateBucket}},
+		{"a case branch keeps the pod's PROGRAM", fakeContainer{Name: "app", Env: env("PROGRAM", dispatch),
+			Command: shell(`case "$MODE" in hub) PROGRAM=/usr/local/bin/envoy-hub ;; esac; exec "$PROGRAM"`)}, []string{bus.CIStateBucket}},
+		{"a default-if-unset branch keeps the pod's PROGRAM", fakeContainer{Name: "app", Env: env("PROGRAM", dispatch),
+			Command: shell(`if [ -z "$PROGRAM" ]; then PROGRAM=nats-server; fi; exec "$PROGRAM"`)}, []string{bus.CIStateBucket}},
+		{"a bash substring operator blocks every bucket", fakeContainer{Name: "app", Env: env("P", dispatch),
+			Command: shell(`exec "${P:10}"`)}, bus.CopiedBuckets()},
+		{"a bash replace operator blocks every bucket", fakeContainer{Name: "app", Env: env("P", dispatch),
+			Command: []string{"/bin/bash", "-c", `exec "${P/local/opt}"`}}, bus.CopiedBuckets()},
+		{"a name a script joins to a literal before the writer's name blocks", fakeContainer{Name: "app",
+			Command: shell(`P=/usr/local/bin/envoy-; exec ${P}dispatch`)}, []string{bus.CIStateBucket}},
+		{"a name from a command's output joined to the writer's name blocks", fakeContainer{Name: "app",
+			Command: shell(`BIN="$(cat /etc/program)/envoy-"; exec "${BIN}dispatch"`)}, []string{bus.CIStateBucket}},
+		{"a control whose pod PROGRAM is another program writes nothing", fakeContainer{Name: "app", Env: env("PROGRAM", "/usr/local/bin/nats-server"),
+			Command: shell(`case "$MODE" in hub) PROGRAM=/usr/local/bin/envoy-hub ;; esac; exec "$PROGRAM"`)}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			pod := fakePod{namespace: "envoy", name: "pod-launched", labels: c.labels, containers: []fakeContainer{c.container}}
 			var pods podList
-			if err := json.Unmarshal([]byte(podsJSON(t, pod)), &pods); err != nil {
+			if err := json.Unmarshal([]byte(podsJSON(t, fakePod{namespace: "envoy", name: "pod-values", containers: []fakeContainer{c.container}})), &pods); err != nil {
 				t.Fatalf("decode the pod: %v", err)
 			}
 			container := pods.Items[0].Spec.Containers[0]
 			container.pod = &pods.Items[0]
 			if got := container.writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(c.writes))) {
 				t.Errorf("the container writes %v, want %v", got, c.writes)
-			}
-			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, pod)}}
-			for _, bucket := range slices.Sorted(maps.Keys(c.blocks)) {
-				code, stdout, stderr := recreateIn(t, w, bucket, "envoy")
-				if want := "runs container app, which writes " + bucket + c.blocks[bucket] + "\n"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, "deleted") {
-					t.Errorf("recreate of %s beside %s = %d, want 1 naming %q and nothing deleted\n%s%s", bucket, c.name, code, want, stdout, stderr)
-				}
-			}
-			for _, bucket := range c.passes {
-				if code, stdout, stderr := recreateIn(t, w, bucket, "envoy"); code != 0 {
-					t.Errorf("recreate of %s beside %s = %d, want 0\n%s%s", bucket, c.name, code, stdout, stderr)
-				}
 			}
 		})
 	}
