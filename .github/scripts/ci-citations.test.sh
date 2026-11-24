@@ -23,8 +23,9 @@
 # - a path word followed right away by a hash and a name outside a token is refused, with no
 #   backticks around it or inside a code span that other text starts; a Markdown heading's
 #   anchor is not, and nor is a colon after a path inside a command's code span;
-# - a token names text its file holds once, so the rename of the case arm or the list entry it
-#   cites fails it, while a token whose text another string holds too still holds;
+# - a token names text its file holds once, so the rename of the case arm or the deletion of
+#   the list entry it cites fails it, while a token that names another part of the same file,
+#   the arm's usage line or the root's file name in another string, still holds;
 # - each spelling of a line number beside a path word is refused, and so is a token whose name
 #   is a line number;
 # - a backticked text that is no token, right after a path word (a possessive, a parenthesis or
@@ -72,8 +73,9 @@ tok() { printf '%s%s%s%s%s' "$bt" "$1" "$h" "$2" "$bt"; }
 # rows", names TestOldName only in a comment and holds the strings setup-golang and setup-go-x;
 # playwright.config.ts, run.sh and tool.py each hold a comment marker inside a string ahead of
 # a name; guard.test.ts, note.tsx, tool.py, scan.go and ci.yaml hold the shapes each language's
-# case reads; push.sh holds a case arm whose text a message holds too, and roots.test.ts a list
-# entry whose file name another string holds, as release-push.sh and skills-guard.test.ts do.
+# case reads; push.sh holds a case arm no message of it holds, whose command its usage line
+# names too, and roots.test.ts a list entry whose file name another string holds, as
+# release-push.sh and skills-guard.test.ts do.
 fixture() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/ci-notes" "$root/.github/docker" "$root/.github/workflows" \
@@ -118,7 +120,7 @@ EOF
 case $1 in
   release)
     usage='usage: push.sh release [<tag>]'
-    echo "no tag: push v0.0.0 on the commit before its first release)" >&2
+    echo "no tag: push v0.0.0 on the first release's parent commit" >&2
     ;;
 esac
 EOF
@@ -479,30 +481,32 @@ check "and a colon after a path inside a command's code span" "$(clean 9)"
 check "and refuses nothing else" "$(is "$(grep -c 'notes.md' <<<"$out")" 3)"
 
 echo "case: a token names text its file holds once, so the rename of what it cites fails it"
-# The shape review 6043861656 found: release-push.sh's release) arm is also held by a message of
-# that file, and skills-guard.test.ts's AGENTS.md root by another string of it, so a token that
-# names either still holds after the arm is renamed or the root is deleted. The arm's usage line
-# and the root's list entry are text that each file holds once.
+# The shape review 6043861656 found: a token holds on after the rename of what it names, where
+# another part of the cited file holds its text too. roots.test.ts holds the AGENTS.md root's
+# file name in another string, so the root is cited by its list entry, text that file holds
+# once. push.sh's message no longer holds the text of its case arm, as release-push.sh's does
+# not, so the arm is such a text and is cited by itself; the usage line is not, as the last
+# check shows: a token of that line passes the rename of the arm alone.
 root=$(fixture once)
 push="packages/app/push.sh"
 roots="packages/app/roots.test.ts"
 notes "$root" <<EOF
-$(tok "$push" 'usage: push.sh release [')
+$(tok "$push" 'release)')
 
 $(tok "$roots" 'path.join(REPO_ROOT, "AGENTS.md")')
 
-$(tok "$push" 'release)') and $(tok "$roots" AGENTS.md)
+$(tok "$push" 'usage: push.sh release [') and $(tok "$roots" AGENTS.md)
 EOF
 track "$root"
 run_check "$root"
 check "passes before the rename" "$(is "$status" 0)"
-sed -i 's/^  release)$/  publish)/; s/push.sh release \[/push.sh publish [/' "$root/$push"
+sed -i 's/^  release)$/  publish)/' "$root/$push"
 sed -i 's/path.join(REPO_ROOT, "AGENTS.md"), //' "$root/$roots"
 run_check "$root"
 check "fails after it" "$(is "$status" 1)"
-check "on the usage line of the renamed arm" "$(refused 1 "holds no ${bt}usage: push.sh release [${bt}")"
+check "on the renamed case arm" "$(refused 1 "holds no ${bt}release)${bt}")"
 check "on the list entry of the deleted root" "$(refused 3 "holds no ${bt}path.join(REPO_ROOT, \"AGENTS.md\")${bt}")"
-check "while the arm's name and the root's file name, which other strings hold, still hold" "$(clean 5)"
+check "while the arm's usage line and the root's file name, which the rename left, still hold" "$(clean 5)"
 
 echo "case: a line number beside a path word is refused, in every spelling"
 root=$(fixture lines)

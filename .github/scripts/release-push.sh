@@ -911,7 +911,7 @@ case "$command" in
         prev_version=$(npm view "$first_npm" version 2>/dev/null || echo 0.0.0)
         range=HEAD
       else
-        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2
+        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the first release's parent commit)" >&2
         exit 1
       fi
       # release-bump.sh refuses a previous version that is not X.Y.Z (the

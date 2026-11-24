@@ -448,9 +448,9 @@ another commit) leaves no attestation for archives no release carries.
 
 ## What legion's GitHub release step does on a re-run
 
-`.github/scripts/release-push.sh#usage: release-push.sh release [`: creates the release, reuses a published one, or
-publishes a draft an earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step
-listed. Its version and tag are the job's outputs, which worker_image_release names the worker image on.
+`.github/scripts/release-push.sh#release)`: creates the release, reuses a published one, or publishes a draft an
+earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its
+version and tag are the job's outputs, which worker_image_release names the worker image on.
 
 ## What the worker image build is given and what it pushes
 

@@ -1570,18 +1570,20 @@ capitalised file name such as CODEOWNERS. A backticked text with a hash in it th
 reads as a token whose path names no file, so it is written without the backticks or reworded.
 A name is chosen so that the rename of what the citation means fails it, and so is text the
 cited code holds once: a word every such file holds, such as a YAML key like if: or a shell
-case's command word, is no such name, and nor is a case arm that a message of the same file
-also holds, as release) is in release-push.sh. The release command is cited by its usage line,
-`.github/scripts/release-push.sh#usage: release-push.sh release [`, and a root of the list that
-skills-guard.test.ts sweeps by its entry,
-`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`. Nothing outside
-.github is read. The check runs in the lint job, which every pull request and merge group runs,
-since a rename can be in any file of the repository, after the job's setup-go and its bun
-install, which its scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just
-before it. The TypeScript scanner's bun run resolves typescript from this repository, where the
-scanner stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile
-fills from bun.lock. A local run with no node_modules does not fail on that: Bun installs
-typescript itself into its own cache, at the version the root package.json and bun.lock give.
+case's command word, is no such name, and nor is text that another part of the same file holds
+too, which the rename of the part the citation means leaves standing. The release command of
+release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#release)`: that file
+holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
+of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
+its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
+since another string of that file holds the file name alone. Nothing outside .github is read.
+The check runs in the lint job, which every pull request and merge group runs, since a rename
+can be in any file of the repository, after the job's setup-go and its bun install, which its
+scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The
+TypeScript scanner's bun run resolves typescript from this repository, where the scanner
+stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile fills
+from bun.lock. A local run with no node_modules does not fail on that: Bun installs typescript
+itself into its own cache, at the version the root package.json and bun.lock give.
 
 ## A lane label turns on one slow suite on a pull request
 
