@@ -85,12 +85,14 @@ export function IssuePropertiesRow({
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the decisions the tree read answers as nodes, with each Change it hangs under one -
-  // and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`), but for the
-  // tree read, which keeps its own (`TREE_FRESH`): events refresh them, never their age
-  // (decision 180). Staleness is per observer, so each read here takes that rule too, and the
-  // count costs no request of its own (`waiting.ts`). A Change of a decision no node holds is
-  // read by its quote, as `decision-review.ts` reads it with no blocks read.
+  // as, and the tree read, which the outline keeps fresh by its own rule (`TREE_FRESH`), whose
+  // decision nodes hang the Changes written on them, which say which decision a Change belongs
+  // to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
+  // refresh them, never their age (decision 180). Staleness is per observer, so each read here
+  // takes that rule too, and the count costs no request of its own (`waiting.ts`). Until a
+  // decision's node is held the count reads the Changes asked of it by their quotes, as
+  // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
+  // read is read by its quote alone, as the tree places it.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });

@@ -14,7 +14,7 @@ first sections below.
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-over five shard machines, the three `-alone` projects get a machine each, the two-process job,
+over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -143,7 +143,7 @@ the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
+One leg of the lane's rows. Each leg runs the rows the deal gives it over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -222,7 +222,7 @@ which passed. The browser step over them, in seconds:
   2026-11-21    144    414    507  531
   all           672    380    486  531
 
-The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
+The browser step's budget at this census was that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
@@ -233,21 +233,15 @@ the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, an
 44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
 at it.
 
-The census's legs are four, and this workflow runs five, each over a fifth of the lane's rows
-(`--shard=$shard/5`), so a leg here runs about four fifths of the rows a census leg ran, and the
-11 minutes is held as the census reads it rather than read again from five legs. The five legs
-were last measured on two full-lane runs of one head, c1ea125d, whose suite was smaller than the
-census's: 44455259784, a pull request's push, and 44455340996, a workflow_dispatch of ci.yaml,
-in shard order, in seconds:
-
-  step                                     pull request's push       workflow_dispatch
-  Browser-test dispatch dashboard         434, 383, 316, 403, 394  344, 325, 408, 298, 325
-  every other step summed                 116, 131, 132, 129, 127  126, 121, 121, 121, 120
-
-No run of that head took the pull-request lane, so its five legs are a computed reading and not
-a run: `playwright test --list` with that lane's projects, its `@pr` grep and `--shard=N/5` gives
-each leg's rows, and the push's own time of each row gives the legs 277, 160, 203, 154 and 147 s
-of rows, about 69 s on a leg's four workers at the most.
+The deal of each leg's tests (#how-a-shard-leg-chooses-its-tests) and a suite of 1,676 rows
+moved that maximum, and the budget is read again over the 12 legs of the first three
+full-lane runs that dealt it, at pull request #4259's heads 0562cc8843, 0dabc697fe and
+690da024b6 (runs 45015897737, 45021559595 and 45024317897), read with
+`gh api 'repos/cybermonklabs/legion/actions/runs/<id>/jobs?filter=latest&per_page=100'`,
+each browser step's `completed_at` less its `started_at`: 474, 476, 607 and 602 s; 636,
+568, 636 and 592 s; 651, 459, 604 and 542 s. One leg read 474 s and then 651 s on the same
+tests, so a run's noise is about a third of a leg. The budget, `timeout-minutes: 13`, is
+651 x 1.15 = 749 s -> 13 min.
 
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
@@ -307,8 +301,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 660 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,465 s, 24 min 25 s, rounded up to the 25 minutes
+browser step's 780 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,585 s, 26 min 25 s, rounded up to the 27 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -321,12 +315,11 @@ pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282.
 `visual` projects hold 20, which the visual job runs one row at a time, and the 54
 wall-clock rows are the alone job's.
 
-## Why the leg count stands in two places
+## Why the leg count stands in three places
 
-Five legs. The count is written here and in the `--shard` denominator of the browser step
-(`--shard=$shard/5` in .github/scripts/dispatch-browser-shard-suite.sh), and the two move together: a denominator larger than the leg list
-would leave the rows of the missing legs unrun with nothing red. The browser step's name holds it
-too, and .github/scripts/ci_job_reads.py's `BROWSER_SHARD_SPECS` spells that name again.
+Four legs. The count is written in the shard job's matrix (`shard: [1, 2, 3, 4]`, whose `# why:` line points here), in the `legs` value of the browser step
+(`legs=4` in .github/scripts/dispatch-browser-shard-suite.sh) and in that step's title (`shard ${{ matrix.shard }} of 4`), and nowhere else, so the three move together: a count larger than the leg list
+would leave the rows dealt to the missing legs unrun with nothing red, and a smaller one fails each leg above it, whose number the deal refuses.
 
 ## What the shard job downloads in place of a Go build
 
@@ -474,9 +467,41 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from main's
-own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s; the job's head gives
-the census's query and why the budget is read again as the suite grows.
+The step's budget, `timeout-minutes: 13`, is the 13 minutes the job's head derives from the
+legs of the first full-lane runs that dealt the suite by recorded seconds, whose maximum is
+651 s; the job's head gives the census's query, those runs, and why the budget is read again
+as the suite grows.
+
+## How a shard leg chooses its tests
+
+Each leg runs whole files, dealt to the legs by the seconds they took rather than by their count.
+`--shard=N/4` cut the run's ordered tests into four runs of equal count, and with `fullyParallel` each run held neighbouring files, so the slow `issue-page-*` files fell to one leg.
+In full-lane run 45008983778 the legs' rows summed to 2,026 s, 2,395 s, 1,718 s and 1,456 s, and the second leg reached its 11-minute step limit with 49 of its 419 tests not finished.
+
+Before its run, each leg runs packages/dispatch/e2e/tools/shard-deal.ts with its number, the leg count and the run's own selection: the config, the lane's projects and its grep.
+The tool lists that selection with `playwright test --list`, which loads the spec files and runs no `globalSetup`, so it starts no stack (the list mode's task list, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:7140-7142).
+It groups the listed tests by project and file and deals the groups to the legs: the heaviest first, each onto the leg with the fewest planned seconds, ties broken by name, so every leg computes the same deal from the same checkout.
+It writes this leg's groups to the file the run's `--test-list` reads, one `[project] › <file>` line each with the file named from the config's directory, which is how `loadTestList` (:2746 of that file) compares it, and which takes every test of that file in that project.
+So every listed test runs in exactly one leg, and a file's hooks and serial blocks stay on one machine.
+The step's log holds every leg's planned seconds, this leg's groups, and the listing's own milliseconds in its `bounded child:` line.
+After its run, the leg holds the test count Playwright says it ran (its `Running N tests` line, 0 where it printed none) to the count the deal planned for this leg (the tool's `leg <n> of <legs>: ..., N tests` line), and fails, naming both, where they differ.
+Playwright fails no `--test-list` run that selects no test, so a Playwright that read the deal's lines another way would run every leg empty and green, and the merge job, which holds the legs' counts to the merged report's, would find them agree at 0.
+
+The weights are packages/dispatch/e2e/shard-times.json: for each `[project] › e2e/<file>`, the seconds of every attempt of its tests, and how many tests those were.
+A group weighs its recorded seconds scaled to the tests the run lists of it, so the pull-request lane's `@pr` share of a file, and a file that gained tests, weigh what they hold.
+A group the table does not hold weighs its test count times the table's median seconds per test.
+A stale table only makes the deal less even: the tests come from the listing, never from the table.
+The table now is read from the four legs of run 45008983778, so the two files of its second leg that never ran weigh by the median, and the two it ran in part are scaled from the tests that ran.
+Refresh it from a green full-lane run's shard legs, from packages/dispatch, as the tool's head says:
+
+  gh run view <run> --json jobs --jq '.jobs[] | select(.name | contains("shard")) | .databaseId'
+  gh run view --job <job> --log > shard-<n>.log
+  bun e2e/tools/shard-deal.ts --record shard-*.log > e2e/shard-times.json
+
+Measured on a pod at this change's base, 2da43fb6, over the full lane's 1,676 tests in 320 groups: four legs plan 1,937 s each, and two legs plan 3,874 s and 3,875 s.
+The four legs' plan is below the 2,026 s of that run's fullest leg that ended inside the limit, and the two legs' plan is twice it.
+The listing took 36.7 s and 40.2 s with an empty transform cache and 9.4 s to 10.2 s with a full one.
+It fills the cache under the run's own TMPDIR, and the run then loads only its own files: in list mode a leg's `--shard=2/4` load took 38.9 s from an empty cache, against 40.4 s for the deal and 7.2 s for that leg's `--test-list` load after it, so the deal adds about 9 s to a leg on that pod.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1109,7 +1134,7 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
 report, publishes four readings of it - the rows, the flake rate, the legs that did not
 succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not eight.
+and not seven.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It

@@ -104,7 +104,7 @@ var restoreWorkRead = `
 		  and not ` + owesBlockIndex("spec.id") + `
 		union all
 		select '` + RestoreMoves + `', decisions.issue_key, k.id::text, d.node_id, d.block_id, spec.id
-		from ` + decisionsDocuments + ` decisions
+		from ` + decisionsDocuments + ` decisions -- kept for one release: decisions-documents-fn
 		join document_blocks d on d.artifact_id = decisions.id and d.type = 'ask'
 		join asks k on k.block_artifact_id = decisions.id and block_id_key(k.block_id) = block_id_key(d.block_id)
 		join artifacts spec on spec.issue_key = decisions.issue_key and spec.is_primary

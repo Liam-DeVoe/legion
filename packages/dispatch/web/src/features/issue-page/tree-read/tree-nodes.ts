@@ -1,6 +1,7 @@
 import { type BlockItemKind, parseBlockPointerValue } from "@legion/contracts";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
+import type { TreeFilter } from "../../../api/queries";
 import type {
   ArtifactBlock,
   BlockAttributeValue,
@@ -19,13 +20,14 @@ import {
   parseDispatchReference,
   parseNodeReference,
 } from "../../refs/routes";
-import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
   blockIdOfNode,
   decisionNodeChanges,
   decisionNodes,
+  firstOfEachId,
   inReviewList,
+  parentsIn,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { blockAttributeLabel, type NodeType } from "../page-words";
@@ -42,9 +44,10 @@ import {
   markKeptAndUnsure,
   plainWords,
   requirementGaps,
+  stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
  * The tree read's answer as the outline's drafts (`tree-drafts.ts`), for `assemble` to build the
@@ -211,7 +214,7 @@ export function treeDraftsFrom(
   reads: IssueTreeReads,
   context: TreeWords
 ): Map<string, Draft> {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const tuples = new Map<string, TreeTuple[]>();
   const ending = new Map<string, TreeTuple[]>();
   for (const tuple of answer.tuples ?? []) {
@@ -313,27 +316,6 @@ function firstDraft(
   return undefined;
 }
 
-/**
- * The node each node of `order` hangs under: the nearest node before it in `order` that its
- * `parent` names, since a parent comes before its children; else the answer's node of that id
- * (`nodes`). A decision's Change is the comment the read hangs under it by the same rule
- * (`decision-review.ts`' `parentsIn`).
- */
-function parentsIn(
-  order: readonly TreeAnswerNode[],
-  nodes: ReadonlyMap<string, TreeAnswerNode>
-): Map<TreeAnswerNode, TreeAnswerNode> {
-  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
-  const latest = new Map<string, TreeAnswerNode>();
-  for (const node of order) {
-    const parent =
-      node.parent === null ? undefined : (latest.get(node.parent.id) ?? nodes.get(node.parent.id));
-    if (parent !== undefined) parents.set(node, parent);
-    latest.set(node.id, node);
-  }
-  return parents;
-}
-
 /** What `treeIdOf` reads beside the answer: the issue, for its key and its documents' slugs, and
  *  the asks read, which names the block an ask was indexed from. */
 export type TreeIdReads = Pick<IssueTreeReads, "asks" | "issue">;
@@ -379,7 +361,7 @@ export function treeIdOfNode(
  * does not hold is its own tree id.
  */
 export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: string) => string {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const idOfNode = nodeIdsIn(reads);
   return (readId) => {
     const node = nodes.get(readId);
@@ -410,7 +392,7 @@ function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
  * issue's tree. Every node a step is offered then has its ancestors' drafts made before it.
  */
 function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const inTree = new Map<TreeAnswerNode, boolean>();
   const reachesIssue = (node: TreeAnswerNode): boolean => {
     const known = inTree.get(node);
@@ -638,10 +620,11 @@ function draftDecision(
 /**
  * A question asked of the issue: who asked it and when, its `shaped` tuples as chips, each naming
  * a node the question shaped, and from the asks read how it stands, its options, a person's
- * answer, and whether it waits on the reader, whose turn it is, as the outline drew a question. An
- * approval request belongs to the document it reviews and is no node of the tree, as in the
- * outline. An ask the asks read has not answered for yet is open, as the outline drew an ask
- * block before that read answered.
+ * answer, and whether it waits on the reader, whose turn it is, as the outline drew a question,
+ * with the ask as the record its words are, kept by the tree read's reading of them, else by the
+ * node (`stableSourceOf`). An approval request belongs to the document it reviews and is no node
+ * of the tree, as in the outline. An ask the asks read has not answered for yet is open, as the
+ * outline drew an ask block before that read answered.
  *
  * An `ask` block of a document is drawn by its question as the asks read holds it, with that
  * read's reading of it, as the outline drew an ask: the read's reading of the block is of its
@@ -659,7 +642,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, context);
-  if (askId !== undefined) draft.source = textSourceOf("ask", askId);
+  if (askId !== undefined) draft.source = stableSourceOf(draft.tree ?? node, "ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -691,7 +674,8 @@ function draftAsk(
 }
 
 /** A turn of the conversation, a comment or a message: who wrote it and when, and the record
- *  its words are, which its body's links resolve against. */
+ *  its words are, which its body's links resolve against, kept by the reading of its words
+ *  (`stableSourceOf`). */
 function draftTurn(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -700,7 +684,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = textSourceOf(node.supertag, node.id);
+  draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
 }
 
@@ -744,7 +728,8 @@ function draftChild(
 /** A draft of `node` as every kind starts one: its tree id, its words and their reading
  *  (`readingOf`), its address (`referenceOf`), and, where the read sent a reading, the document a
  *  typed block is written in, which the links of the body drawn from that reading resolve
- *  against. The order and the read id are `treeDraftsFrom`'s. */
+ *  against, kept by that reading (`stableSourceOf`). The order and the read id are
+ *  `treeDraftsFrom`'s. */
 function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext): Draft {
   const draft = blank(context.treeIdOfNode(node), type, 0);
   draft.text = node.text;
@@ -754,23 +739,35 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = textSourceOf("artifact", node.document.artifact_id);
+      draft.source = stableSourceOf(reading, "artifact", node.document.artifact_id);
     }
   }
   return draft;
 }
 
+/** Each typed block's reading cut to its own content (`readingOf`), by the reading it was cut
+ *  from. A re-read whose answer is unchanged keeps each reading's object, and so a row is handed
+ *  the cut it was handed before, and the source kept by that cut (`stableSourceOf`), and its
+ *  words are not drawn again. */
+const cutReadings = new WeakMap<DisplayTree, DisplayTree>();
+
 /** The reading of `node`'s words that a row and a chip draw. The read sends a block's reading
  *  as the blocks read does, of the block's whole stored text: a typed block's reading is the one
  *  typed node, its type and its attributes on it, which the row draws apart (its kind, its chips,
  *  its facts). So a block whose reading is that one node of its own kind (`typedNodeOf`) reads as
- *  the node's own content, as the server's other reads cut a typed block's text to its content.
- *  Every other reading is the node's words as sent. A view's line (`presets.ts`) reads it here
- *  too. */
+ *  the node's own content, as the server's other reads cut a typed block's text to its content,
+ *  the same object for the same reading (`cutReadings`). Every other reading is the node's words
+ *  as sent. A view's line (`presets.ts`) reads it here too. */
 export function readingOf(node: TreeAnswerNode): DisplayTree | undefined {
   const reading = node.text_tree;
   const content = typedNodeOf(node)?.content;
-  return reading !== undefined && Array.isArray(content) ? { ...reading, content } : reading;
+  if (reading === undefined || !Array.isArray(content)) return reading;
+  let cut = cutReadings.get(reading);
+  if (cut === undefined) {
+    cut = { ...reading, content };
+    cutReadings.set(reading, cut);
+  }
+  return cut;
 }
 
 /** The one node of `node`'s own kind its reading is, where the read sent a typed block's reading,
@@ -994,15 +991,6 @@ function isForeign(node: TreeAnswerNode, key: string): boolean {
   return node.issue !== undefined && node.issue !== key;
 }
 
-/** Each node of the answer by its read id, the first the answer holds where two share one. */
-function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
-  const nodes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes ?? []) {
-    if (!nodes.has(node.id)) nodes.set(node.id, node);
-  }
-  return nodes;
-}
-
 /** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). A
  *  decision's row is the one whose node the read answers (`decisionNodes`). A check's row is its
  *  block in its document; a check of this issue that names no document, a node of its own tree
@@ -1202,7 +1190,7 @@ function blockOf(
  *  on another document's block of the same id. */
 function hungUnder(answer: TreeAnswer): Map<TreeAnswerNode, { asks: number; comments: number }> {
   const counts = new Map<TreeAnswerNode, { asks: number; comments: number }>();
-  for (const [node, parent] of parentsIn(answer.nodes ?? [], nodesById(answer))) {
+  for (const [node, parent] of parentsIn(answer.nodes ?? [])) {
     if (node.supertag !== "ask" && node.supertag !== "comment") continue;
     const count = counts.get(parent) ?? { asks: 0, comments: 0 };
     if (node.supertag === "ask") count.asks += 1;
@@ -1273,4 +1261,16 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
     nodes: pages.flatMap((page) => page.nodes ?? []),
     tuples: pages.flatMap((page) => page.tuples ?? []),
   };
+}
+
+/**
+ * The cursor of the page after `page` in its read, or undefined where `page` is the last: one
+ * whose cursor is null, left out of the body, or empty, as a server that drops an empty field
+ * writes it. The one rule every walk of the read ends by: the page's own (`tree-read.ts`'
+ * `readTree`) and the e2e helpers', which load this module and not that one, as they do for
+ * `mergeTreePages`.
+ */
+export function nextTreeCursor(page: TreeAnswer): string | undefined {
+  const { cursor } = page;
+  return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
 }

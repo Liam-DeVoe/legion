@@ -25,6 +25,7 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import {
   blockIdOfNode,
+  type DecisionContent,
   decisionChangeComments,
   decisionChanges,
   decisionContent,
@@ -142,12 +143,6 @@ export interface TreeContext {
    *  issue's own documents (`treeContext`): one chip per reference, the same value on every
    *  call. */
   readonly chipOf: (reference: string) => NodeChip;
-  /** The words of the stored excerpt the batched reference read names `reference`'s target by
-   *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
-   *  a target the read has not answered for and for one nothing answers to now. It is a block's
-   *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
-   *  are read from beside its words (`addDocumentChips`). */
-  readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
@@ -333,10 +328,6 @@ export function treeContext(
       };
       chips.set(reference, chip);
       return chip;
-    },
-    excerptOf: (reference: string): string => {
-      const target = names.get(reference);
-      return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
     nodeIdOf: nodeIdOfReference,
@@ -528,13 +519,16 @@ function shortAddressesIn(node: DisplayTree, inCode: boolean): DisplayTree {
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
- * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
- * named by the page's word for the document, as every chip naming a whole document is
- * (`documentWord`): the filter's name for the spec and for the plan and Verification documents,
- * and "document" for any other, never the file name the issue's own read carries. It
- * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
- * filter's address. A citation of one block of a document names that block, which the text's
- * own link opens, and no chip.
+ * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The words
+ * read are the draft's text: a node of the tree read is drafted with its words as that read
+ * answers them, a block's its stored source (`tree-read/tree-nodes.ts`' `draftOf`), and a
+ * decision of the decisions read with its block's words (`addDecisions`). The chip is named by
+ * the page's word for the document, as every chip naming a whole document is (`documentWord`):
+ * the filter's name for the spec and for the plan and Verification documents, and "document"
+ * for any other, never the file name the issue's own read carries. It addresses the document as
+ * `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
+ * citation of one block of a document names that block, which the text's own link opens, and no
+ * chip.
  */
 export function addDocumentChips(
   drafts: Map<string, Draft>,
@@ -544,14 +538,7 @@ export function addDocumentChips(
   const bySlug = artifactsBySlug(reads.issue);
   if (bySlug.size === 0) return;
   for (const draft of drafts.values()) {
-    // The words a node is drawn by can leave a citation out - the coverage read drops every
-    // `://` word of a requirement (`api/results.go`'s `blockWords`) - so the node's own source,
-    // the excerpt the reference read names it by, is read as well.
-    const source = draft.reference === undefined ? "" : context.excerptOf(draft.reference);
-    for (const span of [
-      ...referenceSpans(draft.text, "dispatch://"),
-      ...referenceSpans(source, "dispatch://"),
-    ]) {
+    for (const span of referenceSpans(draft.text, "dispatch://")) {
       const route = parseNodeReference(span.value);
       if (route === undefined || !("key" in route) || route.key !== context.key) continue;
       if ("block" in route && route.block !== undefined) continue;
@@ -610,6 +597,54 @@ export function askState(ask: Ask): AskState | undefined {
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
   return words[token] === undefined ? undefined : (token as AskState);
+}
+
+/** Each text source (`textSourceOf`) a row was handed, by its kind, since one object can stand
+ *  for more than one - an ask block's reading is its ask's text and a block of its document - and
+ *  then by the object the row draws: the reading of its words, else the node or the entry it was
+ *  drafted from. A re-read whose answer is unchanged keeps each of these objects, and one whose
+ *  node changed beside its words keeps the node's reading, so every build of the drafts hands a
+ *  row the source object it handed it before, and the row's words are not drawn again for a
+ *  source that only looks new; and a source goes when that object does. */
+const recordSources: Readonly<Record<TextSource["kind"], WeakMap<object, TextSource>>> = {
+  artifact: new WeakMap(),
+  ask: new WeakMap(),
+  comment: new WeakMap(),
+  message: new WeakMap(),
+};
+
+/** The text source of record `id` of `kind` (`textSourceOf`) for `drawn`, the object the row it
+ *  is handed to draws - its reading, else the node or the entry it is drafted from: the one
+ *  object `recordSources` holds for that object and kind, made again only where `id` is not the
+ *  one it was made with, since the reads an id is found through can change while the object
+ *  stays; none where there is no id, as `textSourceOf` answers. */
+export function stableSourceOf(
+  drawn: object,
+  kind: TextSource["kind"],
+  id: string | undefined
+): TextSource | undefined {
+  if (id === undefined) return undefined;
+  const sources = recordSources[kind];
+  const kept = sources.get(drawn);
+  if (kept?.id === id) return kept;
+  const source = textSourceOf(kind, id);
+  if (source === undefined) return undefined;
+  sources.set(drawn, source);
+  return source;
+}
+
+/** Each decision's own content (`decisionContent`), by the entry it was read from: a re-read
+ *  whose answer is unchanged keeps the entry's object, and so a row is handed the words it was
+ *  handed before. */
+const decisionContents = new WeakMap<DecisionEntry, DecisionContent>();
+
+function stableDecisionContent(decision: DecisionEntry): DecisionContent {
+  let own = decisionContents.get(decision);
+  if (own === undefined) {
+    own = decisionContent(decision);
+    decisionContents.set(decision, own);
+  }
+  return own;
 }
 
 /**
@@ -717,8 +752,8 @@ export function addDecisions(
     if (decider !== undefined) draft.author = decider;
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
-    const own = decisionContent(decision);
-    draft.source = textSourceOf("artifact", decisionDocumentId(reads.issue, decision));
+    const own = stableDecisionContent(decision);
+    draft.source = stableSourceOf(decision, "artifact", decisionDocumentId(reads.issue, decision));
     draft.text = own.text;
     draft.tree = own.tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape

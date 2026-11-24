@@ -263,12 +263,12 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
 // R9: an agent's decision is drawn with who decided it as the decisions read's entry for it
 // records (`DecisionEntry.decided_by`), which the read's `decisions` member does not carry. The
 // session that wrote it is named by the title the page's sessions read gives it, as any agent's
-// is: its role's word on the row and its whole title in the opened body (ruling 6). A session no
-// registry lists any longer is named by the title it stamped on what it wrote, which the entry
-// carries (`decided_by.title`), in the same two places. A decision whose entry names nobody draws
-// no author on its row, and its opened body says "Author unknown" (ruling 5). Each decision is a
-// node of the tree read, a `decision` block of the spec, whose `decision` names no decider, so
-// the decider is its entry's.
+// is: its role's word on the row and its whole title in the opened body. A session no registry
+// lists any longer is named by the title it stamped on what it wrote, which the entry carries
+// (`decided_by.title`), in the same two places. A decision whose entry names nobody draws no
+// author on its row, and its opened body says "Author unknown". Each decision is a node of the
+// tree read, a `decision` block of the spec, whose `decision` names no decider, so the decider is
+// its entry's.
 test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
   const title = "Legion architect · CORE-1";
   const storedTitle = "Legion planner · CORE-1";

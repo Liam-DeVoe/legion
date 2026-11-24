@@ -69,7 +69,9 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		 values ('artifact', 'SEED-1/spec', 'part_of', 'issue', 'SEED-1', now() - interval '2 days', '{}', 0),
 		        ('artifact', 'SEED-2/spec', 'part_of', 'issue', 'SEED-2', now() - interval '2 days', '{}', 0)`,
 		// Each block: its part_of - the first hundred under the issue, each other one under one of
-		// those - its in_document, its rank, its state, its placement and its history of text.
+		// those - its in_document, its rank, its state, its placement, its place in the text - its
+		// text_parent, the spec for the first hundred and one of those for each other one, and its
+		// text_rank - and its history of text.
 		`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
 		 select 'block', 'SEED-1/spec#b' || i, 'part_of',
 		        case when i <= 100 then 'issue' else 'block' end,
@@ -89,6 +91,15 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		 from generate_series(1, 480) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributePlacement + `', 'value', 'text', now() - interval '1 day', '{}'::jsonb, 0
+		 from generate_series(1, 480) i
+		 union all
+		 select 'block', 'SEED-1/spec#b' || i, '` + TupleTextParent + `',
+		        case when i <= 100 then 'artifact' else 'block' end,
+		        case when i <= 100 then 'SEED-1/spec' else 'SEED-1/spec#b' || ((i - 1) % 100 + 1) end,
+		        now() - interval '1 day', '{}'::jsonb, 0
+		 from generate_series(1, 480) i
+		 union all
+		 select 'block', 'SEED-1/spec#b' || i, '` + AttributeTextRank + `', 'value', '1' || lpad(i::text, 4, '0'), now() - interval '1 day', '{}'::jsonb, 0
 		 from generate_series(1, 480) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'text', 'value',
@@ -142,7 +153,8 @@ type asOfRead struct {
 // order, the values and the relations out of nodes, the rows of nodes, the moves of old
 // addresses, and the nodes of a child placed under its parent's tree, each at the seed's seq; and
 // the reads a render makes as of a time inside the seed's history of text (TreeCut.Dated): the
-// children, the values and the blocks of a document. A read of one value out of a node is served
+// children, the values - a block's text_rank among them - the relations - its text_parent among
+// them - and the blocks of a document. A read of one value out of a node is served
 // by graph_tuples_values as by graph_tuples_as_of_out, each keyed on the node and the attribute,
 // and a read of the part_of or the moved_to out of a node by graph_tuples_current as by
 // graph_tuples_as_of_out, each keyed on the node and the kind: the planner takes whichever it
@@ -166,6 +178,8 @@ func asOfReads(seed asOfSeed) []asOfRead {
 			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
 		{"the relations out of a node at a time", treeRelationsStatement,
 			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
+		{"the relations out of a node as of a render's time, its text_parent among them", treeRelationsStatement,
+			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out"}},
 		{"the rows of nodes", treeNodesStatement,
 			[]any{blockKinds, blockIDs}, []string{"graph_nodes_pkey"}},
 		{"the moved_to resolve at a time", treeMovedToStatement,

@@ -100,6 +100,12 @@ export function inReviewList(
   );
 }
 
+/** A decision's own words and its own reading (`decisionContent`). */
+export interface DecisionContent {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
 /**
  * What `decision` says: the decisions read answers a decision's text as its one `decision` block
  * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
@@ -109,10 +115,9 @@ export function inReviewList(
  * its own already. `tree` is absent where the read sent no reading. Every reader of a decision's
  * words reads them here: the tree's node (`tree-drafts.ts`) and a Change's quote (`anchorQuote`).
  */
-export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
-  readonly text: string;
-  readonly tree?: DisplayTree;
-} {
+export function decisionContent(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): DecisionContent {
   const text = ownWords(decision.text);
   const tree = ownTree(decision.text_tree);
   return tree === undefined ? { text } : { text, tree };
@@ -233,25 +238,36 @@ function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, T
 }
 
 /**
- * The node each node of the read hangs under: the nearest node before it in the read's order that
- * its `parent` names, since a parent comes before its children; else the first node of that id.
- * The outline places a node by the same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a
- * Change is the comment the outline draws under its decision.
+ * The node each node of `order` hangs under: the nearest node before it in `order` that its
+ * `parent` names, since a parent comes before its children; else the first node of that id,
+ * among `first` where the caller hands it, else among `order`. The outline places a node by this
+ * rule (`tree-read/tree-nodes.ts`), so a Change is the comment the outline draws under its
+ * decision: it walks the answer in an order of its own, and hands the answer's first node of
+ * each id.
  */
-function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAnswerNode> {
-  const first = new Map<string, TreeAnswerNode>();
-  for (const node of nodes) {
-    if (!first.has(node.id)) first.set(node.id, node);
-  }
+export function parentsIn(
+  order: readonly TreeAnswerNode[],
+  first: ReadonlyMap<string, TreeAnswerNode> = firstOfEachId(order)
+): Map<TreeAnswerNode, TreeAnswerNode> {
   const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
   const latest = new Map<string, TreeAnswerNode>();
-  for (const node of nodes) {
+  for (const node of order) {
     const parent =
       node.parent === null ? undefined : (latest.get(node.parent.id) ?? first.get(node.parent.id));
     if (parent !== undefined) parents.set(node, parent);
     latest.set(node.id, node);
   }
   return parents;
+}
+
+/** Each node of `nodes` by its id, the first where two share one: the node of an id `parentsIn`
+ *  falls back to, and the one the outline looks a read id up by (`tree-read/tree-nodes.ts`). */
+export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, TreeAnswerNode> {
+  const first = new Map<string, TreeAnswerNode>();
+  for (const node of nodes) {
+    if (!first.has(node.id)) first.set(node.id, node);
+  }
+  return first;
 }
 
 /**

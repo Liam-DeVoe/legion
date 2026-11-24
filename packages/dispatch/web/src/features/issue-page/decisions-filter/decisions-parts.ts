@@ -272,7 +272,7 @@ export function decisionsParts({
       const own = rows.get(node.reference ?? "");
       const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
       const closing = closings.get(askId);
-      // `question` is the ask's own `state === "open"` (`tree-drafts.ts`'s `addAsks`).
+      // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
         open.push({ ...base, ...timeOf(node.at), kind: "ask", shapes });
         continue;

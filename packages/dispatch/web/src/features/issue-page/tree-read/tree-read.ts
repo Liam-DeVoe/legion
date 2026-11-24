@@ -11,7 +11,7 @@ import { useMemo } from "react";
 
 import { api } from "../../../api/client";
 import { liveFeedUp, onLiveFeedBack } from "../../../api/live-socket";
-import { issueTreeKey } from "../../../api/queries";
+import { issueTreeKey, TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
   IssueDetails,
@@ -22,7 +22,7 @@ import type {
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { writesOf } from "../../writes/write-store";
-import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
+import { blocksOfRole, mergeTreePages, nextTreeCursor, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
@@ -32,14 +32,6 @@ import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 export type TreeAnswer = IssueTreeRead;
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
-
-/** The views of the tree a filter reads (`?view=`). Each is the query of the document of the
- *  same role, so the name says which role's blocks a caller asks for as well (`blocksOfRole`). */
-export type TreeFilter = "spec" | "verification" | "plan";
-
-/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
- *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
-export const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 
 /** One view's key: under the tree's (`issueTreeKey`), so every event of the issue reaches it
  *  too (`event-refresh.ts`). */
@@ -54,9 +46,9 @@ export function viewKey(
  *  (`ViewReadProvider`), so a view a past load held is gone and each is read once: the open one at
  *  the load, at once, whether a write of the issue is out or not, and another when its filter is
  *  next on. It marks none, and clears the mark a write's drop put on a view (`droppedWhileHeld`):
- *  after a load the view is a load's first read. The issue page calls only this one.
- *  `subscribeTreeFreshness` resets none: it refreshes each held view through `refreshQueries`,
- *  and the view keeps what it draws until its new answer lands. */
+ *  after a load the view is a load's first read. `subscribeTreeFreshness` resets none: it
+ *  refreshes each held view through `refreshQueries`, and the view keeps what it draws until its
+ *  new answer lands. */
 export function resetViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     const queryKey = viewKey(key, filter);
@@ -68,13 +60,11 @@ export function resetViews(queryClient: QueryClient, key: string): void {
 }
 
 /** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write,
- *  after which a held view could be older than the tree the page draws. Its callers would be a
- *  Settle, a Keep reading the decisions again and a Change; no surface calls it yet - the Keep and
- *  the Change of `DecisionActions.tsx` do not - and the issue page calls only `resetViews`. The
- *  write whose callback drops them has landed, so a view it drops is read at once, as a load's;
- *  but one it drops after a read of it while another write of the issue is out, which holds it, is
- *  a refresh: held as an answered one and read once as the last write settles
- *  (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. */
+ *  after which a held view could be older than the tree the page draws. The write whose callback
+ *  drops them has landed, so a view it drops is read at once, as a load's; but one it drops after
+ *  a read of it while another write of the issue is out, which holds it, is a refresh: held as an
+ *  answered one and read once as the last write settles (`droppedWhileHeld`, `mayReadNow`). One
+ *  never read reads at once. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     const queryKey = viewKey(key, filter);
@@ -90,16 +80,19 @@ export function dropViews(queryClient: QueryClient, key: string): void {
 
 /**
  * Every page of the tree read, or of one view, asked for in turn: the first, then each next page
- * the page before names (`cursor`), and the pages merged once the last answers, so the tree is
- * built once and never from part of the walk. A page that names no next page is the last,
- * whether its cursor is null, left out of the body or empty, as a server that drops an empty
- * field writes it. A cursor the walk has asked for already ends it there with the pages read, so
- * a server that names one page again cannot hold the walk in a loop. A page that fails fails the
- * read, and a read made again - a refetch, a retry - starts from the first page, since a cursor
- * names a place in the walk as it stood when the page that gave it was answered. A read TanStack
- * gives up (`signal`: a reset, the last observer gone) ends its page in flight and asks for no
- * next one. It waits for nothing before its first page: what holds a refresh back while a write
- * of the issue is out is the query's `enabled` (`TREE_FRESH`), so a read that is begun is sent.
+ * the page before names (`nextTreeCursor`), and the pages merged once the last answers, so the
+ * tree is built once and never from part of the walk. A cursor the walk has asked for already
+ * fails the read with an error that names it: the server named one page twice, so the pages past
+ * it are missing, and the walk neither answers the pages it read as the whole tree nor asks
+ * without end. A page that fails fails the read too. A failure of the tree read with no answer
+ * held draws the outline's failed-read line and its Retry, and a view's leaves its filter drawn
+ * off the tree (`presets.ts`' `presetView`); over a held answer the page keeps that answer, as
+ * TanStack keeps a query's data through a failed refetch. A read made again - a refetch, a retry -
+ * starts from the first page, since a cursor names a place in the walk as it stood when the page
+ * that gave it was answered. A read TanStack gives up (`signal`: a reset, the last observer gone)
+ * ends its page in flight and asks for no next one. It waits for nothing before its first page:
+ * what holds a refresh back while a write of the issue is out is the query's `enabled`
+ * (`TREE_FRESH`), so a read that is begun is sent.
  */
 async function readTree(
   key: string,
@@ -109,13 +102,19 @@ async function readTree(
   const first = await api.getIssueTree(key, { view }, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   const asked = new Set<string>();
-  let cursor: string | null | undefined = first.cursor;
-  while (typeof cursor === "string" && cursor !== "" && !asked.has(cursor)) {
+  let cursor = nextTreeCursor(first);
+  while (cursor !== undefined) {
+    if (asked.has(cursor)) {
+      const read = view === undefined ? `The tree read of ${key}` : `The ${view} view of ${key}`;
+      throw new Error(
+        `${read} named the cursor "${cursor}" twice, so the pages after it are missing.`
+      );
+    }
     asked.add(cursor);
     signal.throwIfAborted();
     const page = await api.getIssueTree(key, { cursor, view }, { signal });
     pages.push(page);
-    cursor = page.cursor;
+    cursor = nextTreeCursor(page);
   }
   return mergeTreePages(pages);
 }

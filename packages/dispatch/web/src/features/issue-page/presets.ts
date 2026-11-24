@@ -1,3 +1,4 @@
+import type { TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -20,7 +21,7 @@ import {
   type Preset,
 } from "./page-words";
 import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
@@ -75,12 +76,6 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check", "result"],
 };
 
-/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
- *  rows itself, so it reads them here rather than holding a copy. */
-export function rowKindsOf(filter: Filter): readonly NodeType[] {
-  return ROW_KINDS[filter];
-}
-
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
  *  context"). */
@@ -100,6 +95,13 @@ const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check"],
 };
 
+/** Whether `filter` draws a node at every placement the tree has it: Verification draws a check
+ *  under every requirement it serves, as the outline does; every other filter draws a node at
+ *  its own place alone. */
+function drawsEveryPlacement(filter: Filter): boolean {
+  return filter === "verification";
+}
+
 /** No node named by the address, which is every address but a deep link's. */
 const EMPTY: ReadonlySet<string> = new Set();
 
@@ -114,7 +116,8 @@ export interface PresetView {
    *  not hide it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
-   *  the row's id: never rows (R4). Empty where the view is read off the tree. */
+   *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
+   *  a line of a row and never a row itself. Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
@@ -126,9 +129,11 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** A node of a view read drawn as a line of a row rather than as a row (R4): a decision whose
+/** A node of a view read drawn as a line of a row, never as a row itself, which is how the view
+ *  read of Spec, Verification or Plan draws a decision and a constraint: a decision whose
  *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
- *  names. Later parts of the page draw them. */
+ *  names. Later parts of the page draw these lines. The Decisions filter and the outline draw a
+ *  decision as a row of its own. */
 export interface PresetLine {
   /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;
@@ -229,6 +234,44 @@ function conversationView(
   };
 }
 
+/** What one node of the tree gives a filter at its place: the rows its branch draws there, and
+ *  whether the node is itself one of them. */
+interface Lifted {
+  readonly drawn: boolean;
+  readonly rows: TreeNode[];
+}
+
+/**
+ * The rows `node`'s branch gives a filter at the place `node` stands in the tree, in the tree's
+ * order: the row `rowOf` draws `node` as, given what each of its children gave, or, where it
+ * draws none, the rows of the branch at `node`'s place (`liftPast`). A transclusion gives a
+ * filter nothing unless the filter draws every placement.
+ */
+function lift(
+  node: TreeNode,
+  everyPlacement: boolean,
+  rowOf: (node: TreeNode, parts: readonly Lifted[]) => TreeNode | undefined
+): Lifted {
+  if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
+  const parts = node.children.map((child) => lift(child, everyPlacement, rowOf));
+  const row = rowOf(node, parts);
+  return row === undefined
+    ? { drawn: false, rows: liftPast(node, parts) }
+    : { drawn: true, rows: [row] };
+}
+
+/** The rows `parts` give the place of `node`, which the filter draws as no row: each row of its
+ *  own children carrying it as its parent's line (`lineOfParent`), so a drawn node whose parent
+ *  is no row is drawn where that parent stood, and each row from deeper as it came. */
+function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
+  const line = parts.some((part) => part.drawn) ? lineOfParent(node) : undefined;
+  return parts.flatMap((part) =>
+    part.drawn && line !== undefined
+      ? part.rows.map((row) => ({ ...row, parentLine: line }))
+      : part.rows
+  );
+}
+
 /** One filter over the tree: its kinds as rows, each other parent a line on its child's row. */
 function filterView(
   root: TreeNode,
@@ -239,17 +282,10 @@ function filterView(
   const rows = ROW_KINDS[filter];
   const contextKinds = CONTEXT_KINDS[filter];
   const counted = COUNTED_KINDS[filter];
-  // Verification draws a check under every requirement it serves, as the outline does; every
-  // other filter draws a node at its own place alone.
-  const everyPlacement = filter === "verification";
   const context = new Set<string>();
   const matched = new Set<string>();
-  // The rows `node` gives the view, and whether `node` is itself one of them: either the node
-  // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
-  // it stood.
-  const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
-    if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
-    const parts = node.children.map(lift);
+  // The row `node` is, with the rows of its branch under it, where the filter draws it.
+  const rowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
     // A `requirement` or `check` block of a document that does not play that part is of no
     // kind a filter draws (`kindOf`): it is a row only where the address names it, and counted
     // nowhere.
@@ -261,20 +297,15 @@ function filterView(
       kind !== undefined &&
       contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
-    const drawn = own || placing;
-    const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(node);
-    const below = parts.flatMap((part) =>
-      part.drawn && line !== undefined
-        ? part.rows.map((row) => ({ ...row, parentLine: line }))
-        : part.rows
-    );
-    if (!drawn) return { drawn: false, rows: below };
+    if (!own && !placing) return undefined;
     if (own && kind !== undefined && counted.includes(kind)) matched.add(node.id);
     if (placing) context.add(node.id);
-    return { drawn: true, rows: [{ ...node, children: below, held: heldBy(below) }] };
+    const below = parts.flatMap((part) => part.rows);
+    return { ...node, children: below, held: heldBy(below) };
   };
+  const everyPlacement = drawsEveryPlacement(filter);
   // The issue is no row of a filter, and no row's parent line: the page is the issue.
-  const top = root.children.flatMap((child) => lift(child).rows);
+  const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf).rows);
   return {
     context,
     filtering: true,
@@ -286,7 +317,7 @@ function filterView(
 }
 
 /**
- * One filter drawn from its view read (`TreeNode.views`, R4): the nodes the view's query took of
+ * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
@@ -295,8 +326,9 @@ function filterView(
  * node of an issue under this one - is no row, and neither is the memo, a callout. A decision and
  * a constraint are never rows: each is a line of the row its tie names (`PresetView.lines`). The
  * words filter keeps the rows whose words hold it, as `filterView` keeps them, and a node the
- * address names is drawn whatever the filter, from the view where it holds the node and from the
- * tree where not.
+ * address names is drawn whatever the filter: from the view where the view holds it as a row, and
+ * else where `filterView` draws it, at each place the tree has it, under the nearest row of the
+ * view above it there or at the top, in the tree's order among the view's rows there.
  */
 function heldFilterView(
   root: TreeNode,
@@ -306,13 +338,12 @@ function heldFilterView(
   named: ReadonlySet<string>
 ): PresetView {
   // Each node of the tree the read drew, by its id and by the read's id, at its first placement,
-  // and each placement by its id and the node it stands under; each node by its own id, with its
-  // parent. A view's node is matched by its id; a node the view does not hold, by the read's.
+  // and each placement by its id and the node it stands under. A view's node is matched by its
+  // id; a node the view does not hold, by the read's.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
-  const byId = new Map<string, { readonly node: TreeNode; readonly parent: TreeNode }>();
   const index = (parent: TreeNode): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
@@ -325,7 +356,6 @@ function heldFilterView(
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
         placements.set(`${child.id} ${parent.id}`, child);
       }
-      if (!byId.has(child.id)) byId.set(child.id, { node: child, parent });
       index(child);
     }
   };
@@ -375,7 +405,7 @@ function heldFilterView(
     const id = treeOf.get(node)?.id;
     if (id !== undefined && parent !== undefined && rowIds.has(parent)) homes.set(id, [parent]);
   }
-  for (const tuple of filter === "verification" ? (answer.tuples ?? []) : []) {
+  for (const tuple of drawsEveryPlacement(filter) ? (answer.tuples ?? []) : []) {
     const to = treeNodeOf(tuple.to.id)?.id;
     const from = treeNodeOf(tuple.from.id)?.id;
     if (tuple.kind !== "serves" || to === undefined || from === undefined || !rowIds.has(to)) {
@@ -400,13 +430,84 @@ function heldFilterView(
   const context = new Set<string>();
   const matched = new Set<string>();
   const drawnIds = new Set<string>();
+  // The tree as `filterView` lifts it (`lift`), with the view's rows and the nodes the address
+  // names as its rows: so a named node that is no row of the view stands where `filterView`
+  // draws it, at each place the tree has it (every placement under Verification, as there),
+  // under the nearest row of the view above it or at the top, carrying its parent's line where
+  // that parent is no row. What the tree holds under each placement of a row of the view is kept
+  // by that placement (`liftedAt`), and by the row's id at its first placement the lift reaches
+  // (`liftedOf`), for a placement it stops at: under Spec and Plan it stops at a transclusion,
+  // which can come first in the tree's order. An address that names no node, or only rows of the
+  // view, lifts nothing: the view read places every row.
+  const liftedAt = new Map<TreeNode, readonly Lifted[]>();
+  const liftedOf = new Map<string, readonly Lifted[]>();
+  const treeRowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
+    if (rowIds.has(node.id)) {
+      liftedAt.set(node, parts);
+      if (!liftedOf.has(node.id)) liftedOf.set(node.id, parts);
+      return node;
+    }
+    // A named node with what its branch gave, which `amongView` draws (`namedRow`).
+    return named.has(node.id)
+      ? { ...node, children: parts.flatMap((part) => part.rows) }
+      : undefined;
+  };
+  const liftedTop = [...named].every((id) => rowIds.has(id))
+    ? undefined
+    : root.children.map((child) => lift(child, drawsEveryPlacement(filter), treeRowOf));
+  // The rows the view draws at one place, each of `nodes` drawn by `drawNode`, with each node the
+  // address names that the tree holds at that place (`lifted`), in the tree's order: before the
+  // first of the view's rows here that comes after it in the tree, else after them all. A row of
+  // the view among what the tree holds there only marks that order: the view read places it.
+  const amongView = (
+    nodes: readonly TreeAnswerNode[],
+    lifted: readonly Lifted[] | undefined,
+    drawNode: (node: TreeAnswerNode) => Lifted
+  ): Lifted[] => {
+    if (lifted === undefined) return nodes.map(drawNode);
+    const here = new Set(nodes.map((node) => treeOf.get(node)?.id));
+    const before = new Map<string, Lifted[]>();
+    let waiting: Lifted[] = [];
+    const reach = (id: string): void => {
+      if (waiting.length === 0 || !here.has(id) || before.has(id)) return;
+      before.set(id, waiting);
+      waiting = [];
+    };
+    // A named node's row as drawn, counted where its kind is counted: each row of the view the
+    // tree holds in its branch is none of its rows, and is reached in turn after it (`inside`).
+    const namedRow = (row: TreeNode, inside: string[]): TreeNode => {
+      if (counted.includes(row.type)) matched.add(row.id);
+      const children = row.children.flatMap((child) => {
+        if (!rowIds.has(child.id)) return [namedRow(child, inside)];
+        inside.push(child.id);
+        return [];
+      });
+      return { ...row, children, held: heldBy(children) };
+    };
+    for (const part of lifted) {
+      for (const row of part.rows) {
+        if (rowIds.has(row.id)) {
+          reach(row.id);
+          continue;
+        }
+        const inside: string[] = [];
+        waiting.push({ drawn: part.drawn, rows: [namedRow(row, inside)] });
+        for (const id of inside) reach(id);
+      }
+    }
+    const drawn = nodes.flatMap((node) => [
+      ...(before.get(treeOf.get(node)?.id ?? "") ?? []),
+      drawNode(node),
+    ]);
+    return [...drawn, ...waiting];
+  };
   // As `filterView`'s `lift`: the node with its own rows under it, or, where it is no row, the
-  // rows of its branch at its place, each carrying it as its parent's line.
+  // rows of its branch at its place (`liftPast`).
   const draw = (
     node: TreeAnswerNode,
     home: TreeNode | undefined,
     above: ReadonlySet<string>
-  ): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
+  ): Lifted => {
     const held = treeOf.get(node);
     const tree =
       (home === undefined || held === undefined
@@ -414,46 +515,28 @@ function heldFilterView(
         : placements.get(`${held.id} ${home.id}`)) ?? held;
     if (tree === undefined || above.has(tree.id)) return { drawn: false, rows: [] };
     const inner = new Set([...above, tree.id]);
-    const parts = (below.get(tree.id) ?? []).map((child) => draw(child, tree, inner));
+    const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
+    const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
     const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
     const placing =
       !own &&
       node.role !== "query" &&
       (wanted === "" || holds(tree, wanted) || parts.some((part) => part.rows.length > 0));
-    const drawn = own || placing;
-    const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(tree);
-    const kept = parts.flatMap((part) =>
-      part.drawn && line !== undefined
-        ? part.rows.map((row) => ({ ...row, parentLine: line }))
-        : part.rows
-    );
-    if (!drawn) return { drawn: false, rows: kept };
+    if (!own && !placing) return { drawn: false, rows: liftPast(tree, parts) };
     if (own && counted.includes(tree.type)) matched.add(tree.id);
     if (placing) context.add(tree.id);
     drawnIds.add(tree.id);
+    const kept = parts.flatMap((part) => part.rows);
     return { drawn: true, rows: [{ ...tree, children: kept, held: heldBy(kept) }] };
   };
-  const drawnTop = top.flatMap((node) => {
+  const drawTop = (node: TreeAnswerNode): Lifted => {
     const part = draw(node, undefined, new Set());
     const line = part.drawn ? viewParentLine(node, root, parentOf.get(node)) : undefined;
-    return line === undefined ? part.rows : part.rows.map((row) => ({ ...row, parentLine: line }));
-  });
-  // A node the address names that the view does not draw, from the tree, at the top.
-  const addressed = [...named].flatMap((id) => {
-    const found = drawnIds.has(id) ? undefined : byId.get(id);
-    if (found === undefined) return [];
-    if (counted.includes(found.node.type)) matched.add(id);
-    const line = found.parent === root ? undefined : lineOfParent(found.parent);
-    return [
-      {
-        ...found.node,
-        children: [],
-        held: 0,
-        ...(line === undefined ? {} : { parentLine: line }),
-      },
-    ];
-  });
-  const children = [...drawnTop, ...addressed];
+    return line === undefined
+      ? part
+      : { drawn: true, rows: part.rows.map((row) => ({ ...row, parentLine: line })) };
+  };
+  const children = amongView(top, liftedTop, drawTop).flatMap((part) => part.rows);
   return {
     context,
     filtering: true,
@@ -579,8 +662,8 @@ export function filterSignals(
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
-  // Once a filter's view read is held, its count is that read's own nodes of its main kind whose
-  // words hold the query (R4); until then, what the view read off the tree draws.
+  // Once a filter's view read is held, its count is the held view's own nodes of its main kind
+  // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
     const held = root.views?.[filter];
     if (held === undefined) return view(filter).matches;

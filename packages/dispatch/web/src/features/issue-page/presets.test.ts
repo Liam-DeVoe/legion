@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView, rowKindsOf } from "./presets";
+import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
@@ -575,7 +575,297 @@ test("a view's row carries the line of the parent of the kind its view names whe
   ).toEqual([["plan-md#b-t1", "spec#b-a1"]]);
 });
 
-// Another part draws the Decisions filter's rows itself and reads its kinds from here.
-test("the Decisions filter's row kinds are the asks and the decisions", () => {
-  expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
+// The page holds the tree read and a filter's view read as each answers, in either order, so a
+// filter is drawn first from either, and what it draws for the node an address names must not
+// turn on which answered first. A node the address names that is no row of the filter stands
+// under the nearest row of the filter above it in the tree, and at the top only where no row
+// stands above it, whether the filter is drawn from its view read or off the tree: under
+// Verification a plan task the tree places under a statement stands under that statement, where
+// the view draws the statement's checks alone, never at the top as a row of its own.
+test("a node the address names stands where the tree places it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+        node("comment-1", "comment", [
+          node("plan#b-t2", "plan_task", [], { readId: "CORE-1/plan#t2" }),
+        ]),
+      ],
+      views === undefined ? {} : { views }
+    );
+  // Each top row by its id, the ids of the rows under it, and the id of its parent's line.
+  const placed = (root: TreeNode, id: string) =>
+    presetView(root, "verification", "", new Set([id])).root.children.map((row) => [
+      row.id,
+      row.children.map((child) => child.id),
+      row.parentLine?.id,
+    ]);
+
+  expect(placed(tree({ verification }), "plan#b-t1")).toEqual([
+    ["spec#b-r1", ["verification#b-c1", "plan#b-t1"], undefined],
+  ]);
+  expect(placed(tree({ verification }), "plan#b-t2")).toEqual([
+    ["spec#b-r1", ["verification#b-c1"], undefined],
+    ["plan#b-t2", [], "comment-1"],
+  ]);
+  for (const id of ["plan#b-t1", "plan#b-t2"]) {
+    expect(placed(tree({ verification }), id)).toEqual(placed(tree(undefined), id));
+  }
+});
+
+// A node the address names that no row of the view stands above is a row of the view's top, at
+// its place in the tree's order, whichever read lands first: the view must not move it after
+// the view's own rows once its read lands. Here the tree walks an ask holding the named comment
+// before the statement r1.
+test("a node the address names with no row above it keeps the tree's order among the view's top rows, whether its filter's view read is held or not", () => {
+  const spec: TreeAnswer = treeAnswer(
+    [viewNode("r1", "requirement", "query", { in: "spec" })],
+    [],
+    {
+      view: "spec",
+    }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("ask-1", "ask", [node("comment-x", "comment", [], { readId: "comment-x" })], {
+          readId: "ask-1",
+        }),
+        statement("spec#b-r1", [], { readId: "CORE-1/spec#r1" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+  const top = (root: TreeNode) =>
+    presetView(root, "spec", "", new Set(["comment-x"])).root.children.map((row) => [
+      row.id,
+      row.parentLine?.id,
+    ]);
+
+  expect(top(tree(undefined))).toEqual([
+    ["comment-x", "ask-1"],
+    ["spec#b-r1", undefined],
+  ]);
+  expect(top(tree({ spec })), "the named comment's place once the Spec view read is held").toEqual(
+    top(tree(undefined))
+  );
+});
+
+/** Each top row `preset` draws with the address naming `id`, nested: its id, the id of its
+ *  parent's line, and the rows under it. */
+type Shape = [string, string | undefined, Shape[]];
+function shapeOf(root: TreeNode, preset: Preset, id: string): Shape[] {
+  const shape = (row: TreeNode): Shape => [row.id, row.parentLine?.id, row.children.map(shape)];
+  return presetView(root, preset, "", new Set([id])).root.children.map(shape);
+}
+
+// Verification draws a node at every placement the tree has, so a node the address names that
+// the tree places under two statements, the second a transclusion, stands under both whichever
+// read lands first: the view read must not drop its second placement.
+test("under Verification a node the address names stands under each statement the tree places it under, whether its view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1"), treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const check = (transcluded: boolean) =>
+    node("verification#b-c1", "check", [], {
+      readId: "CORE-1/verification#c1",
+      state: "failed",
+      transcluded,
+    });
+  const task = (transcluded: boolean) =>
+    node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded });
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement("spec#b-r1", [check(false), task(false)], { readId: "CORE-1/spec#r1" }),
+        statement("spec#b-r2", [check(true), task(true)], { readId: "CORE-1/spec#r2" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// A node the address names stands at each place the tree has it, whichever read lands first.
+// Here the tree places the plan task t1 first under a comment, with no row above it, and again
+// under the statement r2: Verification draws it at the top with the comment as its line, and
+// under r2 after r2's check.
+test("a node the address names stands at each place the tree has it, the first with no row above it, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r2", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r2")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("comment-1", "comment", [
+          node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+        ]),
+        statement(
+          "spec#b-r2",
+          [
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1", transcluded: true }),
+          ],
+          { readId: "CORE-1/spec#r2" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    ["plan#b-t1", "comment-1", []],
+    [
+      "spec#b-r2",
+      undefined,
+      [
+        ["verification#b-c1", undefined, []],
+        ["plan#b-t1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's places once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// Under a row, a node the address names keeps the tree's order among that row's rows, whichever
+// read lands first. Here the tree walks the plan task t1 before the check c1 under the statement
+// r1, so Verification draws t1 before c1, not after the rows the view read places there.
+test("a node the address names under a row keeps the tree's order among that row's rows, whether its filter's view read is held or not", () => {
+  const verification: TreeAnswer = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c1", "check", "query", { in: "verification" }),
+    ],
+    [treeTuple("serves", "c1", "r1")],
+    { view: "verification" }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        statement(
+          "spec#b-r1",
+          [
+            node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" }),
+            node("verification#b-c1", "check", [], {
+              readId: "CORE-1/verification#c1",
+              state: "failed",
+            }),
+          ],
+          { readId: "CORE-1/spec#r1" }
+        ),
+      ],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "verification", "plan#b-t1")).toEqual([
+    [
+      "spec#b-r1",
+      undefined,
+      [
+        ["plan#b-t1", undefined, []],
+        ["verification#b-c1", undefined, []],
+      ],
+    ],
+  ]);
+  expect(
+    shapeOf(tree({ verification }), "verification", "plan#b-t1"),
+    "the named task's place once the Verification view read is held"
+  ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
+});
+
+// Under Spec and Plan the tree's lift stops at a transclusion, and a row the view read draws
+// stands at its first placement in the tree's order, which can be one. A node the address names
+// under that row stands under it all the same, whichever read lands first. Here the tree
+// transcludes the plan task t1 under the statement r1 before t1's own place under the issue, with
+// the named comment under each placement.
+test("a node the address names under a row whose first placement is a transclusion stands under that row, whether its filter's view read is held or not", () => {
+  const plan: TreeAnswer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
+    view: "plan",
+  });
+  const task = (transcluded: boolean) =>
+    node(
+      "plan#b-t1",
+      "plan_task",
+      [node("comment-x", "comment", [], { readId: "comment-x", transcluded })],
+      { readId: "CORE-1/plan#t1", transcluded }
+    );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [statement("spec#b-r1", [task(true)], { readId: "CORE-1/spec#r1" }), task(false)],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "plan", "comment-x")).toEqual([
+    ["plan#b-t1", undefined, [["comment-x", undefined, []]]],
+  ]);
+  expect(
+    shapeOf(tree({ plan }), "plan", "comment-x"),
+    "the named comment's place once the Plan view read is held"
+  ).toEqual(shapeOf(tree(undefined), "plan", "comment-x"));
 });

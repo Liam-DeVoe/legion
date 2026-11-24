@@ -104,8 +104,8 @@ export const NOTHING_OPENED: OpenedBranches = {
 function unanswered(node: TreeNode): boolean {
   switch (node.type) {
     // A question nobody has answered. `question` is the ask's own `state === "open"`
-    // (`tree-read/tree-nodes.ts`'s `draftAsk`), and an ask that was answered, declined or
-    // withdrawn asks the reader nothing.
+    // (`tree-nodes.ts`'s `draftAsk`), and an ask that was answered, declined or withdrawn
+    // asks the reader nothing.
     case "ask":
       return node.question;
     // A check that has not passed: any of the six other states the page's one reading of a

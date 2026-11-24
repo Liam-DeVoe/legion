@@ -25,10 +25,12 @@ import {
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
   blocksOfRole,
+  nextTreeCursor,
   type TreeDraftMark,
   treeDraftMarks,
   treeDraftsFrom,
@@ -125,6 +127,16 @@ function reading(...paragraphs: string[]): DisplayTree {
     content: paragraphs.map((text) => ({ content: [{ text, type: "text" }], type: "paragraph" })),
     type: "doc",
   };
+}
+
+/** The server's reading of a whole typed block, as a read sends it with `Dispatch-Trees: 1`: one
+ *  node of the block's `type`, `attrs` on it, holding one paragraph per string. */
+function typedReading(
+  type: string,
+  attrs: Readonly<Record<string, unknown>>,
+  ...paragraphs: string[]
+): DisplayTree {
+  return { content: [{ attrs, content: reading(...paragraphs).content, type }], type: "doc" };
 }
 
 /** One node of the answer, its words stored and read alike unless the case says otherwise. */
@@ -286,6 +298,33 @@ function linkTo(ref: string): DecisionLink {
   };
 }
 
+/** A decision of a decisions read of the release before: a section of `decisions.md` under
+ *  `heading`, with `words` as its body, which no node of the answer holds. */
+function decisionsSection(
+  id: string,
+  heading: string,
+  words: string,
+  extra: Partial<Decision> = {}
+): Decision {
+  return {
+    asks: [],
+    block_id: id,
+    changed_at: "2026-11-05T00:00:00Z",
+    changed_version: 1,
+    heading,
+    kept: null,
+    kind: "agent",
+    links: [],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-${id}`,
+    replaced: false,
+    text: `## ${heading}\n\n${words}`,
+    text_sha256: "sum",
+    unsure: false,
+    waiting_review: true,
+    ...extra,
+  };
+}
+
 /** A person's comment the read hangs under `parent`, made at `madeAt`. */
 function personsComment(id: string, parent: string, madeAt: string): TreeAnswerNode {
   return node(id, "comment", parent, { author: [{ id: "alice", kind: "user" }], made_at: madeAt });
@@ -346,18 +385,18 @@ test("a node's words come from its text_tree", () => {
 // one node of the block's kind, its attributes on it. A row draws the block's own content from
 // it, and so does a chip that names the block; the kind and the attributes are drawn apart.
 test("a typed block's row and its chip draw the block's own content, not its kind and attributes", () => {
-  const whole = (type: string, attrs: Record<string, string>, ...paragraphs: string[]) => ({
-    content: [{ attrs, content: reading(...paragraphs).content, type }],
-    type: "doc",
-  });
   const { root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0, {
-          text_tree: whole("requirement", { blockId: "r1" }, "The first statement. Its reason."),
+          text_tree: typedReading(
+            "requirement",
+            { blockId: "r1" },
+            "The first statement. Its reason."
+          ),
         }),
         block("t1", "plan_task", "r1", PLAN, 0, {
-          text_tree: whole(
+          text_tree: typedReading(
             "plan_task",
             { blockId: "t1", serves: `dispatch://${KEY}/spec#b-r1` },
             "Build the step."
@@ -375,6 +414,75 @@ test("a typed block's row and its chip draw the block's own content, not its kin
     reading("Build the step."),
   ]);
   expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
+});
+
+/** A typed block of the spec and a person's comment under it, each a new object at each call. */
+const records = () =>
+  answer([
+    block("r1", "requirement", KEY, SPEC, 0, {
+      text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
+    }),
+    personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
+  ]);
+
+// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
+// cache keeps. A row handed a new reading or a new source draws its words again, and a link
+// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
+// same cut reading and the same source, and a comment's row the same source.
+test("drawing the same answer twice hands a row the same reading and the same source", () => {
+  const tree = records();
+  const builds = [drawn(tree).drafts, drawn(tree).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(row?.tree).toEqual(reading("The first statement."));
+  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.tree).toBe(row?.tree);
+  expect(again?.source).toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toBe(turn?.source);
+});
+
+// A row's source is kept by the object the row draws - the reading of its words - so a re-read
+// whose node changed beside its words, as one whose parent was reworded changes its
+// `parent.first_line`, and whose reading the cache keeps, hands the row the source it handed it
+// before, and its words are not drawn again.
+test("a node whose reading stays the same object keeps its source when another of its fields changes", () => {
+  const before = records();
+  const after: TreeAnswer = {
+    ...before,
+    nodes: (before.nodes ?? []).map((one) =>
+      one.parent === null ? one : { ...one, parent: { ...one.parent, first_line: "Reworded." } }
+    ),
+  };
+  const builds = [drawn(before).drafts, drawn(after).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source, "a node changed beside its words is handed a new source").toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source, "a comment changed beside its words is handed a new source").toBe(
+    turn?.source
+  );
+});
+
+// A row's source lives as long as the object it was kept by, so nothing holds a source for every
+// record the session ever drew: an answer holding a new record of an id, with a new reading, as a
+// re-read whose record changed does, hands its row a source of its own, never the one made for
+// the record before.
+test("a new record of an id is handed a new source, not the one made for the record before", () => {
+  // Each build draws an answer of its own: the same records, each a new object.
+  const builds = Array.from({ length: 2 }, () => drawn(records()).drafts);
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source, "a new block is handed the old block's source").not.toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source, "a new comment is handed the old comment's source").not.toBe(
+    turn?.source
+  );
 });
 
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
@@ -762,22 +870,6 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
 // requested; a comment quoting words no decision holds is no change and stays where the read
 // hangs it.
 test("a decisions.md section finds its Change by its words", () => {
-  const section = (id: string, heading: string, words: string): Decision => ({
-    asks: [],
-    block_id: id,
-    changed_at: "2026-11-05T00:00:00Z",
-    changed_version: 1,
-    heading,
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://${KEY}/artifact/decisions-md#b-${id}`,
-    replaced: false,
-    text: `## ${heading}\n\n${words}`,
-    text_sha256: "sum",
-    unsure: false,
-    waiting_review: true,
-  });
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
       artifact_id: DECISIONS.id,
@@ -806,8 +898,8 @@ test("a decisions.md section finds its Change by its words", () => {
     suggestion: null,
     turn: null,
   });
-  const keep = section("d1", "Keep it", "Keep the model pure.");
-  const draw = section("d2", "Draw it", "Draw it once.");
+  const keep = decisionsSection("d1", "Keep it", "Keep the model pure.");
+  const draw = decisionsSection("d2", "Draw it", "Draw it once.");
   const comments = [
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
@@ -838,6 +930,35 @@ test("a decisions.md section finds its Change by its words", () => {
   ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
   expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
+});
+
+// A decision of a decisions read of the release before is drafted beside the tree read's nodes,
+// and a re-read of the same reads hands its row the words and the source it handed it before, as
+// a node of the tree read's does.
+test("drawing the same decisions read twice hands a section's row the same words and source", () => {
+  const section = decisionsSection("d1", "Keep it", "Keep the model pure.", {
+    text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
+  });
+  const reads = {
+    decisions: withEntries(
+      {
+        decisions: [section],
+        document: `dispatch://${KEY}/artifact/decisions-md`,
+        open_questions: [],
+      },
+      KEY
+    ),
+    issue: issueDetails(),
+    tree: answer([]),
+  };
+
+  const [row, again] = [buildIssueTree(reads), buildIssueTree(reads)].map((root) =>
+    nodeOf(root, blockNodeId("decisions-md", "d1"))
+  );
+  expect(row?.source).toEqual({ id: DECISIONS.id, kind: "artifact" });
+  expect(row?.tree).toEqual(reading("Keep the model pure."));
+  expect(again?.tree, "a re-read hands the section new words").toBe(row?.tree);
+  expect(again?.source, "a re-read hands the section a new source").toBe(row?.source);
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
@@ -1079,10 +1200,30 @@ test("a page that names no next page ends the walk, the cursor left out or empty
   }
 });
 
-// A server that names the same next page again never ends a walk that follows it: the walk asks
-// for each page at most once and ends, with an answer or a failure, instead of asking without
-// end.
-test("a cursor the server names twice ends the walk", async () => {
+// The rule every walk of the read ends by, the page's own and the e2e helpers' alike
+// (`nextTreeCursor`): a page whose cursor is null, left out of the body or empty names no next
+// page, and any other cursor names the next.
+test("a page's cursor names no next page where it is null, left out or empty", () => {
+  const page = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = page;
+  const pages = [
+    { ...page, cursor: null },
+    leftOut as TreeAnswer,
+    { ...page, cursor: "" },
+    { ...page, cursor: "page-2" },
+  ];
+  expect(pages.map((one) => nextTreeCursor(one))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    "page-2",
+  ]);
+});
+
+// A server that names a cursor it named already has a fault, and the pages past it are missing:
+// the walk asks for each page at most once, and the read fails with an error that names the
+// cursor, rather than answer the pages it read as the whole tree or ask without end.
+test("a cursor the server names twice fails the read, naming the cursor", async () => {
   const { cursors, outcome } = await walkWith((cursor) =>
     cursor === undefined
       ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
@@ -1092,7 +1233,7 @@ test("a cursor the server names twice ends the walk", async () => {
         }
   );
   expect(cursors).toEqual([undefined, "page-2"]);
-  expect(JSON.stringify(outcome)).not.toContain("page reads");
+  expect(outcome).toEqual({ error: expect.stringContaining('the cursor "page-2" twice') });
 });
 
 /** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */
@@ -1371,16 +1512,13 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
   };
   const { root } = drawn(tree, reads);
   const row = nodeOf(root, blockNodeId("spec", "q-block"));
-  const shaped = nodeOf(root, blockNodeId("spec", "r1"))?.reference ?? "";
 
-  expect(shaped, "the statement has an address").not.toBe("");
   expect({
     children: row?.children.map((child) => child.id),
     chips: row?.chips.map((chip) => chip.ref),
   }).toEqual({
     children: ["c-under-ask"],
-    // A chip addresses a block of the spec as `spec#b-<id>`; the block's own row by the spec's
-    // slug (`shaped`).
+    // A chip addresses a block of the spec as `spec#b-<id>`.
     chips: [`dispatch://${KEY}/spec#b-r1`],
   });
 });
@@ -1428,23 +1566,20 @@ test("a plan task's needs pointer the read ties no node to is still a chip, name
 test("a plan task's needs the read sends on its reading alone are chips, a removed task's gone", () => {
   const needed = `dispatch://${KEY}/artifact/plan-md#b-t1`;
   const removed = `dispatch://${KEY}/artifact/plan-md#b-t9`;
-  // The reading the route sends of a whole `plan_task` block: its one typed node, the block's
+  // The reading the route sends of each whole `plan_task` block: its one typed node, the block's
   // attributes on it, a `block[]` attribute as the list of its references.
-  const typed = (id: string, attrs: Record<string, readonly string[]>) => ({
-    content: [
-      {
-        attrs: { blockId: id, ...attrs },
-        content: reading(`Words of ${id}.`).content,
-        type: "plan_task",
-      },
-    ],
-    type: "doc",
-  });
   const tree = answer([
-    block("t1", "plan_task", KEY, PLAN, 0, { attributes: {}, text_tree: typed("t1", {}) }),
+    block("t1", "plan_task", KEY, PLAN, 0, {
+      attributes: {},
+      text_tree: typedReading("plan_task", { blockId: "t1" }, "Words of t1."),
+    }),
     block("t2", "plan_task", KEY, PLAN, 1, {
       attributes: {},
-      text_tree: typed("t2", { needs: [needed, removed] }),
+      text_tree: typedReading(
+        "plan_task",
+        { blockId: "t2", needs: [needed, removed] },
+        "Words of t2."
+      ),
     }),
   ]);
   const { root } = drawn(tree, {
@@ -1557,4 +1692,29 @@ test("an ask block's row draws the asks read's question, not the options its blo
     reading(words),
   ]);
   expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
+});
+
+// R3 and R5: a document is no node, so a requirement whose stored source cites one - its
+// `From:` line - carries a chip that opens it, at its own address and named by the page's word
+// for a document; the source is the tree read's text of the block, whatever its words drop.
+test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const cites = `dispatch://${KEY}/artifact/notes-md`;
+  const details = issueDetails();
+  const issue = { ...details, artifacts: [...(details.artifacts ?? []), notes] };
+  const words = "The measurements behind it are kept.";
+  const { root } = drawn(
+    answer([
+      block("r-cites", "requirement", KEY, SPEC, 0, {
+        text: `${words}\nFrom: ${cites}`,
+        text_tree: reading(words),
+      }),
+    ]),
+    { issue }
+  );
+
+  expect(
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    "the requirement draws no chip for the document its From line cites"
+  ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });

@@ -104,6 +104,16 @@ export function issueTreeKey(key: string): readonly ["issue-tree", string] {
   return ["issue-tree", key];
 }
 
+/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
+ *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
+export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
+
+/** The views of the tree a filter reads (`?view=`), each under the tree's key
+ *  (`["issue-tree", key, view]`). Each is the query of the document of the same role, so the name
+ *  says which role's blocks a caller asks for as well (`blocksOfRole`). The type is the members
+ *  of `TREE_FILTERS`, so that list holds every filter. */
+export type TreeFilter = (typeof TREE_FILTERS)[number];
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,

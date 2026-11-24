@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's fifth of their rows, the row count the merge job reads, and
-# the memory and CPU sampler this leg starts and reads back.
+# Playwright run over the rows the deal gives this leg, the row count the merge job reads and
+# its check against the deal's, and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
-# <shard> is this leg's number out of the job's five, the shard job's `${{ matrix.shard }}`: it
-# is the `--shard` numerator below, and it names the blob report this leg writes, the row count
+# <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
+# is the leg the deal below lists, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`, `pull-request` or `full`: it decides which projects run
 # and whether the run is held to the `@pr` rows, and an unknown one ends this script below.
@@ -31,7 +31,7 @@
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
 #   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
-# (shard ${{ matrix.shard }} of 5)".
+# (shard ${{ matrix.shard }} of 4)".
 set -euo pipefail
 
 usage() {
@@ -129,7 +129,7 @@ case "$lane" in
 esac
 # Why the projects are named at all: a shard splits the rows of every project the run
 # selects, so a project this leg does not name is a project it would spread over these
-# five machines. `visual` and `visual-phone` are in the default selection, and their
+# four machines. `visual` and `visual-phone` are in the default selection, and their
 # image comparisons belong to the `visual` job, which runs them one row at a time, so
 # naming the projects above is what keeps them off these machines. The three `-alone`
 # projects stay out because this list does not name them, and for no other reason:
@@ -141,6 +141,8 @@ esac
 # project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
 # what keeps them out of a run that names no project, which this is not. The alone job
 # names them, one machine each.
+# why: .github/ci-notes/dispatch-browser.md#how-a-shard-leg-chooses-its-tests
+legs=4
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -161,8 +163,11 @@ esac
 # below are written. The `||` writes the status and lets the pipeline succeed. Each side
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
+# The deal runs inside the same guard, since its listing loads every spec and a load error
+# there would otherwise end the script just as early.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/5 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+{ { bun e2e/tools/shard-deal.ts "$shard" "$legs" "$RUNNER_TEMP/shard-tests.txt" e2e/playwright.config.ts $projects $lane_grep &&
+    bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --test-list "$RUNNER_TEMP/shard-tests.txt" --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts; } 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -171,8 +176,22 @@ kill "$sampler" 2>/dev/null || true
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
   tail -n 1 > "$RUNNER_TEMP/leg-report/rows/shard-$shard.txt"
+# The tests the deal planned for this leg, from its own `leg <shard> of <legs>: ..., N tests`
+# line, against the tests Playwright says it runs, the count just read. Playwright fails no
+# `--test-list` run that selects no test, and prints no `Running` line for one, so a Playwright
+# that read the deal's lines another way would run every leg empty and green, and the merge job,
+# which holds the legs' counts to the merged report's, would find them agree at 0. A leg whose
+# count is not the deal's fails here, naming both, whatever the suite's own status was.
+planned=$(sed -n "s/^  leg $shard of $legs: .*, \([0-9][0-9]*\) tests\$/\1/p" "$RUNNER_TEMP/playwright-log.txt")
+ran=$(cat "$RUNNER_TEMP/leg-report/rows/shard-$shard.txt")
+if [ "${ran:-0}" != "$planned" ]; then
+  echo "::error::shard $shard: Playwright ran ${ran:-0} tests (its 'Running N tests' line, 0" \
+    "where it printed none), and the deal planned ${planned:-no count} for this leg (its" \
+    "'leg $shard of $legs' line)"
+  [ "$status" -ne 0 ] || status=1
+fi
 # The sampler's two readings, titled with this leg so a run's notices say which
 # machine each is from. After the suite and before the exit below, so this step still
-# ends on the suite's own status.
+# ends on the status above.
 "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "shard $shard"
 exit "$status"

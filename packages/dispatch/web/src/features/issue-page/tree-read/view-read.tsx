@@ -1,20 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import { focusOnDocument } from "../../shell/roving";
 import { bringOnScreen } from "../identity-block";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
 import { TAB_STOP_ROW } from "../tree-focus";
-import {
-  resetViews,
-  subscribeTreeFreshness,
-  TREE_FILTERS,
-  type TreeFilter,
-  useTreeRead,
-  viewQuery,
-} from "./tree-read";
+import { resetViews, subscribeTreeFreshness, useTreeRead, viewQuery } from "./tree-read";
 
 /**
  * The filters' view reads of one load of the issue, around the stage. Each of Spec, Verification

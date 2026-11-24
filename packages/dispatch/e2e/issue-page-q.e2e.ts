@@ -18,6 +18,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusRow,
@@ -263,6 +264,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {
@@ -355,6 +357,7 @@ test("only a decision that changed a statement waits for review @phone", async (
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     for (const block of [seeded.tiedToNote, seeded.untied]) {
       const row = await focusRow(page, id(block));
@@ -476,6 +479,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(
         async () => {
@@ -889,7 +893,7 @@ const FALLBACK_LINES = {
 // the outline drawn in the view's place lands on the node's row as the conversation's address
 // does, with the focus on that row. A plan task that serves a statement stands for such a node
 // here: the tree places a comment under what it answers and never under the block it is anchored
-// to (`tree-drafts.ts`'s `addTurns`), so the seed holds no comment under a statement.
+// to (`tree-read/tree-nodes.ts`, by its `parent`), so the seed holds no comment under a statement.
 //
 // Then the Decisions view, with three addresses that name nothing the issue holds, each opened by
 // a load of its own: the gone comment, a `#b-` fragment naming a block no node carries, and that
