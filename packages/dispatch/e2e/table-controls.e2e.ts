@@ -9651,3 +9651,125 @@ test("a Move with only closed issues marked keeps no press live: a live update t
   // control they never chose.
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 25 (the tester's; measured at 683f1fdf in builds Jobs
+// infra-3135-f-h-ch-2mcxd, infra-3135-f-h-fi-j5t4t and infra-3135-f-h-we-glhk8, again in
+// infra-3135-f-h2-ch-g4f2b, infra-3135-f-h2-fi-k2jtf and infra-3135-f-h2-we-spngw, and at 3fce6150
+// in infra-3135-f-b-ch-6v9q6, infra-3135-f-b-fi-scqg8 and infra-3135-f-b-we-mx5fq): on the Inbox at
+// 390x664, narrowed to its questions with threads waiting above them, the window scrolled 30 px
+// with the control row in sight, Enter on the only chip hands the focus to the Filter trigger
+// (components/ControlRow.tsx:438-439), and in the same commit the Inbox's anchor holds the row
+// nearest the list's centre in place once the window is scrolled at all
+// (features/shell/ViewportAnchor.tsx:541-549, mounted at features/inbox/Inbox.tsx:2634) and
+// scrolls the window by every row the cleared narrowing draws above that row
+// (ViewportAnchor.tsx:744-748). The window went from 30 px to 797 px and the trigger stood at
+// -668 px; Enter on Clear filters took it from 30 px to 1,740 px, the trigger at -1,611 px.
+// This row, run at 683f1fdf in builds Job infra-3135-f-red-62spp over three threads, read 30 px
+// -> 1,269 px with the trigger at -1,140 px after either press (Firefox: 1,265.7 px, -1,137 px).
+// Chromium, Firefox and WebKit alike; with the window at 0 the anchor holds no row and the trigger
+// stays wholly in sight. A shared control's own press that lands the focus out of sight is a
+// failure of this pull request's controls (open-items.md, the rescue's removal, 2026-11-23 21:2xZ).
+// WebKit has no scroll anchoring of its own, which Chromium and Firefox apply beside the anchor's,
+// so the row runs in all three engines.
+// SLOW(>=2s): twenty-three seeded rows, and four presses at 390 px waiting out the list's redraw.
+test("taking off the Inbox's only narrowing by its chip or by Clear filters at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "CORE", name: "Core" });
+  // The questions first and the threads last, so the threads are the newest rows: the ones the
+  // narrowing to questions leaves out and that come back at the head of the list when it goes.
+  for (let index = 0; index < 20; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Narrowed ask ${index}` });
+    await createAsk(
+      issue.key,
+      { question: `Narrowed ${index}: what is the rule?` },
+      SURFACE_SESSION
+    );
+  }
+  for (let index = 0; index < 3; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Unnarrowed thread ${index}` });
+    await seedCommentThread(issue.key, `Unnarrowed ${index}: when does it run?`, "At 03:00.");
+  }
+  const row = controlRow(page.getByTestId("main-content"));
+  const chip = row.getByRole("button", { name: /^Remove .* filter$/ });
+  const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+  const rows = page.locator("[data-inbox-row]");
+  const threads = page.locator('[data-inbox-row^="reply:"]');
+  /** What holds the keyboard focus: its name, its `data-control`, its top, and whether the
+   *  window and every box that clips it show the whole of it; the body is in no sight. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { control: null, inSight: false, name: "the body", top: null };
+      }
+      const own = focused.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      let left = 0;
+      let right = window.innerWidth;
+      for (let box = focused.parentElement; box !== null; box = box.parentElement) {
+        const style = getComputedStyle(box);
+        const clip = box.getBoundingClientRect();
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left);
+          right = Math.min(right, clip.right);
+        }
+      }
+      return {
+        control: focused.getAttribute("data-control"),
+        inSight:
+          own.height > 0 &&
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= left - 1 &&
+          own.right <= right + 1,
+        name: focused.getAttribute("aria-label") || focused.textContent?.trim() || focused.tagName,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const offset of [30, 0]) {
+    for (const [pressed, target] of [
+      ["the only chip", chip],
+      ["Clear filters", clear],
+    ] as const) {
+      const where = `Inbox at 390x664, the window at ${offset} px, Enter on ${pressed}`;
+      await page.goto("/?group=none&type=question");
+      await expect(chip, `${where}: the narrowing to questions draws no one chip`).toHaveCount(1);
+      await expect(rows.nth(12), `${where}: the list is no longer than the window`).toBeAttached();
+      await expect(threads, `${where}: the narrowing lists a thread`).toHaveCount(0);
+      await page.evaluate((top) => window.scrollTo(0, top), offset);
+      // The control is focused where it stands, so the focus itself scrolls nothing.
+      await target.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
+      await expect(target).toBeFocused();
+      // Where the window stands just before the press, read once it has held still after the
+      // scroll above; it is only reported, never branched on.
+      const before = await settledScrollTop(page);
+      await page.keyboard.press("Enter");
+      await expect(chip, `${where}: the narrowing stayed on`).toHaveCount(0);
+      await expect(threads, `${where}: the list did not draw the threads again`).toHaveCount(3);
+      // The commit that drew the threads ran the row's hand-off and the list's anchor in its layout
+      // effects, so the window is read once it has held still after them; it is only reported.
+      await nextFrames(page);
+      const after = await settledScrollTop(page);
+      // One read is the answer: the hand-off and the anchor ran in the commit waited for above,
+      // and the window has settled since, so nothing moves the focus or the page after this.
+      const focus = await focusNow();
+      if (!focus.inSight) {
+        wrong.push(
+          `${where}: the focus is on "${focus.name}" (data-control ${focus.control}), its top at ${focus.top} px in the 664 px window, out of sight; window.scrollY ${before} -> ${after}`
+        );
+      }
+    }
+  }
+  // A keyboard reader who takes the narrowing off is left on a control they cannot see: their next
+  // Tab starts from a place the window has carried away from them.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
