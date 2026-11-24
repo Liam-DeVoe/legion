@@ -2279,6 +2279,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}
+		// At the edge the claim just recorded the session's admission, which resumes its relay there (resumeHeld).
+		d.consumers.resumeHeld(r, body.SessionID)
 		// The claimant's registered client instance id, which the predecessor rule falls back to, is
 		// the one PutClearingGap's leader read found, as the record stood before the refresh, where
 		// that record is the session's own registration naming its key; any other record keeps the
