@@ -115,8 +115,8 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
         throw new Error(`${ASKING}: HTTP ${answer.status}: the answer is not JSON`);
       }
       const value =
-        typeof parsed === "object" && parsed !== null
-          ? (parsed as Record<string, unknown>).value
+        typeof parsed === "object" && parsed !== null && "value" in parsed
+          ? parsed.value
           : undefined;
       if (typeof value !== "string" || value === "") {
         throw new Error(`${ASKING}: the answer holds no value`);

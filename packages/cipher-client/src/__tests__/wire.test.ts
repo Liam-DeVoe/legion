@@ -13,6 +13,7 @@ import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { DeviceLoginIdentity } from "../device-login";
@@ -175,7 +176,7 @@ function metadataSource(token: string): TokenSource {
  */
 function githubActionsSource(token: string): TokenSource {
   const audience = "https://cipher.example";
-  const requestToken = "example-actions-request-token";
+  const requestToken = fixtureSecret("actions");
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",

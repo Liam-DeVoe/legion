@@ -12,9 +12,9 @@
     "workflow": "capture-oidc-shape, a one-off workflow on a scratch branch that was deleted after the run",
     "commands": [
       "python3 -c 'import os,urllib.parse as p; u=p.urlsplit(os.environ[\"ACTIONS_ID_TOKEN_REQUEST_URL\"]); print(u.scheme, bool(u.query), sorted(p.parse_qs(u.query)))'",
-      "curl -sS -o answer.json -w 'status=%{http_code} content_type=%{content_type}\\n' -H \"Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cipher.example\"",
+      "a curl GET of $ACTIONS_ID_TOKEN_REQUEST_URL with &audience=https://cipher.example added, the job's own ACTIONS_ID_TOKEN_REQUEST_TOKEN as its bearer, writing the body to answer.json and printing the status and the content type",
       "a python step printed the answer's keys, the JWT header and the JWT claims without jti",
-      "curl -sS -w '\\nstatus=%{http_code} content_type=%{content_type}\\n' -H \"Authorization: bearer ${WRONG_REQUEST_TOKEN}\" \"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://cipher.example\", with WRONG_REQUEST_TOKEN=wrong in the step's env"
+      "the same curl GET with the bearer wrong in place of the request token (WRONG_REQUEST_TOKEN=wrong in the step's env), printing the body, the status and the content type"
     ]
   },
   "request_url": {
