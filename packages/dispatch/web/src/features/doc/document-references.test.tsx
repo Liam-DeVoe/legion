@@ -268,6 +268,7 @@ test("the live editor is told to draw the title for a link whose text is its own
 // post it names: a deleted comment's says it is deleted, never the empty headline of its cleared
 // body, and an edited message's carries ` · edited` (INFRA-1523, R2 and R3; `useReferenceLabel`).
 test("the live editor is told to draw a deleted comment as deleted and an edited message as edited", async () => {
+  await warmMarkdownRenderer();
   const deleted = "5b0e2c41-7d3a-4f6e-8a1b-2c3d4e5f6a7b";
   const edited = "7d2a4e63-9f5c-4b8a-8c3d-4e5f6a7b8c9d";
   const queryClient = seededQueryClient();
