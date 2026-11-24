@@ -40,7 +40,10 @@ import (
 func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 	t.Parallel()
 	pool := reviewPermissionPool(t)
-	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	// The reset is a whole second 90 s from now; a row reads it later, by as long as the rows
+	// before it and a loaded race runner took, so a row's lower bound counts that time.
+	resetSet := time.Now()
+	reset := strconv.FormatInt(resetSet.Add(90*time.Second).Unix(), 10)
 	for _, tc := range []struct {
 		name       string
 		login      string
@@ -127,7 +130,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 				t.Fatalf("%s's permission = %v; want no wait named", tc.login, err)
 			case tc.wantWait != 0 && !errors.As(err, &later):
 				t.Fatalf("%s's permission = %v; want the %s wait GitHub named", tc.login, err, tc.wantWait)
-			case tc.wantWait != 0 && (later.After > tc.wantWait || later.After < tc.wantWait-5*time.Second):
+			case tc.wantWait != 0 && (later.After > tc.wantWait || later.After < tc.wantWait-5*time.Second-time.Since(resetSet)):
 				t.Fatalf("%s's permission names a %s wait, want %s", tc.login, later.After, tc.wantWait)
 			}
 			if got != tc.want {
