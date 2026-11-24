@@ -114,8 +114,8 @@ type ReturnCounts struct {
 }
 
 // PlanTask is one task of a plan. PlanVersion is the version that wrote its text; BlockText, Needs,
-// PartOf, OwnerRole, Merges and StepsByDefault are what that version's block says. State,
-// StoppedReason, Place and Counts are where the task stands, which the walk writes (MoveTask,
+// PartOf, ParentRef, OwnerRole, Merges and StepsByDefault are what that version's block says.
+// State, StoppedReason, Place and Counts are where the task stands, which the walk writes (MoveTask,
 // StopTask, PutReturnCounts). Needs is nil where the block names none.
 type PlanTask struct {
 	Issue       string
@@ -125,8 +125,11 @@ type PlanTask struct {
 	BlockText   string
 	Needs       []string
 	PartOf      string
-	OwnerRole   string
-	Merges      bool
+	// ParentRef is the block's `parent` whole, as the version gave it (plan.Task.ParentRef), "" for
+	// none: a later version that changes it for a running task is refused (plan.RunningChange).
+	ParentRef string
+	OwnerRole string
+	Merges    bool
 	// StepsByDefault says that the block names no step, so the task's steps (PlanStep) are the
 	// default steps it runs (plan.StepsOf), not steps its block names: a later version is compared
 	// with the block as it was given, which names none (plan.ChangedTasks).
@@ -254,13 +257,13 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		if needs == nil {
 			needs = []string{}
 		}
-		if _, err := tx.Exec(ctx, `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges,
+		if _, err := tx.Exec(ctx, `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
 			steps_by_default, state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 			on conflict (issue, generation, task) do update set plan_version = excluded.plan_version, block_text = excluded.block_text,
-			needs = excluded.needs, part_of = excluded.part_of, owner_role = excluded.owner_role, merges = excluded.merges,
-			steps_by_default = excluded.steps_by_default`,
-			v.Issue, int64(v.Generation), task.Task, task.PlanVersion, task.BlockText, needs, task.PartOf, task.OwnerRole, task.Merges,
+			needs = excluded.needs, part_of = excluded.part_of, parent_ref = excluded.parent_ref, owner_role = excluded.owner_role,
+			merges = excluded.merges, steps_by_default = excluded.steps_by_default`,
+			v.Issue, int64(v.Generation), task.Task, task.PlanVersion, task.BlockText, needs, task.PartOf, task.ParentRef, task.OwnerRole, task.Merges,
 			task.StepsByDefault, task.State, task.StoppedReason, task.Place.Kind, task.Place.Position,
 			task.Counts.Pass, task.Counts.Rounds, task.Counts.ConflictRounds, moves, task.Counts.CapTold); err != nil {
 			return fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
@@ -346,8 +349,8 @@ func (s *Postgres) PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) (
 // planTaskColumns is the columns of a plan_tasks row, named by their table so a read joined to
 // another table names no column twice, in the order scanPlanTasks reads them.
 const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.task, plan_tasks.plan_version,
-	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
-	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
+	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.parent_ref, plan_tasks.owner_role, plan_tasks.merges,
+	plan_tasks.steps_by_default, plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
@@ -358,7 +361,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		var task PlanTask
 		var generation int64
 		var moves []byte
-		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
+		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf, &task.ParentRef,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
 			return nil, err
@@ -480,13 +483,14 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if taken {
 		return fmt.Errorf("%s: generation %d holds a plan already", describe, to)
 	}
-	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, state)
-		select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, 'waiting'
+	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
+		steps_by_default, state)
+		select issue, $3, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges, steps_by_default, 'waiting'
 		from plan_tasks where issue = $1 and generation = $2`
 	if carried {
-		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
-			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
-			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
+		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges,
+			steps_by_default, state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
+			select issue, $3, task, plan_version, block_text, needs, part_of, parent_ref, owner_role, merges, steps_by_default,
 			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
 			from plan_tasks where issue = $1 and generation = $2`
 	}

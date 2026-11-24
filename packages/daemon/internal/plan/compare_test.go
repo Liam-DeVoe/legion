@@ -57,7 +57,9 @@ func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 
 // A running task takes a later version that changes its text alone, or `serves`, which says what
 // the task is for and nothing Legion carries out. Every other change of its block, and its removal,
-// is refused, with a reason that names the task and says that it runs.
+// is refused, with a reason that names the task and says that it runs. So is a change of the block
+// its `parent` names, from one requirement to another, and a parent added or removed. A pin of the
+// same parent (`@v<N>`) names a version of the same block and no other block, so it changes nothing.
 func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 	attributes := func(changes ...string) map[string]string {
 		held := map[string]string{"steps": "implementer reviewer", "serves": "dispatch://ACME-1/spec#b-r1"}
@@ -70,9 +72,13 @@ func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 		return Block{ID: "a", Type: TaskBlockType, Attributes: attributes, Text: text}
 	}
 	held := planOf(t, 1, task(attributes(), "Text one."))
+	const r1, r2 = "dispatch://ACME-1/spec#b-r1", "dispatch://ACME-1/spec#b-r2"
+	underR1 := planOf(t, 1, task(attributes("parent", r1), "Text one."))
 
 	for _, tc := range []struct {
-		name    string
+		name string
+		// held is the version in force, the plan held above where it holds no task.
+		held    Plan
 		next    Plan
 		refused bool
 	}{
@@ -81,12 +87,22 @@ func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 		{name: "the steps", next: planOf(t, 2, task(attributes("steps", "implementer tester reviewer"), "Text one.")), refused: true},
 		{name: "needs", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-b"), "Text one.")), refused: true},
 		{name: "owner", next: planOf(t, 2, task(attributes("owner", "sub-architect"), "Text one.")), refused: true},
-		{name: "part_of", next: planOf(t, 2, task(attributes("part_of", "b"), "Text one.")), refused: true},
+		{name: "the task it is a part of", next: planOf(t, 2, Block{ID: "f", Type: TaskBlockType, Attributes: map[string]string{"owner": "sub-architect"}, Text: "Text of f."},
+			Block{ID: "a", Type: TaskBlockType, Parent: "f", Attributes: attributes(), Text: "Text one."}), refused: true},
 		{name: "merges", next: planOf(t, 2, task(attributes("merges", "true"), "Text one.")), refused: true},
 		{name: "the task removed", next: planOf(t, 2, Block{ID: "b", Type: TaskBlockType, Attributes: attributes(), Text: "Text one."}), refused: true},
+		{name: "from r1 to r2", held: underR1, next: planOf(t, 2, task(attributes("parent", r2), "Text one.")), refused: true},
+		{name: "a parent added", next: planOf(t, 2, task(attributes("parent", r1), "Text one.")), refused: true},
+		{name: "a parent removed", held: underR1, next: planOf(t, 2, task(attributes(), "Text one.")), refused: true},
+		{name: "the same parent, a new text", held: underR1, next: planOf(t, 2, task(attributes("parent", r1), "Text two."))},
+		{name: "the same parent, pinned", held: underR1, next: planOf(t, 2, task(attributes("parent", r1+"@v3"), "Text two."))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := RunningChange(held, tc.next, "a")
+			from := tc.held
+			if from.Tasks == nil {
+				from = held
+			}
+			got := RunningChange(from, tc.next, "a")
 			if !tc.refused {
 				if got != nil {
 					t.Fatalf("RunningChange = %+v, want the change taken", *got)
