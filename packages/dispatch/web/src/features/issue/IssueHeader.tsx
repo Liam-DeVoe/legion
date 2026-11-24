@@ -25,7 +25,6 @@ import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { focusOnMount } from "../../components/focus-place";
-import { heldPress } from "../../components/held-press";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -271,10 +270,9 @@ export function IssueHeader({
   const shownStatus = pendingStatus ?? issue.status;
   const [statusOpen, setStatusOpen] = useState(false);
   // A closed issue's Status takes no pick, and while a write of the header's fields is out it
-  // takes no second one. Either way it is held (`heldPress`), never disabled: it keeps the focus
-  // the reader's pick handed back to it, and a press of it opens nothing.
+  // takes no second one. Either way it is held (`aria-disabled`), never disabled: it keeps the
+  // focus the reader's pick handed back to it, and a press of it opens nothing.
   const statusHeld = isClosed || updateIssue.isPending;
-  const statusPress = heldPress(statusHeld, () => setStatusOpen(true));
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -472,8 +470,9 @@ export function IssueHeader({
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
                   // An Enter or an Escape that ends or moves an input method's composition is the
-                  // composition's: it saves nothing, discards nothing and keeps the editor open.
-                  if (event.nativeEvent.isComposing) return;
+                  // composition's (`inputMethodKey`): it saves nothing, discards nothing and keeps
+                  // the editor open.
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -536,13 +535,13 @@ export function IssueHeader({
             className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <MultiSelect
-              ariaDisabled={statusPress["aria-disabled"]}
+              ariaDisabled={statusHeld}
               chevron={false}
               emptyMessage="No status matches that."
               label="Status"
               marks={statusMarks(shownStatus)}
               mode="single"
-              onOpenChange={(next) => (next ? statusPress.onClick() : setStatusOpen(false))}
+              onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
               onPick={(picked) => {
                 if (!statusHeld && picked !== shownStatus) drafts.requestStatusSubmit(picked);
               }}

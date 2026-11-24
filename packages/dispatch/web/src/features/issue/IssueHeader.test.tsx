@@ -288,6 +288,37 @@ test("an Escape that ends an IME composition in Safari, at keyCode 229, keeps th
   }
 });
 
+// Safari sends the Enter and the Escape that end an input method's composition in the title's
+// editor the same way, unmarked with keyCode 229: that Enter saves nothing and that Escape
+// discards nothing, and the editor stays open on what the reader wrote. The plain Enter after
+// them saves it.
+test("Enter and Escape that end an IME composition in Safari, at keyCode 229, save nothing and keep the title's editor open on its draft", async () => {
+  const { patches, unmount, user } = header();
+  try {
+    const editor = await editTitle(user, "Renamed");
+    for (const key of ["Enter", "Escape"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      await pressAsBrowser(() =>
+        fireEvent.keyDown(editor, { isComposing: false, key, keyCode: 229 })
+      );
+      await afterFrameAndTasks();
+      expect(screen.getByRole("textbox", { name: "Issue title" }), `${key} at keyCode 229`).toBe(
+        editor
+      );
+      expect(editor, `${key} at keyCode 229`).toHaveFocus();
+      expect(editor, `${key} at keyCode 229`).toHaveValue("Renamed");
+    }
+    expect(patches).not.toHaveBeenCalled();
+
+    // The plain Enter goes out as a browser's (`pressAsBrowser`).
+    await pressAsBrowser(() => fireEvent.keyDown(editor, { key: "Enter" }));
+    await afterFrameAndTasks();
+    await expectNextKeyEditsNoTitle(user, patches, "Renamed");
+  } finally {
+    unmount();
+  }
+});
+
 // The title's control is a button named for what it does, with the title it edits as its
 // description, so a screen reader reads "Edit title, button" and then the title. The heading
 // keeps the title as its name.
