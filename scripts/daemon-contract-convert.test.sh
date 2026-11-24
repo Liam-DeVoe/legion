@@ -41,6 +41,17 @@
 # Without the conversion the merge conflicts in version.go and answers.go, and the test fails
 # there (the control: this file with the line that runs the script taken out).
 #
+# A second scratch branch, from the same commit, adds two numbered entries, N+1 and N+2, each in a
+# commit of its own as the rule before the cutover had it: its text, its constant in
+# SupportedContracts, one field of the body of `POST /legion/v1/project/pause` (convertFirst, then
+# convertSecond), its manifests, and its goldens by `-update`, which writes the records of its own
+# number in request-shapes.json and keeps those of the numbers below it. So the branch's record of
+# N+1 holds convertFirst alone, and its record of N+2 both fields. After the conversion, the
+# fixture of N+1's entry records convertFirst alone and the fixture of N+2's convertSecond alone:
+# the request types of the converted branch read both fields at every number, so only the
+# branch's records of each number tell one entry's change from the other's. TestEntryFixtures and
+# the request gate then pass over the two fixtures.
+#
 # Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
 set -euo pipefail
 
@@ -52,9 +63,12 @@ base=$(git rev-parse --verify "$base^{commit}")
 scratch=$(mktemp -d)
 branch=convert-test-$$
 repo=$scratch/repo
+branch_two=convert-test-two-$$
+repo_two=$scratch/repo-two
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" >/dev/null 2>&1 || true
+  git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -291,3 +305,111 @@ DAEMON_API_CONTRACT_BASE=$this bash .github/scripts/check-daemon-api-contract.sh
   -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract|TestEntryFixtures)$' \
   >"$scratch/gate.txt" 2>&1) || { excerpt "$scratch/gate.txt"; fail "the shape gate fails on the converted branch"; }
 echo "PASS: entry $k converts to entry $id, merges this change with no conflict, and passes the contract check and the shape gate"
+
+step "the second branch: numbered entries $k and $((k + 1)), each adding one field to one request"
+cd "$root"
+git worktree add -q -b "$branch_two" "$repo_two" "$base"
+cd "$repo_two"
+route='POST /legion/v1/project/pause'
+number=$k
+for word in first second; do
+  python3 - "$number" "$word" <<'PY'
+import re, sys
+
+number, word = sys.argv[1:3]
+api = "packages/daemon/internal/api"
+field = "convert" + word.capitalize()
+
+
+def edit(path, change):
+    with open(path) as f:
+        text = f.read()
+    new = change(text)
+    if new == text:
+        sys.exit(f"{path}: the edit found nothing to change")
+    with open(path, "w") as f:
+        f.write(new)
+
+
+def once(pattern, replacement, text):
+    new, count = re.subn(pattern, replacement, text, count=1)
+    if count != 1:
+        sys.exit(f"no match of {pattern!r}")
+    return new
+
+
+# The entry's text, below the one before it, and the const line raised to it.
+edit(f"{api}/version.go", lambda t: once(
+    r"\nconst DaemonAPIVersion = \d+\n",
+    lambda m: f"\n//\n// {number}: dispatch://INFRA-1569 conversion test -- the {word} of two entries the conversion test\n"
+              f"// adds, each in a commit of its own: the field `{field}` of the body of `POST /legion/v1/project/pause`.\n"
+              f"const DaemonAPIVersion = {number}\n", t))
+
+
+# The constant, after the last contract of shaping.go, and in SupportedContracts.
+def shaping(text):
+    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
+    return (text[:last.end()] + f"\n// {field}Contract is the daemon contract of version.go's {number}, the {word} of the\n"
+            f"// two entries the conversion test adds.\nconst {field}Contract = {number}\n" + text[last.end():])
+edit(f"{api}/shaping.go", shaping)
+edit(f"{api}/answers.go", lambda t: once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", rf"\1, {field}Contract}}", t))
+
+
+# The field, the last of the request's.
+def pause(text):
+    start = text.index("\ntype ProjectPauseRequest struct {\n")
+    close = text.index("\n}\n", start)
+    return text[:close + 1] + f'\t{field[0].upper() + field[1:]} string `json:"{field},omitempty"`' + text[close:]
+edit(f"{api}/pause.go", pause)
+
+for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
+    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + number, t))
+PY
+  gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go" "$api/pause.go"
+  (cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
+    '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
+    >"$scratch/goldens-$word.txt" 2>&1) || { cat "$scratch/goldens-$word.txt"; fail "the second branch: the goldens of entry $number were not written"; }
+  git add -A
+  git commit -q -m "feat(daemon): the conversion test's entry $number, the $word of two"
+  number=$((number + 1))
+done
+# The branch's records of the request, as `-update` wrote them at each number: the probe's fields.
+recorded() {
+  jq -c --argjson contract "$1" --arg route "$route" \
+    '[.[] | select(.contract == $contract and .route == $route) | .fieldPaths[] | select(startswith("convert"))]' \
+    "$fixtures/request-shapes.json"
+}
+[ "$(recorded "$k")" = '["convertFirst"]' ] || fail "the second branch: its record of $k at $route holds $(recorded "$k"), want convertFirst alone"
+[ "$(recorded "$((k + 1))")" = '["convertFirst","convertSecond"]' ] ||
+  fail "the second branch: its record of $((k + 1)) at $route holds $(recorded "$((k + 1))"), want convertFirst and convertSecond"
+echo "the second branch records convertFirst at $k, and convertFirst and convertSecond at $((k + 1)), at $route"
+
+step "the conversion of the second branch"
+bash "$root/scripts/daemon-contract-convert.sh" --main "$this" >"$scratch/convert-two.txt" 2>&1 ||
+  { cat "$scratch/convert-two.txt"; fail "scripts/daemon-contract-convert.sh failed on the second branch"; }
+cat "$scratch/convert-two.txt"
+git merge-base --is-ancestor "$this" HEAD || fail "the second branch does not hold this change after the conversion"
+
+step "each entry's fixture records its own request change alone"
+mapfile -t pair < <(git diff --name-only --diff-filter=A "$this" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' | sort || true)
+[ "${#pair[@]}" -eq 2 ] || fail "the second branch adds ${#pair[@]} entry files, want 2: ${pair[*]}"
+# The ids follow the numbers, so the first file of the two in id order is entry $k's.
+[[ ${pair[0]} == */contract_*_convert-first.go && ${pair[1]} == */contract_*_convert-second.go ]] ||
+  fail "the entry files are ${pair[*]}: want convert-first's, entry $k's, then convert-second's"
+# holds_alone ENTRY_FILE FIELD NUMBER fails unless the fixture of the entry records one request
+# change: FIELD added to the route, the change of version.go's NUMBER.
+holds_alone() {
+  local path
+  path=$(sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"$1")
+  [ -f "$path" ] || fail "no entry fixture $path after the conversion"
+  jq -e --arg route "$route" --arg field "$2" '.routes == [{route: $route, addFieldPaths: [$field]}]' "$path" >/dev/null ||
+    fail "$path records the request changes $(jq -c .routes "$path"), want entry $3's own alone: $2 added to $route"
+  echo "$path records $2 added to $route, and no other request change"
+}
+holds_alone "${pair[0]}" convertFirst "$k"
+holds_alone "${pair[1]}" convertSecond "$((k + 1))"
+
+step "TestEntryFixtures and the request gate pass over the two fixtures"
+(cd packages/daemon && go test -count=1 ./internal/api/ -run '^(TestEntryFixtures|TestEveryRecordedRequestFieldIsReadByName)$' \
+  >"$scratch/gate-two.txt" 2>&1) || { excerpt "$scratch/gate-two.txt"; fail "TestEntryFixtures or the request gate fails on the converted second branch"; }
+echo "PASS: entries $k and $((k + 1)) convert to two entries, and each one's fixture records its own request change alone"
