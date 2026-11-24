@@ -406,6 +406,16 @@ type Reservation struct {
 	Principal string
 }
 
+// Listing is one identity an operator's entry lists, as its identity provider spells it: the
+// principal its tokens hold session names under, the person and the one project the entry gives
+// it (both empty for an entry that names no person), the session the entry fixes ("" for none),
+// and the service its machines or its read-only pods are. Where names the entry in a refusal
+// ("account entry 1, …"). This package spells no provider's principal: each provider builds its
+// own listings, and a Set built from them answers every question that needs no token.
+type Listing struct {
+	Where, Principal, Person, Project, Session, Service string
+}
+
 // AccountEntry lists one Kubernetes service account and what a pod running as it may write.
 // Account and Person are required; Project and Session are not.
 type AccountEntry struct {
@@ -522,6 +532,8 @@ type Set struct {
 	// MappedProjects; a Google entry naming no person and a read entry map their principal to
 	// neither.
 	mapped map[string]mapping
+	// listed is every Listing the set was built from, by principal (Listed).
+	listed map[string]Listing
 }
 
 // mapping is what an operator's entry gives the tokens of its principal: a person and one
@@ -575,7 +587,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if !accountPattern.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
+		if err := CheckGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := set.accounts[entry.Account]; listed {
@@ -596,7 +608,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, fmt.Errorf("exchange: %s: the service is required, since a read entry's token names its service and no person", where)
 		}
 		if !ValidSession(entry.Session) {
-			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, sessionRule)
+			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, SessionRule)
 		}
 		if _, listed := set.reads[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account reads as one identity", where)
@@ -621,7 +633,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if err := CheckGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -657,11 +669,11 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
 		if entry.Person != "" {
-			if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+			if err := CheckGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 				return nil, err
 			}
 		} else if entry.Session != "" && !ValidSession(entry.Session) {
-			return nil, fmt.Errorf("exchange: %s: %s", where, sessionRule)
+			return nil, fmt.Errorf("exchange: %s: %s", where, SessionRule)
 		}
 		if _, listed := set.google[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
@@ -699,6 +711,38 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 	return entry.person, []string{entry.project}, true
 }
 
+// NewListingSet builds a set from listings alone, as the identity registry composes one from
+// every provider's Listings: the reservations of the sessions the listings fix, in their order,
+// and each principal's person and project. It refuses a principal listed twice and a session two
+// listings fix, naming both. It is the bridge until NewSet takes listings itself.
+func NewListingSet(listings []Listing) (*Set, error) {
+	set := &Set{mapped: make(map[string]mapping, len(listings)), listed: make(map[string]Listing, len(listings))}
+	fixedBy := map[string]string{}
+	for _, listing := range listings {
+		if other, listed := set.listed[listing.Principal]; listed {
+			return nil, fmt.Errorf("exchange: %s: %s lists the same identity, and one identity has one entry", listing.Where, other.Where)
+		}
+		if listing.Session != "" {
+			if other, fixed := fixedBy[listing.Session]; fixed {
+				return nil, fmt.Errorf("exchange: %s: %s fixes the same session name, and one name belongs to one identity", listing.Where, other)
+			}
+			fixedBy[listing.Session] = listing.Where
+			set.reservations = append(set.reservations, Reservation{Session: listing.Session, Principal: listing.Principal})
+		}
+		set.listed[listing.Principal] = listing
+		set.mapped[listing.Principal] = mapping{person: listing.Person, project: listing.Project}
+	}
+	return set, nil
+}
+
+// Listed is the listing of principal, and false for a principal no listing names, a person's own
+// among them. It is how a reader holding no token reads what an operator's entry says of an
+// identity: the service a machine's account is listed for, and the person its entry names.
+func (s *Set) Listed(principal string) (Listing, bool) {
+	listing, ok := s.listed[principal]
+	return listing, ok
+}
+
 // ProjectsForAccount is the projects this configuration gives a token minted for one account,
 // and false for an account no entry lists. An account that opens with "system:serviceaccount:"
 // is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
@@ -714,11 +758,11 @@ func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
 	return projects, ok
 }
 
-// entryProjects is the list a token an operator's entry maps carries: that entry's one project,
+// EntryProjects is the list a token an operator's entry maps carries: that entry's one project,
 // or none for an account entry that names none. A request may name the entry's project or name
 // nothing; one naming anything else is refused, since the entry is what chose the project and a
 // trade may neither widen nor change it.
-func entryProjects(identity, project string, asked []string) ([]string, error) {
+func EntryProjects(identity, project string, asked []string) ([]string, error) {
 	if project == "" {
 		if len(asked) == 0 {
 			return nil, nil
@@ -733,7 +777,7 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 		ErrProjectsFixed, identity, project, oauthwire.JoinProjects(asked))
 }
 
-// checkGrant refuses what every entry shares: a blank person, which would mint a token answerable
+// CheckGrant refuses what every entry shares: a blank person, which would mint a token answerable
 // to nobody, and a fixed session name no request could name back. The project is required too,
 // except where noProject allows an empty one: an account entry may name a person and no project,
 // which is the shared public-session account's entry, minting named tokens that name no project
@@ -742,7 +786,7 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 // token the entry mints names it, the exchange stores and reads that list through
 // oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
 // boot and then fail every trade.
-func checkGrant(where, project, person, session string, noProject bool) error {
+func CheckGrant(where, project, person, session string, noProject bool) error {
 	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
 		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
 	}
@@ -755,7 +799,7 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 		return fmt.Errorf("exchange: %s: the person is required, since every token acts for someone", where)
 	}
 	if session != "" && !ValidSession(session) {
-		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
+		return fmt.Errorf("exchange: %s: %s", where, SessionRule)
 	}
 	return nil
 }
@@ -790,7 +834,7 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 // person, no project and no Instance. Its token names no person, so a request of its pod naming
 // a project is refused (ErrProjectsNoPerson), as a machine's whose entry names no person is.
 func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
-	account, err := claimString(token, "sub")
+	account, err := ClaimString(token, "sub")
 	if err != nil {
 		return Claims{}, err
 	}
@@ -799,7 +843,7 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 	if err != nil {
 		return Claims{}, err
 	}
-	name, err := resolveSession(listing.fixed(), session, account)
+	name, err := ResolveSession(listing.fixed(), session, account)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -811,7 +855,7 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 		return Claims{Session: name, Service: listing.read.Service, Scope: ProjectScopeNone, Principal: AccountPrincipal(account)}, nil
 	}
 	entry := listing.account
-	named, err := entryProjects(account, entry.Project, projects)
+	named, err := EntryProjects(account, entry.Project, projects)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -874,7 +918,7 @@ func (s *Set) Registration(account, podUID, session string) error {
 		return fmt.Errorf("%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", ErrSessionFixed, account, fixed)
 	}
 	if !ValidSession(session) {
-		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
+		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), SessionRule)
 	}
 	return nil
 }
@@ -892,19 +936,19 @@ func (s *Set) Registration(account, podUID, session string) error {
 // run of a release workflow keeps writing under the name the run before it held, however soon
 // after it starts.
 func (s *Set) Workflow(token map[string]any, session string, projects []string) (Claims, error) {
-	repository, err := claimString(token, "repository")
+	repository, err := ClaimString(token, "repository")
 	if err != nil {
 		return Claims{}, err
 	}
-	workflowRef, err := claimString(token, "workflow_ref")
+	workflowRef, err := ClaimString(token, "workflow_ref")
 	if err != nil {
 		return Claims{}, err
 	}
-	jobRef, err := claimString(token, "job_workflow_ref")
+	jobRef, err := ClaimString(token, "job_workflow_ref")
 	if err != nil {
 		return Claims{}, err
 	}
-	ref, err := claimString(token, "ref")
+	ref, err := ClaimString(token, "ref")
 	if err != nil {
 		return Claims{}, err
 	}
@@ -920,11 +964,11 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	if !listed {
 		return Claims{}, fmt.Errorf("%w: no entry lists the workflow %s of %s on %s", ErrNoEntry, workflow, repository, ref)
 	}
-	name, err := resolveSession(entry.Session, session, repository+"/"+workflow)
+	name, err := ResolveSession(entry.Session, session, repository+"/"+workflow)
 	if err != nil {
 		return Claims{}, err
 	}
-	named, err := entryProjects(repository+"/"+workflow, entry.Project, projects)
+	named, err := EntryProjects(repository+"/"+workflow, entry.Project, projects)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -975,7 +1019,7 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 	if err := s.allowedMachine(entry, identity); err != nil {
 		return Claims{}, err
 	}
-	name, err := resolveSession(entry.Session, session, identity.Account)
+	name, err := ResolveSession(entry.Session, session, identity.Account)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -988,7 +1032,7 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 		claims.Service = entry.Service
 		return claims, nil
 	}
-	if claims.Projects, err = entryProjects(identity.Account, entry.Project, projects); err != nil {
+	if claims.Projects, err = EntryProjects(identity.Account, entry.Project, projects); err != nil {
 		return Claims{}, err
 	}
 	claims.Person, claims.Scope = entry.Person, ProjectScopeNamed
@@ -1082,7 +1126,7 @@ func (s *Set) Person(token, actor map[string]any, session string, projects []str
 	case err != nil:
 		return Claims{}, fmt.Errorf("%w: the subject token is not a person's Google identity token (%v)", ErrClaimMissing, err)
 	}
-	name, err := resolveSession("", session, login)
+	name, err := ResolveSession("", session, login)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -1141,7 +1185,7 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 	if strings.TrimSpace(approver) == "" {
 		return Claims{}, fmt.Errorf("%w: the machine credential records no approver to act for", ErrClaimMissing)
 	}
-	name, err := resolveSession("", session, approver)
+	name, err := ResolveSession("", session, approver)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -1202,12 +1246,12 @@ func LaunchedBy(accountPrincipal, launcher string) string {
 	return accountPrincipal + " launched-by " + launcher
 }
 
-// sessionRule is the one sentence that says what a session name may be, so an entry refused at
+// SessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it
 // quotes is the cap ValidSession applies.
-var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes", MaxSessionBytes)
+var SessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes", MaxSessionBytes)
 
-// resolveSession answers the session claim for an entry whose fixed session is fixed and a request
+// ResolveSession answers the session claim for an entry whose fixed session is fixed and a request
 // that named named, where identity names who is asking. An entry that fixes a session answers it
 // and refuses a request that names another, rather than quietly putting the fixed one in its
 // place; an entry that fixes none has nothing to fall back on, so the request must name a usable
@@ -1215,7 +1259,7 @@ var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespac
 //
 // A refused name is described and never repeated: it comes from the request, so its length and
 // its bytes are whatever the caller sent.
-func resolveSession(fixed, named, identity string) (string, error) {
+func ResolveSession(fixed, named, identity string) (string, error) {
 	if fixed != "" {
 		if named != "" && named != fixed {
 			return "", fmt.Errorf("%w: %s's tokens name the session %s", ErrSessionMismatch, identity, fixed)
@@ -1226,7 +1270,7 @@ func resolveSession(fixed, named, identity string) (string, error) {
 		return "", fmt.Errorf("%w: %s is listed with no session of its own, so the request names one", ErrSessionRequired, identity)
 	}
 	if !ValidSession(named) {
-		return "", fmt.Errorf("%w: %s named a session of %d bytes; %s", ErrSessionInvalid, identity, len(named), sessionRule)
+		return "", fmt.Errorf("%w: %s named a session of %d bytes; %s", ErrSessionInvalid, identity, len(named), SessionRule)
 	}
 	return named, nil
 }
@@ -1252,10 +1296,10 @@ func ValidSession(name string) bool {
 	return true
 }
 
-// claimString reads one claim the decision needs as a non-empty string. A claim that is absent,
+// ClaimString reads one claim the decision needs as a non-empty string. A claim that is absent,
 // null, or of another JSON type is the same fault to a caller: the subject token is not the kind
 // of token this decision is for.
-func claimString(token map[string]any, name string) (string, error) {
+func ClaimString(token map[string]any, name string) (string, error) {
 	value, present := token[name]
 	if !present {
 		return "", fmt.Errorf("%w: the subject token carries no %s claim", ErrClaimMissing, name)
