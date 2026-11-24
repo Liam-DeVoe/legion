@@ -1963,7 +1963,7 @@ type MergeForwardMessage struct {
 // leaves; the review covers the landed, since it asks the agent to read the merge, as the landed
 // does, and to approve the new head or request changes, and says that its step goes on at the new
 // head. Each cover goes one way. A pair of messages it names no cover for is sent whole.
-var mergeForwardCovered = map[MergeForwardStep]MergeForwardStep{MergeForwardAsk: MergeForwardHold, MergeForwardReview: MergeForwardLanded}
+var mergeForwardCovered = map[MergeForwardStep]MergeForwardStep{MergeForwardAsk: MergeForwardHold, MergeForwardHold: MergeForwardAsk, MergeForwardReview: MergeForwardLanded}
 
 // MergeForwardCovers says whether a message of step stands in for one of covered where one claim
 // holds the recipients of both (mergeForwardCovered).
