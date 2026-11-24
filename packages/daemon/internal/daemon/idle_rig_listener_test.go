@@ -47,7 +47,7 @@ func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListene
 
 // startIdleRigListenerOn is startIdleRigListener on a port of the caller's choosing, so a
 // listener restarted mid-test comes back where every URL already handed out reaches it.
-func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *idleRigListener {
+func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int, forced ...string) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
@@ -66,9 +66,9 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	// agent subject of a session with no record is held for that window before the listener gives
 	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
 	// way comes back inside the rig's pod wait with room to spare.
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s"), forced...)
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()

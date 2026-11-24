@@ -1628,6 +1628,12 @@ func main() {
 		senderLimit:         senderMessageLimit,
 		dispatchPrincipal:   dispatchPrincipal,
 	}
+	// FORCED (never committed to a pull request): a listener told LEGION_FORCED_V1_OPEN_DELAY holds
+	// its /v1 gate closed that long, so every /v1 request meets 503 "service starting" meanwhile.
+	if delay, err := time.ParseDuration(os.Getenv("LEGION_FORCED_V1_OPEN_DELAY")); err == nil {
+		logger.Info("FORCED: /v1 stays closed", slog.String("delay", delay.String()))
+		time.Sleep(delay)
+	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
 	// During a rolling deploy the old task still holds the durable's push binding, and nats.Bind
