@@ -19,7 +19,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1440,4080, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
+    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1456,4149, legion-role-claim.test.ts:21; src/daemon-api-version.test.ts:20,23 reads released-contracts.json and lists contracts/*.json; and packages/contracts/src/daemon-contract.ts:45,57,71-72 reads and lists the same two for daemonContract() of the committed manifest, which names no contract, as PLUGIN_CONTRACT of extensions/legion.ts, src/claim-session.ts and src/controller-session.ts and pluginBuildOf (packages/pi-shared/src/legion-phase-ops.ts) for src/tools.ts's BUILD take it when a test imports them, and as the tests' own PLUGIN_CONTRACT takes it"),
     (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
     (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:969 (PLUGIN_REPORT :854)"),
     ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts:79 names packages/dispatch/e2e/run-server.sh in the checkout it builds, and seed.ts:111, which that test names at :108, imports packages/dispatch/e2e/api.ts"),

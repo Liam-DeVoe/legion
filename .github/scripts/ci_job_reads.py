@@ -496,6 +496,11 @@ CLAUDE_ENVOY_BUILD = reads(
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
         ("skills/**", "packages/claude-envoy/scripts/build.ts:198-202 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "packages/claude-envoy/scripts/build.ts:32 reads the Bun pin"),
+        (f"{FIX}/daemon-api/**", "packages/claude-envoy/scripts/build.ts:49 (pluginManifest) writes this tree's contract into the "
+                                 "manifest it builds and its bundles inline, daemonContract() of the committed manifest, which names "
+                                 "none, for which packages/contracts/src/daemon-contract.ts:45,57,71-72 reads released-contracts.json "
+                                 "and lists contracts/*.json; the glob is the directory's, since contracts/ holds no file until the "
+                                 "first entry lands, and a glob of no file is refused"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:154 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
 ) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
@@ -508,7 +513,12 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "packages/claude-envoy/tests/legion-tool.test.ts:9 imports @legion/pi-shared/test/image-manifest"),
-        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:44-45, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:14-15"),
+        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/legion-claim.test.ts:50-51, legion-pane-mcp.test.ts:30-31 and legion-tool.test.ts:20-21 "
+                                 "read its responses; tests/daemon-api-version.test.ts:21,24 reads released-contracts.json and lists "
+                                 "contracts/*.json; and packages/contracts/src/daemon-contract.ts:45,57,71-72 reads and lists the same "
+                                 "two for daemonContract() of the committed manifest, as PLUGIN_CONTRACT of src/legion-claim.ts and "
+                                 "pluginBuildOf (packages/pi-shared/src/legion-phase-ops.ts) for src/legion-tool.ts's BUILD take it "
+                                 "when a test imports them, and as the tests' own PLUGIN_CONTRACT takes it"),
         (f"{FIX}/envelope-without-role.json", "packages/claude-envoy/tests/envelope-role-field.test.ts:5"),
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
@@ -528,6 +538,9 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                                                             "version is written into all five manifests\" and \"a manifest jq cannot "
                                                             "parse fails the step before the next manifest is written\" copy it into a "
                                                             "root of their own and run it"),
+        ("scripts/daemon-contract.sh", "packages/claude-envoy/tests/release-version.test.ts's releaseRoot copies it beside "
+                                       ".github/scripts/release-claude-envoy-version.sh, which runs it in the test \"the "
+                                       "release's version is written into all five manifests\""),
         (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's check of the "
                                           "packed tarball passes a listing longer than a pipe holds\" runs it for the repository "
                                           "url, and copies it beside the release's check, which runs it, and release-manifest-repository.test.ts "
