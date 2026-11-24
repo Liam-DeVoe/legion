@@ -64,8 +64,10 @@ export const lazyPieces = {
     "stack: yjs, @hocuspocus/provider, pending-edits and pending-sync, both lists imported in " +
     "features/doc/document-chunks.ts",
   "event-refresh":
-    "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
-    "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",
+    "the map from a live event to the reads it refreshes (api/event-refresh.ts) and the " +
+    "correction an edited or deleted post writes into the reads that hold it " +
+    "(api/corrected-post.ts), one chunk, which the live feed asks for once the page it landed " +
+    "on has drawn (api/event-refresh-load.ts)",
   "frame-shell":
     "the new issue page's frame (features/issue-page/frame-shell.tsx, named once in " +
     "features/issue-page/frame-chunk.ts): the code the shell computes the frame from, its " +

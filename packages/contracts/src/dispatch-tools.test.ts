@@ -1959,8 +1959,8 @@ describe("the bounds and words each tool states beside its arguments", () => {
 
   // Each row is the bounds a route holds a field to, one of each kind among them: a text's length,
   // a list's count of items and a number's value. An upper bound is a constant gen-go writes into
-  // Go for the handler that enforces it: one of dispatch-api-limits.ts, or SEARCH_QUERY_MAX of
-  // dispatch-tools.ts. A lower bound is the route's refusal of an empty value (1) or of a
+  // Go for the handler that enforces it: one of dispatch-api-constants.ts, or SEARCH_QUERY_MAX of
+  // dispatch-tools-constants.ts. A lower bound is the route's refusal of an empty value (1) or of a
   // one-character search (2). The field's generated Go states the same bounds, no looser and no
   // tighter.
   test.each([

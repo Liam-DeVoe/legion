@@ -248,7 +248,8 @@ export default defineConfig({
     // `<Timestamp>` is a chunk the pages' chunks share (646 bytes); and the recent items read a
     // document's route from `features/refs/routes.ts`, so the search bar's chip
     // (`features/search/bar-scope.ts`) is a chunk that the bar and the issue list share
-    // (1,142 bytes).
+    // (1,142 bytes). That left 498,776 bytes; the correction's mark then joined the event map's
+    // chunk (`api/event-refresh-load.ts`), and the entry reads 498,590.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
     // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.
