@@ -133,7 +133,12 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 		t.Fatalf("after the hold %d pages of the tracer's memory were not present (%v); the thread took %d page faults writing %d trace events; the tracer's mappings (%s) were %v before the events and %v after",
 			len(absent), absent, faults, xidBurstLogs, xidTracerFound(named), mapped, grown)
 	}
-	t.Logf("%d trace events in %s, begun %s into the wait for a generation: 0 page faults, the tracer's mappings (%s) %v unchanged", xidBurstLogs, to.Sub(from), waited, xidTracerFound(named), mapped)
+	// The log says only what was checked: the mappings were compared only where found by name.
+	compared := "unchanged"
+	if !named {
+		compared = fmt.Sprintf("before the events and %v after, not compared: found that way, they may hold what another thread mapped meanwhile", grown)
+	}
+	t.Logf("%d trace events in %s, begun %s into the wait for a generation: 0 page faults, the tracer's mappings (%s) %v %s", xidBurstLogs, to.Sub(from), waited, xidTracerFound(named), mapped, compared)
 }
 
 // xidTracerFound says how the hold found the tracer's memory (xidTracerRanges).
