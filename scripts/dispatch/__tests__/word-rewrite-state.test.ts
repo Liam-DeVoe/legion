@@ -269,9 +269,9 @@ describe("the state between runs", () => {
   });
 
   test("state-document.json: Dispatch serves the state as it was uploaded, and a state of an older shape is refused, not read as empty", () => {
-    // The capture uploaded a state the serializer of its day made (its held write still named
-    // its kind, and the state named no sessions): Dispatch kept it byte for byte, one fenced line
-    // of JSON, which today's reader refuses rather than take for an empty state.
+    // The capture uploads a state of the serializer's earlier shape (its held write names its
+    // kind, and the state names no sessions; capture.sh): Dispatch keeps it byte for byte, one
+    // fenced line of JSON, which today's reader refuses rather than take for an empty state.
     const captured = fixture("state-document.json") as { markdown: string };
     const [fence, json, close, end] = captured.markdown.split("\n");
     expect([fence, close, end]).toEqual(["```json", "```", ""]);

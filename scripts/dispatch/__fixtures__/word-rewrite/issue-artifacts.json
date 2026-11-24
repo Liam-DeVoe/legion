@@ -1,6 +1,6 @@
 [
   {
-    "id": "088bc2e5-35f3-404a-9d19-463ab2b3b859",
+    "id": "940ce552-7803-400a-b654-21e2e3027a0c",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -9,62 +9,22 @@
     "name": "spec.md",
     "kind": "doc",
     "primary": true,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:15.761298Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:48.985884Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:15.761298Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:48.985884Z",
         "size": 89
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }
   },
   {
-    "id": "968ca162-9179-4ebe-ae0e-f0b8a4f1d266",
-    "issue_key": "SEED-3",
-    "project": "SEED",
-    "session_id": null,
-    "ref_key": "SEED-3/people-md",
-    "slug": "people-md",
-    "name": "people.md",
-    "kind": "doc",
-    "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:15.805988Z",
-    "versions": [
-      {
-        "number": 1,
-        "named": false,
-        "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:15.805988Z",
-        "size": 116
-      },
-      {
-        "number": 2,
-        "named": false,
-        "summary": null,
-        "authors": [{ "kind": "user", "id": "alice", "proven": true }],
-        "created_at": "2026-11-24T04:47:15.830513Z",
-        "size": 167
-      },
-      {
-        "number": 3,
-        "named": false,
-        "summary": null,
-        "authors": [{ "kind": "user", "id": "alice", "proven": true }],
-        "created_at": "2026-11-24T04:47:15.867925Z",
-        "size": 163
-      }
-    ],
-    "approval": { "state": "draft", "latest_version": 3 }
-  },
-  {
-    "id": "62166a17-7e56-4495-ae25-803bb750da87",
+    "id": "c1ecc6a7-943b-49ee-88bc-e322e1832748",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -73,15 +33,15 @@
     "name": "mixed.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:15.892816Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.031501Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:15.892816Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.031501Z",
         "size": 316
       },
       {
@@ -89,14 +49,14 @@
         "named": false,
         "summary": null,
         "authors": [{ "kind": "user", "id": "alice", "proven": true }],
-        "created_at": "2026-11-24T04:47:15.913229Z",
+        "created_at": "2026-11-24T07:29:49.058957Z",
         "size": 360
       }
     ],
     "approval": { "state": "draft", "latest_version": 2 }
   },
   {
-    "id": "8bca49f5-b383-4332-8a51-67c7d28dc82b",
+    "id": "8d03a597-cd9d-4de5-80b0-530d68b8247c",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -105,15 +65,15 @@
     "name": "act.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:15.939593Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.117029Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:15.939593Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.117029Z",
         "size": 31
       },
       {
@@ -121,16 +81,16 @@
         "named": false,
         "summary": null,
         "authors": [
-          { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4", "owner": "alice" }
+          { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "owner": "alice" }
         ],
-        "created_at": "2026-11-24T04:47:15.974533Z",
+        "created_at": "2026-11-24T07:29:49.154565Z",
         "size": 64
       }
     ],
     "approval": { "state": "draft", "latest_version": 2 }
   },
   {
-    "id": "1896925a-eedd-48d6-9654-1de0b6426a23",
+    "id": "f863d621-217b-4d1a-b89d-9ca3afb97f51",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -139,22 +99,22 @@
     "name": "quotes.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.013455Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.200476Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.013455Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.200476Z",
         "size": 94
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }
   },
   {
-    "id": "1345922d-6ea6-41e0-987b-b86e3bb6ab94",
+    "id": "d1f97e77-afa5-498a-93a8-4ad1846f3bd3",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -163,46 +123,22 @@
     "name": "kernel.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.034271Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.215513Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.034271Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.215513Z",
         "size": 103
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }
   },
   {
-    "id": "2bf71617-236e-4250-97f0-046ad6523beb",
-    "issue_key": "SEED-3",
-    "project": "SEED",
-    "session_id": null,
-    "ref_key": "SEED-3/notice-md",
-    "slug": "notice-md",
-    "name": "notice.md",
-    "kind": "doc",
-    "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.066527Z",
-    "versions": [
-      {
-        "number": 1,
-        "named": false,
-        "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.066527Z",
-        "size": 66
-      }
-    ],
-    "approval": { "state": "draft", "latest_version": 1 }
-  },
-  {
-    "id": "70534769-a88b-4761-bb7a-cf9e9102898b",
+    "id": "30b8b9b8-1aa8-4455-b438-93c5f364111e",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -211,22 +147,22 @@
     "name": "priorities.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.096949Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.234864Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.096949Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.234864Z",
         "size": 64
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }
   },
   {
-    "id": "1b9b0109-9821-4102-b305-fe28f7ef6ad6",
+    "id": "537d86e4-1135-44d6-975d-de068a718c6a",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -236,22 +172,22 @@
     "kind": "doc",
     "primary": false,
     "role": "verification",
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.111697Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.249893Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.111697Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.249893Z",
         "size": 177
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }
   },
   {
-    "id": "7582684e-e490-454d-939a-afe8b3864fb6",
+    "id": "44f4f943-d758-4c78-8ba8-fde427ae251c",
     "issue_key": "SEED-3",
     "project": "SEED",
     "session_id": null,
@@ -260,40 +196,16 @@
     "name": "parked-notes.md",
     "kind": "doc",
     "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.122265Z",
+    "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+    "created_at": "2026-11-24T07:29:49.268428Z",
     "versions": [
       {
         "number": 1,
         "named": false,
         "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.122265Z",
+        "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+        "created_at": "2026-11-24T07:29:49.268428Z",
         "size": 22
-      }
-    ],
-    "approval": { "state": "draft", "latest_version": 1 }
-  },
-  {
-    "id": "8487d2d0-1e36-45d0-aca5-f37810542efe",
-    "issue_key": "SEED-3",
-    "project": "SEED",
-    "session_id": null,
-    "ref_key": "SEED-3/race-md",
-    "slug": "race-md",
-    "name": "race.md",
-    "kind": "doc",
-    "primary": false,
-    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "created_at": "2026-11-24T04:47:16.131355Z",
-    "versions": [
-      {
-        "number": 1,
-        "named": false,
-        "summary": null,
-        "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-        "created_at": "2026-11-24T04:47:16.131355Z",
-        "size": 40
       }
     ],
     "approval": { "state": "draft", "latest_version": 1 }

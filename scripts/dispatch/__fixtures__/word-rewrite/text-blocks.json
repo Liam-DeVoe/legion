@@ -4,13 +4,13 @@
   "version": 2,
   "blocks": [
     {
-      "id": "5661b70c-62b3-48a0-9450-9d002da3e39b",
+      "id": "5e185908-4ee2-4c93-98fe-8796cf25a994",
       "type": "paragraph",
       "from": 0,
       "to": 52,
       "token": "sha256:b08a4ce32dd1f6329711f8fec264be84caaad7e9f512d281f5e01d7d00fb00de",
       "references": { "comments": 0, "asks": 0 },
-      "embedding": "none"
+      "embedding": "pending"
     },
     {
       "id": "ask-word",
@@ -24,10 +24,10 @@
         { "name": "multiple", "value": "false", "kind": "bool" },
         { "name": "state", "value": "open", "kind": "enum" }
       ],
-      "embedding": "none"
+      "embedding": "pending"
     },
     {
-      "id": "40c1a643-a165-4641-b1ef-05aef188a8ef",
+      "id": "b79319a8-4666-4fa0-a864-4689c07a2dc7",
       "type": "paragraph",
       "from": 116,
       "to": 156,
@@ -36,7 +36,7 @@
       "embedding": "none"
     },
     {
-      "id": "80099849-2be4-4c02-a3f3-4c8dcc1a0b9d",
+      "id": "7175db75-6ef7-47a0-a60f-8dec00b00d02",
       "type": "bullet_list",
       "from": 158,
       "to": 168,
@@ -45,7 +45,7 @@
       "embedding": "none"
     },
     {
-      "id": "6a858da5-6fce-4a9d-b1a1-c4e203085d47",
+      "id": "9de001c4-412c-4460-b96c-0d872d43f58e",
       "type": "paragraph",
       "from": 160,
       "to": 163,
@@ -54,7 +54,7 @@
       "embedding": "none"
     },
     {
-      "id": "398b0f1f-390d-45cc-a4ba-e241214685a4",
+      "id": "81360ca8-a86b-4282-a4ca-0fa4a816d931",
       "type": "paragraph",
       "from": 166,
       "to": 168,
@@ -78,10 +78,10 @@
         },
         { "name": "when", "value": "before_merge", "kind": "enum" }
       ],
-      "embedding": "none"
+      "embedding": "pending"
     },
     {
-      "id": "5beb5394-a621-4e3b-80e1-80587a46ec46",
+      "id": "6efa3a7d-7288-4309-ad7d-90007b623069",
       "type": "paragraph",
       "from": 287,
       "to": 311,
@@ -90,13 +90,13 @@
       "embedding": "none"
     },
     {
-      "id": "a3fb9730-0b71-4c9c-bd42-66d6fdf993a1",
+      "id": "2108e50f-e070-48d2-927b-3516ae7d69f2",
       "type": "paragraph",
       "from": 317,
       "to": 359,
       "token": "sha256:27511e323c1a2b7b7664a6c7901cfb9b2992f133f15b0c047ce9f3b3db8a8fdd",
       "references": { "comments": 0, "asks": 0 },
-      "embedding": "none"
+      "embedding": "pending"
     }
   ]
 }

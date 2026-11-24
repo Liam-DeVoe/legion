@@ -1,14 +1,14 @@
 [
   {
-    "id": 51,
+    "id": 52,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
     "seq": 1,
     "type": "issue.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:15.761298Z",
+    "created_at": "2026-11-24T07:29:48.985884Z",
     "payload": {
       "key": "SEED-3",
       "rank": "W",
@@ -36,52 +36,16 @@
         "unknown": [],
         "inherited_from": null
       },
-      "created_at": "2026-11-24T04:47:15.761298Z",
-      "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
-      "updated_at": "2026-11-24T04:47:15.761298Z",
+      "created_at": "2026-11-24T07:29:48.985884Z",
+      "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
+      "updated_at": "2026-11-24T07:29:48.985884Z",
       "resolved_repo": null,
       "external_links": [],
       "plan_artifact_id": "",
       "advances_revision": 0,
-      "primary_artifact_id": "088bc2e5-35f3-404a-9d19-463ab2b3b859",
+      "primary_artifact_id": "940ce552-7803-400a-b654-21e2e3027a0c",
       "decisions_artifact_id": "",
       "verification_artifact_id": ""
-    }
-  },
-  {
-    "id": 52,
-    "issue_key": "SEED-3",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 2,
-    "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "notify": false,
-    "created_at": "2026-11-24T04:47:15.805988Z",
-    "payload": {
-      "artifact": {
-        "id": "968ca162-9179-4ebe-ae0e-f0b8a4f1d266",
-        "kind": "doc",
-        "name": "people.md",
-        "slug": "people-md",
-        "primary": false,
-        "project": "SEED",
-        "ref_key": "SEED-3/people-md",
-        "versions": [
-          {
-            "size": 116,
-            "named": false,
-            "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
-            "summary": null,
-            "created_at": "2026-11-24T04:47:15.805988Z"
-          }
-        ],
-        "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:15.805988Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
-        "session_id": null
-      }
     }
   },
   {
@@ -89,60 +53,14 @@
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 3,
-    "type": "artifact.version",
-    "actor": { "kind": "user", "id": "alice", "proven": true },
-    "notify": false,
-    "created_at": "2026-11-24T04:47:15.830513Z",
-    "payload": {
-      "name": "people.md",
-      "version": {
-        "size": 167,
-        "named": false,
-        "number": 2,
-        "authors": [{ "id": "alice", "kind": "user", "proven": true }],
-        "summary": null,
-        "created_at": "2026-11-24T04:47:15.830513Z"
-      },
-      "artifact_id": "968ca162-9179-4ebe-ae0e-f0b8a4f1d266"
-    }
-  },
-  {
-    "id": 54,
-    "issue_key": "SEED-3",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 4,
-    "type": "artifact.version",
-    "actor": { "kind": "user", "id": "alice", "proven": true },
-    "notify": false,
-    "created_at": "2026-11-24T04:47:15.867925Z",
-    "payload": {
-      "name": "people.md",
-      "version": {
-        "size": 163,
-        "named": false,
-        "number": 3,
-        "authors": [{ "id": "alice", "kind": "user", "proven": true }],
-        "summary": null,
-        "created_at": "2026-11-24T04:47:15.867925Z"
-      },
-      "artifact_id": "968ca162-9179-4ebe-ae0e-f0b8a4f1d266"
-    }
-  },
-  {
-    "id": 55,
-    "issue_key": "SEED-3",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 5,
+    "seq": 2,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:15.892816Z",
+    "created_at": "2026-11-24T07:29:49.031501Z",
     "payload": {
       "artifact": {
-        "id": "62166a17-7e56-4495-ae25-803bb750da87",
+        "id": "c1ecc6a7-943b-49ee-88bc-e322e1832748",
         "kind": "doc",
         "name": "mixed.md",
         "slug": "mixed-md",
@@ -154,28 +72,28 @@
             "size": 316,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:15.892816Z"
+            "created_at": "2026-11-24T07:29:49.031501Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:15.892816Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.031501Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 56,
+    "id": 54,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 6,
+    "seq": 3,
     "type": "artifact.version",
     "actor": { "kind": "user", "id": "alice", "proven": true },
     "notify": false,
-    "created_at": "2026-11-24T04:47:15.913229Z",
+    "created_at": "2026-11-24T07:29:49.058957Z",
     "payload": {
       "name": "mixed.md",
       "version": {
@@ -184,24 +102,24 @@
         "number": 2,
         "authors": [{ "id": "alice", "kind": "user", "proven": true }],
         "summary": null,
-        "created_at": "2026-11-24T04:47:15.913229Z"
+        "created_at": "2026-11-24T07:29:49.058957Z"
       },
-      "artifact_id": "62166a17-7e56-4495-ae25-803bb750da87"
+      "artifact_id": "c1ecc6a7-943b-49ee-88bc-e322e1832748"
     }
   },
   {
-    "id": 57,
+    "id": 55,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 7,
+    "seq": 4,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:15.939593Z",
+    "created_at": "2026-11-24T07:29:49.117029Z",
     "payload": {
       "artifact": {
-        "id": "8bca49f5-b383-4332-8a51-67c7d28dc82b",
+        "id": "8d03a597-cd9d-4de5-80b0-530d68b8247c",
         "kind": "doc",
         "name": "act.md",
         "slug": "act-md",
@@ -213,28 +131,28 @@
             "size": 31,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:15.939593Z"
+            "created_at": "2026-11-24T07:29:49.117029Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:15.939593Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.117029Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 58,
+    "id": 56,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 8,
+    "seq": 5,
     "type": "artifact.version",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4", "owner": "alice" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "owner": "alice" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:15.974533Z",
+    "created_at": "2026-11-24T07:29:49.154565Z",
     "payload": {
       "name": "act.md",
       "version": {
@@ -242,27 +160,27 @@
         "named": false,
         "number": 2,
         "authors": [
-          { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session", "owner": "alice" }
+          { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session", "owner": "alice" }
         ],
         "summary": null,
-        "created_at": "2026-11-24T04:47:15.974533Z"
+        "created_at": "2026-11-24T07:29:49.154565Z"
       },
-      "artifact_id": "8bca49f5-b383-4332-8a51-67c7d28dc82b"
+      "artifact_id": "8d03a597-cd9d-4de5-80b0-530d68b8247c"
     }
   },
   {
-    "id": 59,
+    "id": 57,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 9,
+    "seq": 6,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.013455Z",
+    "created_at": "2026-11-24T07:29:49.200476Z",
     "payload": {
       "artifact": {
-        "id": "1896925a-eedd-48d6-9654-1de0b6426a23",
+        "id": "f863d621-217b-4d1a-b89d-9ca3afb97f51",
         "kind": "doc",
         "name": "quotes.md",
         "slug": "quotes-md",
@@ -274,31 +192,31 @@
             "size": 94,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.013455Z"
+            "created_at": "2026-11-24T07:29:49.200476Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.013455Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.200476Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 60,
+    "id": 58,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 10,
+    "seq": 7,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.034271Z",
+    "created_at": "2026-11-24T07:29:49.215513Z",
     "payload": {
       "artifact": {
-        "id": "1345922d-6ea6-41e0-987b-b86e3bb6ab94",
+        "id": "d1f97e77-afa5-498a-93a8-4ad1846f3bd3",
         "kind": "doc",
         "name": "kernel.md",
         "slug": "kernel-md",
@@ -310,67 +228,31 @@
             "size": 103,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.034271Z"
+            "created_at": "2026-11-24T07:29:49.215513Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.034271Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.215513Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 61,
+    "id": 59,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 11,
+    "seq": 8,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.066527Z",
+    "created_at": "2026-11-24T07:29:49.234864Z",
     "payload": {
       "artifact": {
-        "id": "2bf71617-236e-4250-97f0-046ad6523beb",
-        "kind": "doc",
-        "name": "notice.md",
-        "slug": "notice-md",
-        "primary": false,
-        "project": "SEED",
-        "ref_key": "SEED-3/notice-md",
-        "versions": [
-          {
-            "size": 66,
-            "named": false,
-            "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
-            "summary": null,
-            "created_at": "2026-11-24T04:47:16.066527Z"
-          }
-        ],
-        "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.066527Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
-        "session_id": null
-      }
-    }
-  },
-  {
-    "id": 62,
-    "issue_key": "SEED-3",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 12,
-    "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "notify": false,
-    "created_at": "2026-11-24T04:47:16.096949Z",
-    "payload": {
-      "artifact": {
-        "id": "70534769-a88b-4761-bb7a-cf9e9102898b",
+        "id": "30b8b9b8-1aa8-4455-b438-93c5f364111e",
         "kind": "doc",
         "name": "priorities.md",
         "slug": "priorities-md",
@@ -382,31 +264,31 @@
             "size": 64,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.096949Z"
+            "created_at": "2026-11-24T07:29:49.234864Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.096949Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.234864Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 63,
+    "id": 60,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 13,
+    "seq": 9,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.111697Z",
+    "created_at": "2026-11-24T07:29:49.249893Z",
     "payload": {
       "artifact": {
-        "id": "1b9b0109-9821-4102-b305-fe28f7ef6ad6",
+        "id": "537d86e4-1135-44d6-975d-de068a718c6a",
         "kind": "doc",
         "name": "verification.md",
         "role": "verification",
@@ -419,31 +301,31 @@
             "size": 177,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.111697Z"
+            "created_at": "2026-11-24T07:29:49.249893Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.111697Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.249893Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 64,
+    "id": 61,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 14,
+    "seq": 10,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.122265Z",
+    "created_at": "2026-11-24T07:29:49.268428Z",
     "payload": {
       "artifact": {
-        "id": "7582684e-e490-454d-939a-afe8b3864fb6",
+        "id": "44f4f943-d758-4c78-8ba8-fde427ae251c",
         "kind": "doc",
         "name": "parked-notes.md",
         "slug": "parked-notes-md",
@@ -455,64 +337,28 @@
             "size": 22,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.122265Z"
+            "created_at": "2026-11-24T07:29:49.268428Z"
           }
         ],
         "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.122265Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:29:49.268428Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 65,
+    "id": 66,
     "issue_key": "SEED-3",
     "artifact_id": null,
     "project": "SEED",
-    "seq": 15,
-    "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-    "notify": false,
-    "created_at": "2026-11-24T04:47:16.131355Z",
-    "payload": {
-      "artifact": {
-        "id": "8487d2d0-1e36-45d0-aca5-f37810542efe",
-        "kind": "doc",
-        "name": "race.md",
-        "slug": "race-md",
-        "primary": false,
-        "project": "SEED",
-        "ref_key": "SEED-3/race-md",
-        "versions": [
-          {
-            "size": 40,
-            "named": false,
-            "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
-            "summary": null,
-            "created_at": "2026-11-24T04:47:16.131355Z"
-          }
-        ],
-        "issue_key": "SEED-3",
-        "created_at": "2026-11-24T04:47:16.131355Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
-        "session_id": null
-      }
-    }
-  },
-  {
-    "id": 70,
-    "issue_key": "SEED-3",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 16,
+    "seq": 11,
     "type": "ask.opened",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.196954Z",
+    "created_at": "2026-11-24T07:29:49.366014Z",
     "payload": {
       "anchor": null,
       "answer": null,
@@ -520,15 +366,15 @@
       "asked_of": null,
       "asked_of_at": null,
       "asked_of_by": null,
-      "author": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+      "author": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
       "block_id": "ask-word",
-      "created_at": "2026-11-24T04:47:16.196954Z",
+      "created_at": "2026-11-24T07:29:49.366014Z",
       "edited_at": null,
-      "id": "dc33789b-f6a8-4698-a56d-e5c63c7471f4",
+      "id": "34c008bd-6513-4e25-a529-349141c468d7",
       "issue_key": "SEED-3",
       "kind": "question",
       "multiple": false,
-      "opened_event_id": 70,
+      "opened_event_id": 66,
       "options": [{ "id": "b2", "label": "Yes" }, { "id": "b3", "label": "No" }],
       "question": "Should the parked issue move to backlog?",
       "referenced_by_count": 0,

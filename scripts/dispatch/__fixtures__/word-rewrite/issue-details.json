@@ -24,11 +24,11 @@
   "route": null,
   "repo": null,
   "resolved_repo": null,
-  "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-  "created_at": "2026-11-24T04:47:16.442122Z",
-  "updated_at": "2026-11-24T04:47:16.442122Z",
+  "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+  "created_at": "2026-11-24T07:29:49.535249Z",
+  "updated_at": "2026-11-24T07:29:49.535249Z",
   "closed_at": null,
-  "primary_artifact_id": "5da2fe35-af8c-4b3b-96da-f839bae6f958",
+  "primary_artifact_id": "d102a6dc-8ddd-42c7-a868-981f0b2c7263",
   "verification_artifact_id": "",
   "plan_artifact_id": "",
   "decisions_artifact_id": "",
@@ -42,7 +42,7 @@
   "progress": { "tasks": null, "children": null },
   "artifacts": [
     {
-      "id": "5da2fe35-af8c-4b3b-96da-f839bae6f958",
+      "id": "d102a6dc-8ddd-42c7-a868-981f0b2c7263",
       "issue_key": "SEED-7",
       "project": "SEED",
       "session_id": null,
@@ -51,15 +51,15 @@
       "name": "spec.md",
       "kind": "doc",
       "primary": true,
-      "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
-      "created_at": "2026-11-24T04:47:16.442122Z",
+      "created_by": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
+      "created_at": "2026-11-24T07:29:49.535249Z",
       "versions": [
         {
           "number": 1,
           "named": false,
           "summary": null,
-          "authors": [{ "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" }],
-          "created_at": "2026-11-24T04:47:16.442122Z",
+          "authors": [{ "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" }],
+          "created_at": "2026-11-24T07:29:49.535249Z",
           "size": 45
         }
       ],
@@ -69,7 +69,7 @@
   "open_asks": [],
   "children": [],
   "design_gates": [
-    { "step": "spec", "artifact_id": "5da2fe35-af8c-4b3b-96da-f839bae6f958", "holds": true }
+    { "step": "spec", "artifact_id": "d102a6dc-8ddd-42c7-a868-981f0b2c7263", "holds": true }
   ],
   "referenced_by_count": 1
 }

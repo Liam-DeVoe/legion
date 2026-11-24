@@ -32,9 +32,10 @@ import {
 import type { MapEntry, Reach } from "./name-map.ts";
 import type { Pace, PaceLog } from "./pace.ts";
 import { approvalPlace } from "./places.ts";
+import type { WrittenPlace } from "./report.ts";
 import type { Clock } from "./request-log.ts";
 import type { HeldWrite, RunState } from "./state.ts";
-import { VERDICT_CODES, type VerdictCode, verdictKey } from "./verdicts.ts";
+import { type AllowedName, VERDICT_CODES, type VerdictCode, verdictKey } from "./verdicts.ts";
 
 /**
  * Each item's write, for write mode and for the settle command (spec version 43), which is write
@@ -111,6 +112,10 @@ export interface WriteContext {
   readonly retried: ReadonlySet<string>;
   /** The model calls of this run. */
   readonly calls: JudgeCalls;
+  /** Where a run lists what its writes did: each judged occurrence of a written paragraph, by its
+   *  key as read, as `rewritten` or as the verdict saved for it under the new paragraph's key, so
+   *  the run's own listing of an item it wrote counts none of them as not judged. */
+  readonly written?: Map<string, WrittenPlace>;
 }
 
 /** The model calls of a run: first asks, second asks after a refused first answer, and first asks
@@ -383,6 +388,7 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
     group: Group;
     after: string;
     left: (VerdictCode | undefined)[];
+    leftAt: ReadonlyMap<number, AllowedName>;
   }[] = [];
   let unanswered = false;
   let refused = false;
@@ -422,7 +428,7 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
           const code = occurrence.key === null ? undefined : state.verdicts.get(occurrence.key);
           return code === VERDICT_CODES["judge-refused"] ? undefined : code;
         });
-      rewrites.push({ group, after: judgement.paragraph, left });
+      rewrites.push({ group, after: judgement.paragraph, left, leftAt });
     }
     if (judgement.kind === "no-answer") unanswered = true;
   }
@@ -479,6 +485,14 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
       });
       for (const key of rewrite.group.keys) state.verdicts.delete(key);
       settled(rewrite.group.keys);
+      for (const occurrence of rewrite.group.judged) {
+        if (occurrence.key === null) continue;
+        const allowed = rewrite.leftAt.get(occurrence.start);
+        context.written?.set(
+          occurrence.key,
+          allowed === undefined ? "rewritten" : VERDICT_CODES[allowed]
+        );
+      }
     }
   } else {
     keep(true);

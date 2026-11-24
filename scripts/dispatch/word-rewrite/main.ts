@@ -608,6 +608,7 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
         statusLines: new Map(),
         retried: new Set(state.held.filter((write) => write.retry).flatMap((write) => write.keys)),
         calls,
+        written: new Map(),
       };
     }
 
@@ -658,7 +659,7 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
             continue;
           }
           const result = await writeItem(writeContext, one);
-          tally.add(one, state.verdicts);
+          tally.add(one, state.verdicts, writeContext.written);
           handled.add(one.item.id);
           await save(false);
           if (result === "nothing-to-judge") continue;

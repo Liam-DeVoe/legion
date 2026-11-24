@@ -271,6 +271,27 @@ describe("the verdicts a rewrite leaves in its paragraph (spec versions 39 and 4
     expect(next.lines).toContain("verdict quote 1");
   });
 
+  test("the run that writes an item lists each occurrence it judged as rewritten or under the verdict it saved, never as not judged", async () => {
+    const { dispatch, quoteAt } = quoteAndStatus();
+    const model = new FakeModel((user) =>
+      JSON.stringify({
+        rewrite: rewriteByRules(promptParagraph(user)),
+        left: { [String(quoteAt)]: "quote" },
+      })
+    );
+    const run = deps(dispatch, { model });
+    expect(await runTool(writeOptions(), run)).toBe(0);
+    expect(results(run.lines)).toEqual(["written"]);
+    const listed = run.lines
+      .filter((line) => line.startsWith("occurrence "))
+      .map((line) => line.replace(/^.* byte=\d+ /, ""));
+    expect(listed).toEqual(["verdict=quote", "rewritten"]);
+    expect(run.lines).toContain("verdict quote 1");
+    expect(run.lines).toContain("rewritten 1");
+    expect(run.lines).toContain("not-judged 0");
+    expect(run.lines).toContainEqual(expect.stringMatching(/^state .* not-judged=0 /));
+  });
+
   test("an occurrence's earlier verdict is kept under the new paragraph's hash when the run rewrites another occurrence there", async () => {
     const { dispatch, document, paragraph } = quoteAndStatus();
     const kept = dispatch.document({ project: "SEED" }, "rewrite-state.md", "");

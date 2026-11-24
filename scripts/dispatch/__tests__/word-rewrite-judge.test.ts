@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildPrompt,
+  checkAnswer,
   confined,
   judge,
   occurrenceSpans,
@@ -86,6 +87,24 @@ describe("confined", () => {
     ).toBe(false);
   });
 
+  test("checks a kept occurrence by its place: a renamed kept name beside a judged use left as it was is refused", () => {
+    const one = "The parked-decision notice says the tree is parked.";
+    const [kept, judged] = occurrenceSpans(one);
+    if (kept === undefined || judged === undefined) throw new Error("two occurrences");
+    const asked = question(one, { judged: [judged], kept: [kept] });
+    const renamed = "The kept-decision notice says the tree is parked.";
+    expect(confined(one, renamed, [judged], [kept])).toBe(false);
+    expect(checkAnswer(asked, { kind: "rewrite", paragraph: renamed })).toEqual({
+      kind: "judge-refused",
+      reason: 'the rewrite changed "parked-decision", which had to stay',
+    });
+    const right = "The parked-decision notice says the tree is moved to backlog.";
+    expect(checkAnswer(asked, { kind: "rewrite", paragraph: right })).toEqual({
+      kind: "rewrite",
+      paragraph: right,
+    });
+  });
+
   test("sentences end at a stop before white space, or at a line end, and cover the text", () => {
     const text = "One. Two!\nThree? four";
     const spans = sentenceSpans(text);
@@ -166,5 +185,23 @@ describe("the answer", () => {
     expect(prompt.user).toContain("2026-11-24T10:30:00Z backlog");
     expect(prompt.user).toContain("- parked-decision -> kept-decision (a code name)");
     expect(prompt.user).toContain(`- at ${JUDGED[0]?.start}: "park"`);
+  });
+
+  test("the prompt has a status use written in Dispatch's status words, and never held, on hold or paused", () => {
+    const { system } = buildPrompt(question());
+    for (const words of [
+      '"moved to backlog"',
+      '"in backlog"',
+      '"in icebox"',
+      '"in backlog or icebox"',
+    ]) {
+      expect(system).toContain(words);
+    }
+    const flat = system.replace(/\s+/g, " ");
+    expect(flat).toContain(
+      'Never write "held", "on hold", "paused", "shelved", "set aside", "deferred", "suspended" or any other word for a status use'
+    );
+    // A status use speaks of work in the tracker: an issue, a tree, a plan, a branch of work.
+    expect(system).toContain("an issue, a tree, a plan, a branch of work or a release");
   });
 });

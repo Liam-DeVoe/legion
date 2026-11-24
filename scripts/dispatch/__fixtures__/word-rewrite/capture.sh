@@ -121,7 +121,11 @@ expect title-issue-closed.json 409 -X PATCH -H @<(auth) -H 'Content-Type: applic
 # state-document.json: no write-mode run comes before this capture (the proof run makes the
 # state), so the nearest real answer is Dispatch's text of a state the tool's own serializer made,
 # uploaded as write mode uploads its state (a project document with no summary), under a slug of
-# its own so that no run of the tool reads it.
+# its own so that no run of the tool reads it. Its test reads it as a state of an earlier shape,
+# which the tool must refuse rather than take for an empty state: the shape of the serializer
+# before the state named its sessions, whose held writes named their kind (`"k": "i"`). So the
+# serializer's JSON is put back into that shape before the upload; a capture of today's shape
+# would be read, and the test would hold nothing.
 SEED_FILE=$seed bun --eval "
   import { readFileSync } from 'node:fs';
   import { emptyState, serializeState } from '$root/scripts/dispatch/word-rewrite/state.ts';
@@ -135,12 +139,14 @@ SEED_FILE=$seed bun --eval "
     whole: true,
     finished: ['SEED'],
     verdicts: new Map([[key(seed.documents.quotes, 0), 'q'], [key(seed.documents.kernel, 0), 'j']]),
-    held: [{ project: 'SEED', issue: seed.issues.main, id: seed.documents.race, keys: [key(seed.documents.race, 0)], retry: true }],
-    waiting: [{ project: 'SEED', issue: seed.issues.main, id: seed.documents.notice, gate: 'c' + seed.contract }],
+    held: [{ project: 'ABOVE', issue: null, id: seed.documents.race, keys: [key(seed.documents.race, 0)], retry: true }],
+    waiting: [{ project: 'SEED', issue: seed.issues.notice, id: seed.documents.notice, gate: 'c' + seed.contract }],
     refused: [{ project: 'SEED', issue: seed.issues.main, id: seed.documents.kernel, key: key(seed.documents.kernel, 0) }],
-    sessions: [seed.session],
   };
-  process.stdout.write(serializeState(state));
+  const [fence, json, close] = serializeState(state).split('\n');
+  const { sessions, ...stored } = JSON.parse(json);
+  stored.held = stored.held.map((write) => ({ k: 'i', ...write }));
+  process.stdout.write([fence, JSON.stringify(stored), close, ''].join('\n'));
 " >"$scratch/state.md"
 upload=$(jq -cn --argjson actor "$actor" --rawfile content "$scratch/state.md" \
   '{actor: $actor, name: "capture-state.md", content: $content}')

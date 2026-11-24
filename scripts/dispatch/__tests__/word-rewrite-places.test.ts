@@ -276,11 +276,14 @@ describe("the occurrences the tool judges", () => {
   });
 
   test("an agent's typed block, neither ask nor check, with the word in an attribute of its opening line is left under block-attribute", async () => {
+    // A callout's `title` is free text; Dispatch refuses a `requirement` with any attribute
+    // (`pmdoc/schema/blocks.json`), so the input is the callout as Dispatch stores it.
     const [examined] = await fakeDocument((dispatch) => {
-      const issue = dispatch.issue("SEED", "A requirement");
-      dispatch.document({ issue: issue.key }, "spec.md", input("requirement-attribute"));
+      const issue = dispatch.issue("SEED", "A callout");
+      dispatch.document({ issue: issue.key }, "spec.md", input("callout-attribute"));
     });
-    expect(examined?.blocks.find((block) => block.type === "requirement")?.attributes).toEqual([
+    expect(examined?.blocks.find((block) => block.type === "callout")?.attributes).toEqual([
+      expect.objectContaining({ name: "kind", value: "note" }),
       expect.objectContaining({ name: "title" }),
     ]);
     expect(examined?.occurrences.map((occurrence) => occurrence.reason)).toEqual([

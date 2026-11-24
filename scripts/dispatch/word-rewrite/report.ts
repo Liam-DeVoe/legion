@@ -1,3 +1,4 @@
+import { approvalSkip } from "./approval-skips.ts";
 import { authorName, type Changes, versionLink } from "./changes.ts";
 import { ownerName } from "./dispatch-api.ts";
 import type { Examined, Item } from "./inventory.ts";
@@ -20,6 +21,10 @@ import { VERDICT_CODES, type VerdictCode, verdictName } from "./verdicts.ts";
  * occurrence counts as not judged (spec version 41).
  */
 
+/** What a write did to an occurrence it judged, as the run that wrote it lists it: rewrote it, or
+ *  left it with the verdict it saved under the new paragraph's key (`write.ts`). */
+export type WrittenPlace = VerdictCode | "rewritten";
+
 /** The counts and lines of one run, added to item by item. */
 export class Tally {
   readonly lines: string[] = [];
@@ -38,24 +43,45 @@ export class Tally {
   notJudged = 0;
   /** Occurrences whose two answers failed: for the tester's settle command. */
   judgeRefused = 0;
+  /** Occurrences this run's writes rewrote. */
+  rewritten = 0;
   items = 0;
+  /** The check-name lines whose document a person approved at its latest version. */
+  approvedLatestChecks = 0;
   /** The items this run examined. */
   readonly examined = new Set<string>();
 
   /** `changes`: the events after the last write-mode run's cursor, where the run lists them. */
   constructor(private readonly changes?: Changes) {}
 
-  /** Adds one examined item; `verdicts` are the state's. */
-  add(examined: Examined, verdicts: ReadonlyMap<string, VerdictCode>): void {
+  /** Adds one examined item; `verdicts` are the state's, and `written` what this run's write of
+   *  the item did to each occurrence it judged, by its key as read (an item a run wrote is listed
+   *  as it was read, and its verdicts stand under the new paragraph's keys). */
+  add(
+    examined: Examined,
+    verdicts: ReadonlyMap<string, VerdictCode>,
+    written?: ReadonlyMap<string, WrittenPlace>
+  ): void {
     this.examined.add(examined.item.id);
     const item = examined.item;
     this.items += 1;
     const issue = item.issue?.key ?? "-";
     const document = item.artifact?.slug ?? "-";
+    // A check block of a document a person approved at its latest version is marked: changing
+    // the block would cost the person a new approval. The approval is the one the item was read
+    // with, as the place `approved-by-person` reads it.
+    const approvedLatest =
+      item.artifact !== null &&
+      approvalSkip({
+        primary: item.artifact.primary === true,
+        approval: item.artifact.approval,
+        blocks: examined.blocks,
+      }) === "approved-by-person";
     for (const check of examined.checkNames) {
       this.checkLines.push(
-        `check-name issue=${issue} document=${document} block=${check.block} old=${check.old}`
+        `check-name issue=${issue} document=${document} block=${check.block} old=${check.old}${approvedLatest ? " approved=latest" : ""}`
       );
+      if (approvedLatest) this.approvedLatestChecks += 1;
     }
     if (examined.occurrences.length === 0) return;
     const change = this.changes?.of(item);
@@ -65,10 +91,17 @@ export class Tally {
     for (const occurrence of examined.occurrences) {
       counts.occurrences += 1;
       let place: string;
-      const code = occurrence.key === null ? undefined : verdicts.get(occurrence.key);
+      const done = occurrence.key === null ? undefined : written?.get(occurrence.key);
+      const code =
+        done === "rewritten"
+          ? undefined
+          : (done ?? (occurrence.key === null ? undefined : verdicts.get(occurrence.key)));
       if (occurrence.reason !== null) {
         place = `reason=${occurrence.reason}`;
         this.byReason.set(occurrence.reason, (this.byReason.get(occurrence.reason) ?? 0) + 1);
+      } else if (done === "rewritten") {
+        place = "rewritten";
+        this.rewritten += 1;
       } else if (code === VERDICT_CODES["judge-refused"]) {
         // What the settle command's answer names it by: its key, and its offset in its paragraph
         // for a rewrite's `left`.
@@ -94,6 +127,7 @@ export class Tally {
       this.lines.push(`occurrence ${where} ${place}${name}`);
       const unjudged =
         occurrence.reason === null &&
+        done !== "rewritten" &&
         (code === undefined || code === VERDICT_CODES["judge-refused"]);
       if (change !== undefined && unjudged) {
         const link = versionLink(item, change);
@@ -135,15 +169,20 @@ export class Tally {
     for (const [name, count] of [...this.byVerdict.entries()].sort()) {
       lines.push(`verdict ${name} ${count}`);
     }
+    lines.push(`rewritten ${this.rewritten}`);
     lines.push(`judge-refused ${this.judgeRefused}`);
     lines.push(`not-judged ${this.notJudged}`);
     lines.push(`items-read ${this.items}`);
     return lines;
   }
 
-  /** The report's section of check blocks that name an old name, counted. */
+  /** The report's section of check blocks that name an old name, counted, with how many of them
+   *  stand in a document a person approved at its latest version. */
   checkSection(): string[] {
-    return [...this.checkLines, `check-names ${this.checkLines.length}`];
+    return [
+      ...this.checkLines,
+      `check-names ${this.checkLines.length} approved-latest=${this.approvedLatestChecks}`,
+    ];
   }
 
   /** The report's section of occurrences changed since the last write-mode run, counted: no

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { liveDaemonStates } from "../word-rewrite/daemons.ts";
 import { liveDispatch } from "../word-rewrite/dispatch-api.ts";
 import { runTool } from "../word-rewrite/main.ts";
-import { builtInMap, type MapEntry } from "../word-rewrite/name-map.ts";
+import { builtInMap, type MapEntry, parseExtraMap } from "../word-rewrite/name-map.ts";
 import { loggingFetch, RequestRate, requestLog } from "../word-rewrite/request-log.ts";
 import {
   FakeClock,
@@ -190,7 +190,7 @@ describe("report mode", () => {
       "check-name issue=SEED-3 document=verification-md block=k1 old=TestBootReleasesParkedClaims";
     const bare = await reportRun();
     expect(bare.lines.filter((line) => line.startsWith("check-name "))).toEqual([verificationLine]);
-    expect(bare.lines).toContain("check-names 1");
+    expect(bare.lines).toContain("check-names 1 approved-latest=0");
     const extra = {
       old: testName,
       new: "TestTheRenamedTest",
@@ -202,13 +202,11 @@ describe("report mode", () => {
       `check-name issue=SEED-3 document=mixed-md block=check-word old=${testName}`,
       verificationLine,
     ]);
-    expect(lines).toContain("check-names 2");
+    expect(lines).toContain("check-names 2 approved-latest=0");
   });
 
-  test("a check block that names an old name of the map is listed under that name", async () => {
-    const dispatch = new FakeDispatch();
-    const issue = dispatch.issue("SEED", "Checks");
-    dispatch.document({ issue: issue.key }, "verification.md", input("check-names"));
+  /** A report run over a fake Dispatch, its printed lines kept. */
+  async function fakeReport(dispatch: FakeDispatch, extraEntries: readonly MapEntry[] = []) {
     const lines: string[] = [];
     expect(
       await runTool(options(), {
@@ -219,17 +217,63 @@ describe("report mode", () => {
         ancestry: NO_ANCESTRY,
         clock: new FakeClock(),
         contract: 220,
-        extraEntries: [],
+        extraEntries,
         out: (line) => lines.push(line),
         requests: () => 0,
       })
     ).toBe(0);
+    return lines.filter((line) => line.startsWith("check-name"));
+  }
+
+  test("a check block that names an old name of the map is listed under that name", async () => {
+    const dispatch = new FakeDispatch();
+    const issue = dispatch.issue("SEED", "Checks");
+    dispatch.document({ issue: issue.key }, "verification.md", input("check-names"));
     const olds = INPUTS["check-names"];
-    expect(lines.filter((line) => line.startsWith("check-name"))).toEqual([
+    expect(await fakeReport(dispatch)).toEqual([
       ...olds.map((old) => `check-name issue=SEED-1 document=verification-md block=k1 old=${old}`),
-      `check-names ${olds.length}`,
+      `check-names ${olds.length} approved-latest=0`,
     ]);
     const mapped = builtInMap(220).map((entry) => entry.old);
     expect(olds.every((old) => mapped.includes(old))).toBe(true);
+  });
+
+  test("a check block of a document a person approved at its latest version is marked approved=latest and counted apart", async () => {
+    const dispatch = new FakeDispatch();
+    const approved = dispatch.issue("SEED", "Approved checks");
+    const document = dispatch.document(
+      { issue: approved.key },
+      "verification.md",
+      input("check-names")
+    );
+    document.approval = { state: "approved", kind: "person", latest_version: 1, version: 1 };
+    const draft = dispatch.issue("SEED", "Draft checks");
+    dispatch.document({ issue: draft.key }, "verification.md", input("check-names"));
+    const [first, second] = INPUTS["check-names"];
+    expect(await fakeReport(dispatch)).toEqual([
+      `check-name issue=SEED-1 document=verification-md block=k1 old=${first} approved=latest`,
+      `check-name issue=SEED-1 document=verification-md block=k1 old=${second} approved=latest`,
+      `check-name issue=SEED-2 document=verification-md block=k1 old=${first}`,
+      `check-name issue=SEED-2 document=verification-md block=k1 old=${second}`,
+      "check-names 4 approved-latest=2",
+    ]);
+  });
+
+  test("an --extra-map row's old name is matched in a check block too", async () => {
+    const dispatch = new FakeDispatch();
+    const issue = dispatch.issue("SEED", "Checks of a child's names");
+    dispatch.document(
+      { issue: issue.key },
+      "verification.md",
+      ':::check{#k1 run="kubectl get cronjob/old-child-name"}\nThe job runs.\n:::\n'
+    );
+    const extra = parseExtraMap(
+      '{"old": "old-child-name", "new": "new-child-name", "codeName": true, "from": "merged"}\n'
+    );
+    expect(await fakeReport(dispatch)).toEqual(["check-names 0 approved-latest=0"]);
+    expect(await fakeReport(dispatch, extra)).toEqual([
+      "check-name issue=SEED-1 document=verification-md block=k1 old=old-child-name",
+      "check-names 1 approved-latest=0",
+    ]);
   });
 });

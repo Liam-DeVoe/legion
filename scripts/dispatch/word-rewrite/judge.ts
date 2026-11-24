@@ -41,11 +41,45 @@ export function sentenceAt(text: string, at: number): Span {
   );
 }
 
+/** A character of a name that holds the word, such as `parked-decision`, `park_child` or
+ *  `parked_decision.go`. */
+const NAME_CHARACTER = /[A-Za-z0-9_./-]/;
+/** A mark a name does not end with: a stop after a word, a dash or a slash before it. */
+const NAME_EDGE = /[./-]/;
+
+/** The whole name that holds the match from `start` to `end`: the run of name characters around
+ *  it, without the marks at its two ends. */
+function wholeNameAt(text: string, start: number, end: number): Span {
+  let from = start;
+  while (from > 0 && NAME_CHARACTER.test(text.charAt(from - 1))) from -= 1;
+  let to = end;
+  while (to < text.length && NAME_CHARACTER.test(text.charAt(to))) to += 1;
+  while (from < start && NAME_EDGE.test(text.charAt(from))) from += 1;
+  while (to > end && NAME_EDGE.test(text.charAt(to - 1))) to -= 1;
+  return { start: from, end: to };
+}
+
+/** The whole names of `text` that hold the word at `spans`, in their order, each name once. */
+function wholeNames(text: string, spans: readonly Span[]): string[] {
+  const names: string[] = [];
+  let last = -1;
+  for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+    const name = wholeNameAt(text, span.start, span.end);
+    if (name.start === last) continue;
+    last = name.start;
+    names.push(text.slice(name.start, name.end));
+  }
+  return names;
+}
+
 /**
  * Why `after` is not `before` with only the sentences that hold the judged occurrences rewritten,
  * or null when it is. The answer must hold no trace of the word but the occurrences the
  * paragraph keeps (`kept`, each a span of `before`, which must stay as they are): those a
- * program-told place keeps, and those the answer itself names as left.
+ * program-told place keeps, and those the answer itself names as left. Each kept occurrence is
+ * checked by its place: the whole names of `after` that hold the word must be the whole names of
+ * the kept occurrences, in their order, so a rewrite that renames a kept name and leaves a judged
+ * use of the word beside it is refused.
  *
  * The sentences of `before` that hold a judged occurrence are the rewritable parts; every other
  * part must stand in `after` unchanged and in its order: the text before the first rewritable
@@ -66,10 +100,14 @@ export function confinedProblem(
   const hot = spans.filter((span) =>
     judged.some((occurrence) => occurrence.start >= span.start && occurrence.start < span.end)
   );
-  for (const span of kept) {
-    const text = before.slice(span.start, span.end);
-    if (!after.includes(text))
-      return `the rewrite changed ${JSON.stringify(text)}, which had to stay`;
+  const keptNames = wholeNames(before, kept);
+  const afterNames = wholeNames(after, occurrenceSpans(after));
+  for (let index = 0; index < Math.max(keptNames.length, afterNames.length); index += 1) {
+    const name = keptNames[index];
+    if (name === afterNames[index]) continue;
+    return name === undefined
+      ? `the rewrite holds the word in ${JSON.stringify(afterNames[index])}, where no kept occurrence stands`
+      : `the rewrite changed ${JSON.stringify(name)}, which had to stay`;
   }
   const first = hot[0];
   const last = hot.at(-1);
@@ -197,12 +235,18 @@ const SYSTEM = `You edit text that AI agents wrote in Dispatch, an issue tracker
 (park, parks, parked, parking, and names that hold it, such as park_child or isParked) is being
 removed, because it hides what happened. Each use gets the words of its own meaning:
 
-- Where it meant that an issue went to the backlog or the icebox, write that status: "moved to
-  backlog", "in backlog or icebox". Where done or triage are meant too, "out of the workflow".
+- A status use: the word said that an issue, a tree, a plan, a branch of work or a release was set
+  aside in the issue tracker (moved to the backlog or the icebox, or kept out of the workflow).
+  This is its meaning wherever it speaks of such work, unless the paragraph shows one of the
+  meanings below. Write Dispatch's status words for it: "moved to backlog", "in backlog",
+  "in icebox", "in backlog or icebox", and where done or triage are meant too, "out of the
+  workflow". Never write "held", "on hold", "paused", "shelved", "set aside", "deferred",
+  "suspended" or any other word for a status use: only Dispatch's status words.
 - A relaunch that the Legion daemon's wake pacing holds back is "delayed", never "backlog".
 - A launch that waits for the issue pod's start gate "waits for the pod".
 - A person's decision kept for a tree that does not run is a "kept decision".
-- For any other meaning, write what happens there: blocked, waits, paused, held, pending.
+- For any other meaning, one that is no issue's status (a goroutine, a thread, a lock, a test
+  hook, a request), write what happens there: blocked, waits, paused, held, pending.
 - A renamed code name gets its new name exactly, from the list of names you are given. A name
   that is not on the list stays as it is.
 

@@ -1,17 +1,17 @@
 [
   {
-    "id": 94,
+    "id": 117,
     "issue_key": "SEED-10",
     "artifact_id": null,
     "project": "SEED",
     "seq": 3,
     "type": "artifact.created",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.880004Z",
+    "created_at": "2026-11-24T07:30:20.337117Z",
     "payload": {
       "artifact": {
-        "id": "b6657977-6698-4781-8779-da5d28f49ef7",
+        "id": "814e83ed-8fb5-4e6f-9131-b3756a899f0a",
         "kind": "doc",
         "name": "log-b.md",
         "slug": "log-b-md",
@@ -23,51 +23,51 @@
             "size": 27,
             "named": false,
             "number": 1,
-            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
             "summary": null,
-            "created_at": "2026-11-24T04:47:16.880004Z"
+            "created_at": "2026-11-24T07:30:20.337117Z"
           }
         ],
         "issue_key": "SEED-10",
-        "created_at": "2026-11-24T04:47:16.880004Z",
-        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "created_at": "2026-11-24T07:30:20.337117Z",
+        "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
         "session_id": null
       }
     }
   },
   {
-    "id": 95,
+    "id": 118,
     "issue_key": "SEED-10",
     "artifact_id": null,
     "project": "SEED",
     "seq": 4,
     "type": "artifact.version",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.928056Z",
+    "created_at": "2026-11-24T07:30:20.408474Z",
     "payload": {
       "name": "log-a.md",
       "version": {
         "size": 16,
         "named": false,
         "number": 2,
-        "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+        "authors": [{ "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" }],
         "summary": null,
-        "created_at": "2026-11-24T04:47:16.928056Z"
+        "created_at": "2026-11-24T07:30:20.408474Z"
       },
-      "artifact_id": "8543a4cf-4201-4820-bb24-398b89bfdd40"
+      "artifact_id": "33d052d1-2373-48c4-935f-c705825308fa"
     }
   },
   {
-    "id": 96,
+    "id": 119,
     "issue_key": "SEED-10",
     "artifact_id": null,
     "project": "SEED",
     "seq": 5,
     "type": "issue.updated",
-    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "actor": { "kind": "session", "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d" },
     "notify": false,
-    "created_at": "2026-11-24T04:47:16.967036Z",
+    "created_at": "2026-11-24T07:30:20.45163Z",
     "payload": {
       "key": "SEED-10",
       "rank": "d",
@@ -95,14 +95,14 @@
         "unknown": [],
         "inherited_from": null
       },
-      "created_at": "2026-11-24T04:47:16.746382Z",
-      "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
-      "updated_at": "2026-11-24T04:47:16.97864Z",
+      "created_at": "2026-11-24T07:29:49.755605Z",
+      "created_by": { "id": "9e9de965-2ab7-45cc-bda6-66a878f3b13d", "kind": "session" },
+      "updated_at": "2026-11-24T07:30:20.46669Z",
       "resolved_repo": null,
       "external_links": [],
       "plan_artifact_id": "",
       "advances_revision": 0,
-      "primary_artifact_id": "13f1ca0e-a14a-4f2e-b508-2a7e6a38b08f",
+      "primary_artifact_id": "2696fbd3-ee7b-49a8-a3b6-4c7b752362b2",
       "decisions_artifact_id": "",
       "verification_artifact_id": ""
     }

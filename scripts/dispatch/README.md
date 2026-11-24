@@ -830,15 +830,20 @@ goes into the held-back writes.
 
 One line for each occurrence:
 `occurrence kind=<kind> project=<K> issue=<KEY|-> document=<slug|-> byte=<n|name> <place>`, where
-the place is `reason=<reason>`, `verdict=<place>`, `judge-refused item=<id> key=<key> at=<offset>`
-or `not-judged`, with ` name=<old name>` where a map name covers the occurrence. A judge-refused
-occurrence is listed under a place a program can tell while one holds it; the run reads its item
-where it did not read it otherwise. Then the counts: `count <kind> <K> occurrences=<n>
-not-judged=<n>`, `reason <reason> <n>` for every reason, `verdict <place> <n>`,
-`judge-refused <n>`, `not-judged <n>` (judge-refused occurrences among them) and
-`items-read <n>`. Then each check block of an open issue that names an old name of the map,
-`check-name issue=<KEY> document=<slug> block=<id> old=<name>`, and `check-names <n>`. Report
-mode then prints the changed-since section with `changed-since <n>`, and the pace lines.
+the place is `reason=<reason>`, `verdict=<place>`, `judge-refused item=<id> key=<key> at=<offset>`,
+`rewritten` or `not-judged`, with ` name=<old name>` where a map name covers the occurrence. A
+judge-refused occurrence is listed under a place a program can tell while one holds it; the run
+reads its item where it did not read it otherwise. An item that write mode writes is listed as
+the run read it: each occurrence the write judged is `rewritten`, or under the verdict saved for
+it under the new paragraph's key. Then the counts: `count <kind> <K>
+occurrences=<n> not-judged=<n>`, `reason <reason> <n>` for every reason, `verdict <place> <n>`,
+`rewritten <n>`, `judge-refused <n>`, `not-judged <n>` (judge-refused occurrences among them) and
+`items-read <n>`. Then each check block of an open issue that names an old name of the map, the
+built-in rows and the `--extra-map` rows alike,
+`check-name issue=<KEY> document=<slug> block=<id> old=<name>`, with ` approved=latest` where a
+person approved the block's document at its latest version (a change to the block would cost a
+new approval), and `check-names <n> approved-latest=<m>`, where `<m>` counts the marked lines.
+Report mode then prints the changed-since section with `changed-since <n>`, and the pace lines.
 
 Last come `state verdicts=<n> held=<n> waiting=<n> not-judged=<n> bytes=<n> projected-bytes=<n>
 bound=921600`, then `model-calls first=<n> second=<n> again=<n> judged-again=<n>` (first asks,
@@ -850,10 +855,21 @@ that cannot be written prints why and exits 1.
 
 `word-rewrite/local-seed.ts --url <base> [--out <file>]` seeds a local Dispatch
 (`bun run dispatch:local`) with the items that check k6 names, in the projects `SEED`, `BELOW`,
-`ABOVE`, `NOKEY`, `NONE`, `NOADDR` and `GIVEN`. It starts stub daemons below, at and above the
-recorded contract and one whose state has no contract, registers them, prints one JSON object of
-every key, id and address, and serves the stubs until it is stopped. Its texts hold the word:
-they are the tool's test input.
+`ABOVE`, `NOKEY`, `NONE`, `NOADDR`, `GIVEN` and `SILENT`. It starts stub daemons below, at and
+above the recorded contract and one whose state has no contract, registers them, and finds an
+address that no daemon answers on, for `SILENT`. It prints one JSON object of every key, id and
+address, with the flags of a run (`run_flags`), and serves the stubs until it is stopped. A stub
+takes `PUT /contract` with `{"daemon": <n>}` and reports that contract from then on, as k6 raises
+the daemon below the contract. Each document the tool writes to stands on an issue of its own
+where k6 lets it, since the pace writes one item of an issue in 15 minutes. The tree's root stays
+open: k6 closes it after the write mode's first run. Four paragraphs end with the sentence "The
+checks ran on Tuesday.", which k6's proxy of the model gateway answers with a rewrite that the
+check of each answer refuses. Before its last step the seed waits for the edit notice of alice's
+last edit (an `artifact.human_edited` event, 30 seconds after the edit), so that
+`event-log.json` holds that step's events alone. `--field-only` seeds what k6 seeds again on each
+start of a stamped Dispatch build: a document that names a field of the priorities answer under
+its old name, and a state document of `SEED` whose whole read is done and that keeps the document
+waiting for the build to hold the merge. Its texts hold the word: they are the tool's test input.
 
 `__fixtures__/word-rewrite/capture.sh` captures from that Dispatch each fixture the tests read,
 with the request that answers it: `BASE=<base> bash capture.sh <the seed's --out file>`, with
