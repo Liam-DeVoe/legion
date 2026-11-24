@@ -160,7 +160,7 @@ type searchSplitManifest struct {
 
 // searchSplitPlanFile is one plan file of the manifest: the word, form, statement and side it is a run
 // of, the shape of that statement (keyword, meaning-every, meaning-scoped or meaning-joined,
-// search's own names, meaningShape), whether it is the rank-free run, and which run it is.
+// search's own names, meaningStatementFor), whether it is the rank-free run, and which run it is.
 type searchSplitPlanFile struct {
 	File      string `json:"file"`
 	Word      string `json:"word"`
@@ -306,7 +306,7 @@ func TestSearchReadSplitScript(t *testing.T) {
 	}
 	settings := []string{"set local plan_cache_mode = force_custom_plan"}
 	settings = append(settings, slices.DeleteFunc(slices.Clone(searchMeaningScan),
-		func(setting string) bool { return setting == searchMeaningStatementBound })...)
+		func(setting string) bool { return setting == searchStatementBoundSetting })...)
 	if timeout := os.Getenv(searchSplitTimeoutEnv); timeout != "" {
 		if !searchSplitTimeout.MatchString(timeout) {
 			t.Fatalf("%s=%q; want a duration such as 120s", searchSplitTimeoutEnv, timeout)
@@ -321,7 +321,7 @@ func TestSearchReadSplitScript(t *testing.T) {
 	prepared := map[string]string{}
 	for _, word := range subjects.words() {
 		for _, form := range subjects.forms() {
-			shapes[searchSplitMeaning] = meaningShape(meaningStatementFor(form.project, subjects.Filled, false))
+			_, shapes[searchSplitMeaning] = meaningStatementFor(form.project, subjects.Filled, false)
 			keyword := searchQueryArguments(searchParameters{text: word.lexeme, project: form.project, limit: searchDefaultLimit})
 			arguments := map[string][]any{
 				searchSplitKeyword: keyword,
@@ -380,16 +380,7 @@ func TestSearchReadSplitScript(t *testing.T) {
 
 `, runs, filepath.Join(out, "split.sql"), subjects.QueryVector)
 	for _, name := range slices.Sorted(maps.Keys(prepared)) {
-		description, err := connection.Conn().PgConn().Prepare(ctx, "", prepared[name], nil)
-		if err != nil {
-			t.Fatalf("prepare %s on a migrated database: %v", name, err)
-		}
-		types := make([]string, len(description.ParamOIDs))
-		for index, oid := range description.ParamOIDs {
-			if err := connection.QueryRow(ctx, "select format_type($1, null)", oid).Scan(&types[index]); err != nil {
-				t.Fatalf("name the type of %s's parameter $%d: %v", name, index+1, err)
-			}
-		}
+		types := statementTypes(t, connection, prepared[name])
 		fmt.Fprintf(&script, "prepare %s (%s) as%s;\n\n", name, strings.Join(types, ", "), prepared[name])
 	}
 	script.WriteString(explains.String())
@@ -567,11 +558,8 @@ type searchSplitPlan struct {
 func searchSplitPlanOf(t testing.TB, raw []byte) (searchSplitPlan, error) {
 	t.Helper()
 	nodes := explaintest.Nodes(t, explaintest.OnePlan(t, raw))
-	plan := searchSplitPlan{nodes: nodes, children: make([][]int, len(nodes)), union: -1, q: -1}
+	plan := searchSplitPlan{nodes: nodes, children: explaintest.Children(nodes), union: -1, q: -1}
 	for index, node := range nodes {
-		if node.Parent >= 0 {
-			plan.children[node.Parent] = append(plan.children[node.Parent], index)
-		}
 		if node.SubplanName == "CTE q" {
 			if plan.q >= 0 {
 				return plan, errors.New("the plan begins CTE q twice")
@@ -654,15 +642,6 @@ func (p searchSplitPlan) under(node, ancestor int) bool {
 		}
 	}
 	return false
-}
-
-// subtree is root and every node below it, which the walk lists right after it.
-func (p searchSplitPlan) subtree(root int) []int {
-	nodes := []int{root}
-	for index := root + 1; index < len(p.nodes) && p.under(index, root); index++ {
-		nodes = append(nodes, index)
-	}
-	return nodes
 }
 
 // requireArms fails a plan whose arms are not the statement's: the five kinds' keyword arms with
@@ -748,7 +727,7 @@ func (p searchSplitPlan) parts(meaning bool) (searchSplitPlanParts, error) {
 			if p.nodes[child].SubplanName == "" {
 				continue
 			}
-			for _, node := range p.subtree(child) {
+			for _, node := range explaintest.Subtree(p.nodes, child) {
 				if p.nodes[node].SubplanName != "" {
 					held = held.plus(searchSplitBlocksOf(p.nodes[node]))
 				}
@@ -774,7 +753,7 @@ func (p searchSplitPlan) keywordTypes() []string {
 			continue
 		}
 		var arms []string
-		for _, node := range p.subtree(arm.node) {
+		for _, node := range explaintest.Subtree(p.nodes, arm.node) {
 			arms = append(arms, p.nodes[node].Type)
 		}
 		types = append(types, strings.Join(arms, ", "))
@@ -816,7 +795,7 @@ func (p searchSplitPlan) armReads(list, kind, relation string) bool {
 		if arm.list != list || arm.kind != kind {
 			continue
 		}
-		for _, node := range p.subtree(arm.node) {
+		for _, node := range explaintest.Subtree(p.nodes, arm.node) {
 			if p.nodes[node].Relation == relation {
 				return true
 			}
@@ -1214,13 +1193,13 @@ func TestTheRankingIsTheKeywordArmsLessTheRankFreeArms(t *testing.T) {
 
 	changed := rankFree
 	changed.nodes = slices.Clone(rankFree.nodes)
-	scan := slices.IndexFunc(changed.subtree(changed.arms[0].node), func(node int) bool {
+	scan := slices.IndexFunc(explaintest.Subtree(changed.nodes, changed.arms[0].node), func(node int) bool {
 		return changed.nodes[node].Type == "Bitmap Heap Scan"
 	})
 	if scan < 0 {
 		t.Fatal("the rank-free run's first keyword arm reads its matches through no Bitmap Heap Scan")
 	}
-	changed.nodes[changed.subtree(changed.arms[0].node)[scan]].Type = "Seq Scan"
+	changed.nodes[explaintest.Subtree(changed.nodes, changed.arms[0].node)[scan]].Type = "Seq Scan"
 	if _, err := searchSplitOf(ranked, changed, false); err == nil {
 		t.Error("a rank-free run whose first keyword arm reads its matches by a Seq Scan split without failing")
 	}

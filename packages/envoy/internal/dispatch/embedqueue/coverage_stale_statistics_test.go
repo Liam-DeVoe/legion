@@ -98,7 +98,7 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	}
 	group := recountWindowGroup(t)
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+recountStatement(group.counted), group.kinds).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+group.statement, group.kinds).Scan(&raw); err != nil {
 		t.Fatalf("explain the recount's window statement: %v", err)
 	}
 	explained := explaintest.OnePlan(t, raw)

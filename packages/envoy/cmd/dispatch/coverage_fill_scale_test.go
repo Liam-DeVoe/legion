@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -61,14 +62,14 @@ type countsStart struct {
 // first.
 func (s countsStart) endedAfterListening() time.Duration { return s.ended.Sub(s.listened) }
 
-// TestTheServerFillsTheCoverageCountsAtScale is cb-fill-length's start at scale S: the head's
-// binary started (startDispatchProcessWith) on the database DISPATCH_COVERAGE_FILL_URL names,
-// scripts/coverage-scale.sh's copy of the corpus at S with done_at unset, as the first deploy of
-// the counts finds production, and started again on it once its fill has ended, with done_at set.
-// It reads every time from the server's own lines: since_start_ms of `dispatch: listening`; the
-// first run's start line, which names the timeout it runs under; and its end line's elapsed_ms
-// and time, against the listening line's time. The first start is stopped once its fill line is
-// logged.
+// TestTheServerFillsTheCoverageCountsAtScale is the fill-length check's start at scale S: the
+// head's binary started (startDispatchProcessWith) on the database DISPATCH_COVERAGE_FILL_URL
+// names, scripts/coverage-scale.sh's copy of the corpus at S with done_at unset, as the first
+// deploy of the counts finds production, and started again on it once its fill has ended, with
+// done_at set. It reads every time from the server's own lines: since_start_ms of `dispatch:
+// listening`; the first run's start line, which names the timeout it runs under; and its end
+// line's elapsed_ms and time, against the listening line's time. The first start is stopped once
+// its fill line is logged.
 //
 // It prints one line that starts `fill-length:` for each result, and last a line that starts
 // `fill-length: pass` or `fill-length: FAIL` naming every number the verdict rests on. A missing
@@ -177,7 +178,7 @@ func readCountsStart(t *testing.T, p *dispatchProcess, start, run, started, ende
 	if strings.Contains(runStart, failed) {
 		failFillLength(t, p, "%s: the %s failed before it logged its start: %s", start, run, runStart)
 	}
-	timeout, ok := lineValue(runStart, "timeout")
+	timeout, ok := horizontest.Field(runStart, "timeout")
 	if !ok {
 		failFillLength(t, p, "%s: the %s's start line names no timeout: %s", start, run, runStart)
 	}
@@ -241,21 +242,10 @@ func awaitLogLine(t *testing.T, p *dispatchProcess, within time.Duration, start,
 	}
 }
 
-// lineValue is the value of key in line, a line of the server's text log, up to the next space:
-// what the handler writes for a number, a duration, a time or a word.
-func lineValue(line, key string) (string, bool) {
-	_, rest, found := strings.Cut(" "+line, " "+key+"=")
-	if !found {
-		return "", false
-	}
-	value, _, _ := strings.Cut(rest, " ")
-	return value, value != ""
-}
-
 // lineTime is line's own time, which the text handler writes first, to the millisecond.
 func lineTime(t *testing.T, p *dispatchProcess, start, line string) time.Time {
 	t.Helper()
-	value, ok := lineValue(line, "time")
+	value, ok := horizontest.Field(line, "time")
 	if !ok {
 		failFillLength(t, p, "%s: a line names no time: %s", start, line)
 	}
@@ -269,7 +259,7 @@ func lineTime(t *testing.T, p *dispatchProcess, start, line string) time.Time {
 // lineMilliseconds is the whole number of milliseconds key names in line.
 func lineMilliseconds(t *testing.T, p *dispatchProcess, start, line, key string) int64 {
 	t.Helper()
-	value, ok := lineValue(line, key)
+	value, ok := horizontest.Field(line, key)
 	if !ok {
 		failFillLength(t, p, "%s: a line names no %s: %s", start, key, line)
 	}

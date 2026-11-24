@@ -249,7 +249,7 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	ctx := context.Background()
 	fillCoverageCounts(t, database)
 	const bound = time.Second
-	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound.String()))
+	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound))
 	holdLock(t, database, "lock table search_coverage_counts in access exclusive mode")
 	blocked := func() int {
 		t.Helper()

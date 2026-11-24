@@ -7,7 +7,8 @@
 // a bitmap heap scan's index recheck removed each time it ran among them, the shared buffers it
 // and the nodes under it hit and read, the position of the node it is directly under, the name of
 // the subplan it begins (a CTE's plan is `CTE <name>`) and the output list a VERBOSE plan prints
-// of it (Nodes), and each bitmap heap scan with the bitmap it reads its rows through
+// of it (Nodes), with each node's children and subtree read from those positions (Children,
+// Subtree), and each bitmap heap scan with the bitmap it reads its rows through
 // (BitmapHeapScans). It also answers, from the catalog, the first key column of a named index and
 // whether a scan's condition names it, which is what tells a read served by an index from one
 // that reads the whole index and filters it, and it holds a whole plan to that
@@ -49,8 +50,8 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // a join's Join Filter and a bitmap heap scan's index recheck removed each time it ran, all 0 in a
 // plan explained without ANALYZE), the shared buffers it and the nodes under it hit and read (0 in
 // a plan explained without BUFFERS), the CTE it scans, the alias the statement gives the relation
-// it reads, the output list a plan explained with VERBOSE prints of it (nil without VERBOSE), and
-// its children.
+// it reads, the order an index scan reads its index in, the output list a plan explained with
+// VERBOSE prints of it (nil without VERBOSE), and its children.
 type planNode struct {
 	NodeType                  string            `json:"Node Type"`
 	RelationName              string            `json:"Relation Name"`
@@ -70,6 +71,7 @@ type planNode struct {
 	SharedReadBlocks          float64           `json:"Shared Read Blocks"`
 	CTEName                   string            `json:"CTE Name"`
 	Alias                     string            `json:"Alias"`
+	OrderBy                   string            `json:"Order By"`
 	Output                    []string          `json:"Output"`
 	Plans                     []json.RawMessage `json:"Plans"`
 
@@ -85,7 +87,7 @@ type planNode struct {
 func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
-		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
+		CTE: n.CTEName, Alias: n.Alias, OrderBy: n.OrderBy, Subplan: n.subplan,
 		Parent: n.parent, SubplanName: n.SubplanName, Output: n.Output,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
@@ -260,7 +262,8 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // without ANALYZE, and what a VERBOSE plan says it outputs.
 //
 // Parent is the position in Nodes' answer of the node this one is directly under, -1 for the
-// root, so a caller can climb from any node to the root or gather every node under one.
+// root, so a caller can climb from any node to the root or gather every node under one
+// (Children, Subtree).
 // SubplanName is the node's own "Subplan Name", the name of the subplan it begins: `CTE <name>`
 // for the plan of a CTE, `InitPlan <n>` or `SubPlan <n>` for an init plan or a subplan, and
 // empty for a node that begins none. It is not Subplan, which every node under a SubPlan
@@ -284,7 +287,9 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // "Rows Removed by Index Recheck"), the rows removed over every loop divided by Loops and rounded
 // to a whole number, and 0 where the node prints none, as a node carrying no such filter or
 // recheck does. Alias is the name the statement gives the relation it reads, which a condition of
-// another node spells that relation's columns with.
+// another node spells that relation's columns with. OrderBy is the "Order By" an index scan prints
+// for an ordered read of its index, as an HNSW index scan carries its distance there and no index
+// condition, and empty where the node prints none.
 //
 // SharedHitBlocks and SharedReadBlocks are the shared buffers the node and every node under it
 // hit in the cache and read into it, which a plan explained with the BUFFERS option carries, and
@@ -294,16 +299,16 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // plan's as well, and the same blocks show under the CTE's plan and under the scan, though the
 // statement read them once (testdata/verbose_buffers.json).
 type Node struct {
-	Type, Relation, Index, CTE, Alias, Subplan   string
-	Parent                                       int
-	SubplanName                                  string
-	Output                                       []string
-	Loops, Rows                                  float64
-	Filter, IndexCond, RecheckCond               string
-	HeapFetches                                  float64
-	RowsRemovedByFilter, RowsRemovedByJoinFilter float64
-	RowsRemovedByIndexRecheck                    float64
-	SharedHitBlocks, SharedReadBlocks            float64
+	Type, Relation, Index, CTE, Alias, OrderBy, Subplan string
+	Parent                                              int
+	SubplanName                                         string
+	Output                                              []string
+	Loops, Rows                                         float64
+	Filter, IndexCond, RecheckCond                      string
+	HeapFetches                                         float64
+	RowsRemovedByFilter, RowsRemovedByJoinFilter        float64
+	RowsRemovedByIndexRecheck                           float64
+	SharedHitBlocks, SharedReadBlocks                   float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,
@@ -329,6 +334,30 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 		nodes = append(nodes, node.asNode())
 	}
 	return nodes
+}
+
+// Children is each node's children in nodes, Nodes' answer, by position: children[at] lists the
+// nodes directly under the node at position at (their Parent), in the order the plan lists them.
+func Children(nodes []Node) [][]int {
+	children := make([][]int, len(nodes))
+	for at, node := range nodes {
+		if node.Parent >= 0 {
+			children[node.Parent] = append(children[node.Parent], at)
+		}
+	}
+	return children
+}
+
+// Subtree is root and every node below it in nodes, Nodes' answer, in walk order. The walk lists
+// each node right before the nodes below it, so they are the run of nodes after root whose parent
+// is root or comes after it; the first node after that run is a child of one of root's ancestors,
+// which all come before root.
+func Subtree(nodes []Node, root int) []int {
+	subtree := []int{root}
+	for at := root + 1; at < len(nodes) && nodes[at].Parent >= root; at++ {
+		subtree = append(subtree, at)
+	}
+	return subtree
 }
 
 // BitmapHeapScan is one "Bitmap Heap Scan" of a plan with the bitmap it reads its rows through:

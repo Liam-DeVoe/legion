@@ -22,7 +22,7 @@
 # DISPATCH_COVERAGE_SCALES (the test's default is "1 2") reaches the test as it is.
 #
 # COVERAGE_SCALE_SERVE=1, which reaches the test as it is, adds a start of the head's server at
-# the largest scale, S (cb-fill-length): the test copies the database of S once its corpus is
+# the largest scale, S (the fill-length check): the test copies the database of S once its corpus is
 # loaded, before any measurement, with done_at unset, and prints the copy's name on a line that
 # starts `coverage-scale-database:`. The script then runs TestTheServerFillsTheCoverageCountsAtScale
 # (cmd/dispatch) on the copy, which starts the server there, reads its fill from the server's own

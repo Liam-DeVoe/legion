@@ -63,8 +63,9 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
 // processStarted is when this process started, as near as its Go code can say: the moment the
 // package's variables were set, before main ran. The listening line gives the milliseconds since
-// then (since_start_ms), which the fill-length check reads (cb-fill-length): how long a start took
-// to serve, the migrations included.
+// then (since_start_ms), which the fill-length check reads
+// (TestTheServerFillsTheCoverageCountsAtScale): how long a start took to serve, the migrations
+// included.
 var processStarted = time.Now()
 
 // serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown), deregistering

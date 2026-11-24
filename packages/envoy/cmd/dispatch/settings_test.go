@@ -2112,7 +2112,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			for _, invalid := range []string{"two", "-1", "0", "1.5"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_FAILURES": invalid},
-					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_FAILURES=%q (expected a whole number of 1 or more)", invalid))
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_FAILURES=%q (expected a positive integer)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_FAILURES": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},

@@ -22,8 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// endMeaningStatementsAt points the server's bound on a search statement at `at` for one test:
-// searchStatementBound, and the setting built from it (searchMeaningStatementBound) in both
+// endSearchStatementsAt points the server's bound on a search statement at `at` for one test:
+// searchStatementBound, and the setting built from it (searchStatementBoundSetting) in both
 // searchMeaningScan and searchKeywordScan. A keyword or meaning statement is then ended by the
 // server rather than answered, without a test waiting production's fifteen seconds out, and the
 // 503 the search route answers names the bound in force. The bound it replaces must be in each
@@ -56,10 +56,10 @@ import (
 // statements it precedes instead, beginSearchScan would fail with that same cancellation, and
 // each caller below reports it the same way, so what these tests assert does not depend on which
 // of the transaction's statements the bound ends.
-func endMeaningStatementsAt(t *testing.T, at time.Duration) {
+func endSearchStatementsAt(t *testing.T, at time.Duration) {
 	t.Helper()
 	bound, meaning, keyword := searchStatementBound, searchMeaningScan, searchKeywordScan
-	shortened := "set local statement_timeout = '" + at.String() + "'"
+	shortened := statementTimeoutSetting(at)
 	shortenedMeaning := shortenedScan(t, "searchMeaningScan", meaning, shortened)
 	shortenedKeyword := shortenedScan(t, "searchKeywordScan", keyword, shortened)
 	searchStatementBound, searchMeaningScan, searchKeywordScan = at, shortenedMeaning, shortenedKeyword
@@ -67,13 +67,13 @@ func endMeaningStatementsAt(t *testing.T, at time.Duration) {
 }
 
 // shortenedScan is scan, the list named name, with the server's bound on a search statement
-// (searchMeaningStatementBound) replaced by shortened.
+// (searchStatementBoundSetting) replaced by shortened.
 func shortenedScan(t *testing.T, name string, scan []string, shortened string) []string {
 	t.Helper()
-	at := slices.Index(scan, searchMeaningStatementBound)
+	at := slices.Index(scan, searchStatementBoundSetting)
 	if at < 0 {
 		t.Fatalf("%s = %q, want it to hold the server's own bound on a search statement (%q)",
-			name, scan, searchMeaningStatementBound)
+			name, scan, searchStatementBoundSetting)
 	}
 	replaced := slices.Clone(scan)
 	replaced[at] = shortened
@@ -88,7 +88,7 @@ func shortenedScan(t *testing.T, name string, scan []string, shortened string) [
 // statement runs, so until the release such a statement can be ended by the server's bound on
 // it and never answered. That is what lets these tests assert what a caller makes of a
 // statement the server ended without betting that the bound is shorter than the statement
-// (endMeaningStatementsAt says why that bet loses).
+// (endSearchStatementsAt says why that bet loses).
 //
 // Nothing else on these tests' paths reads embeddings: search's own key and numnode reads, the
 // related-item check's keyword stage and the fill's progress read (embeddingProjectKeysFilled)
@@ -97,7 +97,7 @@ func shortenedScan(t *testing.T, name string, scan []string, shortened string) [
 // neither those writes nor the server's own shutdown queue behind it.
 func holdMeaningStatements(t *testing.T, database *store.Store) (release func()) {
 	t.Helper()
-	return holdTable(t, database, "embeddings")
+	return holdLock(t, database, "lock table embeddings in access exclusive mode")
 }
 
 // holdKeywordStatements is holdMeaningStatements for the keyword statement: it locks messages,
@@ -106,28 +106,7 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 // attachAskStates runs only once the statement has answered.
 func holdKeywordStatements(t *testing.T, database *store.Store) (release func()) {
 	t.Helper()
-	return holdTable(t, database, "messages")
-}
-
-// holdTable locks table in ACCESS EXCLUSIVE mode on a transaction of the test's own and answers
-// the function that rolls that transaction back; the test's cleanup rolls it back too, should
-// the test end first.
-func holdTable(t *testing.T, database *store.Store, table string) (release func()) {
-	t.Helper()
-	ctx := context.Background()
-	hold, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds %s: %v", table, err)
-	}
-	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, "lock table "+table+" in access exclusive mode"); err != nil {
-		t.Fatalf("lock %s: %v", table, err)
-	}
-	return func() {
-		if err := hold.Rollback(ctx); err != nil {
-			t.Fatalf("release the lock on %s: %v", table, err)
-		}
-	}
+	return holdLock(t, database, "lock table messages in access exclusive mode")
 }
 
 // A meaning query's transaction carries the server's own bound, read from the transaction itself
@@ -244,7 +223,7 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	healthy := searchMeaningScan
-	searchMeaningScan = []string{searchMeaningStatementBound, `set local statement_timeout = 'not a duration'`}
+	searchMeaningScan = []string{searchStatementBoundSetting, `set local statement_timeout = 'not a duration'`}
 	t.Cleanup(func() { searchMeaningScan = healthy })
 
 	before := database.Pool.Stat().AcquiredConns()
@@ -295,7 +274,7 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	}
 
 	const bound = time.Millisecond
-	endMeaningStatementsAt(t, bound)
+	endSearchStatementsAt(t, bound)
 	release := holdMeaningStatements(t, database)
 	ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), "/api/v1/search", "q=wibbleflorp"))
 	release()
@@ -330,7 +309,7 @@ func TestSearchReportsAKeywordStatementTheServerEnded(t *testing.T) {
 			}
 
 			const bound = time.Millisecond
-			endMeaningStatementsAt(t, bound)
+			endSearchStatementsAt(t, bound)
 			release := holdKeywordStatements(t, database)
 			ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), path.path, path.query))
 			release()
@@ -367,7 +346,7 @@ func TestASearchWhoseClientLeftIsNotATimeout(t *testing.T) {
 		t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by meaning", healthy, issue.Key)
 	}
 
-	endMeaningStatementsAt(t, time.Millisecond)
+	endSearchStatementsAt(t, time.Millisecond)
 	release := holdMeaningStatements(t, database)
 	ctx, leave := context.WithCancel(context.Background())
 	t.Cleanup(leave)
@@ -401,7 +380,7 @@ func (l *leaveAsTheStatementEnds) TraceQueryStart(ctx context.Context, _ *pgx.Co
 }
 
 func (l *leaveAsTheStatementEnds) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
-	if leave, ok := ctx.Value(leaveKey{}).(context.CancelFunc); ok && meaningStatementEnded(data.Err) {
+	if leave, ok := ctx.Value(leaveKey{}).(context.CancelFunc); ok && searchStatementEnded(data.Err) {
 		l.left.Store(true)
 		leave()
 	}
@@ -479,7 +458,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 
 	const meaningBound = time.Hour
 	srv.meaningBound, srv.suggestionTimeout = meaningBound, meaningBound
-	endMeaningStatementsAt(t, time.Millisecond)
+	endSearchStatementsAt(t, time.Millisecond)
 	release := holdMeaningStatements(t, database)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})

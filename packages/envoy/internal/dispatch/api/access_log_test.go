@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -179,12 +180,8 @@ func seedTestProject(t *testing.T, database *store.Store) {
 	}
 }
 
-// searchKeyField reads the search_key a request line names, and searchKeyShape is the shape the
-// key must have: 16 hex characters.
-var (
-	searchKeyField = regexp.MustCompile(` search_key=([^ ]*)`)
-	searchKeyShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
-)
+// searchKeyShape is the shape the search_key a request line names must have: 16 hex characters.
+var searchKeyShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // sendSearch sends a search on path with query as alice, with the display-trees header when
 // trees, and answers the one request line it wrote and the search_key that line names, which
@@ -206,14 +203,14 @@ func sendSearch(t *testing.T, handler http.Handler, logged *logBuffer, path stri
 	if len(lines) != 1 {
 		t.Fatalf("GET %s?%s wrote %d request lines, want one:\n%s", path, query.Encode(), len(lines), strings.Join(lines, "\n"))
 	}
-	found := searchKeyField.FindStringSubmatch(lines[0])
-	if found == nil {
+	key, found := horizontest.Field(lines[0], "search_key")
+	if !found {
 		t.Fatalf("the request line of GET %s?%s names no search_key: %s", path, query.Encode(), lines[0])
 	}
-	if !searchKeyShape.MatchString(found[1]) {
-		t.Fatalf("the request line of GET %s?%s names search_key=%q, want 16 hex characters: %s", path, query.Encode(), found[1], lines[0])
+	if !searchKeyShape.MatchString(key) {
+		t.Fatalf("the request line of GET %s?%s names search_key=%q, want 16 hex characters: %s", path, query.Encode(), key, lines[0])
 	}
-	return lines[0], found[1]
+	return lines[0], key
 }
 
 // unkeyedHashes are the hashes of the search query names that a reader of the log could make
@@ -283,7 +280,7 @@ func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			line, _ := sendSearch(t, handler, logged, shape.path, shape.query, false)
-			if !strings.HasSuffix(line, " search_shape="+shape.want) && !strings.Contains(line, " search_shape="+shape.want+" ") {
+			if got, _ := horizontest.Field(line, "search_shape"); got != shape.want {
 				t.Errorf("the request line names no search_shape=%s: %s", shape.want, line)
 			}
 			q := shape.query.Get("q")

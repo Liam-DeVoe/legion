@@ -316,7 +316,8 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
+	statement, _ := meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
+	return statement
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a
@@ -551,32 +552,42 @@ func searchStatementPlans(t *testing.T, connection *pgxpool.Conn, name, statemen
 }
 
 // statementLiterals is what explaintest.GenericPlan prepares statement under and executes it
-// with: the type Postgres gives each of its parameters, read from the server's own description of
-// the statement as pgx reads it before it binds one, and each of arguments written as a literal of
-// that type, which Postgres writes itself (quote_nullable over the value cast to text), so no
-// value is spelled by hand.
+// with: the type Postgres gives each of its parameters (statementTypes), and each of arguments
+// written as a literal of that type, which Postgres writes itself (quote_nullable over the value
+// cast to text), so no value is spelled by hand.
 func statementLiterals(t *testing.T, connection *pgxpool.Conn, statement string, arguments []any) (types, literals []string) {
+	t.Helper()
+	ctx := context.Background()
+	types = statementTypes(t, connection, statement)
+	if len(types) != len(arguments) {
+		t.Fatalf("the statement takes %d parameters and %d arguments were given", len(types), len(arguments))
+	}
+	for index, typeName := range types {
+		var literal string
+		if err := connection.QueryRow(ctx, "select quote_nullable(($1::"+typeName+")::text)", arguments[index]).Scan(&literal); err != nil {
+			t.Fatalf("write $%d as a literal of %s: %v", index+1, typeName, err)
+		}
+		literals = append(literals, literal+"::"+typeName)
+	}
+	return types, literals
+}
+
+// statementTypes is the type Postgres gives each of statement's parameters, read from the
+// server's own description of the statement as pgx reads it before it binds one.
+func statementTypes(t *testing.T, connection *pgxpool.Conn, statement string) []string {
 	t.Helper()
 	ctx := context.Background()
 	description, err := connection.Conn().PgConn().Prepare(ctx, "", statement, nil)
 	if err != nil {
 		t.Fatalf("describe the statement's parameters: %v", err)
 	}
-	if len(description.ParamOIDs) != len(arguments) {
-		t.Fatalf("the statement takes %d parameters and %d arguments were given", len(description.ParamOIDs), len(arguments))
-	}
+	types := make([]string, len(description.ParamOIDs))
 	for index, oid := range description.ParamOIDs {
-		var typeName, literal string
-		if err := connection.QueryRow(ctx, "select format_type($1, null)", oid).Scan(&typeName); err != nil {
+		if err := connection.QueryRow(ctx, "select format_type($1, null)", oid).Scan(&types[index]); err != nil {
 			t.Fatalf("name the type of $%d: %v", index+1, err)
 		}
-		if err := connection.QueryRow(ctx, "select quote_nullable(($1::"+typeName+")::text)", arguments[index]).Scan(&literal); err != nil {
-			t.Fatalf("write $%d as a literal of %s: %v", index+1, typeName, err)
-		}
-		types = append(types, typeName)
-		literals = append(literals, literal+"::"+typeName)
 	}
-	return types, literals
+	return types
 }
 
 // planIndexCatalog answers, from the catalog, the table an index a plan names is on and the
@@ -607,53 +618,16 @@ func (c *planIndexCatalog) of(t *testing.T, index string) (table, method string)
 }
 
 // searchPlanTree is a plan's nodes in the order explaintest.Nodes walks them, with each node's
-// children (from Node.Parent) and the "Order By" each prints, which explaintest does not read:
-// an HNSW index scan carries its distance there and no index condition.
+// children (explaintest.Children).
 type searchPlanTree struct {
 	nodes    []explaintest.Node
 	children [][]int
-	orderBy  []string
 }
 
 func newSearchPlanTree(t *testing.T, plan json.RawMessage) searchPlanTree {
 	t.Helper()
-	tree := searchPlanTree{nodes: explaintest.Nodes(t, plan)}
-	tree.children = make([][]int, len(tree.nodes))
-	for at, node := range tree.nodes {
-		if node.Parent >= 0 {
-			tree.children[node.Parent] = append(tree.children[node.Parent], at)
-		}
-	}
-	// The same walk as explaintest's: each node before its children, the children in the order
-	// the plan lists them, so position for position the two agree.
-	var walk func(raw json.RawMessage)
-	walk = func(raw json.RawMessage) {
-		var node struct {
-			OrderBy json.RawMessage   `json:"Order By"`
-			Plans   []json.RawMessage `json:"Plans"`
-		}
-		if err := json.Unmarshal(raw, &node); err != nil {
-			t.Fatalf("decode a plan node: %v", err)
-		}
-		tree.orderBy = append(tree.orderBy, string(node.OrderBy))
-		for _, child := range node.Plans {
-			walk(child)
-		}
-	}
-	walk(plan)
-	if len(tree.orderBy) != len(tree.nodes) {
-		t.Fatalf("the plan walk met %d nodes and explaintest.Nodes %d", len(tree.orderBy), len(tree.nodes))
-	}
-	return tree
-}
-
-// under is the node at position at and every node below it, in walk order.
-func (tree searchPlanTree) under(at int) []int {
-	nodes := []int{at}
-	for _, child := range tree.children[at] {
-		nodes = append(nodes, tree.under(child)...)
-	}
-	return nodes
+	nodes := explaintest.Nodes(t, plan)
+	return searchPlanTree{nodes: nodes, children: explaintest.Children(nodes)}
 }
 
 // relationOf is the table the node at position at reads: the relation it names, or, for a
@@ -707,7 +681,7 @@ func (tree searchPlanTree) meaningArms(t *testing.T, catalog *planIndexCatalog) 
 	}
 	meaning := map[string][]int{}
 	for _, arm := range arms {
-		nodes := tree.under(arm)
+		nodes := explaintest.Subtree(tree.nodes, arm)
 		for _, at := range nodes {
 			if tree.relationOf(t, at, catalog) != "embeddings" {
 				continue
@@ -813,7 +787,7 @@ func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 					arm, documents := arms["document_block"]
 					if !found || !documents {
 						t.Fatalf("%s text's %s plan has no arm of CTE kinds' Append under which a scan of embeddings tests 'document_block', so it says nothing of the meaning document arm:\n%s",
-							side.whose, plan.mode, tree.describe(tree.under(0)))
+							side.whose, plan.mode, tree.describe(explaintest.Subtree(tree.nodes, 0)))
 					}
 					switch reads := tree.reads(t, arm, "artifact_versions", catalog); {
 					case reads && !side.readsArtifactVersions:
@@ -833,7 +807,7 @@ func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 // carry an "Index Cond", as explaintest.ScansWithoutIndexCond reads them.
 var searchIndexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"}
 
-// TestEverySearchStatementReadsEachGrowingTableThroughAnIndex is cb-plan: each of the four
+// TestEverySearchStatementReadsEachGrowingTableThroughAnIndex holds that each of the four
 // statements a search runs, in the generic plan a prepared statement settles on and in the plan
 // with the values the route binds, reads every table that grows with the data through an index
 // condition (explaintest.ScansWithoutIndexCond), and its meaning arms read no artifact_versions.
@@ -897,7 +871,7 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 					}
 					switch {
 					case relation == "projects":
-					case node.Type == "Index Scan" && method == "hnsw" && strings.Contains(tree.orderBy[at], "<=>"):
+					case node.Type == "Index Scan" && method == "hnsw" && strings.Contains(node.OrderBy, "<=>"):
 					case node.Type == "Bitmap Index Scan" && method == "gin":
 					default:
 						t.Errorf("%s, %s plan: %s reads %s with no index condition (under %q)",
@@ -913,7 +887,7 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 				}
 				arms, found := tree.meaningArms(t, catalog)
 				if !found || len(arms) != 5 {
-					t.Fatalf("%s plan: found %d meaning arms in the kinds CTE, want five:\n%s", plan.mode, len(arms), tree.describe(tree.under(0)))
+					t.Fatalf("%s plan: found %d meaning arms in the kinds CTE, want five:\n%s", plan.mode, len(arms), tree.describe(explaintest.Subtree(tree.nodes, 0)))
 				}
 				for _, kind := range slices.Sorted(maps.Keys(arms)) {
 					if tree.reads(t, arms[kind], "artifact_versions", catalog) {

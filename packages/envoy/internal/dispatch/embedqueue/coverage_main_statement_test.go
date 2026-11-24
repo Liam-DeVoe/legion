@@ -6,9 +6,10 @@ package embedqueue
 // grew with the corpus. main ran it under mainRouteCoverageSettings, in the transaction Coverage
 // bounds. The route never sends it now (coverageRead, TestTheCoverageRouteSendsNoStatementOfMains).
 // It is one side of every comparison of the report's answers, beside mainCoverageQuery, the
-// statement before it, and the statement the buffer reads set beside the kept counts' read (T11 on
-// the seeded database, T13 on production). It must never be edited to follow a schema change: a
-// copy edited to fit answers for nothing that was ever served.
+// statement before it, and the statement the buffer reads set beside the kept counts' read
+// (TestTheCoverageReadsOfMainAndTheHead on the seeded database, and the production check). It
+// must never be edited to follow a schema change: a copy edited to fit answers for nothing that
+// was ever served.
 const mainRouteCoverageStatement = `
 		with judged as (
 			select ('{document_block,comment_block,message_block,ask_part}'::text[])[position] as kind, count(*) as items, count(*) filter (where current) as current,

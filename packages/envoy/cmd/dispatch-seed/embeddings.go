@@ -112,15 +112,11 @@ func (r *seedRun) writeEmbeddings(ctx context.Context) error {
 
 // windowKinds is the embeddings kind of the windows of each kind of row meaning search embeds in
 // windows of its blocks rather than whole, in the order embeddedRows takes them: a document's,
-// an ask's, a comment's and a message's. windowKindList is the same as a literal SQL list
-// (sqlStatusList writes any list of this binary's own words), the list embeddings_window_owner's
-// partial predicate names (migration 20261102233630).
-var (
-	windowKinds = []string{
-		refs.DocumentWindowKind, refs.ItemAsk.WindowKind(), refs.ItemComment.WindowKind(), refs.ItemMessage.WindowKind(),
-	}
-	windowKindList = "(" + sqlStatusList(windowKinds) + ")"
-)
+// an ask's, a comment's and a message's. refs.WindowKinds is the same kinds as a literal SQL list,
+// the list embeddings_window_owner's partial predicate names (migration 20261102233630).
+var windowKinds = []string{
+	refs.DocumentWindowKind, refs.ItemAsk.WindowKind(), refs.ItemComment.WindowKind(), refs.ItemMessage.WindowKind(),
+}
 
 // embeddedRows is every (kind, id) that gets a vector, in the order the vectors are drawn: every
 // other issue in plan order, then the first window by id of every other document, ask, comment
@@ -169,7 +165,7 @@ func (r *seedRun) embeddedRows(ctx context.Context) (kinds, ids []string, err er
 		  from unnest($1::text[], $2::text[]) with ordinality as o (kind, owner_key, n)
 		  join (select distinct on (kind, split_part(id, '#', 1)) kind, split_part(id, '#', 1) as owner_key, id
 		          from embeddings
-		         where kind in `+windowKindList+`
+		         where kind in `+refs.WindowKinds+`
 		         order by kind, split_part(id, '#', 1), id) w
 		    on w.kind = o.kind and w.owner_key = o.owner_key
 		 order by o.n

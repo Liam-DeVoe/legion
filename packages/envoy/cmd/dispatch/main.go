@@ -1221,20 +1221,22 @@ func main() {
 	waitFill := func() { <-fillStopped }
 	// The search coverage counts loop (embedqueue.RunCounts) keeps the counts GET
 	// /api/v1/search/coverage reads: it fills them where no fill has ended, folds the delta rows the
-	// counting triggers write every 10 s, and recounts every kind about every 10 minutes. It starts
-	// at every start, with an embedder or with none, since the counts follow every write whatever
-	// embeds; its goroutine starts here, but like the keyword fill it takes nothing and writes
-	// nothing until serving closes, so no start waits for a count and the route answers 503
-	// SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every way out from here waits for it
-	// (waitCounts) before the pool closes: once ctx is cancelled it returns at once, rolling back
-	// the fill, fold or recount in flight. The three DISPATCH_TEST_COVERAGE_* settings, read only
-	// under DISPATCH_TEST_HOOKS=1, shorten the fill's timeout and the route's bound and make fills
-	// fail, for a test of each.
+	// counting triggers write every 10 s, and recounts every kind, each recount starting 11 minutes
+	// less the recount's bound (coverageRecountTimeout) after the one before started, or at a random
+	// time from 10 minutes up to that while the bound is under a minute, so a write the triggers
+	// missed is counted within 11 minutes. It starts at every start, with an embedder or with none,
+	// since the counts follow every write whatever embeds; its goroutine starts here, but like the
+	// keyword fill it takes nothing and writes nothing until serving closes, so no start waits for a
+	// count and the route answers 503 SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every
+	// way out from here waits for it (waitCounts) before the pool closes: once ctx is cancelled it
+	// returns at once, rolling back the fill, fold or recount in flight. The three
+	// DISPATCH_TEST_COVERAGE_* settings, read only under DISPATCH_TEST_HOOKS=1, shorten the fill's
+	// timeout and the route's bound and make fills fail, for a test of each.
 	if boot.CoverageFillTimeout > 0 {
 		embedqueue.ShortenCoverageFillTimeoutForTest(boot.CoverageFillTimeout)
 	}
 	if boot.CoverageStatementTimeout > 0 {
-		embedqueue.ShortenCoverageBoundForTest(fmt.Sprintf("%dms", boot.CoverageStatementTimeout.Milliseconds()))
+		embedqueue.ShortenCoverageBoundForTest(boot.CoverageStatementTimeout)
 	}
 	if boot.CoverageFillFailures > 0 {
 		embedqueue.FailCoverageFillsForTest(boot.CoverageFillFailures)
@@ -2561,18 +2563,17 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 
 // testHookCount reads the test-only count setting name into target, leaving target as it is when
 // the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any
-// value that is not a whole number of 1 or more.
+// value positiveSetting refuses.
 func testHookCount(env settingValues, name string, testHooksEnabled bool, target *int) error {
-	raw := strings.TrimSpace(env.get(name))
-	if raw == "" {
+	if strings.TrimSpace(env.get(name)) == "" {
 		return nil
 	}
 	if !testHooksEnabled {
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return fmt.Errorf("%s=%q (expected a whole number of 1 or more)", name, raw)
+	value, err := positiveSetting(env, name)
+	if err != nil {
+		return err
 	}
 	*target = value
 	return nil

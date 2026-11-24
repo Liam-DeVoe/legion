@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 )
 
 // closedClientSender is one caller the walk below sends every row of the table as: how its
@@ -117,7 +116,7 @@ func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
 				continue
 			}
 			requests++
-			before := logged.Len()
+			requestsBefore, errorsBefore := len(accessLines(t, logged)), len(errorLines(logged))
 			response, panicked := serveClosedClient(t, name+" as "+sender.name, handler, closedClientRequest(route, sender, row))
 			idle := make(chan struct{})
 			go func() {
@@ -131,16 +130,7 @@ func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
 					name, sender.name, closedClientServeLimit))
 			}
 
-			var requestLines, errorLines []string
-			for line := range strings.Lines(logged.String()[before:]) {
-				line = strings.TrimSpace(line)
-				if strings.Contains(line, `msg="`+accesslog.Message+`"`) {
-					requestLines = append(requestLines, line)
-				}
-				if strings.Contains(line, "level=ERROR") {
-					errorLines = append(errorLines, line)
-				}
-			}
+			requestLines, faults := accessLines(t, logged)[requestsBefore:], errorLines(logged)[errorsBefore:]
 			var wrong []string
 			if panicked != nil {
 				wrong = append(wrong, fmt.Sprintf("panicked with %v", panicked))
@@ -151,7 +141,7 @@ func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
 			case strings.Contains(requestLines[0], "status=500"):
 				wrong = append(wrong, "its request line reads status=500: "+requestLines[0])
 			}
-			for _, line := range errorLines {
+			for _, line := range faults {
 				wrong = append(wrong, "wrote "+line)
 			}
 			if len(wrong) > 0 {

@@ -129,7 +129,7 @@ func assertWindowVectors(t *testing.T, database *store.Store, run *seedRun) {
 		select kind, split_part(id, '#', 1), count(*), min(id),
 		       coalesce(array_agg(id order by id) filter (where embedding is not null), '{}')
 		  from embeddings
-		 where kind in `+windowKindList+`
+		 where kind in `+refs.WindowKinds+`
 		 group by 1, 2`)
 	if err != nil {
 		t.Fatalf("read the windows of each owner: %v", err)

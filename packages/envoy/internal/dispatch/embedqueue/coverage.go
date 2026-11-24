@@ -708,15 +708,14 @@ var notIndexedPositions = func() map[string]int {
 	return positions
 }()
 
-// coverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
-// before it refuses with ErrCoverageFoldBehind: R7 of dispatch://INFRA-4864's spec names 100,000.
-// Delta rows build up only while no fold runs - during a recount, which holds the counts lock for
-// at most its statement bound (coverageRecountTimeout), or while the fold fails - so the bound must
-// be at least four times twice the most rows production's counted tables changed in any span of
-// one recount bound and one fold period. T18 reads that number from pg_stat_user_tables over a
-// weekday hour of the agents' peak load; a measurement that asks for a larger bound than 100,000
-// goes to the architect, since the spec names 100,000.
-const coverageDeltaBound = 100000
+// CoverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
+// before it refuses with ErrCoverageFoldBehind, and the number the route's message names: R7 of
+// dispatch://INFRA-4864's spec names 100,000. Delta rows build up only while no fold runs - during
+// a recount, which holds the counts lock for at most its statement bound (coverageRecountTimeout),
+// or while the fold fails - so the bound must be at least four times twice the most rows
+// production's counted tables changed in any span of one recount bound and one fold period, read
+// from pg_stat_user_tables over a weekday hour of the agents' peak load.
+const CoverageDeltaBound = 100000
 
 // ErrCoverageNotFilled is what Coverage answers while no fill of the coverage counts has ended
 // since the migration that made them (search_coverage_filled holds no row): the counts loop fills
@@ -724,27 +723,22 @@ const coverageDeltaBound = 100000
 // hold nothing to answer. The route answers it 503 SEARCH_COVERAGE_NOT_FILLED.
 var ErrCoverageNotFilled = errors.New("the search coverage counts are not filled yet")
 
-// ErrCoverageFoldBehind is what Coverage answers when it read more than coverageDeltaBound delta
+// ErrCoverageFoldBehind is what Coverage answers when it read more than CoverageDeltaBound delta
 // rows: the counts are the base rows plus every delta row not yet folded into them, and the report
 // refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND.
-var ErrCoverageFoldBehind = fmt.Errorf("more than %d rows of writes are not folded into the search coverage counts", coverageDeltaBound)
-
-// CoverageDeltaBound is the most delta rows the report reads (coverageDeltaBound), for the
-// message the route answers ErrCoverageFoldBehind with.
-func CoverageDeltaBound() int64 {
-	return coverageDeltaBound
-}
+var ErrCoverageFoldBehind = fmt.Errorf("more than %d rows of writes are not folded into the search coverage counts", CoverageDeltaBound)
 
 // coverageReadStatement is the report's one statement (coverageRead), so one snapshot and one
-// now() answer every count and every age. $1 is the identity, ” when none is configured, and then
-// no item is current. It reads:
+// now() answer every count and every age. $1 is the identity, the empty string when none is
+// configured, and then no item is current. It reads:
 //
 //   - search_coverage_filled's one row, by its key: whether a fill has ended
 //     (ErrCoverageNotFilled);
-//   - every base row (search_coverage_counts) and at most coverageDeltaBound + 1 delta rows
+//   - every base row (search_coverage_counts) and at most CoverageDeltaBound + 1 delta rows
 //     (search_coverage_deltas), with how many delta rows it read (ErrCoverageFoldBehind), summed by
 //     class: a class is (kind, model, matched, dead), as the counting triggers and the recount
-//     write it (migration 20261124011834_search_coverage_counts), model being ” where not matched;
+//     write it (migration 20261124011834_search_coverage_counts), model being the empty string
+//     where not matched;
 //   - for each covered kind, the oldest lacking item, through the first entry of an index: for a
 //     window kind, of the unembedded half (windowUnembedded) by kind and not dead, of the embedded
 //     half (windowEmbedded) by kind, not dead and each model other than the identity's that one of
@@ -800,7 +794,7 @@ var coverageReadStatement = func() string {
 	}
 	return `
 		with deltas as (
-			select kind, model, matched, dead, items from search_coverage_deltas limit ` + strconv.Itoa(coverageDeltaBound+1) + `
+			select kind, model, matched, dead, items from search_coverage_deltas limit ` + strconv.Itoa(CoverageDeltaBound+1) + `
 		),
 		classes as (
 			select kind, model, matched, dead, sum(items)::bigint as items
@@ -813,8 +807,8 @@ var coverageReadStatement = func() string {
 		from (` + strings.Join(arms, "\n\t\tunion all ") + `) counted`
 }()
 
-// CoverageReadStatement is the text of the report's one statement (coverageReadStatement), for a
-// measurement that runs it under EXPLAIN where the report runs (T15, on production).
+// CoverageReadStatement is the text of the report's one statement (coverageReadStatement), for the
+// production check, which runs it under EXPLAIN where the report runs, on a deployment's database.
 func CoverageReadStatement() string {
 	return coverageReadStatement
 }
@@ -827,9 +821,15 @@ func CoverageReadStatement() string {
 // held to (dispatch://INFRA-4241, R1); and the statement it bounds reads a number of rows that does
 // not grow with the corpus (coverageRead), so it is reached only by a database that does not
 // answer, which is what the 503 is for. A var, not a const, so another package's test can shorten
-// it (ShortenCoverageBoundForTest) rather than wait ten seconds out, as endMeaningStatementsAt
+// it (ShortenCoverageBoundForTest) rather than wait ten seconds out, as endSearchStatementsAt
 // shortens search's bound.
-var coverageStatementTimeout = "10s"
+var coverageStatementTimeout = 10 * time.Second
+
+// statementTimeoutSetting is the `set local` that bounds each later statement of a transaction to
+// d, in whole milliseconds and never under one: a statement_timeout of 0 turns the bound off.
+func statementTimeoutSetting(d time.Duration) string {
+	return fmt.Sprintf("set local statement_timeout = %d", max(d.Milliseconds(), 1))
+}
 
 // coverageRollbackTimeout bounds Coverage's rollback, which runs after the statement whatever
 // happened to it. It is not the statement's bound: it ends a rollback the database will not
@@ -841,10 +841,10 @@ const coverageRollbackTimeout = 2 * time.Second
 // waited for it: nothing was counted, and a later call may answer.
 var ErrCoverageTimedOut = errors.New("the coverage statement ran past its statement_timeout")
 
-// CoverageStatementTimeout is the bound Coverage holds its statement to, as Postgres reads it
+// CoverageStatementTimeout is the bound Coverage holds its statement to, as Go writes a duration
 // ("10s"), for the message the route answers ErrCoverageTimedOut with.
 func CoverageStatementTimeout() string {
-	return coverageStatementTimeout
+	return coverageStatementTimeout.String()
 }
 
 // coverageFailed wraps err, an error of the coverage statement or of the settings planCoverage
@@ -960,7 +960,7 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 //
 // It reads the counts the writes keep (coverageRead), in one statement, and never counts an item's
 // rows: it answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind when more
-// than coverageDeltaBound delta rows wait for the fold, and otherwise the counts.
+// than CoverageDeltaBound delta rows wait for the fold, and otherwise the counts.
 //
 // It reads in a read-only transaction whose statement runs under coverageStatementTimeout, and a
 // statement Postgres ends at that bound while ctx is live answers ErrCoverageTimedOut
@@ -986,7 +986,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+coverageStatementTimeout+"'"); err != nil {
+	if _, err := tx.Exec(ctx, statementTimeoutSetting(coverageStatementTimeout)); err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
 	}
 	if err := planCoverage(ctx, tx); err != nil {
@@ -1000,7 +1000,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 // transaction, once it has bounded the statement and planCoverage has set its settings, and the
 // repeatable-read transaction of a test that compares the answer with main's coverage statements
 // at one snapshot. It answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind
-// when the statement read more than coverageDeltaBound delta rows, and otherwise the report: each
+// when the statement read more than CoverageDeltaBound delta rows, and otherwise the report: each
 // covered kind's counts with lacking computed here, an oldest lacking age past the statement's
 // now() read as 0, each not-indexed kind's items, and the totals.
 func coverageRead(ctx context.Context, tx pgx.Tx, identity string) (model.SearchCoverage, error) {
@@ -1060,7 +1060,7 @@ func coverageRead(ctx context.Context, tx pgx.Tx, identity string) (model.Search
 	switch {
 	case !filled:
 		return model.SearchCoverage{}, ErrCoverageNotFilled
-	case deltaRows > coverageDeltaBound:
+	case deltaRows > CoverageDeltaBound:
 		return model.SearchCoverage{}, ErrCoverageFoldBehind
 	}
 	for _, counts := range kinds {

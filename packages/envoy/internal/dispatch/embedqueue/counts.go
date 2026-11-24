@@ -30,11 +30,11 @@ import (
 // run at once, in this process or in another one during a roll, and a fold never adds to a base
 // row that a recount is replacing.
 
-// The counts loop's periods and bounds (RunCounts). coverageFoldInterval and coverageFoldJitter
-// are spec version 27's: every 10 s, plus a jitter of up to 1 s. The backoff of a failed fill, and
-// of a failed recount, is its too: the first wait's bound is 10 s, each later bound twice the one
-// before, and no bound passes 10 minutes. coverageFoldTimeout bounds one fold: a fold still
-// running when the next would start has failed, and the next period runs it again.
+// The counts loop's periods and bounds (RunCounts), as R7 of dispatch://INFRA-4864's spec and its
+// design set them: a fold every 10 s, plus a jitter of up to 1 s; and after a failed fill, or a
+// failed recount, a wait whose first bound is 10 s, each later bound twice the one before, and no
+// bound past 10 minutes. coverageFoldTimeout bounds one fold: a fold still running when the next
+// would start has failed, and the next period runs it again.
 const (
 	coverageFoldInterval   = 10 * time.Second
 	coverageFoldJitter     = time.Second
@@ -46,15 +46,12 @@ const (
 // The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage): a fill that reaches it is a failed
-	// fill. T16 sets it to four times the fill's longest time on scripts/coverage-scale.sh's corpus
-	// at scale 3, from the builds Job; until then it holds 30 minutes, and the orchestrator replaces
-	// it and this comment before the pull request leaves draft.
+	// fill. Its value is four times the fill's longest time on scripts/coverage-scale.sh's corpus
+	// at scale 3.
 	coverageFillTimeout = 30 * time.Minute
 	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage): every
-	// refresh batch and every group statement runs under the time left to it. T16 sets it to four
-	// times the recount's longest whole time on scripts/coverage-scale.sh's corpus at scale 3, from
-	// the builds Job; until then it holds 2 minutes, and the orchestrator replaces it and this
-	// comment before the pull request leaves draft.
+	// refresh batch and every group statement runs under the time left to it. Its value is four
+	// times the recount's longest whole time on scripts/coverage-scale.sh's corpus at scale 3.
 	coverageRecountTimeout = 2 * time.Minute
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval
 	// plus up to the jitter after the one before started (recountGap). Both follow from T
@@ -137,7 +134,8 @@ func recountStatement(counted string) string {
 // coverage statement read them, through a BitmapOr of the two window indexes under planCoverage's
 // settings (windowItems, planCoverage), and grouped by the kind's position for the reason that arm
 // grouped by it: no index's order is of use to it. A class is matched where the row holds a vector
-// of its current text, and then carries the row's model (” for none); otherwise its model is ”.
+// of its current text, and then carries the row's model (the empty string for none); otherwise its
+// model is the empty string.
 var windowClasses = `
 	select (` + windowKindArray + `)[windows.position], windows.model, windows.matched, windows.dead, count(*)
 	from (select array_position(` + windowKindArray + `, kind) as position,
@@ -153,13 +151,13 @@ var windowClasses = `
 const issueClasses = `select '` + issueKind + `'::text, model, matched, dead, count(*)
 	from search_coverage_issues where has_text group by model, matched, dead`
 
-// countsGroup is one group the recount counts in a transaction and a statement of its own
-// (recountStatement): its kinds, and the select of its classes. planned is the window group's,
-// which runs under planCoverage's settings.
+// countsGroup is one group the recount counts in a transaction and a statement of its own: its
+// kinds, and that statement (recountStatement over the select of its classes). planned is the
+// window group's, which runs under planCoverage's settings.
 type countsGroup struct {
-	kinds   []string
-	counted string
-	planned bool
+	kinds     []string
+	statement string
+	planned   bool
 }
 
 // countsGroups is every group the recount counts, in the order it counts them: the issue, whose
@@ -168,16 +166,16 @@ type countsGroup struct {
 // table.
 var countsGroups = func() []countsGroup {
 	groups := []countsGroup{
-		{kinds: []string{issueKind}, counted: issueClasses},
-		{kinds: windowCoverageKinds, counted: windowClasses, planned: true},
+		{kinds: []string{issueKind}, statement: recountStatement(issueClasses)},
+		{kinds: windowCoverageKinds, statement: recountStatement(windowClasses), planned: true},
 	}
 	for _, kind := range notIndexedKinds {
 		if kind.kind == sessionKind {
 			continue
 		}
 		groups = append(groups, countsGroup{
-			kinds:   []string{kind.kind},
-			counted: "select '" + kind.kind + "'::text, ''::text, false, false, " + kind.items,
+			kinds:     []string{kind.kind},
+			statement: recountStatement("select '" + kind.kind + "'::text, ''::text, false, false, " + kind.items),
 		})
 	}
 	return groups
@@ -188,7 +186,8 @@ var countsGroups = func() []countsGroup {
 // now: search_coverage_issue_inputs over issueSource, the issue's created_at and its embeddings
 // row's id and xmin, the one rendering the refresh records, so a write to any input with its
 // triggers off changes a value or a row's xmin and the comparison finds it (issueSource's comment
-// names its one theoretical miss). It answers the last key it refreshed (” when none) and how many.
+// names its one theoretical miss). It answers the last key it refreshed (the empty string when
+// none) and how many.
 var staleIssueStates = `
 	select coalesce(max(refreshed.key), ''), count(*)
 	from (select picked.key, search_coverage_issue_refresh(picked.key)
@@ -230,6 +229,11 @@ var errFillMadeToFail = errors.New("the search coverage counts fill was made to 
 // taking countsLock when locked. It commits when fn answers nil. The rollback runs on a context
 // ctx's end does not end, so a loop stopped mid-statement still hands its connection back to the
 // pool.
+//
+// The bound and the lock go in one Exec: they carry no argument, so pgx sends them over the simple
+// protocol, which takes a statement list, and Postgres bounds each statement of a list by the
+// statement_timeout in force when it starts, so the lock's wait is bounded too. The error of a
+// failed Exec names the two together.
 func countsTransaction(ctx context.Context, database *store.Store, locked bool, fn func(pgx.Tx) error) error {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -244,13 +248,12 @@ func countsTransaction(ctx context.Context, database *store.Store, locked bool, 
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
-	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = %d", max(time.Until(deadline).Milliseconds(), 1))); err != nil {
-		return fmt.Errorf("bound the statements: %w", err)
-	}
+	setup, failed := statementTimeoutSetting(time.Until(deadline)), "bound the statements"
 	if locked {
-		if _, err := tx.Exec(ctx, countsLock); err != nil {
-			return fmt.Errorf("take the counts lock: %w", err)
-		}
+		setup, failed = setup+"; "+countsLock, "bound the statements and take the counts lock"
+	}
+	if _, err := tx.Exec(ctx, setup); err != nil {
+		return fmt.Errorf("%s: %w", failed, err)
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -305,11 +308,11 @@ func recountGroups(ctx context.Context, database *store.Store, fill bool) error 
 		last := fill && position == len(countsGroups)-1
 		if err := countsTransaction(ctx, database, true, func(tx pgx.Tx) error {
 			if group.planned {
-				if _, err := tx.Exec(ctx, coverageSettings); err != nil {
+				if err := planCoverage(ctx, tx); err != nil {
 					return err
 				}
 			}
-			if _, err := tx.Exec(ctx, recountStatement(group.counted), group.kinds); err != nil {
+			if _, err := tx.Exec(ctx, group.statement, group.kinds); err != nil {
 				return err
 			}
 			if last {

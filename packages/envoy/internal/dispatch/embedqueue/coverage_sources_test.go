@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -271,7 +272,7 @@ func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
-	t.Cleanup(ShortenCoverageBoundForTest("500ms"))
+	t.Cleanup(ShortenCoverageBoundForTest(500 * time.Millisecond))
 	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds search_coverage_counts: %v", err)

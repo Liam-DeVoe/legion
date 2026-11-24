@@ -45,7 +45,7 @@ func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, embedqueue.ErrCoverageFoldBehind):
 		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_FOLD_BEHIND",
 			"more than %s rows of writes are not folded into the search coverage counts yet; try again later",
-			pgmigrate.Thousands(embedqueue.CoverageDeltaBound())))
+			pgmigrate.Thousands(embedqueue.CoverageDeltaBound)))
 	case err != nil:
 		s.writeHandlerError(w, err)
 	default:

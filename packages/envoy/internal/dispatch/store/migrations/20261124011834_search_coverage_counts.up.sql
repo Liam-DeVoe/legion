@@ -2,13 +2,16 @@
 -- kept by triggers on the tables they count (dispatch://INFRA-4864, R7).
 --
 -- Why it exists. The coverage route counted every item of the five covered kinds and every row
--- of the not-indexed tables in one statement (internal/dispatch/embedqueue/coverage.go,
--- coverageQuery), which reads every window row of embeddings and so grows with the corpus: from
--- 2026-11-21T08:19Z to 2026-11-22T00:30Z, 10 of 65 probe calls reached its 10 s bound. Postgres
--- keeps no exact count of a table's rows, so the exact answer that does not grow is a count that
--- each write keeps in its own transaction. This migration makes the tables that hold those counts
--- and the triggers that keep them. embedqueue's counts loop fills them, folds them every 10 s and
--- recounts them every 10 to 11 minutes; the route reads them and never runs coverageQuery.
+-- of the not-indexed tables in one statement (main's statement: coverageQuery at df18d9be, kept as
+-- mainRouteCoverageStatement in embedqueue/coverage_main_statement_test.go), which reads every
+-- window row of embeddings and so grows with the corpus: from 2026-11-21T08:19Z to
+-- 2026-11-22T00:30Z, 10 of 65 probe calls reached its 10 s bound. Postgres keeps no exact count of
+-- a table's rows, so the exact answer that does not grow is a count that each write keeps in its
+-- own transaction. This migration makes the tables that hold those counts and the triggers that
+-- keep them. embedqueue's counts loop fills them, folds them every 10 s and recounts them, each
+-- recount starting at most 11 minutes less its bound (coverageRecountTimeout) after the one
+-- before started, so a write the triggers missed is counted within 11 minutes; the route reads
+-- them and never runs main's statement.
 --
 -- The tables:
 --
@@ -16,7 +19,7 @@
 --   - search_coverage_deltas, one row per class a write statement moved, items signed. The fold
 --     deletes the rows it sees and adds their sums to the base in one transaction, and the route
 --     sums the base and the rows not yet folded.
---   - search_coverage_issues, one row per issue: the issue arm of coverageQuery kept per issue.
+--   - search_coverage_issues, one row per issue: the issue arm of main's statement kept per issue.
 --     has_text says the issue is an item; inputs is what the row was computed from
 --     (search_coverage_issue_inputs), so the recount finds an issue that a write changed without
 --     its triggers.
@@ -24,14 +27,16 @@
 --     (done_at). The migration inserts no row, so a table that holds none says the counts are not
 --     filled yet.
 --
--- A class is (kind, model, matched, dead), each as coverageQuery reads it. A row of embeddings is
--- an item of its kind when the kind is a window kind and its text has something to embed
--- (embedqueue's windowItems, word for word: a change to the window kinds or to the blank test
--- owes a migration that replaces search_coverage_count_embeddings); matched is embedding is not
--- null and embedded_hash = content_hash; dead is the row's. An issue is an item when issueHasText
--- holds; matched is a vector at the hash issueHash names; dead is coalesce(e.dead, false);
--- waited_since is greatest(e.pending_since, i.created_at). model is the row's model where matched
--- and '' otherwise. A not-indexed kind (component, document_version, result, handoff) is one class:
+-- A class is (kind, model, matched, dead), each as main's statement reads it
+-- (mainRouteCoverageStatement, embedqueue/coverage_main_statement_test.go, main at df18d9be). A
+-- row of embeddings is an item of its kind when the kind is a window kind and its text has
+-- something to embed (embedqueue's windowItems, word for word: a change to the window kinds or to
+-- the blank test owes a migration that replaces search_coverage_count_embeddings); matched is
+-- embedding is not null and embedded_hash = content_hash; dead is the row's. An issue is an item
+-- when its text has something to embed, as that statement's issue arm tests it; matched is a
+-- vector at the hash that arm computes; dead is coalesce(e.dead, false); waited_since is
+-- greatest(e.pending_since, i.created_at). model is the row's model where matched and ''
+-- otherwise. A not-indexed kind (component, document_version, result, handoff) is one class:
 -- model '', matched and dead false; each counts every row of its table (notIndexedKinds), and
 -- route_roster's session count is read from its one row and kept by nothing here. The route's
 -- current count for an identity is the sum of the classes matched with that model.
@@ -77,28 +82,28 @@
 --     its row or its spec being gone; on issues every state row is deleted, whose own trigger
 --     writes the matching delta rows.
 --
--- The refresh, search_coverage_issue_refresh, computes an issue's row as coverageQuery's issue arm
--- computes it, issueHash's shortcut through embedding_issue_sources included, and writes it to the
--- issue's state row, or deletes the row of an issue that is gone. It is exact under READ COMMITTED
--- whatever the interleaving of the writes: it first takes the lock of the issue's state row,
--- inserting the key as a row no class counts (has_text false) where the issue has none, and
--- computes the row only in a later statement, whose snapshot is taken after every transaction
--- that held that lock before it has committed. Every write of an input refreshes after it in its
--- own transaction, so of two transactions that change two inputs of one issue, the one that takes
--- the lock second computes after the other has committed and sees both changes. A statement that
--- refreshes several issues refreshes them in key order. inputs is search_coverage_issue_inputs over
--- issueSource's value, the issue's created_at and its embeddings row's id and xmin, the one
--- rendering the recount compares too; a write to any of them, with or without triggers, changes a
--- value or a row's xmin. A claim changes its row's xmin and refreshes nothing, the issue's class
--- being as it was, so the recount finds that issue's inputs changed and writes them again.
--- content_hash is not among the columns an update of embeddings is refreshed for: each write that
--- changes it sets pending_since = now() beside it (embeddings_enqueue, embedqueue's
--- repairStaleIssues), and where now() repeats, inside one transaction, the write of the title or
--- the spec that made the new text refreshes the issue itself after its enqueue, since Postgres
--- fires one table's row triggers in the order of their names. A later migration that changes
--- issue_embedding_text or issue_embedding_spec must refresh every issue's row in the same release,
--- as it must empty embedding_issue_sources: inputs names the inputs, not the function that turns
--- them into text.
+-- The refresh, search_coverage_issue_refresh, computes an issue's row as the issue arm of main's
+-- statement computes it, its shortcut to the hash through embedding_issue_sources included, and
+-- writes it to the issue's state row, or deletes the row of an issue that is gone. It is exact
+-- under READ COMMITTED whatever the interleaving of the writes: it first takes the lock of the
+-- issue's state row, inserting the key as a row no class counts (has_text false) where the issue
+-- has none, and computes the row only in a later statement, whose snapshot is taken after every
+-- transaction that held that lock before it has committed. Every write of an input refreshes
+-- after it in its own transaction, so of two transactions that change two inputs of one issue,
+-- the one that takes the lock second computes after the other has committed and sees both
+-- changes. A statement that refreshes several issues refreshes them in key order. inputs is
+-- search_coverage_issue_inputs over issueSource's value, the issue's created_at and its embeddings
+-- row's id and xmin, the one rendering the recount compares too; a write to any of them, with or
+-- without triggers, changes a value or a row's xmin. A claim changes its row's xmin and refreshes
+-- nothing, the issue's class being as it was, so the recount finds that issue's inputs changed
+-- and writes them again. content_hash is not among the columns an update of embeddings is
+-- refreshed for: each write that changes it sets pending_since = now() beside it
+-- (embeddings_enqueue, embedqueue's repairStaleIssues), and where now() repeats, inside one
+-- transaction, the write of the title or the spec that made the new text refreshes the issue
+-- itself after its enqueue, since Postgres fires one table's row triggers in the order of their
+-- names. A later migration that changes issue_embedding_text or issue_embedding_spec must refresh
+-- every issue's row in the same release, as it must empty embedding_issue_sources: inputs names
+-- the inputs, not the function that turns them into text.
 --
 -- Every name is written with its schema and every function the bodies call with pg_catalog, as
 -- 20261115200014 writes its own: these functions run under the caller's search_path.
@@ -194,11 +199,13 @@ language sql stable parallel safe as $$
     || coalesce(p_embedding_xmin::text, '-') || ':' || p_source
 $$;
 
--- issueSourceFrom, issueSource, issueHasText and issueHash are embedqueue's, word for word but
--- for the schema each name is written with. The loop takes the state row's lock: a row another
--- transaction inserted after the select's snapshot is not seen by it, so the insert meets that
--- row and does nothing and the loop selects it again under a new snapshot; a row another
--- transaction deleted while the select waited for it is gone, so the insert makes it again.
+-- issueSourceFrom and issueSource are embedqueue's, word for word but for the schema each name is
+-- written with; the text test and the hash are those of the issue arm of main's statement
+-- (mainRouteCoverageStatement, embedqueue/coverage_main_statement_test.go, main at df18d9be). The
+-- loop takes the state row's lock: a row another transaction inserted after the select's snapshot
+-- is not seen by it, so the insert meets that row and does nothing and the loop selects it again
+-- under a new snapshot; a row another transaction deleted while the select waited for it is gone,
+-- so the insert makes it again.
 create function public.search_coverage_issue_refresh(p_key text) returns void
 language plpgsql as $$
 begin

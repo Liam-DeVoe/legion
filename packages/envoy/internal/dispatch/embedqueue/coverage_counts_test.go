@@ -47,19 +47,19 @@ func (trigger countingTrigger) String() string {
 	return fmt.Sprintf("%s on %s: after %s, for each %s", trigger.name, trigger.table, events, level)
 }
 
-// countingTriggers is every trigger the coverage counts are kept by (plan D7, "Triggers"), each
-// named search_coverage_<table>_<what>: the name is the contract this test holds the migration
-// to, so a trigger the migration names otherwise is missing here and one it adds that this list
-// does not hold is an extra. On embeddings, three statement triggers, after insert, after update
-// and after delete, since Postgres takes transition tables only on a trigger of one event; on
-// components, artifact_versions, check_results and handoffs two each, after insert and after
-// delete. The row triggers of issues, artifacts and artifact_versions refresh the state row of
-// the issue a write concerns, each fired by an update of the columns the plan names that issue's
-// class is read from: an issue's title and created_at, an artifact's issue_key and is_primary,
-// and a version's markdown, the issue's spec where the artifact is its primary document. Each
-// of those seven tables has a statement trigger after truncate, and search_coverage_issues has
-// a row trigger of its own that writes the old class minus and the new class plus as delta
-// rows. route_roster is read directly and has none.
+// countingTriggers is every trigger the coverage counts are kept by (migration
+// 20261124011834_search_coverage_counts), each named search_coverage_<table>_<what>: the name is
+// the contract this test holds the migration to, so a trigger the migration names otherwise is
+// missing here and one it adds that this list does not hold is an extra. On embeddings, three
+// statement triggers, after insert, after update and after delete, since Postgres takes
+// transition tables only on a trigger of one event; on components, artifact_versions,
+// check_results and handoffs two each, after insert and after delete. The row triggers of issues,
+// artifacts and artifact_versions refresh the state row of the issue a write concerns, each fired
+// by an update of the columns that issue's class is read from: an issue's title and created_at,
+// an artifact's issue_key and is_primary, and a version's markdown, the issue's spec where the
+// artifact is its primary document. Each of those seven tables has a statement trigger after
+// truncate, and search_coverage_issues has a row trigger of its own that writes the old class
+// minus and the new class plus as delta rows. route_roster is read directly and has none.
 var countingTriggers = []countingTrigger{
 	{"embeddings", "search_coverage_embeddings_insert", false, []string{"insert"}, nil},
 	{"embeddings", "search_coverage_embeddings_update", false, []string{"update"}, nil},
@@ -279,15 +279,15 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 	requireMainsAnswer(t, database, "after A and B committed")
 }
 
-// TestAClaimOfAnIssuesRowRefreshesNothing holds plan D7's "Triggers, ordinary ones": an update of
-// an issue's embeddings row refreshes the issue's state row only where it changed the row's
-// embedding is null, embedded_hash, model, dead or pending_since. The issue's row holds a vector
-// of an older title, so the queue claims it. Each of the queue's two claims, scanPending's and
-// claimRenewal's, writes the row (its xmin moves) and changes next_attempt_at alone, and each
-// leaves the issue's state row as it was, its xmin unchanged, and writes no delta row. An update of
-// embedded_hash alone, to the row's content_hash, refreshes it: the state row is written again and
-// the issue moves from lacking to current, one delta row minus and one plus. After each write the
-// counts equal main's statement's.
+// TestAClaimOfAnIssuesRowRefreshesNothing holds that a claim is no input of an issue's class: an
+// update of an issue's embeddings row refreshes the issue's state row only where it changed the
+// row's embedding is null, embedded_hash, model, dead or pending_since. The issue's row holds a
+// vector of an older title, so the queue claims it. Each of the queue's two claims, scanPending's
+// and claimRenewal's, writes the row (its xmin moves) and changes next_attempt_at alone, and each
+// leaves the issue's state row as it was, its xmin unchanged, and writes no delta row. An update
+// of embedded_hash alone, to the row's content_hash, refreshes it: the state row is written again
+// and the issue moves from lacking to current, one delta row minus and one plus. After each write
+// the counts equal main's statement's.
 func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -362,7 +362,7 @@ const writeTally = `
 // requireDeltaRowsBounded fails the test unless write inserted at most twice as many delta rows as
 // it changed rows of the counted tables: each write statement inserts one delta row for each class
 // it moved, and a write that passed twice its changed rows would build delta rows up faster than
-// the bound the route reads (coverageDeltaBound) was set for (plan D7, T18).
+// the bound the route reads (CoverageDeltaBound) was sized for.
 func requireDeltaRowsBounded(t *testing.T, write string, deltas, changed int64) {
 	t.Helper()
 	if deltas > 2*changed {

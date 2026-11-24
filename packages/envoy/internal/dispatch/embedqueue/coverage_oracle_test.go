@@ -637,7 +637,7 @@ func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
 }
 
 // recountWindowGroup is the group the recount counts the window kinds in (countsGroups' planned
-// group): its kinds and its select of their classes (windowClasses).
+// group): its kinds and its statement (recountStatement over windowClasses).
 func recountWindowGroup(t *testing.T) countsGroup {
 	t.Helper()
 	for _, group := range countsGroups {
@@ -686,7 +686,7 @@ func explainPlannedIn(t *testing.T, tx pgx.Tx, profile string) json.RawMessage {
 	}
 	group := recountWindowGroup(t)
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (format json) `+recountStatement(group.counted), group.kinds).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, `explain (format json) `+group.statement, group.kinds).Scan(&raw); err != nil {
 		t.Fatalf("explain the recount's window statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)

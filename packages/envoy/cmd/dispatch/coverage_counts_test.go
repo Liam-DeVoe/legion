@@ -117,11 +117,12 @@ func coverageDatabase(t *testing.T) *store.Store {
 	return database
 }
 
-// coverageHold is a lock the test takes on its own connection that a fill or a recount waits on
-// where it runs and the route's read does not take: components in access exclusive mode, which
-// the not-indexed group's statement reads. It answers the holding transaction; committing it ends
-// the hold.
-func coverageHold(t *testing.T, database *store.Store) pgx.Tx {
+// coverageHold is a lock the test takes on its own connection: table in access exclusive mode.
+// components, which the not-indexed group's statement reads, is one a fill or a recount waits on
+// where it runs and the route's read does not take; search_coverage_counts, which the route's read
+// sums, is one that read waits on. It answers the holding transaction; committing it ends the
+// hold.
+func coverageHold(t *testing.T, database *store.Store, table string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
 	hold, err := database.Pool.Begin(ctx)
@@ -129,8 +130,8 @@ func coverageHold(t *testing.T, database *store.Store) pgx.Tx {
 		t.Fatalf("begin the hold: %v", err)
 	}
 	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, `lock table components in access exclusive mode`); err != nil {
-		t.Fatalf("hold components: %v", err)
+	if _, err := hold.Exec(ctx, "lock table "+table+" in access exclusive mode"); err != nil {
+		t.Fatalf("hold %s: %v", table, err)
 	}
 	return hold
 }
@@ -358,7 +359,7 @@ func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 	}{{"no embedder", "", dispatchOptions{}}, {"the dev embedder", "127.0.0.1", devEmbedderOptions}} {
 		t.Run(run.name, func(t *testing.T) {
 			database := coverageDatabase(t)
-			hold := coverageHold(t, database)
+			hold := coverageHold(t, database, "components")
 			process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), run.options)
 			server := coverageServer{process, run.host}
 			process.waitHealthy(t)
@@ -384,7 +385,7 @@ func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 // `coverage counts filled`; the route then answers the kept counts, equal to main's statement's.
 func TestAFillCutOffByAStopFillsAgainAtTheNextStart(t *testing.T) {
 	database := coverageDatabase(t)
-	hold := coverageHold(t, database)
+	hold := coverageHold(t, database, "components")
 	first := startDispatchProcess(t, database.Pool.Config().ConnString())
 	first.waitHealthy(t)
 	requireHeld(t, hold, "fill")
@@ -414,7 +415,7 @@ func TestAFilledStartListensBeforeItsRecountEnds(t *testing.T) {
 	if err := embedqueue.FillCoverage(context.Background(), database); err != nil {
 		t.Fatalf("fill the counts before the start: %v", err)
 	}
-	hold := coverageHold(t, database)
+	hold := coverageHold(t, database, "components")
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	server := coverageServer{dispatchProcess: process}
 	process.waitHealthy(t)
@@ -441,7 +442,7 @@ func TestAFilledStartListensBeforeItsRecountEnds(t *testing.T) {
 // held; once that one ends the route answers the kept counts, equal to main's statement's.
 func TestAFailedFillKeepsServingAndRefusesUntilAFillEnds(t *testing.T) {
 	database := coverageDatabase(t)
-	hold := coverageHold(t, database)
+	hold := coverageHold(t, database, "components")
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{
 		"DISPATCH_TEST_COVERAGE_FILL_FAILURES": "1",
 	}})
@@ -461,7 +462,7 @@ func TestAFailedFillKeepsServingAndRefusesUntilAFillEnds(t *testing.T) {
 // ends; then the route answers the kept counts, equal to main's statement's.
 func TestAFillPastItsTimeoutIsAFailedFill(t *testing.T) {
 	database := coverageDatabase(t)
-	hold := coverageHold(t, database)
+	hold := coverageHold(t, database, "components")
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{
 		"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s",
 	}})
@@ -511,21 +512,13 @@ func TestTheCoverageRouteAnswersFoldBehindPastTheBound(t *testing.T) {
 // search_coverage_counts held in access exclusive mode by the test once its counts are filled,
 // answers the route 503 SEARCH_COVERAGE_TIMEOUT naming 200ms.
 func TestTheCoverageRouteAnswersItsTimeoutAt503(t *testing.T) {
-	ctx := context.Background()
 	database := coverageDatabase(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{
 		"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": "200ms",
 	}})
 	process.waitHealthy(t)
 	process.waitForLog(t, 30*time.Second, coverageFilledLine)
-	hold, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the hold: %v", err)
-	}
-	defer func() { _ = hold.Rollback(context.Background()) }()
-	if _, err := hold.Exec(ctx, `lock table search_coverage_counts in access exclusive mode`); err != nil {
-		t.Fatalf("hold search_coverage_counts: %v", err)
-	}
+	coverageHold(t, database, "search_coverage_counts")
 	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_TIMEOUT",
 		"the search coverage statement ran past its 200ms bound, so nothing was counted; try again later")
 }

@@ -639,7 +639,7 @@ func (s *server) runRelatedCheck(
 // searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
 // not answer, so the check answers by keywords alone and says so (INFRA-148). Which of the two
 // clocks ran out first is not the caller's business, and only one of them shows in ctx: a
-// statement Postgres ended arrives as SQLSTATE 57014 (meaningStatementEnded) and may arrive
+// statement Postgres ended arrives as SQLSTATE 57014 (searchStatementEnded) and may arrive
 // while this stage's own context is still live, so the reason is read from the error too. Were
 // it not, the bound this server holds on its own query would reach the writer as "meaning search
 // failed", which is what the check says when something broke.
@@ -654,7 +654,7 @@ func (s *server) relatedMeaningStage(
 	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
-		if ctx.Err() != nil || meaningStatementEnded(err) {
+		if ctx.Err() != nil || searchStatementEnded(err) {
 			reason = relatedReasonMeaningTimeout
 		}
 		if err != nil {

@@ -278,8 +278,8 @@ test("a project-document hit is grouped under the document and opens it; a messa
 // A search statement that runs past the server's 15 s bound answers `503 SEARCH_TIMEOUT`, and
 // asking again costs the database the bound again and finds nothing more, so the app sends that
 // search once (`isSearchTimeout`, which `isRetryableQueryError` exempts, web/src/api/client.ts)
-// and leaves asking again to the reader's Retry (dispatch://INFRA-4864). Before that change the
-// app retried the 503 twice, as it does any other 5xx, and the first count below read 3.
+// and leaves asking again to the reader's Retry (dispatch://INFRA-4864), where any other 5xx is
+// asked again twice.
 //
 // The route answers every search of the term itself: no seeding makes a statement run 15 s. The
 // bar sends two searches of it (`useTieredSearch`): the keystroke's, which asks for the keyword

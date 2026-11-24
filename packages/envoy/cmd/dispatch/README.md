@@ -1656,7 +1656,7 @@ The pass records each try in the database (`doc_settlements_pending.tried_at`), 
 
 **The coverage counts loop** (`embedqueue.RunCounts`, Search below) has none of the three shapes above.
 Every process runs it, with an embedder or with none, from the moment the server listens and the registry admits the process, so no start waits for it:
-it fills the coverage counts where no fill has ended, then folds the writes' delta rows into them every 10 s, plus up to 1 s, and recounts them every 10 to 11 minutes.
+it fills the coverage counts where no fill has ended, then folds the writes' delta rows into them every 10 s, plus up to 1 s, and recounts them, each recount starting 11 minutes less `coverageRecountTimeout` after the one before started (with a jitter while that bound is under a minute), so a write the triggers missed is counted within 11 minutes.
 Each fill, fold and recount takes one advisory lock inside its own transaction, so two processes' runs take turns rather than lease the work.
 
 **The keyword fill** (`textversions.Run`) is a held duty, not a loop woken per pass, and it has none of the three shapes above.
@@ -3917,7 +3917,7 @@ each wait is a random time between 0 and its bound, the first bound 10 s, each l
 A start whose counts were filled already recounts at once instead.
 Then the fold runs every 10 s, plus a jitter of up to 1 s:
 one statement deletes every delta row its snapshot sees and adds their sums to the base, so a delta row of a write that has not committed at that snapshot stays for the next fold.
-The recount counts every class from its rows again every 10 to 11 minutes, so a write that fired no trigger, one made with its table's triggers disabled or under `session_replication_role = replica`, is in the counts after the next recount.
+The recount counts every class from its rows again, so a write that fired no trigger, one made with its table's triggers disabled or under `session_replication_role = replica`, is in the counts after the next recount, within 11 minutes of the write.
 It counts group by group, the issue (after it refreshes each issue's state row whose inputs changed), the window kinds, and each not-indexed kind a count keeps, each in one statement that counts the group's rows, replaces the group's base and deletes the group's delta rows it saw, all at one snapshot;
 so a write that commits while it runs keeps its delta row for the next fold, and the recount loses and doubles nothing.
 The whole recount runs under one deadline, `coverageRecountTimeout`, and starts at most 11 minutes less one recount after the one before.

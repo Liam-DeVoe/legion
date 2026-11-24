@@ -179,18 +179,24 @@ function renderPalette({
   return { queryClient, unmount: view.unmount };
 }
 
+/** Types `query` into the box and moves the clock `ms` on from the keystroke: past the 150 ms
+ *  debounce, and past the 500 ms pause where `ms` reaches it. */
+async function typeAndWait(user: UserEvent, query: string, ms: number): Promise<void> {
+  const input = screen.getByRole("combobox", { name: "Search" });
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(query);
+  await tick(ms);
+}
+
 /** Types `query` into the box and waits for the hits it brings. The 150 ms keystroke debounce
  *  is moved past here, so the search for these words goes out and answers; the 500 ms meaning
  *  pause is left standing, so what a row reads after this is the keyword tier's list. A row
  *  that means the pause to fire moves the clock past it itself. */
 async function searchFor(user: UserEvent, query: string): Promise<HTMLInputElement> {
-  const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-  await user.clear(input);
-  await user.click(input);
-  await user.paste(query);
-  await tick(150);
+  await typeAndWait(user, query, 150);
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
-  return input;
+  return screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
@@ -1263,16 +1269,6 @@ function searchTimedOut(): Promise<SearchResponse> {
         "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query",
     })
   );
-}
-
-/** Types `query` into the box and moves the clock `ms` on from the keystroke: past the 150 ms
- *  debounce, and past the 500 ms pause where `ms` reaches it. */
-async function typeAndWait(user: UserEvent, query: string, ms: number): Promise<void> {
-  const input = screen.getByRole("combobox", { name: "Search" });
-  await user.clear(input);
-  await user.click(input);
-  await user.paste(query);
-  await tick(ms);
 }
 
 // The retry of a search, one row per state of the plan's table "UI state with timing"

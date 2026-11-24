@@ -41,7 +41,6 @@ const fragmentName = "prosemirror"
 
 type config struct {
 	baseURL        *url.URL
-	identityHeader string
 	person         string
 	artifacts      []string
 	peers          int
@@ -90,7 +89,7 @@ func run(args []string) int {
 				random := rand.New(rand.NewPCG(cfg.seed, uint64(index)))
 				// Each peer is a person of its own, as a browser is: <person>-<peer>.
 				header := http.Header{}
-				header.Set(cfg.identityHeader, fmt.Sprintf("%s-%d", cfg.person, p))
+				header.Set(identity.UserHeader, fmt.Sprintf("%s-%d", cfg.person, p))
 				typePeer(ctx, cfg, roomURL(cfg.baseURL, artifact), header, random, &results[index])
 			})
 		}
@@ -124,10 +123,10 @@ func parseFlags(args []string) (config, error) {
 		flags.PrintDefaults()
 	}
 	var cfg config
-	var rawURL, artifactsFile string
+	var rawURL, artifactsFile, identityHeader string
 	var artifacts, protect stringList
 	flags.StringVar(&rawURL, "url", "", "Dispatch base URL, http(s)://host:port; peers connect to <url>/ws/doc/<artifact>")
-	flags.StringVar(&cfg.identityHeader, "identity-header", identity.UserHeader, "the header the peers name their person in: "+identity.UserHeader+", the one header a server run with DISPATCH_IDENTITY=header:"+identity.UserHeader+" reads; any other is refused")
+	flags.StringVar(&identityHeader, "identity-header", identity.UserHeader, "the header the peers name their person in: "+identity.UserHeader+", the one header a server run with DISPATCH_IDENTITY=header:"+identity.UserHeader+" reads; any other is refused")
 	flags.StringVar(&cfg.person, "person", "browsertype", "login prefix of the people the peers are: peer n of every document is <person>-<n>")
 	flags.Var(&artifacts, "artifact", "document artifact id to type into (repeatable)")
 	flags.StringVar(&artifactsFile, "artifacts-file", "", "file of document artifact ids, one per line (blank lines and lines starting with # skipped); adds to -artifact")
@@ -151,10 +150,9 @@ func parseFlags(args []string) (config, error) {
 	cfg.baseURL = base
 	// A server's header identity reads identity.UserHeader alone, so a peer naming its person in
 	// any other header would be refused by every room it opens.
-	if http.CanonicalHeaderKey(strings.TrimSpace(cfg.identityHeader)) != identity.UserHeader {
-		return config{}, fmt.Errorf("-identity-header %q: Dispatch's header identity reads %s alone", cfg.identityHeader, identity.UserHeader)
+	if http.CanonicalHeaderKey(strings.TrimSpace(identityHeader)) != identity.UserHeader {
+		return config{}, fmt.Errorf("-identity-header %q: Dispatch's header identity reads %s alone", identityHeader, identity.UserHeader)
 	}
-	cfg.identityHeader = identity.UserHeader
 	if strings.TrimSpace(cfg.person) == "" {
 		return config{}, errors.New("-person must name a login prefix")
 	}

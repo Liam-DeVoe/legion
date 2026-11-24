@@ -14,8 +14,9 @@ import (
 // window indexes on the table an embedder change leaves: once the configured identity changes, the
 // coverage pass's identity step (dropForeignVectors) takes every vector the old identity made out
 // of its row, so every window row leaves the embedded half for the other one until the queue has
-// embedded it again, which takes hours at production's size. Recounts run all that time, every 10
-// to 11 minutes, under their bound (coverageRecountTimeout).
+// embedded it again, which takes hours at production's size. Recounts run all that time, each
+// under its bound (coverageRecountTimeout) and starting at most 11 minutes less that bound after
+// the one before started.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
 // (loadSmallCoverageCorpus): the identity step of another identity run over every window kind,

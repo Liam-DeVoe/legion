@@ -48,7 +48,7 @@ const (
 	rigHuman = "alice"
 	// rigUserHeader is the header the test identity reads that login from, and rigAgentToken the
 	// shared bearer a session's own write carries (DISPATCH_AGENT_TOKEN).
-	rigUserHeader = "X-Dispatch-User"
+	rigUserHeader = identity.UserHeader
 	rigAgentToken = "agent-token"
 	// rigDeliveryMode is the targeted delivery mode every mention and broadcast here asks for,
 	// and one every session in this file advertises: resolution, not capability, is under test.

@@ -770,7 +770,7 @@ func timeCountsRun(t *testing.T, timer *statementTimer, what string, run func() 
 	measured := countsRun{whole: time.Since(started)}
 	names := map[string]string{staleIssueStates: "refresh", goneIssueStates: "refresh"}
 	for _, group := range countsGroups {
-		names[recountStatement(group.counted)] = countsGroupName(group)
+		names[group.statement] = countsGroupName(group)
 	}
 	refresh := groupTime{group: "refresh"}
 	var groups []groupTime

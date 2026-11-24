@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -159,7 +160,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		// the seed gives a vector to one window of every other one of them (embeddedRows), so the
 		// row counts above are windows and this is how many of their owners hold a vector.
 		{"owners with an embedded window", `select kind || '=' || count(distinct split_part(id, '#', 1)) filter (where embedding is not null) ||
-			'/' || count(distinct split_part(id, '#', 1)) from embeddings where kind in ` + windowKindList + ` group by kind order by kind`},
+			'/' || count(distinct split_part(id, '#', 1)) from embeddings where kind in ` + refs.WindowKinds + ` group by kind order by kind`},
 		{"issues with a repository of their own", `select count(*) || ' of ' || (select count(*) from issues) from issues where repo is not null`},
 		{"graph edges by kind", `select kind || '->' || to_kind || '=' || rows from (
 			select kind, to_kind, count(*) as rows from graph_edges group by 1, 2) e order by kind, to_kind`},

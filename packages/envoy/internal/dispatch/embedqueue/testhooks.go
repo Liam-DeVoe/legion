@@ -3,28 +3,26 @@ package embedqueue
 import "time"
 
 // ShortenCoverageBoundForTest points the bound Coverage holds its statement to
-// (coverageStatementTimeout) at timeout, a statement_timeout value as Postgres reads it ("50ms"),
-// until restore is called. Tests in package api shorten it to see the search coverage route
-// answer a statement Postgres ended at its bound, without waiting production's ten seconds out;
-// they cannot reach the unexported var. It is set and restored while nothing else reads it: no
-// test of either package that reads the coverage report runs in parallel. cmd/dispatch calls it
-// too, only under DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT set, before
-// it serves, and never restores it.
-func ShortenCoverageBoundForTest(timeout string) (restore func()) {
+// (coverageStatementTimeout) at timeout, in whole milliseconds and never under one, since a
+// statement_timeout of 0 turns the bound off, until restore is called. Tests in package api
+// shorten it to see the search coverage route answer a statement Postgres ended at its bound,
+// without waiting production's ten seconds out; they cannot reach the unexported var. It is set
+// and restored while nothing else reads it: no test of either package that reads the coverage
+// report runs in parallel. cmd/dispatch calls it too, only under DISPATCH_TEST_HOOKS=1 with
+// DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT set, before it serves, and never restores it.
+func ShortenCoverageBoundForTest(timeout time.Duration) (restore func()) {
 	healthy := coverageStatementTimeout
-	coverageStatementTimeout = timeout
+	coverageStatementTimeout = time.Duration(max(timeout.Milliseconds(), 1)) * time.Millisecond
 	return func() { coverageStatementTimeout = healthy }
 }
 
 // ShortenCoverageFillTimeoutForTest points the bound of the whole fill of the coverage counts
-// (coverageFillTimeout) at timeout until restore is called. cmd/dispatch calls it, and only under
-// DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_COVERAGE_FILL_TIMEOUT set, so a test can start a server
-// whose fill reaches its timeout without waiting a deployment's out; the server sets it before the
-// counts loop starts and never restores it.
-func ShortenCoverageFillTimeoutForTest(timeout time.Duration) (restore func()) {
-	healthy := coverageFillTimeout
+// (coverageFillTimeout) at timeout. cmd/dispatch calls it, and only under DISPATCH_TEST_HOOKS=1
+// with DISPATCH_TEST_COVERAGE_FILL_TIMEOUT set, so a test can start a server whose fill reaches
+// its timeout without waiting a deployment's out; the server sets it before the counts loop
+// starts.
+func ShortenCoverageFillTimeoutForTest(timeout time.Duration) {
 	coverageFillTimeout = timeout
-	return func() { coverageFillTimeout = healthy }
 }
 
 // FailCoverageFillsForTest makes the next failures fills of the coverage counts fail before their

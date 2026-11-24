@@ -1711,7 +1711,7 @@ CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
 
 ### A server's start at the largest scale (`COVERAGE_SCALE_SERVE=1`)
 
-`COVERAGE_SCALE_SERVE=1`, which reaches the test as it is, adds cb-fill-length's start of the head's server on the corpus at S, the largest scale:
+`COVERAGE_SCALE_SERVE=1`, which reaches the test as it is, adds the fill-length check's start of the head's server on the corpus at S, the largest scale (`TestTheServerFillsTheCoverageCountsAtScale`):
 
 ```bash
 cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch COVERAGE_SCALE_SERVE=1 DISPATCH_COVERAGE_SCALES="1 $S" scripts/coverage-scale.sh

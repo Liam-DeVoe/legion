@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -44,15 +45,9 @@ func handlerErrorLines(logged *logBuffer) (closed, failures []string) {
 	return closed, failures
 }
 
-// errorLines are every level=ERROR line a buffer holds, whoever wrote it.
+// errorLines are every level=ERROR line a buffer holds, whoever wrote it, in order.
 func errorLines(logged *logBuffer) []string {
-	var lines []string
-	for _, line := range strings.Split(logged.String(), "\n") {
-		if strings.Contains(line, "level=ERROR") {
-			lines = append(lines, line)
-		}
-	}
-	return lines
+	return strings.FieldsFunc(logged.Lines("level=ERROR"), func(r rune) bool { return r == '\n' })
 }
 
 // routeLines are the request lines a buffer holds for method and route.
@@ -114,7 +109,8 @@ func TestASearchItsClientClosedIsLoggedAs499(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
 		t.Fatalf("request lines %q, want one with status=%d", lines, accesslog.StatusClientClosed)
 	}
-	if !strings.Contains(lines[0], " search_shape=meaning-every") || !searchKeyField.MatchString(lines[0]) {
+	shape, _ := horizontest.Field(lines[0], "search_shape")
+	if _, keyed := horizontest.Field(lines[0], "search_key"); !keyed || shape != "meaning-every" {
 		t.Errorf("the closed search's line names no search_key or no search_shape=meaning-every: %s", lines[0])
 	}
 	if faults := errorLines(logged); len(faults) != 0 {

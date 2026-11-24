@@ -73,17 +73,14 @@ func topUpDeltas(t *testing.T, database *store.Store, total int) {
 // alone; components, versions of a project document, results and handoffs. Each kind is written in
 // one statement over generate_series, so a corpus of twice the items differs from one of the items
 // in its rows alone, and its triggers keep the counts as any write does. The first call (from 1)
-// writes what the rest hang from: the project, an architecture source and snapshot, and the
-// document.
+// writes what the rest hang from: the project, an architecture source and snapshot
+// (seedComponentsArchitecture), and the document.
 func seedRowsCorpus(t *testing.T, database *store.Store, project string, from, to int) {
 	t.Helper()
 	q := database.Pool
 	vector, foreign := embed.Literal(oneVector()), foreignIdentity
 	if from == 1 {
-		mustExec(t, q, `insert into projects (key, name, default_assignee) values ($1, 'Rows', 'alice')`, project)
-		mustExec(t, q, `insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
-			values ($1, 1, 'rows/arch', 'main', 1, '{"kind":"system","id":"test"}')`, project)
-		mustExec(t, q, `insert into architecture_snapshots (id, project_key, commit, files) values (900, $1, 'c1', '{}')`, project)
+		seedComponentsArchitecture(t, q, project, 900)
 		mustExec(t, q, `insert into artifacts (project_key, slug, name, kind, created_by, ref_key)
 			values ($1, 'rows-md', 'rows.md', 'doc', '{"kind":"user","id":"alice"}', $1 || '/rows-md')`, project)
 	}
@@ -143,15 +140,15 @@ type coverageRouteState struct {
 // coverageRouteStates is every state the route reads the kept counts in: filled; not filled, with
 // the delta rows the triggers wrote from the migration on; after a fill that failed at its end,
 // which wrote every base row but the record that it ended; at the delta bound; and above it. Each
-// holds coverageDeltaBound delta rows unfolded, which is as many as any but the last allows, and
+// holds CoverageDeltaBound delta rows unfolded, which is as many as any but the last allows, and
 // the last one more. The filled state's base has had its fold; the state at the bound has had
 // none since its fill.
 var coverageRouteStates = []coverageRouteState{
-	{"filled", func(t *testing.T, database *store.Store) { fillCounts(t, database); foldCounts(t, database) }, coverageDeltaBound, nil},
-	{"not filled", func(*testing.T, *store.Store) {}, coverageDeltaBound, ErrCoverageNotFilled},
-	{"after a failed fill", failFill, coverageDeltaBound, ErrCoverageNotFilled},
-	{"at the delta bound", fillCounts, coverageDeltaBound, nil},
-	{"above the delta bound", fillCounts, coverageDeltaBound + 1, ErrCoverageFoldBehind},
+	{"filled", func(t *testing.T, database *store.Store) { fillCounts(t, database); foldCounts(t, database) }, CoverageDeltaBound, nil},
+	{"not filled", func(*testing.T, *store.Store) {}, CoverageDeltaBound, ErrCoverageNotFilled},
+	{"after a failed fill", failFill, CoverageDeltaBound, ErrCoverageNotFilled},
+	{"at the delta bound", fillCounts, CoverageDeltaBound, nil},
+	{"above the delta bound", fillCounts, CoverageDeltaBound + 1, ErrCoverageFoldBehind},
 }
 
 // seedRouteState writes the rows corpus of size items of every kind to a database of its own,
@@ -176,7 +173,7 @@ func explainRead(t *testing.T, database *store.Store, statement string, args []a
 		t.Fatalf("begin the explain: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	mustExec(t, tx, "set local statement_timeout = '"+coverageStatementTimeout+"'")
+	mustExec(t, tx, statementTimeoutSetting(coverageStatementTimeout))
 	if err := planCoverage(ctx, tx); err != nil {
 		t.Fatalf("plan the statement as Coverage does: %v", err)
 	}
@@ -230,7 +227,7 @@ func requireAnswers(t *testing.T, database *store.Store, identity string, want e
 // and at 2N items of every kind (seedRowsCorpus), the report's one statement is explained with
 // ANALYZE for the configured identity and for none, and the rows every scan node read - the rows
 // it answered, its Filter removed and its index recheck removed, times the times it ran (rowsRead)
-// - add up to the same at both sizes; no state reads more than coverageDeltaBound + 1 delta rows,
+// - add up to the same at both sizes; no state reads more than CoverageDeltaBound + 1 delta rows,
 // and each reads every delta row it holds up to that.
 func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 	const n = 20
@@ -244,9 +241,9 @@ func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 					stage := fmt.Sprintf("%d items of every kind, identity %q", size, identity)
 					requireAnswers(t, database, identity, state.answers, stage)
 					rows, deltas, named := rowsRead(t, explainRead(t, database, coverageReadStatement, []any{identity}, true))
-					if deltas > coverageDeltaBound+1 || deltas != float64(min(state.deltas, coverageDeltaBound+1)) {
+					if deltas > CoverageDeltaBound+1 || deltas != float64(min(state.deltas, CoverageDeltaBound+1)) {
 						t.Errorf("%s: the report read %v delta rows of the %d it holds, want them all and at most %d",
-							stage, deltas, state.deltas, coverageDeltaBound+1)
+							stage, deltas, state.deltas, CoverageDeltaBound+1)
 					}
 					key := identity + "@" + fmt.Sprint(size)
 					read[key], scans[key] = rows, named
@@ -265,7 +262,7 @@ func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 }
 
 // coverageReadUnkeyedTables are the tables the report may read with no index condition: the base
-// rows and the delta rows, which it reads whole (the delta rows up to coverageDeltaBound + 1), and
+// rows and the delta rows, which it reads whole (the delta rows up to CoverageDeltaBound + 1), and
 // the two tables of one row. Every other table it reads grows with the corpus and is read through
 // an index condition.
 var coverageReadUnkeyedTables = []string{"search_coverage_counts", "search_coverage_deltas", "search_coverage_filled", "route_roster"}
@@ -404,7 +401,7 @@ func TestTheCoverageRouteSendsNoStatementOfMains(t *testing.T) {
 	}
 }
 
-// TestCoverageReadsAtMostTheDeltaBound holds R7j's read: with coverageDeltaBound delta rows
+// TestCoverageReadsAtMostTheDeltaBound holds R7j's read: with CoverageDeltaBound delta rows
 // unfolded Coverage answers the counts, and its read (coverageRead) answers what main's two
 // statements answer, row for row in one snapshot (requireMainsAnswer); with one more it answers
 // ErrCoverageFoldBehind, the bound the route names being 100,000.
@@ -412,18 +409,18 @@ func TestCoverageReadsAtMostTheDeltaBound(t *testing.T) {
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	fillCounts(t, database)
-	topUpDeltas(t, database, coverageDeltaBound)
+	topUpDeltas(t, database, CoverageDeltaBound)
 
 	requireMainsAnswer(t, database, "100,000 delta rows unfolded")
 	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
 		requireAnswers(t, database, identity, nil, fmt.Sprintf("100,000 delta rows unfolded, identity %q", identity))
 	}
 
-	topUpDeltas(t, database, coverageDeltaBound+1)
+	topUpDeltas(t, database, CoverageDeltaBound+1)
 	if _, err := Coverage(context.Background(), database, configuredIdentity); !errors.Is(err, ErrCoverageFoldBehind) {
 		t.Fatalf("with 100,001 delta rows unfolded Coverage answers %v, want ErrCoverageFoldBehind", err)
 	}
-	if CoverageDeltaBound() != 100000 {
-		t.Errorf("the bound the route names is %d, want spec version 27's 100,000", CoverageDeltaBound())
+	if CoverageDeltaBound != 100000 {
+		t.Errorf("the bound the route names is %d, want the 100,000 R7 of dispatch://INFRA-4864's spec names", CoverageDeltaBound)
 	}
 }

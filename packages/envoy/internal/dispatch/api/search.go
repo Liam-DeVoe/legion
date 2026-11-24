@@ -574,7 +574,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     under a second on production's data, and the 30-second deadline the generator and
 //     Dispatch's own clients give a request. So the server gives up before the client does,
 //     rather than an hour after, and the backend goes with the statement. A statement ended that
-//     way is SQLSTATE 57014 (meaningStatementEnded): the search route answers it 503
+//     way is SQLSTATE 57014 (searchStatementEnded): the search route answers it 503
 //     SEARCH_TIMEOUT (searchFailed), and the related-item check reports it as its own timeout.
 //   - client_connection_check_interval: how often Postgres checks, while the statement runs, that
 //     its client is still connected (searchClientConnectionCheck), 1 second. A request whose
@@ -602,7 +602,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
-	searchMeaningStatementBound,
+	searchStatementBoundSetting,
 	searchClientConnectionCheck,
 	`set local hnsw.ef_search = 400`,
 	`set local hnsw.iterative_scan = relaxed_order`,
@@ -614,37 +614,42 @@ var searchMeaningScan = []string{
 // statement serves the bar's keystroke request (keywords_only) and every search whose query
 // embedding could not be had, so a deployment under load runs it as often as the meaning ones.
 var searchKeywordScan = []string{
-	searchMeaningStatementBound,
+	searchStatementBoundSetting,
 	searchClientConnectionCheck,
 }
 
 // searchStatementBound is the server's own bound on each keyword and each meaning statement a
-// search runs, 15 seconds. Both scans set it (searchMeaningStatementBound), and a statement it
+// search runs, 15 seconds. Both scans set it (searchStatementBoundSetting), and a statement it
 // ends answers 503 SEARCH_TIMEOUT with a message that names it (search). A search whose first
 // statement matches nothing runs a second one, broadened (runSearch), which has the whole bound
-// again. It is a variable for one reason: endMeaningStatementsAt shortens it for a test, with
+// again. It is a variable for one reason: endSearchStatementsAt shortens it for a test, with
 // the setting built from it, so that the message names the bound in force.
 var searchStatementBound = 15 * time.Second
 
-// searchMeaningStatementBound is searchStatementBound as the setting both scans open with. It is
+// statementTimeoutSetting is the `set local` that bounds each later statement of a transaction
+// to d. Go writes 15 seconds as "15s", which Postgres reads as the same duration.
+func statementTimeoutSetting(d time.Duration) string {
+	return "set local statement_timeout = '" + d.String() + "'"
+}
+
+// searchStatementBoundSetting is searchStatementBound as the setting both scans open with. It is
 // named because two readers outside the lists need the very same string: the measurement of
 // these statements, which has to read what a statement costs and so cannot run under a bound
 // that would end it (TestStatementTimings), and the test that shortens the bound to prove what
-// each caller reports when the server ends a statement (endMeaningStatementsAt). Go writes 15
-// seconds as "15s", which Postgres reads as the same duration.
-var searchMeaningStatementBound = "set local statement_timeout = '" + searchStatementBound.String() + "'"
+// each caller reports when the server ends a statement (endSearchStatementsAt).
+var searchStatementBoundSetting = statementTimeoutSetting(searchStatementBound)
 
 // searchClientConnectionCheck is the connection check both scans set (searchMeaningScan says
 // what it is for).
 const searchClientConnectionCheck = `set local client_connection_check_interval = '1s'`
 
-// meaningStatementEnded reports whether err is Postgres ending a search statement itself - a
+// searchStatementEnded reports whether err is Postgres ending a search statement itself - a
 // meaning statement, or the keyword one - rather than answering it: SQLSTATE 57014,
-// query_canceled, which is what searchMeaningStatementBound raises when a query outlasts it, and
+// query_canceled, which is what searchStatementBoundSetting raises when a query outlasts it, and
 // what an operator's pg_cancel_backend raises too. A caller's own context ending is not this
 // error - pgx answers that with the context's error - so a caller that tells a timeout from a
 // failure has to read the error as well as its context (relatedMeaningStage, searchFailed).
-func meaningStatementEnded(err error) bool {
+func searchStatementEnded(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "57014"
 }
@@ -664,7 +669,7 @@ var errSearchTimedOut = errors.New("the search statement ran past its statement_
 // handler answers it as it answers every request whose client closed it. Any other error is
 // answered as it came.
 func searchFailed(ctx context.Context, err error) error {
-	if !meaningStatementEnded(err) {
+	if !searchStatementEnded(err) {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -699,7 +704,7 @@ func (s *server) beginKeywordScan(ctx context.Context) (pgx.Tx, error) {
 // every result (pgx v5 conn.go's execSimpleProtocol), and every search and every related-item
 // check pays one round trip of setup rather than one per setting. The join is made here rather
 // than at package init because a test reassigns searchMeaningScan and searchKeywordScan to
-// shorten the bound (endMeaningStatementsAt), and a string built at init would not see it.
+// shorten the bound (endSearchStatementsAt), and a string built at init would not see it.
 //
 // A setting Postgres refuses fails the whole Exec, and the Go-side error no longer names which
 // of them failed; Postgres's own message still does, since it quotes the parameter it refused.
@@ -1157,9 +1162,9 @@ meaning_comment as (
 // The shapes a search's request line names as search_shape (noteShape): the statement the search
 // chose, noted before it runs, so a line that ends in 503 or 499 names it too: keyword is
 // searchQuery for a request that asked for keywords alone, keyword-degraded is searchQuery because
-// no embedder answered, and the three meaning shapes name meaningStatementFor's three statements
-// (meaningShape). A broadened second run names its shape followed by searchShapeBroadened, and a
-// query of stop words alone, which runs no statement, names searchShapeNone.
+// no embedder answered, and the three meaning shapes name meaningStatementFor's three statements.
+// A broadened second run names its shape followed by searchShapeBroadened, and a query of stop
+// words alone, which runs no statement, names searchShapeNone.
 const (
 	searchShapeKeyword         = "keyword"
 	searchShapeKeywordDegraded = "keyword-degraded"
@@ -1208,18 +1213,6 @@ func (p searchParameters) noteShape(ctx context.Context, shape string) {
 		shape += searchShapeBroadened
 	}
 	accesslog.NoteSearch(ctx, p.logKey, shape)
-}
-
-// meaningShape is the shape that names statement, one of meaningStatementFor's three.
-func meaningShape(statement string) string {
-	switch statement {
-	case searchQueryMeaningScoped:
-		return searchShapeMeaningScoped
-	case searchQueryMeaningJoined:
-		return searchShapeMeaningJoined
-	default:
-		return searchShapeMeaningEvery
-	}
 }
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
@@ -1506,8 +1499,8 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	// one, so neither pays for the progress row's savepoint.
 	filtered := parameters.filtered()
 	filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
-	statement := meaningStatementFor(parameters.project, filled, filtered)
-	parameters.noteShape(ctx, meaningShape(statement))
+	statement, shape := meaningStatementFor(parameters.project, filled, filtered)
+	parameters.noteShape(ctx, shape)
 	rows, err := tx.Query(ctx, statement,
 		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)
 	if err != nil {
@@ -1523,9 +1516,10 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	return response, nil
 }
 
-// meaningStatementFor is the meaning statement a search of project runs. filled is what
-// embeddingProjectKeysFilled answered in that search's own transaction, and filtered whether the
-// request narrows by any of q's three filters (searchParameters.filtered).
+// meaningStatementFor is the meaning statement a search of project runs, and the shape that
+// names it on the search's request line (noteShape). filled is what embeddingProjectKeysFilled
+// answered in that search's own transaction, and filtered whether the request narrows by any of
+// q's three filters (searchParameters.filtered).
 //
 // A filtered search takes the joined statement, whatever project it names and whatever the fill
 // has reached, because that is the only one of the three whose comment arm applies those filters
@@ -1550,16 +1544,16 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 // (meaningProjectScope). The related-item check chooses among its own three the same way and has
 // no filtered case to choose for: its q binds all three filters empty (relatedQOpener), so no
 // caller of it can narrow by them (relatedMeaningStatementFor).
-func meaningStatementFor(project string, filled, filtered bool) string {
+func meaningStatementFor(project string, filled, filtered bool) (statement, shape string) {
 	switch {
 	case filtered:
-		return searchQueryMeaningJoined
+		return searchQueryMeaningJoined, searchShapeMeaningJoined
 	case project == "":
-		return searchQueryMeaning
+		return searchQueryMeaning, searchShapeMeaningEvery
 	case filled:
-		return searchQueryMeaningScoped
+		return searchQueryMeaningScoped, searchShapeMeaningScoped
 	default:
-		return searchQueryMeaningJoined
+		return searchQueryMeaningJoined, searchShapeMeaningJoined
 	}
 }
 
@@ -1600,7 +1594,7 @@ func meaningStatementFor(project string, filled, filtered bool) string {
 //
 // The savepoint also carries the bound on how long that read may wait. The row is one row of a
 // one-row table, so the only wait it can take is a lock somebody else holds on the table, and
-// behind an ACCESS EXCLUSIVE lock the read waited out searchMeaningStatementBound's whole 15
+// behind an ACCESS EXCLUSIVE lock the read waited out searchStatementBoundSetting's whole 15
 // seconds before it degraded - 15,002 ms measured at this change's head, against 202 ms with
 // the setting below (INFRA-988). A search that is going to answer from the joined statement
 // anyway must not spend a quarter of a minute learning that, so the savepoint sets
