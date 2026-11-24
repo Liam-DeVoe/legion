@@ -408,13 +408,21 @@ A session holds a role exactly when the role's claim in `envoy_roles` names it, 
 rollback and its old holder's topic cleanup are best-effort tidying of interest topics within the
 same budget: a claim that landed answers 200 whatever the cleanup did, and a topic left behind
 gives nobody the role. Two writes of a session consumer's filter follow such store work before the
-answer. An unsubscribe's (`refollow`) runs on a budget of its own, `sessionConsumerCallTimeout`
-(5 s), after the 3.5 s. A claim that took a Legion controller role from another session narrows
+answer. An unsubscribe's (`refollow`) runs on the route's request context, so it ends within the
+same 3.5 s of the request's arrival: `storedFilterWrite` bounds it by `sessionConsumerCallTimeout`
+(5 s) as well, and the earlier deadline applies. The write first waits for the session's lock
+(`lockWithin`), which this listener's registrations, relay restarts and deletes of that session
+also take. It then sets the filter from the row the bucket holds, in at most five fenced passes
+(`fenceFilterWrite`). If the lock is not free before the budget ends, the write gives up and
+sends nothing: the listener logs a WARN line, the filter keeps the removed topics until a later
+filter write such as the session's next heartbeat, and the route answers 200. If the last pass
+meets a NATS reconnect, the route answers 503.
+A claim that took a Legion controller role from another session narrows
 that session's filter (`narrowFormerHolder`: a role claim read from the role bucket stream's
 leader, a row read, the wait for that session's lock and one consumer call) within what is left
 of the claim's own 3.5 s, on a context the client's hang-up does not cancel, so `POST /v1/roles/set`
-still answers inside its budget, and a narrowing the budget cut short is logged at WARN naming
-the role, its lane and both sessions.
+still answers inside its budget, and a narrowing the budget cut short, or whose filter write met a
+NATS reconnect, is logged at WARN naming the role, its lane and both sessions.
 
 ## Request body limits
 
