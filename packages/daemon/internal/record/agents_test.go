@@ -514,3 +514,50 @@ func TestStepTokenIsTheTreeArchitectsForTheOwnerAndItsAgentsOtherwise(t *testing
 		t.Errorf("StepToken of a step named outside the agent grammar = %q, want a refusal", got)
 	}
 }
+
+// Two roles of 30 bytes or more that agree in their first 30 cut to one numbered name
+// (claim.NumberedAgentName), and a version replaces the rows that showed the name held on the
+// other role. A name whose stored claim holds another role is passed over all the same, since that
+// claim's session is the other role's agent's. With role A, 30 r's and -a, and role B, 30 r's and
+// -b: version 1 gives task t `A A`, so step 2 runs as rrr…r-2 and its claim holds A; version 2,
+// `B reviewer`, replaces version 1's rows; version 3, `B B`, must not give step 2 rrr…r-2, whose
+// claim would resume A's agent's session in a step of B. The control: where the claim of that name
+// holds B itself, the name is free for B's agent. The fault: pass 4 read only the earlier rows, found
+// rrr…r-2 held on no other role, and gave it to B's step 2.
+func TestANameWhoseClaimHoldsAnotherRoleIsNotGivenToAnAgentOfALongRole(t *testing.T) {
+	a, b := strings.Repeat("r", 30)+"-a", strings.Repeat("r", 30)+"-b"
+	cut := claim.Agent(strings.Repeat("r", 30) + "-2")
+	if claim.NumberedAgentName(claim.Role(a), 2) != cut || claim.NumberedAgentName(claim.Role(b), 2) != cut {
+		t.Fatalf("the second agents of %s and %s are named %q and %q, want both %q: the case's premise", a, b,
+			claim.NumberedAgentName(claim.Role(a), 2), claim.NumberedAgentName(claim.Role(b), 2), cut)
+	}
+	token, err := claim.AgentToken("legion", "LEGION-208", cut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := NameAgents(nil, nil, []PlanStep{
+		{Generation: 1, Task: "t", Position: 1, Role: b},
+		{Generation: 1, Task: "t", Position: 2, Role: "reviewer"},
+	})
+	v3 := []PlanStep{
+		{Generation: 1, Task: "t", Position: 1, Role: b},
+		{Generation: 1, Task: "t", Position: 2, Role: b},
+	}
+	for _, tc := range []struct {
+		name  string
+		holds string
+		taken bool
+	}{
+		{name: "the claim holds the other role", holds: a},
+		{name: "control: the claim holds the step's own role", holds: b, taken: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := KeySessionsOf([]IssueClaim{{Token: token, Role: claim.Role(tc.holds), SessionAgent: "step:2:t"}})
+			got := NameAgents(v2, claims, v3)
+			if taken := got[1].Agent == cut; taken != tc.taken {
+				t.Errorf("version 3's step 2, of %s, beside the claim %s of %s: name %q, want %s taken = %v", b, cut, tc.holds,
+					got[1].Agent, cut, tc.taken)
+			}
+		})
+	}
+}
