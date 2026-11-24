@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
+import { MAX_BLOCK_ID_BYTES } from "./dispatch-block-ref";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_BLOCK_UNITS,
@@ -60,22 +61,6 @@ function recordingSchemaApi(): {
     },
     fields,
   };
-}
-
-/** The Dispatch skill's own text, read from the repository it ships in. */
-function dispatchSkill(): string {
-  const repoRoot = resolve(import.meta.dir, "../../..");
-  return readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
-}
-
-/** Every `## ` heading of the Dispatch skill, the names a tool description may point at. */
-function dispatchSkillHeadings() {
-  return dispatchSkill()
-    .split("\n")
-    .flatMap((line) => {
-      const match = line.match(/^## (.+)$/u);
-      return match === null ? [] : [match[1]];
-    });
 }
 
 function specFor(name: string) {
@@ -277,19 +262,6 @@ describe("dispatchToolSpecs", () => {
       [keyof typeof validCalls, (typeof validCalls)[keyof typeof validCalls]]
     >) {
       expect(schemaFor(name).safeParse(args).success, name).toBe(true);
-    }
-  });
-
-  test("both ask tools take a question string and a list of labelled options", () => {
-    for (const name of ["dispatch_ask", "dispatch_edit_ask"] as const) {
-      const tool = dispatchToolSpecs.find((candidate) => candidate.name === name);
-      if (tool === undefined) throw new Error(`${name} spec is missing`);
-      const argumentsSchema = tool.arguments(schemaApi) as unknown as {
-        question: z.ZodType;
-        options: z.ZodType;
-      };
-      expect(argumentsSchema.question.safeParse("Hold to Monday?").success, name).toBe(true);
-      expect(argumentsSchema.options.safeParse([{ label: "Hold" }]).success, name).toBe(true);
     }
   });
 
@@ -976,14 +948,19 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("rejects an ask with more than eight options", () => {
-    expect(
-      schemaFor("dispatch_ask").safeParse({
-        issue: "DSP-1",
-        question: "Which option?",
-        options: Array.from({ length: 9 }, (_, index) => ({ label: `Option ${index}` })),
-      }).success
-    ).toBe(false);
+  // An option needs only its label, so eight bare options are taken and a ninth is refused by the
+  // bound alone. Each ask tool declares the bound of its own options.
+  test("both ask tools take up to eight options that each need only a label, and refuse a ninth", () => {
+    const options = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ label: `Option ${index}` }));
+    for (const [name, call] of [
+      ["dispatch_ask", { issue: "DSP-1", question: "Which option?" }],
+      ["dispatch_edit_ask", { ask: "ask-1" }],
+    ] as const) {
+      const schema = schemaFor(name);
+      expect(schema.safeParse({ ...call, options: options(8) }).success, name).toBe(true);
+      expect(schema.safeParse({ ...call, options: options(9) }).success, name).toBe(false);
+    }
   });
 
   test("requires ask multiple to be boolean", () => {
@@ -1467,34 +1444,48 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // What a description's rules are about, by name: the fields, flags, commands, file names and
-  // printed labels an agent types or reads. Each is held as a whole token, so the sentences around
-  // them may be reworded and a rule that stops naming one fails here. A name that is also a plain
-  // word (the operations replace and insert, urgency and high, optional, required and false, the
-  // check attributes serves, surface, run, when and needs, the statuses backlog and icebox, repo,
-  // approve) is held by no row: it stands in its description as a word too, so a check of it could
-  // pass when the rule stops naming it.
+  // What a description's rules are about, by name: the fields, flags, values, commands, file names,
+  // statuses and printed labels an agent types or reads. Each is held as a whole token, so the
+  // sentences around them may be reworded and a rule that stops naming one fails here. A name that
+  // stands twice or more in its description is held by no row, since a check of it still passes
+  // when the rule stops naming it: `replace`, `insert` and the `with` field in dispatch_doc_edit's,
+  // `dispatch doc-edit` in dispatch_artifact's, the check attributes `serves`, `when` and `needs`
+  // in dispatch_read's, `dispatch projects` in dispatch_project's and `repo` in
+  // dispatch_architecture_sync's. dispatch_read's Coverage rule names the `check` and `plan_task`
+  // blocks too, so its block-read rule's are held in the possessive form only that rule writes.
   const descriptionNames: readonly (readonly [string, readonly string[]])[] = [
     ["dispatch_comment", ["reply_to_ask", "dispatch edit-ask"]],
-    ["dispatch_doc_edit", ["{#id}"]],
-    ["dispatch_artifact", ["spec.md", "dispatch doc-edit"]],
-    ["dispatch_message", ["--issue", "expects_reply", "reply_with"]],
+    ["dispatch_doc_edit", ["{#id}", `${MAX_BLOCK_ID_BYTES} bytes`]],
+    ["dispatch_artifact", ["spec.md"]],
+    ["dispatch_ask", ["urgency", "high"]],
+    ["dispatch_resolve_ask", ["answered"]],
+    [
+      "dispatch_message",
+      ["--issue", "expects_reply", "optional", "required", "false", "reply_with"],
+    ],
     [
       "dispatch_read",
       [
         "`Block:`",
         "`Type:`",
         "`Document:`",
-        "`check`",
+        "`check`'s",
+        "surface",
+        "run",
         "negative_control",
         "ci_check",
-        "`plan_task`",
+        "`plan_task`'s",
         "`Changed in version:`",
         "`Text:`",
+        "unchanged",
+        "changed",
+        "removed",
         "`No block <id> in <document>.`",
       ],
     ],
-    ["dispatch_project", ["dispatch projects", "dispatch issue"]],
+    ["dispatch_project", ["dispatch issue"]],
+    ["dispatch_priorities", ["backlog", "icebox"]],
+    ["dispatch_review", ["approve"]],
   ];
   test.each(
     descriptionNames
@@ -1512,7 +1503,9 @@ describe("dispatchToolSpecs", () => {
   });
 
   // A reference flag's help names the forms of reference it takes, each a pattern of the
-  // reference grammar rather than a sentence about it.
+  // reference grammar rather than a sentence about it. dispatch_read's /ask/<id> and
+  // /comment/<id> stand inside its issue forms too, so the project document's pair is held as the
+  // slice of the clause that lists them.
   const referenceForms: readonly (readonly [string, string, readonly string[]])[] = [
     ["dispatch_ask", "ref", ["dispatch://"]],
     [
@@ -1520,8 +1513,7 @@ describe("dispatchToolSpecs", () => {
       "ref",
       [
         "dispatch://PROJECT/artifact/<slug>[@vN]",
-        "/ask/<id>",
-        "/comment/<id>",
+        "/ask/<id> and /comment/<id>",
         "dispatch://KEY/spec#b-<block id>[@vN]",
         "dispatch://KEY/artifact/<slug>#b-<block id>[@vN]",
         "dispatch://PROJECT/artifact/<slug>#b-<block id>[@vN]",
@@ -1537,7 +1529,7 @@ describe("dispatchToolSpecs", () => {
     >;
     const argument = fields[field];
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
-    expect(forms.filter((form) => !description.includes(form))).toEqual([]);
+    expect(namesMissing(description, forms)).toEqual([]);
   });
 
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
@@ -1557,22 +1549,6 @@ describe("dispatchToolSpecs", () => {
       expect(skills, tool).toEqual(["dispatch-writing-specs"]);
     }
     expect(existsSync(resolve(repoRoot, "skills/dispatch-writing-specs/SKILL.md"))).toBe(true);
-  });
-
-  // The Dispatch skill keeps the headings code and other skills cite.
-  test("the Dispatch skill keeps every heading code and other skills cite", () => {
-    expect(dispatchSkillHeadings()).toEqual(
-      expect.arrayContaining([
-        "Asks and ask blocks",
-        "Issue status is yours to move",
-        "Choosing what to work on",
-        "Close what you opened",
-        "Structure over stream",
-        "Architecture components",
-        "References",
-        "Setup and the HTTP API",
-      ])
-    );
   });
 
   // Each tool that writes a body states the server's bounds and the decision

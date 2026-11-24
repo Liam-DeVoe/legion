@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  SESSION_LIVE_WINDOW_MS,
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
@@ -20,12 +21,22 @@ import {
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
-import { createEnvoyClient, type SessionState, UNRESPONSIVE_RULE } from "../transport";
+import {
+  type ConnectionState,
+  createEnvoyClient,
+  type SessionState,
+  UNRESPONSIVE_RULE,
+} from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: the rule's text must carry that number, and a change of the constant
  *  must change the text rather than leave it saying a number nothing enforces. */
 const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
+
+/** The minutes a session stays live after its last registration, from the constant the listener
+ *  reads a session's state by: a text that names the live window writes it as this number of
+ *  minutes, and a change of the constant must change the text. */
+const LIVE_WINDOW_MINUTES = SESSION_LIVE_WINDOW_MS / 60_000;
 
 const schemaApi = zodSchemaApi(z);
 
@@ -128,9 +139,13 @@ describe("envoyToolSpecs", () => {
     expect(subscribe?.description).toContain("envoy.exceptions.<original-topic>");
   });
 
-  // Each topic kind the stream stores is named, in the list the two texts that say what a
-  // subscription and a publish reach give it, and a 200 is what a stored publish answers.
-  test("names each topic kind the stream stores, and the 200 a stored publish answers", () => {
+  // Each topic kind of `kinds` is one the stream stores, and the two texts that say what a
+  // subscription and a publish reach name each in the one clause that lists them; a 200 is what a
+  // stored publish answers. `agent` and `team` stand in other sentences of both texts too, and the
+  // subscribe text's topic guide names github, slack, ghostwispr and whatsapp topics, so each kind
+  // is held in that clause: the run of comma-separated names that holds the most of them. The
+  // eight are written here, so a ninth kind the stream comes to store is one this case does not see.
+  test("names these eight topic kinds the stream stores in the clause that lists them, and the 200 a stored publish answers", () => {
     const kinds = [
       "agent",
       "dispatch",
@@ -144,18 +159,30 @@ describe("envoyToolSpecs", () => {
     expect(kinds.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual([]);
     for (const name of ["envoy_subscribe", "envoy_publish"]) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
-      expect(namesMissing(description, kinds), name).toEqual([]);
+      let clause = "";
+      for (const [run] of description.matchAll(/\w+(?:, \w+)+/gu)) {
+        if (namesMissing(run, kinds).length < namesMissing(clause, kinds).length) clause = run;
+      }
+      expect(namesMissing(clause, kinds), name).toEqual([]);
       expect(namesMissing(description, ["200"]), name).toEqual([]);
     }
   });
 
-  test("names the recipient counts, the stopped state and the hours of the duplicate window", () => {
+  // A text that tells a sender what a session's state means names the stopped state a send answers
+  // with (`ConnectionState`), the live window in minutes and the duplicate window in hours, each
+  // number from the constant that sets the window.
+  test("names the recipient counts, the stopped state, the minutes of the live window and the hours of the duplicate window", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+    const stopped: ConnectionState = "stopped";
+    const names = [
+      stopped,
+      `${LIVE_WINDOW_MINUTES} minutes`,
+      `${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`,
+    ];
 
     for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
-      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description;
-      expect(description).toContain("stopped");
-      expect(description).toContain(`${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`);
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(namesMissing(description, names), name).toEqual([]);
     }
     const counts = namesMissing(publish?.description ?? "", ["recipients", "recipients_connected"]);
     expect(counts).toEqual([]);

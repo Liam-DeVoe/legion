@@ -785,13 +785,15 @@ test("read_release_records reads the window with this session's claim, and repor
 // Every phase worker reads one description of the tool, whatever its role, and the daemon alone
 // decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
 // no phase worker is given a description of its own. That one description names the `verdict`
-// field, its two values and the tester, the role it is taken from. The case holds no word of it.
+// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
+// held: the description names the tester in other sentences too, so a check of it could not fail.
+// The case holds no word of it.
 test("every phase worker is given the same description of the legion tool", () => {
   const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
     (role) => toolFor(claimSession(role)).description
   );
   expect(new Set(described).size).toBe(1);
-  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail", "tester"])).toEqual([]);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {

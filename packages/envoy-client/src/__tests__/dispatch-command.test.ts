@@ -48,6 +48,26 @@ function shellWords(line: string): string[] {
   return words;
 }
 
+/** The parts of a call's JSON schema the help cases read. */
+interface SchemaNode {
+  readonly description?: string;
+  readonly items?: SchemaNode;
+  readonly properties?: Readonly<Record<string, SchemaNode>>;
+}
+
+/**
+ * The part of `help` under `flag`: from the flag's own line, `\n  --issue <text>` or
+ * `\n  --multiple` for a flag with no value, up to the next flag's line or the end. Empty when no
+ * line of `help` is the flag's.
+ */
+function flagSection(help: string, flag: string): string {
+  const line = `\n  ${flag}`;
+  const at = Math.max(help.indexOf(`${line} `), help.indexOf(`${line}\n`));
+  if (at === -1) return "";
+  const end = help.indexOf("\n  --", at + 1);
+  return help.slice(at, end === -1 ? undefined : end);
+}
+
 describe("the dispatch command surface", () => {
   test("every spec's example survives commandLine then parseCommand unchanged", () => {
     for (const spec of dispatchToolSpecs) {
@@ -70,29 +90,35 @@ describe("the dispatch command surface", () => {
   });
 
   // A flag that takes JSON lists the keys of its object, or of each item of its list, from the
-  // schema the call is checked against, so a caller learns the field names from --help rather
-  // than from the refusal of a wrong one.
-  test("every JSON flag's help lists each key its object or list item takes", () => {
-    interface Node {
-      readonly type?: string;
-      readonly items?: Node;
-      readonly properties?: Readonly<Record<string, Node>>;
-    }
+  // schema the call is checked against, each key on its own line with the description its schema
+  // gives it, so a caller learns the field names and what each holds from --help rather than from
+  // the refusal of a wrong one.
+  test("every JSON flag's help lists each key its object or list item takes, with the key's description", () => {
     let checked = 0;
     for (const spec of dispatchToolSpecs) {
-      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as Node;
       const help = commandHelp(spec.name);
+      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as SchemaNode;
       for (const [field, node] of Object.entries(schema.properties ?? {})) {
         const keys = node.properties ?? node.items?.properties;
         if (keys === undefined) continue;
-        const flag = `  --${flagName(field)}-json <json>\n`;
-        const at = help.indexOf(flag);
-        expect(at, `${spec.name} ${field}`).toBeGreaterThan(-1);
-        const end = help.indexOf("\n  --", at + flag.length);
-        const section = help.slice(at, end === -1 ? undefined : end);
-        for (const key of Object.keys(keys)) {
-          expect(section, `${spec.name} ${field}.${key}`).toContain(`\n        ${key} (`);
+        const flag = `--${flagName(field)}-json`;
+        const section = flagSection(help, flag);
+        expect(section, `${spec.name} ${field}`).toStartWith(`\n  ${flag} `);
+        for (const [key, { description }] of Object.entries(keys)) {
+          const told = `${spec.name} ${field}.${key}`;
+          const line = `\n        ${key} (`;
+          expect(section, told).toContain(line);
           checked++;
+          if (description === undefined) continue;
+          // `<key> (<type>): <description>`, the description on the key's own line, each later
+          // line of it indented as every line of a flag's help is.
+          const at = section.indexOf(line);
+          const said = section.indexOf(`): ${description.replaceAll("\n", "\n      ")}`, at);
+          expect(said, `${told} has no description after it`).toBeGreaterThan(at);
+          expect(
+            section.slice(at + 1, said),
+            `${told}'s description is not on its own line`
+          ).not.toContain("\n");
         }
       }
     }
@@ -102,23 +128,16 @@ describe("the dispatch command surface", () => {
   // A command's help prints its tool's description, and under the flag that sets a field the
   // description the field's schema holds, so the help says what the spec says.
   test("every command's help prints its spec's description and each field's under its flag", () => {
-    interface Node {
-      readonly description?: string;
-      readonly properties?: Readonly<Record<string, Node>>;
-    }
     let checked = 0;
     for (const spec of dispatchToolSpecs) {
       const help = commandHelp(spec.name);
       expect(help, spec.name).toContain(`\n\n${spec.description}\n\n`);
-      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as Node;
+      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as SchemaNode;
       for (const [field, { description }] of Object.entries(schema.properties ?? {})) {
         if (description === undefined) continue;
-        // The flag's own line: `  --issue <text>`, or `  --multiple` for a flag with no value.
-        const flag = `\n  ${fieldFlag(spec.name, field)}`;
-        const at = Math.max(help.indexOf(`${flag} `), help.indexOf(`${flag}\n`));
-        expect(at, `${spec.name} ${field}`).toBeGreaterThan(-1);
-        const end = help.indexOf("\n  --", at + 1);
-        const section = help.slice(at, end === -1 ? undefined : end);
+        const flag = fieldFlag(spec.name, field);
+        const section = flagSection(help, flag);
+        expect(section, `${spec.name} ${field}`).toStartWith(`\n  ${flag}`);
         expect(section, `${spec.name} ${field}`).toContain(
           description.replaceAll("\n", "\n      ")
         );

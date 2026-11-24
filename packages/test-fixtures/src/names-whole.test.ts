@@ -22,6 +22,18 @@ test("a name that begins or ends with punctuation is bounded by that punctuation
   expect(namesWhole("keep --issues", "--issue")).toBe(false);
 });
 
+// A name is matched as its own text: a character a pattern reads as syntax is escaped first, so a
+// name holding one is found only where the text holds that character.
+test("a | in a name matches only a |, never a choice between two names", () => {
+  expect(namesWhole("pass|fail only", "pass|fail")).toBe(true);
+  expect(namesWhole("pass only", "pass|fail")).toBe(false);
+});
+
+test("a . in a name matches only a ., never any character", () => {
+  expect(namesWhole("<subject>.>", "<subject>.>")).toBe(true);
+  expect(namesWhole("<subject>x>", "<subject>.>")).toBe(false);
+});
+
 test("namesMissing lists each name the text does not hold, in order", () => {
   expect(namesMissing("backlog and icebox", ["backlog", "triage", "icebox", "todo"])).toEqual([
     "triage",

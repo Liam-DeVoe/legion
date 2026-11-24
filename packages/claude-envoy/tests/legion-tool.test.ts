@@ -4,7 +4,11 @@ import { resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
+import {
+  type ClaimCapability,
+  legionToolDescription,
+  PHASE_OP_SENTENCES,
+} from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import { legion, name, version } from "../package.json" with { type: "json" }
@@ -194,21 +198,17 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     },
     required: ["op"],
   })
-  // Where the host's texts stand, by the operation names and the shared sentences around them:
-  // its read_record and read_release_records sentences right before handoff_complete's contract,
-  // ready_for_update's part after it, its request_backward_move and read_build sentences after
-  // that, and the publish tool by its name as Claude Code shows it. No word is held here.
-  const description = definition.description
-  const before = `${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}`
-  const at = description.indexOf(before)
-  expect(at, "no read_record and read_release_records part").toBeGreaterThan(-1)
-  const contract = at + before.length
-  expect(description.indexOf("handoff_complete", at)).toBe(contract)
-  const update = description.indexOf("ready_for_update", contract)
-  expect(update).toBeGreaterThan(contract)
-  const after = `${PHASE_OP_SENTENCES.requestBackwardMove}${PHASE_OP_SENTENCES.readBuild}`
-  expect(description.indexOf(after, update)).toBeGreaterThan(update)
-  expect(description).toContain("mcp__legion__envoy_publish")
+  // The texts this host passes the shared template: the Envoy publish tool by its name as Claude
+  // Code shows it, and the phase-op sentences it puts before and after handoff_complete's
+  // contract. Where the template places each is the template's own test
+  // (packages/pi-shared/src/legion-phase-ops.test.ts).
+  expect(definition.description).toBe(
+    legionToolDescription({
+      envoyPublish: "mcp__legion__envoy_publish",
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+    }),
+  )
 })
 
 test("handoff_complete finds the record and commit for the issue's phase and the claim's role, then mints its grant and posts them", async () => {

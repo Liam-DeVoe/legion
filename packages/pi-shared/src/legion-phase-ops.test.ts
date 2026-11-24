@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  LEGION_PHASE_BACKWARD_TARGETS,
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
-} from "@legion/contracts/legion-api";
+import { LEGION_PHASE_BACKWARD_TARGETS, type LegionPhase } from "@legion/contracts/legion-api";
 import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
@@ -16,8 +12,10 @@ import {
   type ClaimCapability,
   executePhaseOp,
   legionToolDescription,
+  PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
+  type PhaseOpField,
   type PhaseOpRuntime,
   phaseOpParameters,
   STALE_ENTRY_INSTRUCTION,
@@ -210,8 +208,9 @@ test("the description sets the host's texts before and after handoff_complete's 
 // description, so a worker reads one instruction in its tool and in the refusal. The daemon's
 // golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and
 // its constant to `stale-entry.json`: this case holds the tool's constant to the daemon's, and the
-// description to naming that code with the constant after it. It holds no word of the description.
-test("the description names HANDOFF_STALE_ENTRY with the instruction the daemon's refusal ends with", () => {
+// description to ending that code's clause, `HANDOFF_STALE_ENTRY (` up to its `), `, with the
+// constant. It holds no word of the description.
+test("the description ends HANDOFF_STALE_ENTRY's clause with the instruction the daemon's refusal ends with", () => {
   const { code, instruction } = daemonFixture("stale-entry.json") as {
     readonly code: string;
     readonly instruction: string;
@@ -219,12 +218,10 @@ test("the description names HANDOFF_STALE_ENTRY with the instruction the daemon'
   expect(code).toBe("HANDOFF_STALE_ENTRY");
   expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const named = description.indexOf(code);
-  expect(named, `the description names no ${code}`).toBeGreaterThan(-1);
-  expect(
-    description.indexOf(STALE_ENTRY_INSTRUCTION, named),
-    `the description gives ${code} no instruction after it`
-  ).toBeGreaterThan(named);
+  const opens = description.indexOf(`${code} (`);
+  expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
+  const clause = description.slice(opens, description.indexOf("), ", opens));
+  expect(clause).toEndWith(STALE_ENTRY_INSTRUCTION);
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -254,9 +251,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: "2026-11-06T10:00Z" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
-    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: not
-    // blank, and at most 2,000 characters counted as the daemon counts them. Each is refused by its
-    // field's name, before the client's own parse of the request would refuse it unnamed.
+    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: a
+    // string, not blank, and at most 2,000 characters counted as the daemon counts them. Each is
+    // refused by its field's name, before the client's own parse of the request would refuse it
+    // unnamed.
     [
       { op: "handoff_complete", summary: "x", plan_rating: 0, plan_reason: "r" },
       "handoff_complete's plan_rating is a whole number from 1 to 5",
@@ -275,6 +273,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     ],
     [
       { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: " \t\n" },
+      "handoff_complete requires plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: 5 },
       "handoff_complete requires plan_reason",
     ],
     [
@@ -537,44 +539,11 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
   expect(parted).toEqual([]);
 });
 
-// The completion that ends the retro carries the rating of the plan: handoff_complete itself takes
-// `plan_rating`, a whole number on the contract's scale, with `plan_reason`, a string, and the
-// daemon's refusals of a rating reach the agent by their codes. The case holds the operation's
-// fields, their types and the daemon's codes, and no word of the description.
-test("handoff_complete takes the retro's rating fields on the contract's scale, and the daemon's refusals of a rating reach the agent by code", async () => {
-  const completion = {
-    op: "handoff_complete",
-    summary: "Retro done.",
-    plan_reason: "fit",
-  } as const;
-  for (const rating of [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST]) {
-    const parsed = PhaseOpArguments.safeParse({ ...completion, plan_rating: rating });
-    expect(parsed.success, `handoff_complete refuses plan_rating ${rating}`).toBe(true);
-  }
-  for (const rating of [LEGION_PLAN_RATING_LEAST - 1, LEGION_PLAN_RATING_MOST + 1, 2.5]) {
-    const parsed = PhaseOpArguments.safeParse({ ...completion, plan_rating: rating });
-    expect(parsed.success, `handoff_complete takes plan_rating ${rating}`).toBe(false);
-  }
-  const unworded = { ...completion, plan_rating: LEGION_PLAN_RATING_MOST, plan_reason: 5 };
-  expect(PhaseOpArguments.safeParse(unworded).success, "plan_reason takes a number").toBe(false);
-  for (const code of ["PLAN_RATING_REQUIRED", "PLAN_RATING_UNEXPECTED", "PLAN_RATING_INPUT"]) {
-    const refusal = { status: 400, code, error: "a refusal the stub daemon answers" };
-    const { ops } = runtime(implementer, stateAtPhase("retro"), refusal, RETRO_REPORT);
-    await expect(
-      executePhaseOp(ops, {
-        op: "handoff_complete",
-        summary: "Retro done.",
-        plan_rating: LEGION_PLAN_RATING_MOST,
-        plan_reason: "fit",
-      })
-    ).rejects.toThrow(`400 ${code}`);
-  }
-});
-
 // The description is where every host's agent reads what the completion that ends the retro
 // carries: the two fields, the skill that states the rule, and the daemon's refusals of a rating,
 // each by name. The scale's two numbers stand elsewhere in the description as well, so a check of
-// them here could not fail by its cause; the schema case above holds the scale.
+// them here could not fail by its cause; the refusals of 0 and 6 and the daemon's golden cases
+// above hold the scale.
 test("the description names the retro's rating fields, its skill and the daemon's refusals of a rating", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   const missing = namesMissing(description, [
@@ -629,6 +598,22 @@ test("the description names return_to and the daemon's three refusals of it", ()
     "RETURN_REFUSED",
   ]);
   expect(missing).toEqual([]);
+});
+
+// A host that carries request_backward_move or read_build states it in its own text with the
+// sentence `PHASE_OP_SENTENCES` gives it. The move's sentence names the move's fields, each
+// backticked, and accepting, the phase an architect moves its issue back from; the build's names
+// null, the contract read_build answers where the daemon states none. Each name is held in its
+// own sentence: a host's whole description names `issue` and accepting in other sentences too
+// (read_record's and sign_off's), where a check of them could not fail.
+test("request_backward_move's sentence names its fields and the phase an architect moves from, and read_build's names null", () => {
+  const fields: readonly PhaseOpField[] = ["to", "reason", "issue"];
+  const accepting: LegionPhase = "accepting";
+  const move = [...fields.map((field) => `\`${field}\``), accepting];
+  expect({
+    move: namesMissing(PHASE_OP_SENTENCES.requestBackwardMove, move),
+    build: namesMissing(PHASE_OP_SENTENCES.readBuild, ["null"]),
+  }).toEqual({ move: [], build: [] });
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were

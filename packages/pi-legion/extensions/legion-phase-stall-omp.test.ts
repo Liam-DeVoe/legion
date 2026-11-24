@@ -405,10 +405,11 @@ test.skipIf(skip)(
     expect(turns).toHaveLength(3);
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
-    // The tool text the model is offered names the report's `verdict`, its two values and the
-    // tester, the role the daemon takes it from.
+    // The tool text the model is offered names the report's `verdict` and its two values. The
+    // tester, the role the daemon takes it from, is not held: the text names the tester in other
+    // sentences too, so a check of it could not fail.
     const offered = legionToolDescription(turns[0] as Request);
-    expect(namesMissing(offered, ["`verdict`", "pass|fail", "tester"])).toEqual([]);
+    expect(namesMissing(offered, ["`verdict`", "pass|fail"])).toEqual([]);
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
     expect(userText(turns[1] as Request)).toContain("written as text");
