@@ -1115,7 +1115,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	switch reading.wait {
 	case waitsForResume:
 		s.log.Info("supervise: a suspension that only a resume lifts holds this update round now the sweep has reached its replacement; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "held", holdsOf(reading.held))
+			"issue", issue, "round", round, "pod", pod, "held", holdNames(reading.held))
 		s.tellLateRound(ctx, issue, live, round, pod, reasons, reasonOver(reading.held, holdReason), clock)
 		return
 	case waitsForPause:
@@ -1128,7 +1128,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		return
 	case waitsForProcessInItsPod:
 		s.log.Info("supervise: no claim of this issue records a process in this update round's pod now the sweep has reached its replacement; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "held", holdsOf(reading.held))
+			"issue", issue, "round", round, "pod", pod, "held", holdNames(reading.held))
 		// The walk asks the runtime whether this pod is there before it tells anyone of it or
 		// weighs a hold, and the next sweep's walk decides this round
 		// (roundWithNoProcessInItsPod).
@@ -1476,10 +1476,10 @@ func holdSentences(held []supervise.Claim) string {
 	return strings.Join(sentences, " ")
 }
 
-// holdsOf names the suspension over each agent of held by its holder, for a log line or an
+// holdNames names the suspension over each agent of held by its holder, for a log line or an
 // error — "an operator's suspension holds tester", "the controller's suspension holds
 // implementer" — in the order holdWords runs.
-func holdsOf(held []supervise.Claim) []string {
+func holdNames(held []supervise.Claim) []string {
 	var named []string
 	for _, holder := range holdWords {
 		for _, c := range held {
@@ -1590,7 +1590,7 @@ func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue stri
 func (s *supervision) waitForResume(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string,
 	held []supervise.Claim, clock roundClock) {
 	s.log.Info("supervise: a suspension that only a resume lifts holds this update round; the replacement waits for that resume, whatever the round's bound",
-		"issue", issue, "round", round, "pod", pod, "held", holdsOf(held))
+		"issue", issue, "round", round, "pod", pod, "held", holdNames(held))
 	s.tellLateRound(ctx, issue, live, round, pod, reasons, reasonOver(held, holdReason), clock)
 }
 
@@ -1687,7 +1687,7 @@ func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(
 			return fmt.Errorf("%w: the holds of a project's pause on the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
 		if held := heldClaims(group, round, clock); len(held) > 0 {
-			return fmt.Errorf("%w: %s", errReplacementNotDue, strings.Join(holdsOf(held), ", "))
+			return fmt.Errorf("%w: %s", errReplacementNotDue, strings.Join(holdNames(held), ", "))
 		}
 		if clock.held() {
 			return fmt.Errorf("%w: a project's pause holds the pod of %s", errReplacementNotDue, issue)
@@ -1785,7 +1785,7 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 // bound has already moved by the time the pause held the pod (roundClock.roundBound).
 func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool, string) {
 	if held := heldClaims(group, round, clock); len(held) > 0 {
-		return false, strings.Join(holdsOf(held), ", ")
+		return false, strings.Join(holdNames(held), ", ")
 	}
 	if clock.held() {
 		return false, "a project's pause holds the pod"

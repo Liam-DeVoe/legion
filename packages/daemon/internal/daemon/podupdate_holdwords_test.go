@@ -15,7 +15,7 @@ import (
 
 // Every source whose suspension holds (supervise.SuspendSource.Holds) has exactly one row of
 // holdWords, and no other source has one. A holding source with no row would drop its claims out
-// of the late-round notice (holdSentences) and the log line (holdsOf) while those claims kept the
+// of the late-round notice (holdSentences) and the log line (holdNames) while those claims kept the
 // round past its bound, and a second row would name them twice. The sources are read from
 // supervise's own source rather than listed here, so a third holding source declared there and
 // given no row fails this test instead of passing it.
