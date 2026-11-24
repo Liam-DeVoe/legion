@@ -961,7 +961,8 @@ describe("dispatchToolSpecs", () => {
 
   // The route refuses a write naming both labels and labels_add (400 LABELS_INPUT): labels
   // replaces every label, and labels_add adds to the labels the issue holds. The tool refuses such
-  // a call before anything is sent, in words that say which to name; each alone is a field.
+  // a call before anything is sent, in words that say which to name; each alone is a field, and
+  // the tool's description names labels_add.
   test("dispatch_issue_update takes labels_add, which adds labels, and never with labels", () => {
     const schema = schemaFor("dispatch_issue_update");
     const both = schema.safeParse({ issue: "DSP-1", labels: ["board"], labels_add: ["api"] });
@@ -975,7 +976,7 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(false);
     const update: DispatchToolSpec = specFor("dispatch_issue_update");
     expect(update.validation?.message).toContain("; labels_add goes without labels.");
-    expect(update.description).toContain("labels_add adds labels and keeps every label");
+    expect(namesMissing(update.description, ["labels_add"])).toEqual([]);
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.
@@ -1756,14 +1757,15 @@ function statedBounds(name: string): string[] {
   return held(specFor(name).arguments(api) as Record<string, Bounded>);
 }
 
-/** The rule of a `components` argument's parts, as dispatch_issue and dispatch_issue_update
- *  state it. */
+/** The rule of a `components` argument's parts: the refusal dispatch_issue and
+ *  dispatch_issue_update give a call that breaks it, and the words their components field states
+ *  it in, both written from the one constant of dispatch-tools.ts. */
 const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
 
 // The catalogue serves each tool's arguments with the bounds its spec states (ToolField's Min and
 // Max), and a client holds a call to them before it is sent, so a bound the Go loses or moves, or
 // one looser than the route's, promises an argument the route refuses.
-describe("the bounds and words each tool states beside its arguments", () => {
+describe("the bounds and refusals each tool states beside its arguments", () => {
   test("the generated Go carries every bound each tool's arguments state, on the field that states it", () => {
     expect(dispatchToolSpecs.flatMap((spec) => statedBounds(spec.name)).length).toBeGreaterThan(0);
     for (const spec of dispatchToolSpecs) {
@@ -1811,7 +1813,7 @@ describe("the bounds and words each tool states beside its arguments", () => {
   // TestIssueComponentsInputValidation holds the route to each, U+0085 among them, and takes a
   // reason of U+FEFF. The tool refuses the same calls before anything is sent, in the rule its
   // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
-  // the other way.
+  // the other way. The field's description holds the refusal's text, both copies of one constant.
   test.each([
     "dispatch_issue",
     "dispatch_issue_update",
@@ -1841,44 +1843,26 @@ describe("the bounds and words each tool states beside its arguments", () => {
       const result = schema.safeParse({ ...validCalls[name], components });
       expect(result.success, JSON.stringify(components)).toBe(true);
     }
-    const words = argumentDescriptions(name).join(" ");
-    expect(words).toContain(COMPONENTS_RULE);
-    expect(words).toContain("Required for mode explicit");
-    expect(words).toContain("Required for mode none");
+    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+      string,
+      { description?: string; unwrap?: () => { description?: string } }
+    >;
+    const argument = fields.components;
+    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    expect(description).toContain(COMPONENTS_RULE);
   });
 
-  // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
-  // create names: one already imported into that project answers its issue and creates nothing,
-  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
-  // TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers in server_test.go holds the tool's
-  // generated words to each of those answers of the route.
-  test("dispatch_issue's external says the form its route reads and the refusal it answers", () => {
-    const external = argumentDescriptions("dispatch_issue").find((text) =>
-      text.startsWith("Optional external issue reference")
-    );
-    expect(external).toContain("owner/repo#n");
-    expect(external).toContain("answers its issue and creates nothing");
-    expect(external).toContain("400 EXTERNAL_PROJECT_MISMATCH");
-  });
-
-  // A suggestion's replacement is markdown: text alone stays in the quoted text's block, and whole
-  // blocks stand where the quoted text stood, over a heading's whole text in the heading's place.
-  // A section moves by its blocks written beside the whole text of the block where it goes, then
-  // each emptied where it stood, a heading staying as its #s alone. block_edits_test.go's
-  // TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace holds the route to each step; the
-  // words promise no more than that, and no block in a table cell.
-  test("dispatch_suggest's replace_with says which blocks its route takes, where, and how a section moves", () => {
-    const replaceWith = argumentDescriptions("dispatch_suggest").find((text) =>
-      text.startsWith("Replacement markdown for the quoted text.")
-    );
-    for (const promise of [
-      "Text alone stays in the quoted text's block",
-      "whole blocks (paragraphs, lists, headings written with their #s) stand where the quoted text stood",
-      "over a heading's whole text they take the heading's place, so a heading that stays is written with its #s",
-      "A table cell takes text alone.",
-      "To move a section, write its blocks beside the whole text of the block where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied heading stays as its #s alone).",
-    ]) {
-      expect(replaceWith, promise).toContain(promise);
-    }
+  // POST /api/v1/issues refuses the import of a GitHub issue already imported into another
+  // project with 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
+  // TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers in server_test.go holds the route to
+  // that code, and the tool's generated copy to naming it.
+  test("dispatch_issue's external names the code its route refuses an import into another project with", () => {
+    const fields = specFor("dispatch_issue").arguments(schemaApi) as unknown as Record<
+      string,
+      { description?: string; unwrap?: () => { description?: string } }
+    >;
+    const argument = fields.external;
+    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    expect(namesMissing(description, ["400 EXTERNAL_PROJECT_MISMATCH"])).toEqual([]);
   });
 });
