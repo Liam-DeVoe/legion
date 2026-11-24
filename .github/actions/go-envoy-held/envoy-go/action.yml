@@ -252,6 +252,10 @@ runs:
         packages/envoy/internal/dispatch/pmdoc/gen/differential.sh --base "$DIFFERENTIAL_BASE" \
           --corpus "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl" --out "$RUNNER_TEMP/differential"
         BODY
+    # A failed gate names each flagged document in report.jsonl alone, so a failure keeps it.
+    - if: failure() && inputs.part == inputs.legs
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with: {name: go-envoy-held-envoy-go-differential-report, path: '${{ runner.temp }}/differential/report.jsonl', if-no-files-found: ignore, overwrite: true}
     # The built agent-secrets against moto's AWS, with no AWS account
     # (cmd/cipher/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): the one run of the binary
     # through the AWS SDK's own profile and credential chain, which the in-process tests replace

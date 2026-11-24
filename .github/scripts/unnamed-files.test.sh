@@ -148,10 +148,11 @@ run_unnamed "$areas"
 check "2,999 of them are a whole list, which selects nothing through this step" "$(is "$found" false)"
 
 echo "case: a file a ! pattern of the real filters drops, alone"
-# text-checks' filter drops docs/plans, which no text check reads, and no other filter names it,
-# so the file counts as named and a pull request that changes only it runs only the jobs that run
-# on every pull request.
-files docs/plans/2026-11-23-a-plan.md
+# text-checks' filter drops docs/plans, which no text check reads, and no other filter names a
+# file there that is not markdown (go-envoy-held's corpus filter names every *.md), so the file
+# counts as named and a pull request that changes only it runs only the jobs that run on every
+# pull request.
+files docs/plans/2026-11-23-a-plan.svg
 run_unnamed "$areas"
 check "exits 0" "$(is "$status" 0)"
 check "selects nothing through this step" "$(is "$found" false)"

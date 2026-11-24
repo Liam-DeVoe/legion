@@ -181,15 +181,22 @@ func TestDifferentialCompare(t *testing.T) {
 		// display read must read a document as the browser's read-only engine reads it, and its
 		// version mode as the editing engine does, block ids ignored. A document an engine
 		// cannot read is left to that engine's own count, and a revision with no display read
-		// dumps neither tree and answers neither gate.
-		if head.dump.Display != nil && shown != nil {
-			if tree, err := FromJSON(head.dump.Display); err != nil || !tree.Equal(shown) {
-				flag("display differs from the read-only engine", sides)
+		// dumps neither tree and answers neither gate. So is a document the head refuses to
+		// store (its upload's refusal, Write): Dispatch holds no such document for either read
+		// to show, the schema refuses it because the readers part on it, and the gates above
+		// fail a head that refuses what its base stored.
+		if head.dump.Write != "" {
+			counts["the head refuses to store"]++
+		} else {
+			if head.dump.Display != nil && shown != nil {
+				if tree, err := FromJSON(head.dump.Display); err != nil || !tree.Equal(shown) {
+					flag("display differs from the read-only engine", sides)
+				}
 			}
-		}
-		if head.dump.DisplayVersion != nil && source != nil {
-			if tree, err := FromJSON(head.dump.DisplayVersion); err != nil || !tree.Equal(source) {
-				flag("version differs from the editing engine", sides)
+			if head.dump.DisplayVersion != nil && source != nil {
+				if tree, err := FromJSON(head.dump.DisplayVersion); err != nil || !tree.Equal(source) {
+					flag("version differs from the editing engine", sides)
+				}
 			}
 		}
 		for index, name := range []string{"base", "head"} {
@@ -267,7 +274,7 @@ func TestDifferentialCompare(t *testing.T) {
 	}
 
 	var summary strings.Builder
-	fmt.Fprintf(&summary, "documents: %d (the engine cannot read %d)\n", documents, counts["engine cannot read"])
+	fmt.Fprintf(&summary, "documents: %d (the engine cannot read %d; the head refuses to store %d, which the cross-reader gates leave out)\n", documents, counts["engine cannot read"], counts["the head refuses to store"])
 	// gates is each count that is summarized and that fails the test, in the order both read them.
 	gates := []struct{ label, key string }{
 		{"regressions (base stores correctly, head does not)", "regression"},
