@@ -77,19 +77,8 @@ release() {
     "$2" "$version_job" > "$1/.github/workflows/release.yaml"
 }
 
-# The job of release.yaml that runs legion's version step, as the real one runs it.
-version_job='jobs:
-  legion_build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine next version
-        id: version
-        run: |
-          .github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"
-'
-
-# step_job <run line>...: the job of version_job with its version step's `run:` holding <run
-# line>s in its place, so a case can change the step's commands and nothing else.
+# step_job <run line>...: the job of release.yaml that runs legion's version step, with <run
+# line>s as that step's `run:`, so a case can change the step's commands and nothing else.
 step_job() {
   local line body=''
   for line in "$@"; do
@@ -97,9 +86,10 @@ step_job() {
   done
   printf 'jobs:\n  legion_build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Determine next version\n        id: version\n        run: |\n%s' "$body"
 }
-# The version step's one command, as the real step runs it.
+# The version step's one command, and its job, as the real ones run it.
 # shellcheck disable=SC2016 # the step's text, which bash expands in the step and not here
 step_command='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"'
+version_job="$(step_job "$step_command")"$'\n'
 
 # gowork <root>: a go.work at the root that binds the two modules, as the real one does, and an
 # empty go.work.sum beside it.
