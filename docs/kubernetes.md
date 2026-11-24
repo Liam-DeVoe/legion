@@ -7319,33 +7319,36 @@ A daemon of an earlier release that sends that frame still sends it to a shim of
 A `legion-v20.14.0` daemon then replaces the pod once every role it asked has answered and no turn runs, or at the round's bound, and it asks no role a second time: it reads no activity report.
 A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
 
-No role was asked to push what a claim the round passed over left on the disk.
-So where the round passed over a claim that had not answered, the replacement first reads the issue's workspace, once per round, through the role whose process the pod is replaced through (`readRoundWorkspace`, `runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame).
-It reads only where every claim the round asks has answered and no turn runs, so a replacement that the bound lets through over a claim the round asks that has not answered, or over a running turn, makes no read; background work a role reports holds the replacement until the bound and does not stop the read.
-A claim that a project's pause still keeps and that the round does not ask, a launch that forgot the role's lost session, holds the replacement until the bound (above) and does not stop the read either: it runs no process in the pod, and the claim the round passed over still left its work there.
+Before every replacement a round makes, the daemon reads the issue's workspace (R7 of dispatch://INFRA-3271, `readPodWorkspace`): through the role whose process the pod is replaced through (`runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame), and, where no role process runs in the pod (a replacement by issue, or one a launch makes as the round's own), through the pod's launcher (`runtime.PodWorkspaceReader`).
+The read's moment is taken before the claims the replacement rests on are read, and the replacement's last word under the pod's launch turn refuses it where a role of the issue started a turn after that moment.
 The read counts as work a commit under a workspace's working copy or under a local bookmark that no branch or tag on `origin` holds, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
 An empty commit with no description is no work, so the empty working copies that every issue pod's clone keeps count for nothing.
 A commit that a fetch left visible is no work either: the clone keeps unreachable commits (`git.abandon-unreachable-commits = false`), so after any role's `jj git fetch` hundreds of other issues' commits are visible with no bookmark.
 Nor is a side head that no working copy and no bookmark reaches, although such a head can hold this issue's own unpushed work: that loss goes unnamed, and it is the cost of a read that names no other issue's commits.
-The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for and that had not answered, a failed claim or a claim the round passed over (`notWaitedFor`), and what the read found, or why it made no read.
-Where the read found work or failed, the daemon writes one message on the issue that names each of those claims with its state, and the commits, the change in the working copy or the read's error (`workspaceLostMessage`); a read that finds no work writes nothing on the issue.
-Where the pod's disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`), that message says the work is still on that volume rather than lost, as the message of a pod that went before its round does ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-The read pushes nothing and keeps nothing of the disk, so it holds to the decision above, and it changes no decision of the round: the replacement is made at the same sweep whatever the read found.
-The read is bounded by one sweep interval, and a read that runs out of it has failed.
-A shim built before the read passes the frame to its agent, which refuses it, and the daemon reads that refusal as a read that failed.
+The read is bounded by one sweep interval, and a read that runs out of it has failed; a shim or a launcher built before the read refuses the frame, and the daemon reads that as a read that failed.
+
+A read that finds nothing lets the replacement go on.
+A read that finds work, or that fails, keeps the pod where the round is over a drift its roles can keep working under (`roundKeeps`): the round ends with no replacement, each claim that answered gets the task the round held, and the pod and its roles keep working on the old image and settings.
+The keep is recorded as an idle release's decline (`idle_release_declines`: the pod, the work, the moment), the open phase's worker, where it runs in the pod, or else the issue's architect (`workspace-kept`) is told once, and no new round opens over that pod while the record stands.
+After each turn or start of a role of the issue, once that turn has ended, and an hour after a read that failed, the sweep reads the workspace again, without a round and as a step after its walk over the issues (`readKeptPod`); a read that finds nothing ends the record, and the next sweep may open a round.
+A round is over a drift that breaks the pod where its recorded reasons open on `[breaks the pod] ` (`runtime.BreaksPod`): the runtime puts that mark on the reason of such a drift where it decides it, today a drift of the Kubernetes service account the pod runs as, and a round records its marked reasons first.
+Such a round replaces the pod whatever the read finds, and a keep of the pod holds no such round back; a pod whose disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`) is replaced whatever the read finds as well.
+Where such a replacement's read found work or failed, the issue's architect is told once what it took (`workspace-taken`): each commit and the working-copy change by name, or that no read could be made, and whether the work is gone or on a kept volume.
+A round keeps the reasons it recorded at its open: a drift that breaks the pod and comes while a round is open is the next round's, which opens once the open round has ended.
+
+Each such replacement is recorded before the runtime acts, keyed by the issue and the pod (`pod_replacements`), with the read made before it, and the record is deleted in the transaction that queues the architect's notice, so the notice is queued once whatever fails between.
+A record a failed call or a stopped daemon leaves is finished at the start of a later sweep (`finishReplacements`): where the runtime shows the pod taken (its Sandbox gone, Suspended, or running another pod), the round ends as that replacement from the read made before it, and the pod is never read again nor kept; where the pod still runs, the record is forgotten, and the round decides afresh.
 
 Everything a round decides comes from its claim columns, so a daemon restart resumes a round where it stood, and each claim shows it as `updateRound` and `updateHead` on every claim view, except to a caller in a pod whose claims record a plugin contract below 46, whose strict reader knows neither field: `GET /legion/v1/state` serves that caller, known by the pod that holds its address, the claim views without them.
-The sweep keeps four records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
+The sweep keeps three records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
 
 - the pace of its openings (`podUpdateOpenings`): a daemon that has just booted opens its first round at its first sweep;
 
-- the read of the workspace that a round made before its replacement (`podUpdateWorkspace`), so a replacement that was refused or failed reads nothing again at a later sweep: a daemon that has just booted reads the workspace again before that replacement;
-
 - the rounds it has ended whose end a member's machine has not taken yet (`podUpdateEnded`): a daemon that has just booted makes such an end once more (below);
 
-- what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted reads a pod that a launch replaced as a pod gone, whose message names the same members (below).
+- what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted finishes a pod that a launch replaced as the round's own from that replacement's record in the store (above).
 
-A round, once opened, ends only by replacing its pod, or because that pod is gone.
+A round, once opened, ends by replacing its pod, by a keep over a read that found work or failed, or because that pod is gone.
 The drift returning to nothing — an operator rolled the release back — ends no round:
 the round has already told each role it asks to push its work, let its subagents and background jobs finish or stop them, push what they made and start no new work, so the pod is replaced all the same, and the round's message and its notice keep naming the reasons the round was opened for, which the round records (`roundReasons`).
 A role that has answered waits for that replacement.

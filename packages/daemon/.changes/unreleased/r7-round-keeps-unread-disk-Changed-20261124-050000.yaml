@@ -1,0 +1,25 @@
+kind: Changed
+body: |-
+  An update round replaces a pod only over a clean read of its workspace, and a replacement that
+  still takes a disk says what it took (R7 of INFRA-3271). Before every replacement a round makes,
+  through a role, by issue, or at a launch, the daemon reads the issue workspace through a role's
+  shim or the pod's launcher; a turn that starts after the read voids it. Over a drift the pod's
+  roles can keep working under, a read that finds work that no branch or tag on origin holds, or
+  that fails, ends the round with no replacement: the pod and its roles keep working on the old
+  image and settings, the keep is recorded as an idle release's decline, the open phase's worker
+  or else the architect is told once (`workspace-kept`), and the workspace is read again after each
+  turn of the issue, and an hour after a failed read, until a read finds nothing. A drift of the
+  Kubernetes service account the pod runs as breaks the pod (its reason opens on `[breaks the
+  pod] `), so its round replaces the pod after the read whatever it finds, and no keep holds that
+  round back; a round over a kept volume the next pod mounts replaces the pod too. Such a
+  replacement, and a launch's own replacement of an issue pod, tells the architect once what it
+  took (`workspace-taken`): each commit and the working-copy change by name, or that no read could
+  be made. A launch reads through any launcher of the pod that can, and a launch that deletes a
+  kept volume of a Sandbox that runs no pod says so. Each replacement is recorded before it acts
+  (new table `pod_replacements`, migration 20261124041455) and its notice is queued with the
+  record's delete, so a replacement whose call fails or whose daemon stops once the pod is taken
+  is finished from the read made before it, never kept, and told once. The round's ask says a
+  round can end with no replacement, and the ask of a round that breaks the pod says it cannot.
+time: 2026-11-24T05:00:00Z
+custom:
+  Issue: r7-round-keeps-unread-disk
