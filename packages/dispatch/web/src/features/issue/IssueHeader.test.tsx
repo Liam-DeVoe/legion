@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
@@ -31,9 +31,9 @@ import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 
-// The issue's header, read with the real `IssueHeader`: its title's editor with the page's focus
-// rescue mounted around it as the app shell mounts it (`RescuedMain`), and its pin under the reads
-// of the viewer's state asked while the pin's write is out.
+// The issue's header, read with the real `IssueHeader`: its title's editor in the shell's main
+// content, as the app shell draws it, and its pin under the reads of the viewer's state asked
+// while the pin's write is out.
 
 const base: Issue = {
   advances: [],
@@ -110,9 +110,9 @@ function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
   );
 }
 
-/** The header of `details` in the main content, the page's focus rescue mounted on it, with the
- *  page's text after it, and the title writes it makes answered as Dispatch answers them. With
- *  `isClosed`, the issue is `closedDetails`. */
+/** The header of `details` in the main content, with the page's text after it, and the title
+ *  writes it makes answered as Dispatch answers them. With `isClosed`, the issue is
+ *  `closedDetails`. */
 function header(isClosed = false): { patches: Patches; unmount: () => void; user: UserEvent } {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -132,10 +132,10 @@ function header(isClosed = false): { patches: Patches; unmount: () => void; user
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <MarginProvider>
-          <RescuedMain>
+          <main>
             <CachedHeader isClosed={isClosed} />
             <p>{PAGE_TEXT}</p>
-          </RescuedMain>
+          </main>
         </MarginProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -153,10 +153,9 @@ function header(isClosed = false): { patches: Patches; unmount: () => void; user
 
 /**
  * Sends `press` as a browser has React commit it. A browser commits the update an event makes in
- * a microtask after that event, so the page's focus rescue, whose `focusout` listener on the
- * document runs before React's own, reads the page in a microtask of its own first; user-event
- * commits inside each event it sends, which no browser does. So these presses go out with
- * fireEvent inside one act, which commits what they changed once they have run.
+ * a microtask after that event, once every listener of the event has run; user-event commits
+ * inside each event it sends, which no browser does. So these presses go out with fireEvent
+ * inside one act, which commits what they changed once they have run.
  */
 async function pressAsBrowser(press: () => void): Promise<void> {
   await act(async () => {
@@ -193,7 +192,7 @@ async function expectNextKeyEditsNoTitle(
     screen.getByRole("button", { description: title, name: "Edit title" })
   ).toBeInTheDocument();
   await user.keyboard("t");
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
   expect(patches).toHaveBeenCalledTimes(1);
@@ -207,7 +206,7 @@ test("Enter in the title's editor saves it and closes it, and the next key edits
   try {
     const editor = await editTitle(user, "Renamed");
     await pressAsBrowser(() => fireEvent.keyDown(editor, { key: "Enter" }));
-    await afterRescue();
+    await afterFrameAndTasks();
     await expectNextKeyEditsNoTitle(user, patches, "Renamed");
   } finally {
     unmount();
@@ -232,7 +231,7 @@ test("a click on the page's text saves the title and closes its editor, and the 
       fireEvent.mouseUp(text);
       fireEvent.click(text);
     });
-    await afterRescue();
+    await afterFrameAndTasks();
     await expectNextKeyEditsNoTitle(user, patches, "Renamed");
   } finally {
     unmount();
@@ -250,7 +249,7 @@ test("Enter and Escape that end an IME composition in the title's editor save no
     for (const key of ["Enter", "Escape"]) {
       // user-event has no form for this: it cannot mark a key as an IME composition.
       await pressAsBrowser(() => fireEvent.keyDown(editor, { isComposing: true, key }));
-      await afterRescue();
+      await afterFrameAndTasks();
       expect(screen.getByRole("textbox", { name: "Issue title" }), `${key} composing`).toBe(editor);
       expect(editor, `${key} composing`).toHaveFocus();
       expect(editor, `${key} composing`).toHaveValue("Renamed");
@@ -260,7 +259,7 @@ test("Enter and Escape that end an IME composition in the title's editor save no
     // The plain Enter goes out as a browser's, in one act that React commits after it
     // (`pressAsBrowser`): user-event commits inside each event it sends.
     await pressAsBrowser(() => fireEvent.keyDown(editor, { key: "Enter" }));
-    await afterRescue();
+    await afterFrameAndTasks();
     await expectNextKeyEditsNoTitle(user, patches, "Renamed");
   } finally {
     unmount();
@@ -291,7 +290,7 @@ test("the title's heading takes no Tab stop and opens no editor when pressed", a
     const heading = await screen.findByRole("heading", { level: 1, name: base.title });
     expect(heading).not.toHaveAttribute("tabindex");
     await user.click(heading);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -318,7 +317,7 @@ test("a click on Edit title, Enter on it and Space on it each open the title's e
       await activate(await editTitleButton());
       expect(await screen.findByRole("textbox", { name: "Issue title" }), by).toHaveFocus();
       await user.keyboard("{Escape}");
-      await afterRescue();
+      await afterFrameAndTasks();
       expect(screen.queryByRole("textbox", { name: "Issue title" }), by).not.toBeInTheDocument();
       expect(screen.getByRole("heading", { level: 1, name: base.title }), by).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Edit title" }), by).toBeInTheDocument();
@@ -329,14 +328,14 @@ test("a click on Edit title, Enter on it and Space on it each open the title's e
 });
 
 // Edit title opens the editor when the reader activates it, not when it takes the focus: an
-// editor opening on focus changes the page on focus (WCAG 2.2, 3.2.1 On Focus), and the page's
-// focus rescue can give the button the focus with no act of the reader's.
+// editor opening on focus changes the page on focus (WCAG 2.2, 3.2.1 On Focus), and a focus can
+// come to the button with no act of the reader's.
 test("focusing Edit title does not open the title's editor", async () => {
   const { unmount } = header();
   try {
     const edit = await editTitleButton();
     act(() => edit.focus());
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(edit).toHaveFocus();
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
@@ -353,7 +352,7 @@ test("a closed issue's title is its heading alone, with no Edit title button", a
     expect(heading).not.toHaveAttribute("tabindex");
     expect(screen.queryByRole("button", { name: "Edit title" })).not.toBeInTheDocument();
     await user.click(heading);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
     unmount();

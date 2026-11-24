@@ -770,9 +770,7 @@ function AgentRow({
           </span>
           {unreadReplies === 0 ? null : (
             // Opening the conversation is what reads it, so the badge opens it. It is held while
-            // the row is open, where its press, which only opens the row, does nothing: held, it
-            // keeps the press live until the conversation has read the replies and the pill goes,
-            // so the page's rescue hands the focus on from it (`causedByReader`).
+            // the row is open, where its press, which only opens the row, does nothing.
             <button
               // The pill's own words first, so the name contains the visible text and a voice
               // user can press what they read (WCAG 2.5.3, axe's
@@ -1105,10 +1103,9 @@ function AgentFilterBar({
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
  * focus it held goes to the select-all checkbox before it while the reader can see it
  * (`useFocusPlace`). While no row matches, that checkbox is disabled and the header holds no
- * other control, so the walk goes back over the main content - the page's rescue's, or, where
- * none is mounted, the header's own hand-off's - to the nearest control before the header that
- * the reader can see and that takes no typed text: the Filter button. The header arms its own
- * hand-off at a press inside it (`armOnPress`).
+ * other control, so the header's own hand-off walks back over the main content to the nearest
+ * control before the header that the reader can see and that takes no typed text: the Filter
+ * button. The header arms its own hand-off at a press inside it (`armOnPress`).
  */
 function SelectionHeader({
   current,

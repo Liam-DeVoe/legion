@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
-import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../__tests__/frames";
 import { installResizeObserver } from "../__tests__/scroll-box";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { appKeymap, type KeymapScope, useKeymapScope } from "../features/shell/keymap";
@@ -795,10 +795,10 @@ test("a page's own control that takes itself away hands the focus past a text bo
 });
 
 /** The shell's main content holding a row whose page slot draws exactly `names`, as a live update
- *  leaves them, with the page's focus rescue mounted on it as `app.tsx` mounts it. */
+ *  leaves them. */
 function LivePage({ names }: { names: readonly string[] }) {
   return (
-    <RescuedMain>
+    <main>
       <ControlRow
         trigger={
           <button data-control="panel-trigger" type="button">
@@ -812,15 +812,14 @@ function LivePage({ names }: { names: readonly string[] }) {
           </button>
         ))}
       </ControlRow>
-    </RescuedMain>
+    </main>
   );
 }
 
 // INFRA-3135's review round 1, R10: a live update - the last unread item read in another tab -
 // takes Mark all read away while it holds the focus, after the reader scrolled it out of their
-// sight. The slot's hand-off keeps the rescue's rule, read from the rescue's own record of what
-// the reader can see: it hands the focus to no control, so neither Blocked on you takes it nor
-// the page is scrolled back to the row.
+// sight. The slot's hand-off hands the focus to no control - a live update is no press of the
+// reader's - so neither Blocked on you takes it nor the page is scrolled back to the row.
 test("a page's own control the reader scrolled out of sight goes with a live update and hands the focus to nothing", async () => {
   const view = render(<LivePage names={["Mark all read", "Blocked on you"]} />);
   try {
@@ -832,7 +831,7 @@ test("a page's own control the reader scrolled out of sight goes with a live upd
       document.dispatchEvent(new Event("scroll"));
     });
     view.rerender(<LivePage names={["Blocked on you"]} />);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
     expect(screen.getByRole("button", { name: "Blocked on you" })).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
@@ -843,11 +842,10 @@ test("a page's own control the reader scrolled out of sight goes with a live upd
 
 /** A row whose page slot draws a modal dialog, as the Delivery page draws its Session groups
  *  dialog there: a Close button and a link, then a Groups section holding the only group's Delete
- *  group, which takes the section away when pressed. With `rescued`, the row is in the shell's
- *  main content with the page's focus rescue mounted on it as `app.tsx` mounts it. */
-function DialogInSlotRow({ rescued }: { rescued: boolean }) {
+ *  group, which takes the section away when pressed. */
+function DialogInSlotRow() {
   const [deleted, setDeleted] = useState(false);
-  const drawn = (
+  return (
     <ControlRow
       trigger={
         <button data-control="panel-trigger" type="button">
@@ -868,52 +866,43 @@ function DialogInSlotRow({ rescued }: { rescued: boolean }) {
       </aside>
     </ControlRow>
   );
-  return rescued ? <RescuedMain>{drawn}</RescuedMain> : drawn;
 }
 
 // A control of a dialog drawn in a slot is the dialog's, not the row's. The reader has scrolled
 // the dialog so that every control before Delete group is out of sight, and presses Delete group,
 // which takes the Groups section with it. The row hands that focus to none of its own controls,
-// so the filter trigger, in sight, does not take it. With no rescue nothing moves. With the
-// page's rescue mounted, the focus goes to the dialog's own stop with no scroll, since no control
-// of the dialog is in sight.
-test("a control of a dialog drawn in a slot hands its focus to no control of the row, and the page's rescue lands it on the dialog's own stop", async () => {
+// so the filter trigger, in sight, does not take it: nothing moves, and nothing scrolls.
+test("a control of a dialog drawn in a slot hands its focus to no control of the row", async () => {
   const user = userEvent.setup();
-  // Where the focus went once Delete group had gone, and how many scrolls the page was asked for.
-  const landed: Record<string, { focus: string | null; scrolls: number }> = {};
-  for (const rescued of [false, true]) {
-    const view = render(<DialogInSlotRow rescued={rescued} />);
-    const scrolls = spyOn(Element.prototype, "scrollIntoView");
-    try {
-      const dialog = screen.getByRole("dialog", { name: "Session groups" });
-      const deleteGroup = screen.getByRole("button", { name: "Delete group" });
-      // Scrolled 500 px above the window's top edge: happy-dom lays nothing out.
-      for (const control of dialog.querySelectorAll("a, button")) {
-        if (control !== deleteGroup) {
-          control.getBoundingClientRect = () => new DOMRect(0, -500, 200, 40);
-        }
+  const view = render(<DialogInSlotRow />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const dialog = screen.getByRole("dialog", { name: "Session groups" });
+    const deleteGroup = screen.getByRole("button", { name: "Delete group" });
+    // Scrolled 500 px above the window's top edge: happy-dom lays nothing out.
+    for (const control of dialog.querySelectorAll("a, button")) {
+      if (control !== deleteGroup) {
+        control.getBoundingClientRect = () => new DOMRect(0, -500, 200, 40);
       }
-      act(() => deleteGroup.focus());
-      await user.keyboard("{Enter}");
-      await afterRescue();
-      expect(screen.queryByRole("button", { name: "Delete group" })).toBeNull();
-      const focused = document.activeElement;
-      landed[rescued ? "with the page's rescue" : "with no rescue"] = {
-        focus:
-          focused === null || focused === document.body
-            ? "the page"
-            : (focused.getAttribute("aria-label") ?? focused.textContent),
-        scrolls: scrolls.mock.calls.length,
-      };
-    } finally {
-      scrolls.mockRestore();
-      view.unmount();
     }
+    act(() => deleteGroup.focus());
+    await user.keyboard("{Enter}");
+    await afterFrameAndTasks();
+    expect(screen.queryByRole("button", { name: "Delete group" })).toBeNull();
+    const focused = document.activeElement;
+    // Where the focus went once Delete group had gone, and how many scrolls the page was asked for.
+    const landed = {
+      focus:
+        focused === null || focused === document.body
+          ? "the page"
+          : (focused.getAttribute("aria-label") ?? focused.textContent),
+      scrolls: scrolls.mock.calls.length,
+    };
+    expect(landed).toEqual({ focus: "the page", scrolls: 0 });
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
   }
-  expect(landed).toEqual({
-    "with no rescue": { focus: "the page", scrolls: 0 },
-    "with the page's rescue": { focus: "Session groups", scrolls: 0 },
-  });
 });
 
 // dispatch://INFRA-2160, R12: Tab reaches every control the row shows. The chips line drew two

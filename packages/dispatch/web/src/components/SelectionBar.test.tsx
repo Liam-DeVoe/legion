@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import type { ControlSize } from "./control-names";
-import { useFocusRescue } from "./focus-place";
+import { useHeldThroughAnswer } from "./held-press";
 import { MultiSelect } from "./MultiSelect";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -168,9 +168,9 @@ function rowBox(key: string): HTMLElement {
 }
 
 /** The reader's press on the bar's action named `name`, which leaves the focus on it: the click
- *  a pointer's press makes in Chromium and Firefox, with no rescue mounted. It arms the bar's
- *  hand-off (`armOnPress`), so the commit after it in the same task that takes the bar away, or
- *  takes the action out of a bar that stays, is the reader's doing. */
+ *  a pointer's press makes in Chromium and Firefox. It arms the bar's hand-off (`armOnPress`), so
+ *  the commit after it in the same task that takes the bar away, or takes the action out of a bar
+ *  that stays, is the reader's doing. */
 function pressInBar(name: string): HTMLElement {
   const action = screen.getByRole("button", { name });
   act(() => {
@@ -327,13 +327,11 @@ test("a control the reader moved the focus off moves nothing when it later goes 
   }
 });
 
-// INFRA-3135's review round 1, R10: the bar's hand-off keeps the rescue's rule. The bar's line
-// of actions scrolls sideways, and the reader had scrolled it so far that the focused Clear
-// selection was out of their sight when a refetch emptied the selection and took the bar away.
-// Read from the rescue's own record of what the reader can see, the bar hands the focus to no
-// row, so the list is not scrolled to one the reader did not pick.
+// INFRA-3135's review round 1, R10: the bar's hand-off keeps its sight rule. The bar's line of
+// actions scrolls sideways, and the reader had scrolled it so far that the focused Clear selection
+// was out of their sight when a refetch emptied the selection and took the bar away. The bar
+// hands the focus to no row, so the list is not scrolled to one the reader did not pick.
 test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -358,7 +356,6 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
     expect(asked).toBe(0);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
@@ -392,9 +389,8 @@ function MarkedTable({
 // INFRA-3135's review round 1, follow-up F4: a refetch, not the reader, empties the selection and
 // takes the bar away while it holds the focus. With no press of the reader's on the bar or on a
 // row's mark before it, the bar hands the focus to no row, so the list is not scrolled to one they
-// did not pick. The rescue, mounted here, is what records whether the reader pressed.
+// did not pick: nothing armed the bar's hand-off (`causedByReader`).
 test("the bar emptied by a refetch with no press hands the focus to no row", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -410,14 +406,12 @@ test("the bar emptied by a refetch with no press hands the focus to no row", () 
     expect(asked).toBe(0);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
-// Emptied by the reader's own Clear selection, a press on the bar: the bar hands the focus on as it
-// always has, to what the page names.
+// Emptied by the reader's own Clear selection, a click on the bar, which arms the bar's hand-off
+// at its root (`armOnPress`): the bar hands the focus on as it always has, to what the page names.
 test("the bar emptied by the reader's Clear selection hands the focus to what returnFocus names", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -427,25 +421,25 @@ test("the bar emptied by the reader's Clear selection hands the focus to what re
   try {
     const clear = screen.getByRole("button", { name: "Clear selection" });
     act(() => clear.focus());
-    act(() => clear.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    act(() => clear.click());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
 // INFRA-2160: the bar's Snooze is a single pick in a menu's place (D5), its list portalled out of
 // the bar, and a pick in it hands the focus back to where the list was opened from - here the
 // bar's trigger, which Enter pressed - before its write takes the bar away. The pick is the
-// reader's press in the bar, though it landed in the list, so the bar hands the focus on to what
-// the page names. The trigger is held while the write is out, as the Inbox holds it, which keeps
-// the press the cause until the write lands (`answerPress`).
+// reader's press in the bar, though it landed in the list: the bar's root armed its hand-off
+// (`armOnPress`). The trigger is held from the pick through the commit after the write's answer,
+// as the Inbox holds the bar's Snooze (`useHeldThroughAnswer`), and that hold keeps the press
+// armed until the write lands (`holdHandOff`), so the bar hands the focus on to what the page
+// names.
 test("the bar emptied by a pick in a menu its own trigger opened hands the focus to what returnFocus names", async () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   const user = userEvent.setup();
   let asked = 0;
   const returnFocus = () => {
@@ -454,7 +448,9 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
   };
   const picked: string[] = [];
   function Bar({ count }: { count: number }): ReactNode {
-    const [held, setHeld] = useState(false);
+    const [writing, setWriting] = useState(false);
+    // The write lands as the rows it snoozed leave the selection.
+    const held = useHeldThroughAnswer(writing && count !== 0);
     const [open, setOpen] = useState(false);
     return (
       <>
@@ -474,7 +470,7 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
             onOpenChange={setOpen}
             onPick={(value) => {
               picked.push(value);
-              setHeld(true);
+              setWriting(true);
             }}
             open={open}
             optionLabel={() => "Later today"}
@@ -508,7 +504,6 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
     expect(asked).toBe(1);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
@@ -520,7 +515,6 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
 // 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit and
 // Firefox (builds Job infra-3135-r18mk): no test read the rule.
 test("the bar emptied by the reader's press on the last row's mark hands the focus to what returnFocus names", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -530,23 +524,22 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
   try {
     act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
     const mark = rowBox("CORE-1");
-    act(() => mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    act(() => mark.click());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
-// With no rescue mounted, the bar reads the press that armed its hand-off (`armHandOff`). A
-// refetch that empties the selection while Clear selection holds the focus, with nothing armed,
-// is a loss the reader did not cause: as the page did before it had any hand-off, the focus stays
-// on the body, in no row, and the page is never asked where it goes. One row of the state table
-// of `focus-place.test.ts` (do).
-test("with no rescue mounted, the bar emptied by a refetch with nothing armed hands the focus to no row", () => {
+// The bar reads the press that armed its hand-off (`armHandOff`). A refetch that empties the
+// selection while Clear selection holds the focus, with nothing armed, is a loss the reader did
+// not cause: as the page did before it had any hand-off, the focus stays on the body, in no row,
+// and the page is never asked where it goes. One row of the state table of `focus-place.test.ts`
+// (do).
+test("the bar emptied by a refetch with nothing armed hands the focus to no row", () => {
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -567,12 +560,11 @@ test("with no rescue mounted, the bar emptied by a refetch with nothing armed ha
   }
 });
 
-// With no rescue mounted, the reader's click on the last marked row's mark arms the bar's
-// hand-off while the bar is drawn, though the mark stands outside the bar: the click leaves the
-// checkbox unfocused, as WebKit does, so the focus is still on Clear selection when the press
-// takes the last row's mark off and empties the bar. The bar hands the focus on to what the page
-// names (`pressOnRowMark`).
-test("with no rescue mounted, the bar emptied by the reader's click on the last row's mark hands the focus to what returnFocus names", () => {
+// The reader's click on the last marked row's mark arms the bar's hand-off while the bar is
+// drawn, though the mark stands outside the bar: the click leaves the checkbox unfocused, as WebKit
+// does, so the focus is still on Clear selection when the press takes the last row's mark off and
+// empties the bar. The bar hands the focus on to what the page names (`pressOnRowMark`).
+test("the bar emptied by the reader's click on the last row's mark hands the focus to what returnFocus names", () => {
   let asked = 0;
   const returnFocus = () => {
     asked += 1;

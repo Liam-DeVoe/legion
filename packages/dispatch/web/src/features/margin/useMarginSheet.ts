@@ -421,10 +421,7 @@ export function useMarginSheet(): MarginSheetModel {
   // already. The comment is over, so the reader goes back to the words they commented on: the
   // commented document takes the caret at once, at the selection its editor kept, before the
   // composer's box goes. The focus then moves from the box to the editor directly, and the box's
-  // going leaves no loss of focus for the page's rescue to answer (`useFocusRescue`). The rescue
-  // reads a loss on the next frame, or after `FRAME_WAIT_MS` where no frame comes; with a frame
-  // later than that, it would take the loss for the reader's, whose press is still live, and put
-  // the focus on a control of the margin. Below 1280 px the sheet over the document closes too.
+  // going leaves no loss of focus. Below 1280 px the sheet over the document closes too.
   // Its dialog would give the focus back to what held it as the sheet opened (`useDialog`): the
   // editor after Ctrl+Alt+M, but the selection bar's Comment after a press on it, which would take
   // the caret off the words. So this close leaves the focus where the editor took it

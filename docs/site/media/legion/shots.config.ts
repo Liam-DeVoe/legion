@@ -6,7 +6,6 @@
 // controller's daily report, which takes the project's next key.
 import type { Page } from "@playwright/test";
 
-import { statusTrigger } from "../../../../packages/dispatch/e2e/menus";
 import { expect } from "../harness";
 import type { ShotSet } from "../shot-runner";
 import {
@@ -29,6 +28,10 @@ import {
   type Tracked,
   writeDesign,
 } from "./journey";
+
+/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
+ *  shows (`data-issue-status`), as the native select it replaced carried its value. */
+const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 interface LegionJourney extends Tracked {
   /** The approval ask the architect opens, once it has. */
@@ -212,7 +215,7 @@ const legion: ShotSet<LegionJourney> = {
       prepare: (journey) => closeAtMerge(journey),
       ready: async (page) => {
         await expect(turns(page)).toContainText("Signed off.");
-        await expect(statusTrigger(page)).toHaveText("Done");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "done");
       },
       steps: headerOnTop,
     },
@@ -227,7 +230,7 @@ const legion: ShotSet<LegionJourney> = {
       },
       ready: async (page) => {
         await titled(page, "Legion daily report");
-        await expect(statusTrigger(page)).toHaveText("Icebox");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "icebox");
         await expect(turns(page)).toContainText("Finished:");
       },
     },

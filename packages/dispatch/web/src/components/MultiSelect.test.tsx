@@ -575,7 +575,7 @@ function keepRemovedFocus(): () => void {
 // INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
 // the body, so in an engine that keeps naming a removed element focused, as `keepRemovedFocus`
 // makes happy-dom do, Tab or Shift+Tab out of the text box the close took away left the focus to
-// the page's rescue. None of the three engines measured does so (`focusLost`); a close the list
+// fall onto the page. None of the three engines measured does so (`focusLost`); a close the list
 // makes itself puts the reader on the trigger either way, and a press outside still leaves them
 // where it put them.
 test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {

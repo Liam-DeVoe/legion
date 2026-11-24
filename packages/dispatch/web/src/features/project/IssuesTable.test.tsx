@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
 import { installResizeObserver } from "../../__tests__/scroll-box";
@@ -95,12 +95,11 @@ afterEach(() => {
   localStorage.clear();
 });
 /** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
- *  `open` the one that holds the open ones alone, in place of `issues` itself; `rescued` draws the
- *  List in the shell's main content with the page's focus rescue mounted (`RescuedMain`), after a
- *  link that stands for the shell's navigation; `client` is the query client the List reads
- *  through, a plain one unless the case needs the app's own; `props` is what a caller other than
- *  the project page passes: a listing of its own, the priorities' titles and the prefix its view
- *  is written under. */
+ *  `open` the one that holds the open ones alone, in place of `issues` itself; `inMain` draws the
+ *  List in the shell's main content, after a link that stands for the shell's navigation, as the
+ *  app draws it; `client` is the query client the List reads through, a plain one unless the case
+ *  needs the app's own; `props` is what a caller other than the project page passes: a listing of
+ *  its own, the priorities' titles and the prefix its view is written under. */
 function table(
   issues: IssueSummary[],
   search = "",
@@ -108,12 +107,12 @@ function table(
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
     full,
     open,
-    rescued = false,
+    inMain = false,
   }: {
     client?: QueryClient;
     full?: Promise<IssueSummary[]>;
     open?: Promise<IssueSummary[]>;
-    rescued?: boolean;
+    inMain?: boolean;
   } = {},
   props: {
     listing?: IssueListing;
@@ -166,10 +165,10 @@ function table(
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          {rescued ? (
+          {inMain ? (
             <>
               <a href="/">Inbox</a>
-              <RescuedMain>{list}</RescuedMain>
+              <main>{list}</main>
             </>
           ) : (
             list
@@ -1131,11 +1130,10 @@ test("an issue the table stops listing drops out of the selection and out of wha
 // marked last moves up into its place, where the reader can see it, and its checkbox takes the
 // focus with no scroll. The first row, nine rows above the window, would scroll the box back to
 // its top through `focusRow`. The press is the bar's Take out of epic, by Enter, whose writes
-// land and whose read of the list after them no longer lists the two issues. No focus rescue is
-// mounted (`table()` without `rescued`): the press arms the bar's own hand-off (`armOnPress`),
-// which the action's run holds until its read has settled (`perform`), so the bar reads its
-// going as the reader's (`causedByReader`). In the app the same read with no press of the
-// reader's is a loss they did not cause, and the focus stays on the page.
+// land and whose read of the list after them no longer lists the two issues. The press arms the
+// bar's own hand-off (`armOnPress`), which the action's run holds until its read has settled
+// (`perform`), so the bar reads its going as the reader's (`causedByReader`). The same read with
+// no press of the reader's is a loss they did not cause, and the focus stays on the page.
 test("the List's bar gone with the focus after the issue marked last left the list hands the focus to the row now at its place, with no scroll", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockImplementation(
@@ -1179,12 +1177,12 @@ test("the List's bar gone with the focus after the issue marked last left the li
 // above the window, would scroll the box back to its top through `focusRow`.
 test("the List's bar gone with the focus while no issue is marked hands the focus to the first row in sight below the table's head, with no scroll", async () => {
   const user = userEvent.setup();
-  // Drawn with the page's rescue mounted, as the app draws it: Clear selection is a press of the
+  // Drawn in the shell's main content, as the app draws it: Clear selection is a press of the
   // reader's, so the bar hands its focus on.
   table(
     Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`)),
     "",
-    { rescued: true }
+    { inMain: true }
   );
   await screen.findByRole("checkbox", { name: "Select CORE-20" });
   // The rows in the order the table draws them.
@@ -1209,8 +1207,8 @@ test("the List's bar gone with the focus while no issue is marked hands the focu
   await waitFor(() => expect(landing).toHaveFocus());
   expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
   expect(moves.scrolled).toEqual([]);
-  // The page's rescue, which reads the same press, leaves the focus where the bar put it.
-  await afterRescue();
+  // A frame and two tasks on, the focus is still where the bar put it.
+  await afterFrameAndTasks();
   expect(landing).toHaveFocus();
 });
 
@@ -1238,12 +1236,12 @@ test("under the Epic filter, Take out of epic hands the focus to the row now at 
   const children = Array.from({ length: 20 }, (_, index) =>
     issue(`CORE-${index + 2}`, { parent: "CORE-1" })
   );
-  // Drawn with the page's rescue mounted, as the app draws it: the bar hands its focus on only
-  // while the reader's press is still the cause of its going.
+  // Drawn in the shell's main content, as the app draws it: the bar hands its focus on only while
+  // the reader's press is still the cause of its going.
   const { listing } = table(
     [issue("CORE-1", { labels: ["epic"], title: "Table epic" }), ...children],
     `?f.epic=${encodeURIComponent("CORE-1 · Table epic")}`,
-    { rescued: true }
+    { inMain: true }
   );
   await screen.findByRole("checkbox", { name: "Select CORE-21" });
   // The rows in the order the table draws them, and the three this case reads: the two it marks
@@ -1288,8 +1286,8 @@ test("under the Epic filter, Take out of epic hands the focus to the row now at 
     `Select ${next} {"preventScroll":true}`
   );
   expect(moves.scrolled.map((element) => element.tagName)).toEqual([]);
-  // The page's rescue, which reads the same press, leaves the focus where the bar put it.
-  await afterRescue();
+  // A frame and two tasks on, the focus is still where the bar put it.
+  await afterFrameAndTasks();
   expect(focusedName()).toBe(`Select ${next}`);
 });
 
@@ -1445,7 +1443,7 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   const { listing } = table(
     [epic, issue("CORE-2", { parent: "CORE-1" }), issue("CORE-3", { parent: "CORE-1" })],
     "",
-    { rescued: true }
+    { inMain: true }
   );
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
@@ -1459,7 +1457,7 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   await user.keyboard("{Enter}");
   await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
-  await afterRescue();
+  await afterFrameAndTasks();
   // The writes have landed and the read is out: the bar stays, held, with the focus.
   expect(
     screen.queryByRole("toolbar", { name: "Selected issues" })?.textContent ?? "no bar"
@@ -1469,7 +1467,7 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   await act(async () => reread.resolve([epic, issue("CORE-2"), issue("CORE-3")]));
   await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
   await waitFor(() => expect(focusedName()).toBe("Select CORE-2"));
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(focusedName()).toBe("Select CORE-2");
 });
 
@@ -1497,7 +1495,7 @@ test("the bar's going and its hand-off are one render when the action ends outsi
   const { listing } = table(
     [epic, issue("CORE-2", { parent: "CORE-1" }), issue("CORE-3", { parent: "CORE-1" })],
     "",
-    { rescued: true }
+    { inMain: true }
   );
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
@@ -1544,7 +1542,7 @@ test("Start next over three queued issues from the bar, its steps answered one a
       issue(`CORE-${index + 1}`, { labels: ["legion"], rank: String(index).padStart(3, "0") })
     ),
     "",
-    { rescued: true }
+    { inMain: true }
   );
   await screen.findByRole("row", { name: "CORE-10 Work CORE-10" });
   for (const key of ["CORE-8", "CORE-9", "CORE-10"])
@@ -1558,14 +1556,14 @@ test("Start next over three queued issues from the bar, its steps answered one a
   // The steps move CORE-10 up first, then CORE-9, then CORE-8.
   for (const [step, key] of ["CORE-10", "CORE-9", "CORE-8"].entries()) {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(step + 1));
-    // A frame and a task, by when a press whose action had been answered would have ended.
-    await afterRescue();
+    // A frame and two tasks, by when a press whose action had been answered would have ended.
+    await afterFrameAndTasks();
     expect(focusedName()).toBe("Start next");
     await act(async () => answers[step]?.(savedIssue(key)));
   }
   await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
   await waitFor(() => expect(focusedName()).toBe("Select CORE-10"));
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(focusedName()).toBe("Select CORE-10");
 });
 
@@ -2529,11 +2527,11 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
 
 // A column filter goes with the table it heads when its press sends the List off to read its
 // issues. The pick is the pointer's, whose option keeps the focus in the list's text box, and the
-// List stands in the shell's main content with the page's focus rescue mounted: the press inside
-// the list's panel is the reader's own, so the rescue answers it inside the main content, from
-// the place the panel was opened from. Its walk back passes over the search box, which takes
-// typed text, to the toolbar's Clear filters, and never sends the focus out of the main content
-// to the shell's navigation.
+// List stands in the shell's main content: the press inside the list's panel is the reader's own,
+// armed at the List's section (`armOnPress`), so the List's own hand-off walks back over the main
+// content from the place the panel was opened from. Its walk back passes over the search box,
+// which takes typed text, to the toolbar's Clear filters, and never sends the focus out of the main
+// content to the shell's navigation.
 test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
   const user = userEvent.setup();
   // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
@@ -2541,7 +2539,7 @@ test("a column filter press that sends the List off to read its issues leaves th
   const open = Promise.withResolvers<IssueSummary[]>();
   table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done&status=todo", {
     open: open.promise,
-    rescued: true,
+    inMain: true,
   });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
@@ -2549,7 +2547,7 @@ test("a column filter press that sends the List off to read its issues leaves th
   await user.click(screen.getByRole("option", { name: /^Done/ }));
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
-  await afterRescue();
+  await afterFrameAndTasks();
   // Not the page's body, from which a keyboard reader would start again at its first link, nor
   // that link itself, outside the main content, nor the search box.
   const clear = screen.getByRole("button", { name: "Clear filters" });
@@ -2564,7 +2562,7 @@ test("a column filter press that sends the List off to read its issues leaves th
 // read again moves its issue up the queue and takes the Start next away: it keeps the focus while
 // its write is out, and its going is the reader's doing, so the focus goes to a control of that
 // row, never to the table's box. With the hold ended at the write's answer, before that read, the
-// List's rescue read the Start next's going as a live update's and sent the focus to the box.
+// Start next's going read as a live update's, and the focus went to the box.
 test("a row's Start next stays held until the list read again takes it away, and its row keeps the focus", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2") as never);
@@ -2575,7 +2573,7 @@ test("a row's Start next stays held until the list read again takes it away, and
       issue("CORE-2", { labels: ["legion"], rank: "C" }),
     ],
     "",
-    { rescued: true }
+    { inMain: true }
   );
   const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   const startNext = within(row).getByRole("button", { name: "Start next" });
@@ -2587,7 +2585,7 @@ test("a row's Start next stays held until the list read again takes it away, and
   await user.keyboard("{Enter}");
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(startNext).toHaveAttribute("aria-disabled", "true");
   expect(startNext).toHaveFocus();
 
@@ -2601,7 +2599,7 @@ test("a row's Start next stays held until the list read again takes it away, and
   await waitFor(() =>
     expect(within(moved()).queryByRole("button", { name: "Start next" })).toBeNull()
   );
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(moved().contains(document.activeElement)).toBe(true);
   expect(screen.getByTestId("issues-table-scroll")).not.toHaveFocus();
 });
@@ -2732,7 +2730,7 @@ test("offline, Take out of epic whose list read never settles hands the focus to
       issue("CORE-2", { parent: "CORE-1" }),
     ],
     "",
-    { client, rescued: true }
+    { client, inMain: true }
   );
   await userEvent.setup().click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
   const bar = () => screen.queryByRole("toolbar", { name: "Selected issues" });
@@ -2756,7 +2754,7 @@ test("offline, Take out of epic whose list read never settles hands the focus to
     expect(bar()?.textContent ?? "no bar").toBe("no bar");
     expect([...focused]).toEqual(["Take out of epic"]);
     expect(focusedName()).toBe("Select CORE-2");
-    // The page's rescue, a frame and a task on, leaves it there.
+    // Half a second on, the focus is still there.
     await tick(500);
     expect(focusedName()).toBe("Select CORE-2");
 
@@ -2770,8 +2768,8 @@ test("offline, Take out of epic whose list read never settles hands the focus to
 
 // A notice's button that takes the notice away hands the focus on, never to the page's body: to
 // the control now at its place among the List's notices, else the one before it, else, by the
-// page's rescue, to the toolbar's nearest control before the notices that takes no typed text,
-// the View menu, and never into the search box.
+// List's own walk back over the main content, to the toolbar's nearest control before the notices
+// that takes no typed text, the View menu, and never into the search box.
 test.each([
   "Finish",
   "Dismiss",
@@ -2791,14 +2789,14 @@ test.each([
   );
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
-  table([issue("CORE-1")], "", { rescued: true });
+  table([issue("CORE-1")], "", { inMain: true });
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   within(recovery).getByRole("button", { name: press }).focus();
   await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
   );
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(screen.getByRole("button", { name: /^View/ })).toHaveFocus();
 });
 
@@ -2817,7 +2815,7 @@ test.each([
   });
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
   const named = nameTheEpic(user, "Existing epic");
-  table([issue("CORE-1")], "", { rescued: true });
+  table([issue("CORE-1")], "", { inMain: true });
   restores.push(() => {
     create.mockRestore();
     send.mockRestore();
@@ -2829,7 +2827,7 @@ test.each([
   within(duplicate).getByRole("button", { name: press }).focus();
   await user.keyboard("{Enter}");
   expect(screen.queryByRole("button", { name: press })).toBeNull();
-  await afterRescue();
+  await afterFrameAndTasks();
   const view = screen.getByRole("button", { name: /^View/ });
   expect(view).toHaveFocus();
   if (press === "Create anyway") {

@@ -17,8 +17,7 @@ import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
-import { SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
-import { heldPress } from "../../components/held-press";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
@@ -1294,9 +1293,8 @@ function InboxBody({
    *  column's scroller, the stop `l` hands the focus to. The list draws none while the column
    *  keeps a question past its row (`paneRow`): the reader's unsent answer keeps it there once a
    *  search or a filter hides its row or the server takes it away, and their sent answer keeps
-   *  it until the server decides it. Left in the row, the focus would go with it, and the page's
-   *  rescue would put it on the same Dismiss of the row that moves up into its place
-   *  (`useFocusRescue`), where Enter would dismiss that row too. */
+   *  it until the server decides it. Left in the row, the focus would go with it and fall onto
+   *  the page, away from the item being read. */
   const dismissFromRow = (named: InboxDismissRow) => {
     if (paneShown && named.id !== paneSelection.id) {
       asideFromRow(named.id);
@@ -1335,6 +1333,13 @@ function InboxBody({
     order: () => rowsIn(listRef.current).map((row) => row.dataset.inboxRow ?? ""),
     shown: bulkBarShown,
   });
+
+  // The bar's Snooze is held from its pick through the commit after its write's answer
+  // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold is part of the action of the
+  // pick that made the write (`holdHandOff`). So the bar's going when the write lands, with the
+  // rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the reading
+  // column's width the short rows draw no Snooze of their own to hold the pick.
+  const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0);
 
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
@@ -1834,7 +1839,7 @@ function InboxBody({
         // (`onTriggerFocus`, `useInboxKeymap`).
         <SnoozePick
           badge="Snooze"
-          held={bulkSnoozing.size !== 0}
+          held={bulkSnoozeHeld}
           label="Snooze selected asks"
           marks={BULK_PICKER_MARKS}
           onPick={(until) => {
@@ -1996,16 +2001,8 @@ function InboxBody({
                         onWidthChange={setPaneWidth}
                         width={paneWidth}
                       />
-                      {/* The column names the question it shows, by which the page's rescue tells
-                            the next question drawn here from what a press drew in its place
-                            (`SHOWN_ITEM_ATTRIBUTE`). */}
                       {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                      <div
-                        className="min-h-0 min-w-0"
-                        {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
-                        onBlur={forgetPaneReturn}
-                        ref={holdPane}
-                      >
+                      <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                         <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
                       </div>
                     </>

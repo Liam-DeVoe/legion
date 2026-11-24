@@ -54,8 +54,9 @@ const SNOOZE_MENU: ListMenu = { keys: digitKeys(), opensOn: "first" };
 
 const ROW_SNOOZE_ATTRIBUTE = "data-inbox-snooze";
 const ROW_SNOOZE_MARKS: ListMarks = { trigger: { [ROW_SNOOZE_ATTRIBUTE]: "" } };
-/** The row's own Snooze list's trigger, which the Inbox's `b` and `h` find by it and press: the
- *  shared list hands out no element of its own. */
+/** The trigger of each Snooze list this control draws, which the Inbox's `b` and `h` find by it
+ *  and press - the row's own, or, with the reading column on, the column head's: the shared list
+ *  hands out no element of its own. */
 export const ROW_SNOOZE_SELECTOR = `[${ROW_SNOOZE_ATTRIBUTE}]`;
 
 const BULK_PICKER_ATTRIBUTE = "data-inbox-bulk-snooze";
@@ -69,8 +70,9 @@ export const BULK_PICKER_SELECTOR = `[${BULK_PICKER_ATTRIBUTE}]`;
 /**
  * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single
  * pick (`MultiSelect`) of `snooze.ts`'s choices, and the list's text box narrows them as the
- * reader types. A row's own Snooze (`SnoozeControl`) and the selection bar's (`Inbox.tsx`) are
- * this control, and the Inbox's `b` and `h` press its trigger, which the host finds by `marks`.
+ * reader types. A row's own Snooze, the reading column head's and the short row's (each a
+ * `SnoozeControl`), and the selection bar's (`Inbox.tsx`) are this control, and the Inbox's `b`
+ * and `h` press its trigger, which the host finds by `marks`.
  * It takes D5's rules (`SNOOZE_MENU`): it opens on Later today, each preset is picked by its
  * digit as well as by Enter or a click, and every close hands the focus back where it was as the
  * list opened - so a snooze whose write takes the item away takes the focus from the row the key
@@ -172,19 +174,18 @@ export function SnoozePick({
  * answer, so the list stays the one control there, held, with the return time being saved before
  * it. An un-snooze takes the row out of its window at once the same way, where Un-snooze would
  * go, so Un-snooze stays drawn, held, while its write is out and through the commit after its
- * answer. The press is the reader's, and the row's going after the answer is that press's doing
- * (`causedByReader`) only while its control - for a pick, the trigger of the list it was made in -
- * is still in the page and held: the row goes with its held control, so the page's rescue hands
- * the focus on as it does for Dismiss and Assign to me, to the same control in the row that moves
- * up into the row's place. That is a row's own Un-snooze. In the reading column's head
+ * answer. The press is the reader's, and its control - for a pick, the trigger of the list it was
+ * made in - stays in the page and held until the row goes with it after the answer, so the focus
+ * stays on that control until then, and a second press on it does nothing. That is a row's own
+ * Un-snooze. In the reading column's head
  * (`ReadingPaneHead`) the control goes with the question the column shows, and the Inbox's own
  * hand-off sends the focus to the column's focus stop instead (`Inbox.tsx`). A control taken away
  * at the press would leave the row's going to drop the focus onto the page.
  *
  * A snooze that lands hands the reader on to the item after the row (`InboxHandOffContext`, R8):
- * the Inbox selects it beside the column and gives its row the focus, over the rescue and the
- * column's own hand-off. The hand-off begins at the press, off the list as the reader saw it, and
- * a snooze the server refuses or the reader stops drops it and leaves the reader on the row.
+ * the Inbox selects it beside the column and gives its row the focus, over the column's own
+ * hand-off. The hand-off begins at the press, off the list as the reader saw it, and a snooze the
+ * server refuses or the reader stops drops it and leaves the reader on the row.
  * Un-snooze moves nobody, and neither does a snooze pressed on a short row beside the column that
  * is not the item in hand (`RowAsideContext`): R8 is the item in hand's, so that press only takes
  * a focus it left in the row to the item being read first.

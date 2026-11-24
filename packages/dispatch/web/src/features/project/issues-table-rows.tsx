@@ -204,9 +204,9 @@ export function GroupRow({
 
 /** An epic's actions, behind one trigger. While a table action is out (`busy`) the trigger is
  *  held (`PanelTrigger`'s `ariaDisabled`): it keeps the focus the closed panel or the merge's
- *  confirmation handed back to it, and the page's rescue reads the group row's going - the merge
- *  moving the epic's last issue out - as the reader's own (`causedByReader`), so the focus goes to
- *  the control now at the row's place. */
+ *  confirmation handed back to it until the group row goes with it - the merge moving the epic's
+ *  last issue out - and the action's hold keeps the reader's press live through that
+ *  (`holdHandOff`), so the row's going reads as the reader's own (`causedByReader`). */
 function EpicActions({
   busy,
   epicKey,

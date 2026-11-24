@@ -5,8 +5,6 @@
 // is on screen.
 import type { Page } from "@playwright/test";
 
-import { listOf } from "../../../../packages/dispatch/e2e/filters";
-import { statusTrigger } from "../../../../packages/dispatch/e2e/menus";
 import { expect } from "../harness";
 import {
   accept,
@@ -27,6 +25,10 @@ import {
   writeDesign,
 } from "../legion/journey";
 import { highlight, linger, pointTo, ring, type Walkthrough } from "../recording";
+
+/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
+ *  shows (`data-issue-status`), as the native select it replaced carried its value. */
+const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 interface Seeded {
   /** The issue Legion has already taken to done. */
@@ -51,12 +53,6 @@ async function seed(): Promise<Seeded> {
 }
 
 const header = (page: Page) => page.getByTestId("issue-header");
-/** The words the Status shows for each status this video reads off it. */
-const STATUS_TEXT = {
-  needs_review: "Needs review",
-  retro: "Retro",
-  testing: "Testing",
-} as const satisfies Record<(typeof PHASE_STATUSES)[number] | "retro", string>;
 const turns = (page: Page) => page.getByRole("list", { name: "Conversation turns" });
 const row = (page: Page, text: string) =>
   page.locator("[data-inbox-row]").filter({ hasText: text });
@@ -85,18 +81,18 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       ],
       open: async (page, seeded) => {
         await openConversation(page, seeded.done);
-        await expect(statusTrigger(page)).toHaveText("Done");
+        await expect(statusOf(page)).toHaveAttribute("data-issue-status", "done");
         await expect(turns(page)).toContainText("Signed off.");
       },
       act: async (page, _seeded, cue) => {
         await linger(page, 0.6);
-        await highlight(page, statusTrigger(page));
+        await highlight(page, statusOf(page));
         cue("status");
         await linger(page, 1.2);
         await highlight(page, turns(page).getByText(/^Signed off\./));
         cue("signoff");
         await linger(page, 1.2);
-        await highlight(page, statusTrigger(page));
+        await highlight(page, statusOf(page));
         cue("merge");
         await linger(page, 1.8);
       },
@@ -131,18 +127,18 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await pointTo(page, labels);
         await labels.click();
         await expect(header(page).getByText("legion", { exact: true })).toBeVisible();
-        const status = statusTrigger(page);
+        const status = statusOf(page);
         await pointTo(page, status);
         await status.click();
-        const todo = listOf(status).getByRole("option", { exact: true, name: "Todo" });
+        const todo = page.getByRole("option", { exact: true, name: "Todo" });
         await pointTo(page, todo);
         await todo.click();
         cue("todo");
-        await expect(status).toHaveText("Todo");
+        await expect(status).toHaveAttribute("data-issue-status", "todo");
         await linger(page, 1.2);
         // The daemon admits it, and its architect claims it: the open page hears both.
         await admit(seeded.next);
-        await expect(status).toHaveText("In progress");
+        await expect(status).toHaveAttribute("data-issue-status", "in_progress");
         const claim = header(page).getByText(`${seeded.next.key} architect`);
         await expect(claim).toBeVisible();
         cue("admitted");
@@ -219,20 +215,20 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       },
       act: async (page, seeded, cue) => {
         await linger(page, 0.4);
-        const pill = statusTrigger(page);
+        const pill = statusOf(page);
         // The daemon's status writes as the phases run; the open page hears each one. Nothing is
         // pointed at or ringed: the pointer stays off screen, so no one is seen setting a status.
         // (The Conversation would show each write as the daemon's activity line, but it follows
         // its newest turn and scrolls the header, and the status with it, off screen.)
         for (const [index, status] of PHASE_STATUSES.entries()) {
           await setStatus(seeded.next, status);
-          await expect(pill).toHaveText(STATUS_TEXT[status]);
+          await expect(pill).toHaveAttribute("data-issue-status", status);
           if (index === 0) cue("phases");
           await linger(page, 1.1);
         }
         // The architect's acceptance, the last of the default steps, moves the issue to retro.
         await accept(seeded.next, DELIVERY_DATE);
-        await expect(pill).toHaveText(STATUS_TEXT.retro);
+        await expect(pill).toHaveAttribute("data-issue-status", "retro");
         await linger(page, 1.7);
       },
     },

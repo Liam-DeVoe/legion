@@ -139,8 +139,8 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   };
 }
 
-/** Puts the focus on a list's own stop with no scroll, as the page's rescue gives a region its
- *  own (`focusOwnStop`). It is where the selection bar's hand-off ends when no row in sight can
+/** Puts the focus on a list's own stop with no scroll, as a component's hand-off gives a region
+ *  its own (`focusOwnStop`). It is where the selection bar's hand-off ends when no row in sight can
  *  take the focus, the emptied list included, since the page's search box takes typed text the
  *  reader never chose. Answers null, so a page's `returnFocus` can end with it and leave the bar
  *  nothing to move. */
@@ -351,13 +351,12 @@ function markShown(
  * elsewhere moves nothing, and neither does one whose going left the focus somewhere other than
  * the body, since the reader put it there, nor the later going of a control the reader had moved
  * the focus off, nor the going of one they had scrolled out of their sight - the bar's line of
- * actions scrolls sideways (`outOfSight`). A going the reader did not cause - a refetch that
- * drops every marked row and empties the bar - the bar leaves to the page's focus rescue, which
- * lands it in no row and scrolls nothing. Where no rescue is mounted, the press these read is
- * the one that armed the hand-off (`armHandOff`): a press on the bar's own actions arms it at the
- * bar's root (`armOnPress`), and so does Escape from a control inside the bar (`armOnBarKey`); a
- * press on a row's mark arms it while the bar is drawn. A going with nothing armed leaves the
- * focus on the body and scrolls nothing.
+ * actions scrolls sideways (`outOfSight`). Nor does a going the reader did not cause - a refetch
+ * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
+ * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
+ * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so does Escape from
+ * a control inside the bar (`armOnBarKey`); a press on a row's mark arms it while the bar is
+ * drawn. A going with nothing armed leaves the focus on the body and scrolls nothing.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's

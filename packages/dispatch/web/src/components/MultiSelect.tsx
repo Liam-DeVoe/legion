@@ -590,8 +590,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // - when the close left it nowhere - the list that held it is gone - and leaves a focus that is
   // somewhere. Whether it is nowhere is the page's one check for a lost focus (`focusLost`, whose
   // doc says where each engine leaves the focus of an element taken away), so a Tab out of the
-  // text box the close took away puts the reader back rather than leave the focus to the page's
-  // rescue. A press outside moves the focus after this runs, so the focus ends where that press
+  // text box the close took away puts the reader back rather than leave the focus to fall onto
+  // the page. A press outside moves the focus after this runs, so the focus ends where that press
   // put it.
   useEffect(() => {
     if (open) {
@@ -681,13 +681,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // it. So a press of a row that holds the focus only notes it, and the commit that answers the
   // press gives the search box the focus only where that commit left the focus lost (`focusLost`,
   // the close's check above): on the body, or an element no longer on the page. It is the page's
-  // one check for a lost focus, the one the close and the rescue ask too, and its doc says where
-  // each engine leaves the focus of an element taken away. Left to fall, the focus is the page's
-  // rescue's to hand to the control now at the lost row's place (`handOn`), the next row where one
-  // follows. A pointer press focuses none of them (`onMouseDown` below), and leaves the focus where
-  // it is. A row or a Create row the options take away holds no press, and its focus stays on the
-  // page's body, as for every change the reader did not make. A popover that closes takes the
-  // search box along, and the close above gives the focus back to the trigger instead.
+  // one check for a lost focus, the one the close asks too, and its doc says where each engine
+  // leaves the focus of an element taken away. A pointer press focuses none of them
+  // (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the options
+  // take away holds no press, and its focus stays on the page's body, as for every change the
+  // reader did not make. A popover that closes takes the search box along, and the close above
+  // gives the focus back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
@@ -710,9 +709,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // in (`PanelTrigger`'s `useFocusPlace`), which, finding the row gone and the focus lost by the
   // reader's press, would otherwise hand the focus the pick took away to the control at the row's
   // place, the list's trigger, first - as on the Agents page's Filter, whose role and machine
-  // lists hold a picked value no live session reports only while it is picked. And the page's
-  // rescue hands a lost focus on at a later frame (`handOn`), and a layout effect runs before any
-  // frame, whatever the update's priority.
+  // lists hold a picked value no live session reports only while it is picked.
   useLayoutEffect(() => {
     const pressed = focusedRowPressed.current;
     focusedRowPressed.current = false;

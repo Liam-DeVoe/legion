@@ -1019,11 +1019,10 @@ test("issue header delivers the click that ends a title edit to the control unde
 // starts the tab chord wherever the focus landed. `IssueHeader.test.tsx` sends these presses in
 // the order a browser sends them; this row has each engine send them.
 // `@firefox` and `@webkit`: the press that ends the edit blurs the title's text box - Enter by the
-// page's own `blur()`, a click on the page's text by the engine - and a commit after it takes the
-// box away and draws Edit title in its place. The page's focus rescue reads that loss as the
-// reader leaving the box only where the box still stands in the microtask it queues from the
-// box's `focusout`, so the row rests on the order in which each engine fires the blur, runs that
-// microtask and lets React commit the save (`playwright.config.ts`).
+// page's own `blur()`, a click on the page's text by the engine - and the blur saves the title and
+// closes the editor, whose commit takes the box away and draws Edit title in its place. So the row
+// rests on each engine firing that blur, and on the order in which it fires it and lets React
+// commit the save (`playwright.config.ts`).
 test("Enter in the title's editor, and a click outside it, close it and leave the next key to the page @firefox @webkit", async ({
   browser,
 }) => {
@@ -1061,11 +1060,10 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
       await expect(editor).toHaveCount(0);
       await expect(heading(title)).toBeVisible();
       await expect(editTitle).toBeVisible();
-      // The page's rescue runs a frame and a task after the loss, so it is done by now.
+      // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
       await nextFrames(page);
       await nextFrames(page);
-      // One read is the answer: every hand-off of the loss has run, and nothing else moves the
-      // focus. The rescue may land it on Edit title, drawn where the editor stood.
+      // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
       const holder = await focusHolder(page);
       expect(holder.takesText, `the focus is in ${holder.name}, which takes text`).toBe(false);
       await page.keyboard.press("x");

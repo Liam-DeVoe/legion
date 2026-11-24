@@ -47,14 +47,13 @@ import { SelectionBar } from "./SelectionBar";
 import { useTableLayout } from "./table-layout";
 
 // The inventory of the component hand-offs' presses (`armHandOff`): every component that hands
-// its focus off arms that hand-off at its own root (`armOnPress`), so that where no rescue is
-// mounted a loss its press causes is read as the reader's (`causedByReader`), and with nothing
-// armed a loss is answered as the page answered it before it had a hand-off. Each case draws the
-// real component, with no rescue mounted, makes one press of one of its controls through the
-// event path a reader's press takes - a click, a pick, or a key the press acts at - and reads the
-// hand-off at once: nothing of that control's was armed before the press, and the press armed
-// it. A press whose control arms nothing fails here. The pages' members are drawn on the pages
-// themselves, in the shell's main content with no rescue mounted, as their own test files draw
+// its focus off arms that hand-off at its own root (`armOnPress`), so that a loss its press causes
+// is read as the reader's (`causedByReader`), and with nothing armed a loss is answered as the page
+// answered it before it had a hand-off. Each case draws the real component, makes one press of one
+// of its controls through the event path a reader's press takes - a click, a pick, or a key the
+// press acts at - and reads the hand-off at once: nothing of that control's was armed before the
+// press, and the press armed it. A press whose control arms nothing fails here. The pages' members
+// are drawn on the pages themselves, in the shell's main content, as their own test files draw
 // them, and their cases at the end of this file also follow the press to where its commit hands
 // the focus.
 
@@ -438,7 +437,7 @@ for (const press of ["Stop trying", "Retry", "Discard"]) {
 }
 
 /** The shell's main content, which a page is drawn in as the app draws it, after a link that
- *  stands for the shell's navigation, with no rescue mounted; both go after the case. */
+ *  stands for the shell's navigation; both go after the case. */
 function mainContent(): HTMLElement {
   const navigation = document.createElement("a");
   navigation.href = "/";
@@ -555,12 +554,12 @@ test("AgentsPage: the header's Clear selection arms the header's hand-off", asyn
   expectArms(within(region).getByRole("button", { name: "Clear selection" }));
 });
 
-// The header's armed hand-off with no rescue mounted (`SelectionHeader`): Clear selection goes
-// with the selection it empties, and its focus goes to the select-all checkbox before it. While
-// no row matches, that checkbox is disabled and the header holds no other control, so the
-// header's own hand-off walks back over the main content it was in (`walkBackInRegion`): past the
-// search box, which takes typed text, to the Filter button, and never out to the navigation.
-test("AgentsPage, no rescue: Clear selection hands its focus to the select-all checkbox, and with no row matching walks back to the Filter button", async () => {
+// The header's armed hand-off (`SelectionHeader`): Clear selection goes with the selection it
+// empties, and its focus goes to the select-all checkbox before it. While no row matches, that
+// checkbox is disabled and the header holds no other control, so the header's own hand-off walks
+// back over the main content it was in (`walkBackInRegion`): past the search box, which takes
+// typed text, to the Filter button, and never out to the navigation.
+test("AgentsPage: Clear selection hands its focus to the select-all checkbox, and with no row matching walks back to the Filter button", async () => {
   const user = userEvent.setup();
   const region = await drawAgents();
   const header = selectAll(region);
@@ -771,8 +770,8 @@ function savedIssue(key: string): Issue {
 }
 
 /** The project List over `issues` at `search`, as `IssuesTable.test.tsx`'s `table()` draws it,
- *  in the shell's main content with no rescue mounted. `open` answers the listing of the open
- *  issues alone in place of `issues`, as a read the case holds out. */
+ *  in the shell's main content. `open` answers the listing of the open issues alone in place of
+ *  `issues`, as a read the case holds out. */
 function drawList(issues: IssueSummary[], search = "", open?: Promise<IssueSummary[]>): void {
   answering(
     spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
@@ -904,14 +903,14 @@ for (const press of ["Create anyway", "Cancel new epic"]) {
   });
 }
 
-// The List's armed hand-off with no rescue mounted (`IssuesTable`): a column filter's pick that
-// sends the List off to read the issues it has not loaded takes the table's head away with the
-// filter's own list, and the List's hand-off walks back over the main content it was in
-// (`walkBackInRegion`), from the place the head left, past the search box, which takes typed
-// text, to the toolbar's Clear filters, never out to the navigation. By the pointer's pick, and
-// by Enter in the filter's text box.
+// The List's armed hand-off (`IssuesTable`): a column filter's pick that sends the List off to
+// read the issues it has not loaded takes the table's head away with the filter's own list, and
+// the List's hand-off walks back over the main content it was in (`walkBackInRegion`), from the
+// place the head left, past the search box, which takes typed text, to the toolbar's Clear
+// filters, never out to the navigation. By the pointer's pick, and by Enter in the filter's text
+// box.
 for (const way of ["a pointer's pick", "Enter in its text box"]) {
-  test(`the List, no rescue: a column filter pick by ${way} that sends the List to read its issues walks back to the toolbar's Clear filters`, async () => {
+  test(`the List: a column filter pick by ${way} that sends the List to read its issues walks back to the toolbar's Clear filters`, async () => {
     const user = userEvent.setup();
     const open = Promise.withResolvers<IssueSummary[]>();
     await openStatusFilter(user, open.promise);
@@ -932,12 +931,12 @@ for (const way of ["a pointer's pick", "Enter in its text box"]) {
   });
 }
 
-// A notice's button that takes the notice away, by Enter with no rescue mounted, hands its focus
-// on by the List's own hand-off: the notices hold no other control, so it walks back over the
-// main content to the toolbar's nearest control before them that takes no typed text, the View
-// menu, never into the search box.
+// A notice's button that takes the notice away, by Enter, hands its focus on by the List's own
+// hand-off: the notices hold no other control, so it walks back over the main content to the
+// toolbar's nearest control before them that takes no typed text, the View menu, never into the
+// search box.
 for (const press of ["Finish", "Dismiss"]) {
-  test(`the List, no rescue: the interrupted action's ${press} hands its focus to the toolbar's View menu`, async () => {
+  test(`the List: the interrupted action's ${press} hands its focus to the toolbar's View menu`, async () => {
     const user = userEvent.setup();
     const recovery = await interruptedList();
     act(() => within(recovery).getByRole("button", { name: press }).focus());
@@ -949,7 +948,7 @@ for (const press of ["Finish", "Dismiss"]) {
 }
 
 for (const press of ["Create anyway", "Cancel new epic"]) {
-  test(`the List, no rescue: the possible duplicate's ${press} hands its focus to the toolbar's View menu`, async () => {
+  test(`the List: the possible duplicate's ${press} hands its focus to the toolbar's View menu`, async () => {
     const user = userEvent.setup();
     const duplicate = await duplicateEpicList(user);
     act(() => within(duplicate).getByRole("button", { name: press }).focus());

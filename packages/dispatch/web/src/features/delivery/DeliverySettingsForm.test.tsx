@@ -5,7 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -37,21 +37,21 @@ const record: DeliverySettings = {
 };
 
 /** The form as the Settings page draws it, reading its record through `queryClient`, a plain
- *  client unless the case needs the app's own; `rescued` draws it in the shell's main content with
- *  the page's focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
+ *  client unless the case needs the app's own; `inMain` draws it in the shell's main content, as
+ *  the app shell draws it. */
 function renderForm({
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-  rescued = false,
+  inMain = false,
 }: {
   readonly queryClient?: QueryClient;
-  readonly rescued?: boolean;
+  readonly inMain?: boolean;
 } = {}) {
   render(
     <QueryClientProvider client={queryClient}>
-      {rescued ? (
-        <RescuedMain>
+      {inMain ? (
+        <main>
           <DeliverySettingsForm />
-        </RescuedMain>
+        </main>
       ) : (
         <DeliverySettingsForm />
       )}
@@ -403,7 +403,7 @@ test("Save keeps the focus once the read draws the stored record, and no field t
   const restoreFocus = emulateChromiumFocusFixup();
 
   try {
-    const queryClient = renderForm({ rescued: true });
+    const queryClient = renderForm({ inMain: true });
     await screen.findByDisplayValue("acme/widgets");
     await replace(user, "Deploy repository", "acme/gadgets");
     // The list as typed, one line; the server stores it as its entries.
@@ -419,14 +419,14 @@ test("Save keeps the focus once the read draws the stored record, and no field t
     await waitFor(() => expect(getDeliverySettings).toHaveBeenCalledTimes(2));
     expect(putDeliverySettings).toHaveBeenCalledTimes(1);
     // Save is held through the read, and keeps the focus.
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(save).toHaveFocus();
 
     await act(async () => read.resolve(stored));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(document.activeElement).toBe(save);
     expect(screen.getByRole("button", { name: "Save delivery settings" })).toBe(save);
     expect(field("Deploy repository")).not.toHaveFocus();
@@ -456,9 +456,9 @@ test("a held Save keeps the keyboard focus, and a press or a submit while it is 
   try {
     render(
       <QueryClientProvider client={queryClient}>
-        <RescuedMain>
+        <main>
           <DeliverySettingsForm initial={record} />
-        </RescuedMain>
+        </main>
       </QueryClientProvider>
     );
     const save = screen.getByRole("button", { name: "Save delivery settings" });
@@ -466,7 +466,7 @@ test("a held Save keeps the keyboard focus, and a press or a submit while it is 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(save).not.toBeDisabled();
     expect(save).toHaveFocus();
@@ -474,7 +474,7 @@ test("a held Save keeps the keyboard focus, and a press or a submit while it is 
     await user.keyboard("{Enter}");
     await user.click(save);
     act(() => save.closest("form")?.requestSubmit());
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(putDeliverySettings).toHaveBeenCalledTimes(1);
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(save).toHaveFocus();
@@ -517,10 +517,9 @@ test("Enter in the Deploy workflow box submits, and the box keeps the focus thro
 });
 
 // The save has its answer, and Save stays held until the Delivery page, which holds the record,
-// draws what the save changed in the form's place (`useHoldUntilDrawn`). That hold is part of the
-// Save press's action, so the form's going while it is on is the reader's doing: the page's
-// rescue gives the focus to what the page drew in the form's place, not to the page's body.
-test("the form its caller replaces after a save hands the focus to what the caller drew in its place", async () => {
+// draws what the save changed in the form's place (`useHoldUntilDrawn`): several frames and tasks
+// after the answer, Save is still held, and keeps the focus.
+test("Save stays held, with the focus, after its save is answered and before its caller draws what it changed", async () => {
   const user = userEvent.setup();
   const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
     ...record,
@@ -528,33 +527,22 @@ test("the form its caller replaces after a save hands the focus to what the call
   });
   const restoreFocus = emulateChromiumFocusFixup();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const page = (replaced: boolean) => (
-    <QueryClientProvider client={queryClient}>
-      <RescuedMain>
-        {replaced ? (
-          <section aria-label="Delivery timeline">
-            <button type="button">Open the latest deploy</button>
-          </section>
-        ) : (
-          <DeliverySettingsForm initial={record} />
-        )}
-      </RescuedMain>
-    </QueryClientProvider>
-  );
   try {
-    const view = render(page(false));
+    render(
+      <QueryClientProvider client={queryClient}>
+        <main>
+          <DeliverySettingsForm initial={record} />
+        </main>
+      </QueryClientProvider>
+    );
     const save = screen.getByRole("button", { name: "Save delivery settings" });
     act(() => save.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    for (const _ of [0, 1, 2]) await afterRescue();
+    for (const _ of [0, 1, 2]) await afterFrameAndTasks();
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(save).toHaveFocus();
-
-    view.rerender(page(true));
-    await afterRescue();
-    expect(screen.getByRole("button", { name: "Open the latest deploy" })).toHaveFocus();
   } finally {
     restoreFocus();
     cleanup();

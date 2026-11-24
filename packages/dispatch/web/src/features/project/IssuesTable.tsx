@@ -330,13 +330,13 @@ export function IssuesTable({
   // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
   // the one before it. Each of these takes the focus only while the reader can see it; where none
   // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
-  // head or the notices hold no other control, the walk goes back over the main content - the
-  // page's rescue's, or, where none is mounted, this hand-off's own - to the nearest control
-  // before them that the reader can see and that takes no typed text, so never into the search
-  // box. Only the head and the notices are counted: the selection bar, the rows and the dialogs
-  // each hand the focus on themselves. The handler sits on the List's section, which stays in
-  // every branch, beside the capture handlers that arm it at a press inside the section
-  // (`armOnPress`): React bubbles a column filter's portalled list's events to it too.
+  // head or the notices hold no other control, this hand-off walks back over the main content to
+  // the nearest control before them that the reader can see and that takes no typed text, so
+  // never into the search box. Only the head and the notices are counted: the selection bar, the
+  // rows and the dialogs each hand the focus on themselves. The handler sits on the List's
+  // section, which stays in every branch, beside the capture handlers that arm it at a press
+  // inside the section (`armOnPress`): React bubbles a column filter's portalled list's events to
+  // it too.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(

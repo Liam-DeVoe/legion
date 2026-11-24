@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, settle } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import {
   dwellOn,
@@ -3246,17 +3246,17 @@ test("the turns' keys stand down while another tab is shown", async () => {
 
 // A turn is a row of the tab's list: an `<li>`, a row by its element alone (`row-marker.ts`'s
 // `ROW_SELECTOR`). A refetch that takes the turn holding the focus away is a loss the reader did
-// not cause, so the app shell's focus rescue, mounted here on the page's main content as the
-// shell mounts it, hands the focus into no other turn: the reader's next `r` or `y` acts on no
-// conversation they did not pick.
+// not cause: no press of theirs armed a hand-off (`causedByReader`), so in the page's main content,
+// as the shell draws it, the focus goes into no other turn: the reader's next `r` or `y` acts on
+// no conversation they did not pick.
 test("a turn a refetch takes away from under the focus hands it to no other turn", async () => {
   const stub = stubLists(turnLists());
   const queryClient = newQueryClient();
   const view = render(
-    <RescuedMain>
+    <main>
       <IssueScope />
       {tab({ "CORE-1": issueState() }, true, queryClient)}
-    </RescuedMain>
+    </main>
   );
   try {
     const turn = await waitFor(() => {
@@ -3272,7 +3272,7 @@ test("a turn a refetch takes away from under the focus hands it to no other turn
       await queryClient.refetchQueries();
     });
     await waitFor(() => expect(turn).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(document.activeElement?.closest("[data-turn], [data-reply]") ?? null).toBeNull();
     expect(view.container.querySelector('[data-turn="handoff:handoff-1"]')).not.toBeNull();

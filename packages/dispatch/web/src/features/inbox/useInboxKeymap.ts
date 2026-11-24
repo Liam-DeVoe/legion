@@ -378,19 +378,15 @@ export function useInboxKeymap({
   // none, and the selection's settling hands the next row the selection on the layout lane, so
   // the column is drawn again for that row in the same task (`pane-selection.ts`). The focus the
   // column held has fallen to the body, and what now stands where it was is the next question,
-  // not what the reader pressed for. The page's rescue takes nothing from another item
-  // (`showsAnother`, `components/focus-place.ts`), so without this hand-off it would walk a
-  // caused loss back to a control before the column, and leave an uncaused one on the body. So
-  // the focus goes to the column's own focus stop, with no scroll, whoever caused the loss, and
-  // `j`, `k` and Enter answer from there as they do from the body. A component may hand a lost
-  // focus to its own region's stop whoever caused the loss (`leaveUncaused`). On the layout lane
-  // too, in the commit that draws the column again, so it runs before the rescue's check a frame
-  // later, which then finds the focus placed. A focus the column lost while it still shows the
-  // same question - an editor a press opened in place - is the rescue's, and so is one that has
-  // gone somewhere by then. `focusLost`, not the body alone, so an engine that names a removed
-  // element focused until its focus fixup is read the same way. The reader's own snooze, dismiss
-  // or answer that lands hands the focus on to the next item's row after this (R8,
-  // `pane-selection.ts`), on the passive lane, so that row has it last.
+  // not what the reader pressed for. So the focus goes to the column's own focus stop, with no
+  // scroll, whoever caused the loss, and `j`, `k` and Enter answer from there as they do from the
+  // body. It runs on the layout lane, in the commit that draws the column again. A focus the
+  // column lost while it still shows the same question - an editor a press opened in place - is
+  // none of this hand-off's, and nor is one that has gone somewhere by then. `focusLost`, not the
+  // body alone, so an engine that names a removed element focused until its focus fixup is read
+  // the same way. The reader's own snooze, dismiss or answer that lands hands the focus on to the
+  // next item's row after this (R8, `pane-selection.ts`), on the passive lane, so that row has it
+  // last.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
     if (noted === null || noted.element.isConnected) return;

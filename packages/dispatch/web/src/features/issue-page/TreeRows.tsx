@@ -204,11 +204,9 @@ function BranchMore({
         />
       ))}
       {/* The press takes no focus: the line goes as it opens, and a focused control that goes
-          loses the focus under the reader's press, which the page's rescue answers by focusing
-          the first row drawn in its place (`components/focus-place.ts`'s `useFocusRescue`) - and
-          a focused row draws its body, so that row would open and change its length in the view
-          (decision 261). Left on whatever held it, the focus is not lost. The keyboard never
-          reaches the line (`tabIndex` -1): the focused row's Right opens a branch in place. */}
+          drops the focus onto the page. Left on whatever held it, the focus is not lost. The
+          keyboard never reaches the line (`tabIndex` -1): the focused row's Right opens a branch
+          in place. */}
       <button
         className="dispatch-inline-link font-medium underline decoration-page-hair underline-offset-[3px]"
         onClick={onOpen}

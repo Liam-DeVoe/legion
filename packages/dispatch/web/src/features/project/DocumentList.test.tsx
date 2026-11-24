@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -420,9 +420,9 @@ test("j and k walk the documents, o and Enter on the row open one in this tab, a
 });
 
 // A document's row is a row of the Documents list. A refetch that takes the row holding the focus
-// away is a loss the reader did not cause, so the app shell's focus rescue, mounted here on the
-// page's main content as the shell mounts it, hands the focus into no other row: the reader's
-// next `o` opens no document they did not pick.
+// away is a loss the reader did not cause: no press of theirs armed a hand-off (`causedByReader`),
+// so in the page's main content, as the shell draws it, the focus goes into no other row: the
+// reader's next `o` opens no document they did not pick.
 test("a row a refetch takes away from under the focus hands it to no other row", async () => {
   const notes = document();
   const roadmap = document({
@@ -440,9 +440,9 @@ test("a row a refetch takes away from under the focus hands it to no other row",
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <RescuedMain>
+        <main>
           <DocumentList project="CORE" />
-        </RescuedMain>
+        </main>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -455,7 +455,7 @@ test("a row a refetch takes away from under the focus hands it to no other row",
       await queryClient.refetchQueries();
     });
     await waitFor(() => expect(goals).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     // `document` here is the fixture above, so the page's own is read through `window`.
     expect(window.document.activeElement?.closest("[data-document-row]") ?? null).toBeNull();

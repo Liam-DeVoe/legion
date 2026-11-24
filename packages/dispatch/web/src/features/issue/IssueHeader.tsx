@@ -111,13 +111,22 @@ const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
  *  changes keys stand down. */
 const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
 
-/** The status list's trigger mark, which the page's `s` finds it by (`IssuePage.tsx`). */
-const STATUS_MARKS: ListMarks = { trigger: { "data-status-menu": "" } };
+/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
+ *  shows `todo`): a reader outside the page (the docs' screenshots) reads the status off it as it
+ *  read a select's value. */
+const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
 
 /** D5's rules for the status (`ListMenu`): the list opens on the status held and takes no digit,
  *  and every close gives the focus back where it was as the list opened - the page or the
  *  element `s` was pressed on, or the trigger a press opened it from. */
 const STATUS_MENU: ListMenu = { keys: {}, opensOn: "value" };
+
+/** The Status list's marks on its trigger: the mark the page's `s` finds it by (`IssuePage.tsx`),
+ *  since the shared list hands out no element of its own, and `STATUS_TRIGGER_ATTRIBUTE`, valued
+ *  with the status it shows. */
+function statusMarks(shown: string): ListMarks {
+  return { trigger: { "data-status-menu": "", [STATUS_TRIGGER_ATTRIBUTE]: shown } };
+}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -538,8 +547,8 @@ export function IssueHeader({
               // what it holds, a button's `aria-label` included. It opens the editor when the
               // reader activates it - a click, Enter or Space - and never as it takes the focus:
               // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
-              // Focus), and the page's focus rescue can give the button the focus with no act of
-              // the reader's. A closed issue's title edits nothing, so it is the heading alone.
+              // Focus), and a focus can come to the button with no act of the reader's. A closed
+              // issue's title edits nothing, so it is the heading alone.
               <div className="relative min-w-0 flex-1">
                 <h1
                   className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
@@ -590,7 +599,7 @@ export function IssueHeader({
               chevron={false}
               emptyMessage="No status matches that."
               label="Status"
-              marks={STATUS_MARKS}
+              marks={statusMarks(statusValue)}
               menu={STATUS_MENU}
               mode="single"
               onOpenChange={(next) => setStatusOpen(next && !statusHeld)}

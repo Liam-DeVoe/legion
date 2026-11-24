@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
-import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
@@ -9,7 +9,8 @@ import { pickNamed } from "../__tests__/list-picks";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
 import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
-import { causedByReader, useFocusRescue } from "./focus-place";
+import { armOnPress, causedByReader } from "./focus-place";
+import { useHeldThroughAnswer } from "./held-press";
 
 const CHOICES: readonly MenuChoice<string>[] = [
   { label: "Later today", value: "later" },
@@ -287,15 +288,24 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
 
 /** Two keyed rows of one list, the first with a menu whose pick moves its row below the other,
  *  as a snooze moves its row down into Later: React takes the row's node out and puts it back.
- *  With `holds`, the pick's write is out from then on, and the menu's trigger is held, as the
- *  Inbox holds a snooze's while its write is out. */
+ *  Each row arms the page's hand-off at its own presses (`armOnPress`), as a component that hands
+ *  its focus off arms it at its root. With `holds`, the pick's write is out from then on, and the
+ *  menu's trigger is held from the pick on (`useHeldThroughAnswer`), as the Inbox holds a
+ *  snooze's while its write is out. */
 function MovingRows({ holds = false }: { holds?: boolean }) {
   const [order, setOrder] = useState(["ask-a", "ask-b"]);
-  const [held, setHeld] = useState(false);
+  const [writing, setWriting] = useState(false);
+  const held = useHeldThroughAnswer(writing);
   return (
     <ul>
       {order.map((id) => (
-        <li data-inbox-row={id} key={id}>
+        <li
+          data-inbox-row={id}
+          key={id}
+          onChangeCapture={armOnPress}
+          onClickCapture={armOnPress}
+          onKeyDownCapture={armOnPress}
+        >
           {id === "ask-a" ? (
             <ChoiceMenu
               choices={CHOICES}
@@ -305,7 +315,7 @@ function MovingRows({ holds = false }: { holds?: boolean }) {
               marks={{}}
               onChoose={() => {
                 setOrder(["ask-b", "ask-a"]);
-                if (holds) setHeld(true);
+                if (holds) setWriting(true);
               }}
               triggerClassName=""
             >
@@ -320,14 +330,14 @@ function MovingRows({ holds = false }: { holds?: boolean }) {
   );
 }
 
-// INFRA-2160: a pick in a menu is the reader's press on the control that opened it, though the
-// menu is portalled out of that control's row. So the focus the pick's write takes away with the
-// row - a snooze that folds the card, a priority that moves the card into another lane, a bulk
-// snooze that takes the selection bar away - is a loss the reader caused, which the page hands on
-// to the control now at its place and scrolls into view, rather than leaving it on the body. The
-// press is that cause while the write it made is out, its trigger held (`answerPress`).
+// INFRA-2160: a pick in a menu is the reader's press in the row its trigger stands in, though the
+// menu is portalled out of that row: React hands a press in the menu to the row's own handlers,
+// which arm the hand-off at the row (`armOnPress`). So the focus the pick's write takes away with
+// the row - a snooze that folds the card, a priority that moves the card into another lane - is a
+// loss the reader caused (`causedByReader`), rather than one to leave on the body. The press is
+// that cause while the write it made is out: its trigger is held from the pick on, and that hold
+// keeps the press armed (`useHeldThroughAnswer`, `holdHandOff`).
 test("a pick in the menu is the reader's own press on its trigger and the row it sits in", async () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   const user = userEvent.setup();
   const view = render(<MovingRows holds />);
   try {
@@ -341,7 +351,6 @@ test("a pick in the menu is the reader's own press on its trigger and the row it
     expect(causedByReader(other)).toBe(false);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 

@@ -233,9 +233,9 @@ type Confirming =
  * (`useHeldThroughAnswer`), never disabled: the dialog hands the focus back to the one that
  * opened it, which keeps it, and a press of a held one opens nothing. A write stays pending
  * until the read its landing starts has answered, which is the read that takes the session's
- * chip away, so the page's rescue reads the chip's going as the press's doing
- * (`causedByReader`). That wait has a bound of its own, the request deadline (`useReadBound`):
- * a read the network does not answer, as offline, lets the controls go then, and the card says
+ * chip away, so the pressed control stays held until it goes with its chip. That wait has a
+ * bound of its own, the request deadline (`useReadBound`): a read the network does not answer,
+ * as offline, lets the controls go then, and the card says
  * why its recipients are not read. A subscriber whose only matching topic is wider than this
  * owner (e.g. `notifications.dispatch.>`) names that topic and has no control, as the header's
  * Subscribed agents panel does. When the subscribers fetch fails, the card says so with a

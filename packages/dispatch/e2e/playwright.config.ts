@@ -356,11 +356,9 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
   // A focused control taken away, itself or with a parent, for which this engine fires no
-  // `focusout`, so the page's focus rescue sees it only by watching the page:
-  // `table-controls`'s page-own focus row, its row whose focused row a live update takes
-  // away, its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, whose `+` takes itself away, its row that Change answer opens the answer form
-  // with the focus in it, whose button takes itself away, its row that an ask withdrawn
+  // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
+  // takes away, its row that Add a priority opens its form in view with the focus on Priority to
+  // advance, whose `+` takes itself away, its row that an ask withdrawn
   // while the reader types its answer in the Inbox's list takes none of their next keys as text,
   // whose answer box the record takes away, its row that a Conversation turn resolved
   // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
@@ -369,26 +367,21 @@ const parallelProjects = [
   // away, its row that a date the reader gives the search bar's Updated since is their press,
   // whose box the date takes away, its row that a Snooze pick in the reading column's head
   // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away, its
-  // row that a group card deleted on another device while it holds the focus leaves the focus on
-  // the Session groups dialog, whose card the live update takes away, its row that clear brush
-  // window pressed with the Window control scrolled out of sight scrolls the Delivery page
-  // nothing, whose button the cleared brush takes away and whose landing each engine scrolls into
-  // view its own way, its row that a bulk Dismiss deep in the Inbox's list hands the focus to
-  // the row now at the marked row's place, whose bar and rows the Dismiss takes away,
-  // its row that a bulk action that takes the marked rows out of the project List's view
-  // hands the focus to the row now at their place, whose bar and rows the action takes away,
+  // row that clear brush window pressed with the Window control scrolled out of sight scrolls
+  // the Delivery page nothing, whose button the cleared brush takes away and whose landing each
+  // engine scrolls into view its own way, its row that a bulk Dismiss deep in the Inbox's list
+  // hands the focus to the row now at the marked row's place, whose bar and rows the Dismiss
+  // takes away, its row that a bulk action that takes the marked rows out of the project List's
+  // view hands the focus to the row now at their place, whose bar and rows the action takes away,
   // its row that Unpin on a pinned agent keeps the keyboard focus on a control in sight, whose
   // row the unpin moves to its new place, its row that a thread's Dismiss in the Inbox's list
-  // hands the focus to the next row, whose row the Dismiss
-  // takes away, its four rows that a control held under the reader's press keeps the keyboard
-  // focus - the Inbox's Decline dialog, a references Retry on the Artifacts tab, the Inbox card's
-  // Referenced by Retry, and Unfollow and Unsubscribe on an Inbox card's recipients - which a
-  // native `disabled` takes the focus from, and its row that offline, Take out of epic hands the
-  // focus to the marked row's checkbox in the render the bar goes, whose bar and rows the action
-  // takes away and whose frames each engine paces its own way. And
-  // `focus-landing`'s rows, a few for each page of R2 at each of two widths, whose focused
-  // control a press, a live update, another device, a held press or a press made offline takes
-  // away.
+  // hands the focus to the next row, whose row the Dismiss takes away, its five rows that a
+  // control held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog,
+  // a references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
+  // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
+  // dialog - which a native `disabled` takes the focus from, and its row that offline, Take out
+  // of epic hands the focus to the marked row's checkbox in the render the bar goes, whose bar
+  // and rows the action takes away and whose frames each engine paces its own way.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
@@ -401,11 +394,9 @@ const parallelProjects = [
   // Agents page's Filter panel, whose own hand-off runs in the same commit; and its Details
   // `k-list-focus` row, whose Escape closes the labels list over its focused search box. (Its
   // header row's single picks focus the list's trigger before the list goes, so they ask nothing.)
-  // The order in which the engine fires a text box's blur, runs the microtask the page's focus
-  // rescue queues from its `focusout`, and lets React commit the save the blur made, which takes
-  // the box away: the rescue reads the loss as the reader leaving the box only where the box
-  // still stands in that microtask. `issue`'s row that Enter in the title's editor, and a click
-  // outside it, close it and leave the next key to the page: Enter blurs the box
+  // The order in which the engine fires a text box's blur and lets React commit the save the
+  // blur made, which takes the box away: `issue`'s row that Enter in the title's editor, and a
+  // click outside it, close it and leave the next key to the page: Enter blurs the box
   // (`saveTitleOnEnter` in `IssueHeader.tsx`) and a click on the page's text blurs it too, so the
   // box no longer holds the focus when the save takes it away.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
@@ -502,13 +493,9 @@ const parallelProjects = [
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
-  // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
-  // page-own focus row, its row whose focused row a live update takes away, its row that Add a
-  // priority opens its form in view with the focus on Priority to advance, its row that Change
-  // answer opens the answer form with the focus in it, its scrolling-table row, whose focused
-  // row a scroll takes away, and `focus-landing`'s rows, a few for each page of R2 at each of two
-  // widths, whose focused control a press, a live update, another device, a held press or a press
-  // made offline takes away.
+  // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
+  // takes away, its row that Add a priority opens its form in view with the focus on Priority to
+  // advance, and its scrolling-table row, whose focused row a scroll takes away.
   // How the engine handles a focused element a commit takes off the page, which a list reads
   // through `focusLost` as its focus lost: `issue-page-h`'s row that Details' labels list gives
   // its text box the focus when Enter on the focused row of a label only the draft holds takes
@@ -517,10 +504,9 @@ const parallelProjects = [
   // Agents page's Filter panel, whose own hand-off runs in the same commit; and its Details
   // `k-list-focus` row, whose Escape closes the labels list over its focused search box. (Its
   // header row's single picks focus the list's trigger before the list goes, so they ask nothing.)
-  // The order in which the engine fires a text box's blur, runs the microtask the page's focus
-  // rescue queues from its `focusout`, and lets React commit the save the blur made, which takes
-  // the box away: `issue`'s row that Enter in the title's editor, and a click outside it, close it
-  // and leave the next key to the page, as above `webkit`.
+  // The order in which the engine fires a text box's blur and lets React commit the save the blur
+  // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
+  // outside it, close it and leave the next key to the page, as above `webkit`.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
