@@ -98,6 +98,7 @@ EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock 
 github.com/sjawhar/envoy/internal/cipher/proxyrules TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelRefusesAHostlessEntry needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
+github.com/sjawhar/envoy/internal/dispatch/api TestTheLegionReadMatchesACapturedDaemonState needs LEGION_STATE_CAPTURE, a capture of GET /legion/v1/state from a Legion daemon, which CI does not have
 '
 
 work="$(mktemp -d)"

@@ -208,7 +208,7 @@ AUDITED_SCRIPTS = {
                 "go test -json -count=1 -race -run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 26m "
                 "./internal/dispatch/api/",
         },
-        sha256="34f845c46ae79287194fa949af55512745aae2c2f96e37f70086592fbc228685",
+        sha256="727054a40db4c567bb32b0e61b565c008d44d052060a204a871f8e795191de15",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one
     # .github/scripts/go-test.sh over the packages before its `--`, which runs gotestsum, whose
