@@ -568,22 +568,32 @@ function workerCrashed(testcase: Testcase): boolean {
   return testcase.name === WORKER_CRASHED && testcase.describe.length === 0;
 }
 
-/** A stop of the leg while Bun ran or after: a SIGTERM or SIGINT the tool received, or the tool's
- *  own stop where a file's runs are projected past the deadline (`overruns`). Where it came while
- *  Bun ran: the progress file as it read at that moment, before the tool passed the signal on to
- *  Bun, and the names of the rows of each file that was running, which it read once Bun had
- *  ended. */
-export interface Stop {
-  /** The signal the tool received, or for its own stop the one it passed on to Bun. */
-  readonly signal: string;
+/** A stop by a SIGTERM or a SIGINT the tool received. */
+export interface SignalCause {
+  readonly by: "signal";
+  readonly signal: NodeJS.Signals;
+}
+
+/** The tool's own stop, where each file of `overruns` had its runs projected past the leg's
+ *  deadline of `deadlineSeconds`. The tool then passes Bun a SIGTERM, as a stop by a signal
+ *  does, but no signal reached the tool. */
+export interface ProjectionCause {
+  readonly by: "projection";
+  readonly deadlineSeconds: number;
+  readonly overruns: readonly Overrun[];
+}
+
+/** What stopped the leg. */
+export type StopCause = SignalCause | ProjectionCause;
+
+/** What every stop holds. Where it came while Bun ran: the progress file as it read at that
+ *  moment, before the tool passed the stop on to Bun, and the names of the rows of each file that
+ *  was running, which it read once Bun had ended. */
+interface StopReading {
   /** When it came, in milliseconds since the epoch, the clock the progress file writes. */
   readonly at: number;
   /** How long after Bun started it came, in milliseconds. */
   readonly afterMs: number;
-  /** Whether Bun had ended by itself when it came, while the tool wrote its report. Then no file
-   *  was running, every result Bun wrote stands, and the progress file is not read: `progress`
-   *  is empty, and `alive`, `names` and `namesRuns` are too. */
-  readonly afterBun: boolean;
   /** The text of `<out>/progress.jsonl`, or why it could not be read. */
   readonly progress: { readonly text: string } | { readonly unreadable: string };
   /** The pids of the workers the progress file names that were alive at the stop. */
@@ -595,21 +605,26 @@ export interface Stop {
   readonly bunEnd: BoundedEnd | null;
   /** How each run that read a running file's names ended, by file. */
   readonly namesRuns: Readonly<Record<string, NamesRunEnd>>;
-  /** Each file whose runs, as its ended runs project them, would end past the leg's deadline: the
-   *  reason for the tool's own stop. Empty for a stop by a signal the tool received. */
-  readonly overruns: readonly Overrun[];
 }
 
+/** A stop of the leg, and what stopped it. One that came while Bun ran is a signal or the tool's
+ *  own projection. One that came after Bun had ended by itself, while the tool wrote its report,
+ *  is a signal alone, since the projection reads only while Bun runs: then no file was running,
+ *  every result Bun wrote stands, and the progress file is not read, so `progress` is empty, and
+ *  `alive`, `names` and `namesRuns` are too. */
+export type Stop =
+  | (StopReading & { readonly afterBun: false; readonly cause: StopCause })
+  | (StopReading & { readonly afterBun: true; readonly cause: SignalCause });
+
 /** A test file whose runs cannot all end by the leg's deadline, as its ended runs project them:
- *  its runs ended of the reruns the leg runs, its fastest ended run, and the soonest its last run
- *  can end, from Bun's start, with each run still to come as fast as that fastest one. */
+ *  its runs ended, its fastest ended run, and the soonest its last run can end, from Bun's start,
+ *  with each run still to come as fast as that fastest one. The reruns and the deadline are the
+ *  leg's, on the report and on the stop's cause. */
 export interface Overrun {
   readonly file: string;
   readonly runsEnded: number;
-  readonly reruns: number;
   readonly fastestSeconds: number;
   readonly projectedSeconds: number;
-  readonly deadlineSeconds: number;
 }
 
 /** What the report says of an overrun: the overrun, and the command, run from packages/dispatch,
@@ -719,12 +734,17 @@ export interface RunningFile {
   readonly reproduce: string;
 }
 
-/** What the report says of a stop. */
-export interface StopReport {
-  readonly signal: string;
+/** The tool's own stop as the report gives it: its cause, each overrun with the command that
+ *  runs its file again. */
+export interface ProjectionReport {
+  readonly by: "projection";
+  readonly deadlineSeconds: number;
+  readonly overruns: readonly OverrunReport[];
+}
+
+/** What every stop of the report holds. */
+interface StopReportReading {
   readonly afterSeconds: number;
-  /** Whether Bun had ended by itself when the stop came, while the tool wrote its report. */
-  readonly afterBun: boolean;
   readonly running: readonly RunningFile[];
   /** Why the progress file could not be read, or null where it was read. */
   readonly progressUnreadable: string | null;
@@ -737,10 +757,16 @@ export interface StopReport {
   readonly bunEnd: BoundedEnd | null;
   /** How each run that read a running file's names ended, against its bound, by file. */
   readonly namesRuns: Readonly<Record<string, NamesRunEnd>>;
-  /** Each file whose runs are projected past the deadline, the reason for the tool's own stop; empty
-   *  for a stop by a signal. */
-  readonly overruns: readonly OverrunReport[];
 }
+
+/** What the report says of a stop, and what stopped it, as `Stop` holds them: a stop after Bun
+ *  had ended by itself, while the tool wrote its report, is a signal alone. */
+export type StopReport =
+  | (StopReportReading & {
+      readonly afterBun: false;
+      readonly cause: SignalCause | ProjectionReport;
+    })
+  | (StopReportReading & { readonly afterBun: true; readonly cause: SignalCause });
 
 /** A failure that belongs to no row. */
 export interface RowlessFailure {
@@ -886,7 +912,9 @@ function progressLine(text: string): ProgressLine | undefined {
     : undefined;
 }
 
-/** Where one load of a test file had got to, as its lines in the progress file say. */
+/** Where one load of a test file had got to, as its lines in the progress file say: its runs
+ *  begun and ended, its rows begun and ended in its latest run, and, for the projection, when its
+ *  latest run began and ended and how long its fastest ended run took, in milliseconds. */
 interface LoadState {
   readonly file: string;
   /** Whether the file runs its rows at once. */
@@ -897,49 +925,80 @@ interface LoadState {
   begun: number;
   ended: number;
   lastAt: number;
+  latestRunAt: number;
+  latestDoneAt: number;
+  fastestRunMs: number;
 }
 
-/** Each worker's latest load, from the progress file's `text`, by the worker's pid.
+/** The loads the progress file's lines have named so far: each by its id, and each worker's
+ *  latest by the worker's pid. */
+interface ProgressRead {
+  readonly loads: Map<string, LoadState>;
+  readonly latest: Map<number, LoadState>;
+}
+
+function progressRead(): ProgressRead {
+  return { loads: new Map(), latest: new Map() };
+}
+
+/** Takes one line of the progress file into `read`: the one reader of those lines, for both a
+ *  stop's report of where each file was and the projection of each file's runs.
  *
  *  A row's `end` is written by the preload's `afterEach`, which Bun 1.4.4 runs after the file's
  *  own `afterEach` hooks, and which a throwing one of them skips (both measured on 2026-11-20).
  *  So an `end` can be missing for a row that did end. In a file that runs one row at a time, the
  *  next row's `start` shows that the row before it ended, and counts it so. In a file that runs
- *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count. */
-function latestLoads(text: string): Map<number, LoadState> {
-  const loads = new Map<string, LoadState>();
-  const latest = new Map<number, LoadState>();
-  for (const line of text.split("\n")) {
-    const read = progressLine(line);
-    if (read === undefined) continue;
-    if (read.event === "load") {
-      const state = {
-        file: read.file,
-        atOnce: read.atOnce,
-        runs: 0,
-        done: 0,
-        begun: 0,
-        ended: 0,
-        lastAt: read.at,
-      };
-      loads.set(read.load, state);
-      latest.set(read.pid, state);
-      continue;
-    }
-    const state = loads.get(read.load);
-    if (state === undefined) continue;
-    state.lastAt = read.at;
-    if (read.event === "run") {
-      state.runs += 1;
-      state.begun = 0;
-      state.ended = 0;
-    } else if (read.event === "start") {
-      if (!state.atOnce) state.ended = state.begun;
-      state.begun += 1;
-    } else if (read.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
-    else state.done += 1;
+ *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count.
+ *
+ *  Each `done` counts one run ended, and times the run that began last, from its own `run`: Bun
+ *  runs a load's runs one after another. A `done` that a throwing `afterAll` of the file skipped
+ *  leaves one run fewer counted as ended than really did, so the stop names the file one run
+ *  further back and the projection counts one more run to come; both read the same count. */
+function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
+  if (line.event === "load") {
+    const state = {
+      file: line.file,
+      atOnce: line.atOnce,
+      runs: 0,
+      done: 0,
+      begun: 0,
+      ended: 0,
+      lastAt: line.at,
+      latestRunAt: line.at,
+      latestDoneAt: line.at,
+      fastestRunMs: Number.POSITIVE_INFINITY,
+    };
+    read.loads.set(line.load, state);
+    read.latest.set(line.pid, state);
+    return;
   }
-  return latest;
+  const state = read.loads.get(line.load);
+  if (state === undefined) return;
+  state.lastAt = line.at;
+  if (line.event === "run") {
+    state.runs += 1;
+    state.begun = 0;
+    state.ended = 0;
+    state.latestRunAt = line.at;
+  } else if (line.event === "start") {
+    if (!state.atOnce) state.ended = state.begun;
+    state.begun += 1;
+  } else if (line.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
+  else {
+    state.done += 1;
+    state.latestDoneAt = line.at;
+    state.fastestRunMs = Math.min(state.fastestRunMs, line.at - state.latestRunAt);
+  }
+}
+
+/** Each worker's latest load, from the progress file's `text`, by the worker's pid. */
+function latestLoads(text: string): Map<number, LoadState> {
+  const read = progressRead();
+  for (const line of text.split("\n")) {
+    const taken = progressLine(line);
+    if (taken !== undefined) takeProgressLine(read, taken);
+  }
+  return read.latest;
 }
 
 /** The pids of the workers the progress file's `text` names that are alive now, which the stop
@@ -958,102 +1017,114 @@ function liveWorkers(text: string): number[] {
   return alive;
 }
 
-/** The runs of one load of a test file, as the projection reads them from the progress file, in
- *  milliseconds since the epoch: how many runs began and when the latest began; the run the
- *  latest `done` ended, by its number, and when; and the fastest run that ended. Bun runs a load's
- *  runs one after another, so a `done` ends the run that began last. A `done` a throwing
- *  `afterAll` of the file skipped leaves its run uncounted as ended, and the next `done` still
- *  times the run it ends from that run's own start. */
-interface LoadRuns {
-  readonly file: string;
-  begun: number;
-  latestBegan: number;
-  endedRun: number;
-  latestEnded: number;
-  fastest: number;
-}
-
-/** Takes one line of the progress file into `loads`, the runs of each load by its id. */
-function takeRunLine(loads: Map<string, LoadRuns>, line: ProgressLine): void {
-  if (line.event === "load") {
-    loads.set(line.load, {
-      file: line.file,
-      begun: 0,
-      latestBegan: 0,
-      endedRun: 0,
-      latestEnded: 0,
-      fastest: Number.POSITIVE_INFINITY,
-    });
-    return;
-  }
-  const runs = loads.get(line.load);
-  if (runs === undefined) return;
-  if (line.event === "run") {
-    runs.begun += 1;
-    runs.latestBegan = line.at;
-  } else if (line.event === "done" && runs.begun > runs.endedRun) {
-    runs.endedRun = runs.begun;
-    runs.latestEnded = line.at;
-    runs.fastest = Math.min(runs.fastest, line.at - runs.latestBegan);
-  }
-}
-
-/** Each file of `loads` whose runs cannot all end by the deadline, `deadlineSeconds` after
+/** Each load of `loads` whose runs cannot all end by the deadline, `deadlineSeconds` after
  *  `startedAt`, Bun's start in milliseconds since the epoch, as its ended runs project them: one
  *  with a run ended and runs still to come, whose latest ended run's end, and then each run still
  *  to come as fast as its fastest ended one, comes past the deadline. Only a later run faster than
  *  every one before it ends sooner. The latest projection first; each projection is rounded up to
  *  a tenth of a second, so the report never shows one at or under the deadline it passed. */
 function overrunsOf(
-  loads: ReadonlyMap<string, LoadRuns>,
+  loads: Iterable<LoadState>,
   startedAt: number,
   reruns: number,
   deadlineSeconds: number
 ): Overrun[] {
   const deadline = startedAt + deadlineSeconds * 1000;
   const found: Overrun[] = [];
-  for (const { file, endedRun, latestEnded, fastest } of loads.values()) {
-    if (endedRun === 0 || endedRun >= reruns) continue;
-    const projected = latestEnded + (reruns - endedRun) * fastest;
+  for (const { file, done, latestDoneAt, fastestRunMs } of loads) {
+    if (done === 0 || done >= reruns) continue;
+    const projected = latestDoneAt + (reruns - done) * fastestRunMs;
     if (projected <= deadline) continue;
     found.push({
       file,
-      runsEnded: endedRun,
-      reruns,
-      fastestSeconds: Math.round(fastest / 100) / 10,
+      runsEnded: done,
+      fastestSeconds: Math.round(fastestRunMs / 100) / 10,
       projectedSeconds: Math.ceil((projected - startedAt) / 100) / 10,
-      deadlineSeconds,
     });
   }
   return found.sort((one, other) => other.projectedSeconds - one.projectedSeconds);
 }
 
-/** `overrunsOf` the runs the progress file's `text` holds: what the tool reads, a few lines at a
- *  time, while Bun runs. Exported for the rows of e2e/__tests__/unit-repeat.test.ts that script a
- *  progress file. */
-export function overrunsIn(
-  text: string,
+/** The projection of a leg that Bun started at `startedAt`, in milliseconds since the epoch, with
+ *  `reruns` and `deadlineSeconds`: each call takes the progress file's lines read since the last
+ *  one, with the one reader a stop uses (`takeProgressLine`), and answers each file whose runs
+ *  they project past the deadline (`overrunsOf`). Exported for the rows of
+ *  e2e/__tests__/unit-repeat.test.ts that feed it a progress file through `progressTail`, as the
+ *  tool does. */
+export function projection(
   startedAt: number,
   reruns: number,
   deadlineSeconds: number
-): Overrun[] {
-  const loads = new Map<string, LoadRuns>();
-  for (const each of text.split("\n")) {
-    const read = progressLine(each);
-    if (read !== undefined) takeRunLine(loads, read);
-  }
-  return overrunsOf(loads, startedAt, reruns, deadlineSeconds);
+): (lines: readonly ProgressLine[]) => Overrun[] {
+  const read = progressRead();
+  return (lines) => {
+    for (const line of lines) takeProgressLine(read, line);
+    return overrunsOf(read.loads.values(), startedAt, reruns, deadlineSeconds);
+  };
 }
 
-/** An overrun's numbers in words: `1 of 20 runs ended, the fastest in 448.1 s; at that speed its
- *  20 runs end 9126.4 s after Bun's start, past the leg's 7800 s deadline`. */
-function overrunFacts(overrun: Overrun): string {
-  const { runsEnded, reruns, fastestSeconds, projectedSeconds, deadlineSeconds } = overrun;
+/** While Bun runs, reads the lines the progress file at `path` gains every `intervalMs`, projects
+ *  each file's runs (`projection`), and calls `stop` once, with the tool's own cause, at the first
+ *  read that finds a file whose runs it projects past the deadline. Answers what ends the watch. */
+function watchProjection(
+  path: string,
+  leg: { readonly startedAt: number; readonly reruns: number; readonly deadlineSeconds: number },
+  intervalMs: number,
+  stop: (cause: ProjectionCause) => void
+): { close(): void } {
+  const { startedAt, reruns, deadlineSeconds } = leg;
+  const tail = progressTail(path);
+  const project = projection(startedAt, reruns, deadlineSeconds);
+  const timer = setInterval(() => {
+    const overruns = project(tail.read());
+    if (overruns.length === 0) return;
+    clearInterval(timer);
+    stop({ by: "projection", deadlineSeconds, overruns });
+  }, intervalMs);
+  return {
+    close: () => {
+      clearInterval(timer);
+      tail.close();
+    },
+  };
+}
+
+/** An overrun's numbers in words, with the leg's `reruns` and `deadlineSeconds`: `1 of 20 runs
+ *  ended, the fastest in 448.1 s; at that speed its 20 runs end 9126.4 s after Bun's start, past
+ *  the leg's 7800 s deadline`. */
+function overrunFacts(overrun: Overrun, reruns: number, deadlineSeconds: number): string {
+  const { runsEnded, fastestSeconds, projectedSeconds } = overrun;
   return (
     `${runsEnded} of ${reruns} runs ended, the fastest in ${fastestSeconds.toFixed(1)} s; at that ` +
     `speed its ${reruns} runs end ${projectedSeconds.toFixed(1)} s after Bun's start, past the ` +
     `leg's ${deadlineSeconds} s deadline`
   );
+}
+
+/** The tool's own stop, as the stop and the report hold it. */
+type Projected = Pick<ProjectionCause, "deadlineSeconds" | "overruns">;
+
+/** How many files the tool's own stop projected past the deadline:
+ *  `1 test file's runs are projected past the leg's 7800 s deadline`. */
+function projectedPast({ deadlineSeconds, overruns }: Projected): string {
+  return (
+    `${counted(overruns.length, "test file's runs are", "test files' runs are")} projected past ` +
+    `the leg's ${deadlineSeconds} s deadline`
+  );
+}
+
+/** Why the tool stopped the leg, file by file, with the leg's `reruns`:
+ *  `1 test file's runs are projected past the leg's 7800 s deadline: <file>: <facts>`. */
+function projectionText(cause: Projected, reruns: number): string {
+  const files = cause.overruns.map(
+    (overrun) => `${overrun.file}: ${overrunFacts(overrun, reruns, cause.deadlineSeconds)}`
+  );
+  return `${projectedPast(cause)}: ${files.join("; ")}`;
+}
+
+/** Who stopped the leg, as a sentence names it: the signal, or `the tool`. */
+function stopperText(cause: SignalCause | Projected): string {
+  return "signal" in cause ? cause.signal : "the tool";
 }
 
 type LaneOf = { readonly reruns: number; readonly seed: number; readonly script: string };
@@ -1304,12 +1375,14 @@ export function summarise(run: LaneRun): Report {
 
   let stop: StopReport | null = null;
   let failures = rowless;
-  if (run.stop !== null && during === null) {
+  if (run.stop?.afterBun === true) {
     // Bun had ended by itself, and the stop came while the tool wrote this report: the leg ran
     // past its deadline in the tool's own work. It still fails, as the step's `timeout` fails it.
+    const { cause, afterMs } = run.stop;
+    const afterSeconds = Math.round(afterMs / 100) / 10;
     stop = {
-      signal: run.stop.signal,
-      afterSeconds: Math.round(run.stop.afterMs / 100) / 10,
+      cause,
+      afterSeconds,
       afterBun: true,
       running: [],
       progressUnreadable: null,
@@ -1317,13 +1390,12 @@ export function summarise(run: LaneRun): Report {
       unreported: [],
       bunEnd: null,
       namesRuns: {},
-      overruns: [],
     };
     failures = [
       {
         kind: "stopped",
         text:
-          `The leg was stopped by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, after ` +
+          `The leg was stopped by ${cause.signal} after ${afterSeconds.toFixed(1)} s, after ` +
           "Bun had ended by itself, while the tool wrote this report: no test file was running, " +
           "and every result Bun wrote stands.",
       },
@@ -1331,8 +1403,18 @@ export function summarise(run: LaneRun): Report {
     ];
   } else if (during !== null) {
     const { progress } = during;
+    const cause: SignalCause | ProjectionReport =
+      during.cause.by === "signal"
+        ? during.cause
+        : {
+            ...during.cause,
+            overruns: during.cause.overruns.map((overrun) => ({
+              ...overrun,
+              reproduce: `bun run ${script} ${overrun.file} --seed=${run.seed} --rerun-each=${run.reruns}`,
+            })),
+          };
     stop = {
-      signal: during.signal,
+      cause,
       afterSeconds: Math.round(during.afterMs / 100) / 10,
       afterBun: false,
       running,
@@ -1341,10 +1423,6 @@ export function summarise(run: LaneRun): Report {
       unreported: lost,
       bunEnd: during.bunEnd,
       namesRuns: during.namesRuns,
-      overruns: during.overruns.map((overrun) => ({
-        ...overrun,
-        reproduce: `bun run ${script} ${overrun.file} --seed=${run.seed} --rerun-each=${run.reruns}`,
-      })),
     };
     const named =
       stop.progressUnreadable !== null
@@ -1362,14 +1440,11 @@ export function summarise(run: LaneRun): Report {
       bunEnd?.killed === true
         ? ` Bun did not end within its ${bunEnd.boundMs / 1000} s grace after the stop, so the tool killed its process group, and its junit file can lack rows that ended.`
         : "";
-    const { overruns } = stop;
+    const after = `after ${stop.afterSeconds.toFixed(1)} s, before Bun ended`;
     const stoppedBy =
-      overruns.length === 0
-        ? `The leg was stopped by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, before Bun ended: ${named}.`
-        : `The tool stopped the leg after ${stop.afterSeconds.toFixed(1)} s, before Bun ended, ` +
-          `because ${counted(overruns.length, "test file's runs are", "test files' runs are")} ` +
-          `projected past the leg's ${overruns[0].deadlineSeconds} s deadline: ` +
-          `${overruns.map((overrun) => `${overrun.file}: ${overrunFacts(overrun)}`).join("; ")}. ` +
+      cause.by === "signal"
+        ? `The leg was stopped by ${cause.signal} ${after}: ${named}.`
+        : `The tool stopped the leg ${after}, because ${projectionText(cause, run.reruns)}. ` +
           `When it stopped, ${named}.`;
     failures = [
       { kind: "stopped", text: `${stoppedBy}${unreported}${graceKilled}` },
@@ -1465,9 +1540,13 @@ function endText(end: BoundedEnd): string {
  *  a running file's names ended. */
 function stopLines(stop: StopReport): string[] {
   return [
-    stop.overruns.length > 0
-      ? `- Stopped: by the tool after ${stop.afterSeconds.toFixed(1)} s, before Bun ended, since ${counted(stop.overruns.length, "test file's runs are", "test files' runs are")} projected past the leg's ${stop.overruns[0].deadlineSeconds} s deadline`
-      : `- Stopped: by ${stop.signal} after ${stop.afterSeconds.toFixed(1)} s, ${stop.afterBun ? "after Bun had ended by itself, while the tool wrote this report" : "before Bun ended"}`,
+    `- Stopped: by ${stopperText(stop.cause)} after ${stop.afterSeconds.toFixed(1)} s, ${
+      stop.afterBun
+        ? "after Bun had ended by itself, while the tool wrote this report"
+        : stop.cause.by === "projection"
+          ? `before Bun ended, since ${projectedPast(stop.cause)}`
+          : "before Bun ended"
+    }`,
     ...(stop.bunEnd === null ? [] : [`- Bun, after the stop, ${endText(stop.bunEnd)}`]),
     ...Object.entries(stop.namesRuns).map(
       ([file, end]) =>
@@ -1516,16 +1595,17 @@ export function markdown(report: Report): string {
   ];
   const { stop } = report;
   if (stop !== null) {
-    if (stop.overruns.length > 0) {
+    if (stop.cause.by === "projection") {
+      const { deadlineSeconds, overruns } = stop.cause;
       lines.push(
-        `### ${counted(stop.overruns.length, "test file's runs", "test files' runs")} projected past the deadline`,
+        `### ${counted(overruns.length, "test file's runs", "test files' runs")} projected past the deadline`,
         ""
       );
-      for (const overrun of stop.overruns) {
+      for (const overrun of overruns) {
         lines.push(
           `#### ${code(overrun.file)}`,
           "",
-          `${overrunFacts(overrun)}. Bun runs every run of a file one after another in one worker,`,
+          `${overrunFacts(overrun, report.reruns, deadlineSeconds)}. Bun runs every run of a file one after another in one worker,`,
           "so the leg cannot end in time unless a later run of the file is faster than every one",
           "before it. To run its runs again in the same order, run this from",
           "`packages/dispatch`:",
@@ -1635,19 +1715,20 @@ export function annotations(report: Report): string[] {
     )
   );
   const { stop } = report;
+  const projected = stop?.cause.by === "projection" ? stop.cause : null;
   const overruns =
-    stop === null
+    stop === null || projected === null
       ? []
-      : stop.overruns.map((overrun) =>
+      : projected.overruns.map((overrun) =>
           workflowCommand(
             "error",
             {
               file: `packages/dispatch/${overrun.file}`,
               title: "Runs projected past the deadline",
             },
-            `${overrun.file}: ${overrunFacts(overrun)}, so the tool stopped the leg after ` +
-              `${stop.afterSeconds.toFixed(1)} s (seed ${report.seed}). Run its runs again from ` +
-              `packages/dispatch: ${overrun.reproduce}`
+            `${overrun.file}: ${overrunFacts(overrun, report.reruns, projected.deadlineSeconds)}, ` +
+              `so the tool stopped the leg after ${stop.afterSeconds.toFixed(1)} s ` +
+              `(seed ${report.seed}). Run its runs again from packages/dispatch: ${overrun.reproduce}`
           )
         );
   const running =
@@ -1658,7 +1739,7 @@ export function annotations(report: Report): string[] {
             "error",
             { file: `packages/dispatch/${file.file}`, title: "Running when the leg was stopped" },
             `${file.file}: in ${placeText(file, report.reruns)}, when ` +
-              `${stop.overruns.length > 0 ? "the tool" : stop.signal} stopped the ` +
+              `${stopperText(stop.cause)} stopped the ` +
               `leg after ${stop.afterSeconds.toFixed(1)} s (seed ${report.seed}). Run it again ` +
               `from packages/dispatch: ${file.reproduce}`
           )
@@ -2029,15 +2110,18 @@ export async function runLane(
   // Set once Bun has ended. A stop after that comes while the tool writes its report: there is
   // nothing left to stop, and the report is written again to name it.
   let bunEnded = false;
-  // A stop by `signal`, which the tool received, or the tool's own stop where `overruns` names
-  // each file whose runs cannot end by the deadline, for which it passes Bun a SIGTERM.
-  const stopFor = (signal: NodeJS.Signals, overruns: readonly Overrun[]) => {
+  // A stop by a signal the tool received, or the tool's own stop by its projection, for which it
+  // passes Bun a SIGTERM. A projection comes only while Bun runs (`watchProjection` is closed once
+  // Bun has ended), so a stop after Bun's end is a signal.
+  const stopFor = (cause: StopCause) => {
     if (held.stop !== null) return;
     stoppedAt = performance.now();
     const afterMs = stoppedAt - started;
+    const after = `${(afterMs / 1000).toFixed(1)} s`;
     if (bunEnded) {
+      if (cause.by !== "signal") return;
       held.stop = {
-        signal,
+        cause,
         at: Date.now(),
         afterMs,
         afterBun: true,
@@ -2046,11 +2130,10 @@ export async function runLane(
         names: {},
         bunEnd: null,
         namesRuns: {},
-        overruns,
       };
       console.log(
-        `unit-repeat: ${signal} after ${(afterMs / 1000).toFixed(1)} s, after Bun had ended by ` +
-          "itself: the report names the stop"
+        `unit-repeat: ${cause.signal} after ${after}, after Bun had ended by itself: the report ` +
+          "names the stop"
       );
       return;
     }
@@ -2059,7 +2142,7 @@ export async function runLane(
     const progress = progressAt(progressPath);
     const alive = "text" in progress ? liveWorkers(progress.text) : [];
     held.stop = {
-      signal,
+      cause,
       at: Date.now(),
       afterMs,
       afterBun: false,
@@ -2068,22 +2151,20 @@ export async function runLane(
       names: {},
       bunEnd: null,
       namesRuns: {},
-      overruns,
     };
     console.log(
-      overruns.length === 0
-        ? `unit-repeat: ${signal} after ${(afterMs / 1000).toFixed(1)} s: Bun is stopped, and the ` +
-            "report names what was running"
-        : `unit-repeat: stopped after ${(afterMs / 1000).toFixed(1)} s, since ` +
-            `${overruns.map((overrun) => `${overrun.file}: ${overrunFacts(overrun)}`).join("; ")}. ` +
-            "Bun is stopped, and the report names that and what was running"
+      cause.by === "signal"
+        ? `unit-repeat: ${cause.signal} after ${after}: Bun is stopped, and the report names what ` +
+            "was running"
+        : `unit-repeat: stopped after ${after}, since ${projectionText(cause, reruns)}. Bun is ` +
+            "stopped, and the report names that and what was running"
     );
     // To `bun run` alone, which passes it on to Bun's test process; that process ends its
     // workers, prints the files still running and writes its junit file, and `bun run` can end
     // before it does. So Bun's end is the end of its pipes, which its test process holds. At the
     // grace's end the tool kills the whole group, and a holder of a pipe that left the group gets
     // PIPE_GRACE_MS more before the pipes are read no further.
-    child.kill(signal);
+    child.kill(cause.by === "signal" ? cause.signal : "SIGTERM");
     killer = setTimeout(() => {
       graceKilled = true;
       killGroup(child.pid);
@@ -2093,7 +2174,7 @@ export async function runLane(
     }, graceMs);
     stopped.resolve();
   };
-  const onStop = (signal: NodeJS.Signals) => stopFor(signal, []);
+  const onStop = (signal: NodeJS.Signals) => stopFor({ by: "signal", signal });
   // The listeners stay until the report is written: a signal with none would end the tool at
   // once, with no report, and a second signal during the names runs would too.
   process.on("SIGTERM", onStop);
@@ -2107,17 +2188,16 @@ export async function runLane(
     sample();
     const sampler = setInterval(sample, MEMORY_SAMPLE_MS);
     // With a deadline, each file's runs are projected from the lines the progress file gains,
-    // and the leg is stopped once one file's runs cannot end by the deadline. Once Bun has ended,
-    // or a stop has come, there is nothing left to project.
-    const tail = progressTail(progressPath);
-    const loads = new Map<string, LoadRuns>();
-    const project = () => {
-      if (deadlineSeconds === null || held.stop !== null || bunEnded) return;
-      for (const line of tail.read()) takeRunLine(loads, line);
-      const overruns = overrunsOf(loads, startedAt, reruns, deadlineSeconds);
-      if (overruns.length > 0) stopFor("SIGTERM", overruns);
-    };
-    const projector = deadlineSeconds === null ? undefined : setInterval(project, projectionMs);
+    // and the leg is stopped once one file's runs are projected past the deadline.
+    const watch =
+      deadlineSeconds === null
+        ? null
+        : watchProjection(
+            progressPath,
+            { startedAt, reruns, deadlineSeconds },
+            projectionMs,
+            stopFor
+          );
     try {
       await Promise.race([relays, stopped.promise]);
       const stop = held.stop;
@@ -2138,8 +2218,7 @@ export async function runLane(
       bunEnded = true;
       clearTimeout(killer);
       clearInterval(sampler);
-      clearInterval(projector);
-      tail.close();
+      watch?.close();
       closeSync(log);
       killGroup(child.pid);
     }

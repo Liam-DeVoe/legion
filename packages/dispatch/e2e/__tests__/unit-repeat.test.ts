@@ -33,9 +33,10 @@ import {
   junitAt,
   type LaneRun,
   markdown,
-  overrunsIn,
+  type Overrun,
   parseArguments,
   progressTail,
+  projection,
   type Report,
   type RowlessKind,
   runningFiles,
@@ -597,7 +598,7 @@ test(
       progressLine({ event: "end", load: "h", at: 8_004 }),
     ];
     const stop: Stop = {
-      signal: "SIGTERM",
+      cause: { by: "signal", signal: "SIGTERM" },
       at: 10_000,
       afterMs: 9_500,
       afterBun: false,
@@ -611,7 +612,6 @@ test(
       },
       bunEnd: null,
       namesRuns: {},
-      overruns: [],
     };
     const lane = { reruns: 2, seed: SEED, script: "test:harness" };
     expect(runningFiles(stop, lane)).toEqual([
@@ -808,20 +808,41 @@ test(
   rowLimit()
 );
 
+/** What the tool's projection, with `reruns` and a deadline of `deadlineSeconds` from `start`,
+ *  names of a progress file holding `text`: the file read through `progressTail`, as the tool reads
+ *  it, and each line taken by the reader a stop uses. */
+function projectedFrom(
+  text: string,
+  start: number,
+  reruns: number,
+  deadlineSeconds: number
+): Overrun[] {
+  const path = join(scratch(), "progress.jsonl");
+  writeFileSync(path, text);
+  const reader = progressTail(path);
+  try {
+    return projection(start, reruns, deadlineSeconds)(reader.read());
+  } finally {
+    reader.close();
+  }
+}
+
 test(
   "a file whose ended runs project its runs past the deadline is named, and a file that can still end in time is not",
   () => {
     // The lie: a leg runs to its deadline for a file whose first run already showed its runs
     // cannot end by it, or the projection stops a leg that could still pass: it takes a run's
     // mean, where a slow first run and fast later ones end in time; it reads a projection that
-    // lands on the deadline as past it; or it names a file with no run ended, or every run ended.
-    // The leg starts at 1,000 s on the progress file's clock, with a deadline of 7,800 s and 20
-    // reruns; every time below is in seconds from that start.
+    // lands on the deadline as past it; it times a run from an earlier run's start; or it names a
+    // file with no run ended, or every run ended. The leg starts at 1,000 s on the progress file's
+    // clock, with a deadline of 7,800 s and 20 reruns; every time below is in seconds from that
+    // start.
     const start = 1_000_000;
     const at = (seconds: number) => start + seconds * 1000;
     const lines: string[] = [];
     // A load of `<load>.test.ts` at `loadedAt`, and each of its runs as [began, ended], one row a
-    // run; a run whose end is null began and has not ended.
+    // run; a run whose end is null began and has not ended, as is one whose `done` a throwing
+    // afterAll skipped.
     const file = (
       load: string,
       loadedAt: number,
@@ -863,30 +884,23 @@ test(
     ]);
     // One run of 390 s: 19 more end at 7,800 s, on the deadline and not past it.
     file("on-the-deadline", 0, [[0, 390]]);
-    // A run begun and not ended: nothing to project from.
+    // A run begun and not ended: nothing to project from. Taken as ended, its 20 runs would end
+    // at no time at all, past every deadline.
     file("unended", 0, [[0, null]]);
-    // Every run ended, the last at 7,000 s: nothing left to come.
+    // Every run ended, the last at 8,000 s, past the deadline: nothing left to come, so nothing to
+    // project, however late it ended.
     file(
       "finished",
       0,
-      Array.from({ length: 20 }, (_, run) => [run * 350, (run + 1) * 350] as const)
+      Array.from({ length: 20 }, (_, run) => [run * 400, (run + 1) * 400] as const)
     );
-    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: its second `done`
-    // times the run it ends from that run's own start, so 18 more end at 6,000 s. Paired with the
-    // first run's start, the run would read 600 s, and 19 more would end at 12,000 s.
-    lines.push(
-      progressLine({
-        event: "load",
-        load: "skipped-done",
-        at: at(0),
-        file: "skipped-done.test.ts",
-        pid: 1,
-        atOnce: false,
-      }),
-      progressLine({ event: "run", load: "skipped-done", at: at(0) }),
-      progressLine({ event: "run", load: "skipped-done", at: at(300) }),
-      progressLine({ event: "done", load: "skipped-done", at: at(600) })
-    );
+    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: one run counts as
+    // ended, timed from its own start, so 19 more end at 6,300 s. Timed from the first run's start,
+    // it would read 600 s, and 19 more would end at 12,000 s.
+    file("skipped-done", 0, [
+      [0, null],
+      [300, 600],
+    ]);
     // One run of 390.001 s: 19 more end at 7,800.02 s, just past the deadline, which the report
     // rounds up, never to the deadline itself.
     lines.push(
@@ -903,36 +917,68 @@ test(
     );
     // The last line, cut short as a worker's write can be when the file is read.
     const text = `${lines.join("\n")}\n{"event":"done","load":"fits","at":`;
-    expect(overrunsIn(text, start, 20, 7800)).toEqual([
-      {
-        file: "slower.test.ts",
-        runsEnded: 1,
-        reruns: 20,
-        fastestSeconds: 500,
-        projectedSeconds: 10200,
-        deadlineSeconds: 7800,
-      },
-      {
-        file: "slow.test.ts",
-        runsEnded: 1,
-        reruns: 20,
-        fastestSeconds: 450.5,
-        projectedSeconds: 9110.5,
-        deadlineSeconds: 7800,
-      },
-      {
-        file: "just-past.test.ts",
-        runsEnded: 1,
-        reruns: 20,
-        fastestSeconds: 390,
-        projectedSeconds: 7800.1,
-        deadlineSeconds: 7800,
-      },
+    expect(projectedFrom(text, start, 20, 7800)).toEqual([
+      { file: "slower.test.ts", runsEnded: 1, fastestSeconds: 500, projectedSeconds: 10200 },
+      { file: "slow.test.ts", runsEnded: 1, fastestSeconds: 450.5, projectedSeconds: 9110.5 },
+      { file: "just-past.test.ts", runsEnded: 1, fastestSeconds: 390, projectedSeconds: 7800.1 },
     ]);
     // Each of them inside a deadline past its projection: none is named.
-    expect(overrunsIn(text, start, 20, 10_201)).toEqual([]);
+    expect(projectedFrom(text, start, 20, 10_201)).toEqual([]);
     // With no progress file yet, nothing is named.
-    expect(overrunsIn("", start, 20, 7800)).toEqual([]);
+    expect(projectedFrom("", start, 20, 7800)).toEqual([]);
+  },
+  rowLimit()
+);
+
+test(
+  "a file whose afterAll skipped a done is at the same run in the stop's report and in the projection",
+  () => {
+    // The lie: two readers of the progress file count a run whose `done` a throwing afterAll
+    // skipped two ways, so one report says the file had 2 of 3 runs ended while its running
+    // section says it was in run 2. Here worker 7's file ran twice, its first `done` skipped and
+    // its second written, and the leg stopped after it.
+    const start = 1_000_000;
+    const at = (seconds: number) => start + seconds * 1000;
+    const lines = [
+      progressLine({
+        event: "load",
+        load: "a",
+        at: at(0),
+        file: "a.test.ts",
+        pid: 7,
+        atOnce: false,
+      }),
+      progressLine({ event: "run", load: "a", at: at(0) }),
+      progressLine({ event: "start", load: "a", at: at(0) }),
+      progressLine({ event: "end", load: "a", at: at(300) }),
+      progressLine({ event: "run", load: "a", at: at(300) }),
+      progressLine({ event: "start", load: "a", at: at(300) }),
+      progressLine({ event: "end", load: "a", at: at(600) }),
+      progressLine({ event: "done", load: "a", at: at(600) }),
+    ];
+    const text = `${lines.join("\n")}\n`;
+    const stop: Stop = {
+      cause: { by: "signal", signal: "SIGTERM" },
+      at: at(700),
+      afterMs: 700_000,
+      afterBun: false,
+      progress: { text },
+      alive: [7],
+      names: { "a.test.ts": { names: ["a one"] } },
+      bunEnd: null,
+      namesRuns: {},
+    };
+    const [running] = runningFiles(stop, { reruns: 3, seed: SEED, script: "test:harness" });
+    const [overrun] = projectedFrom(text, start, 3, 1);
+    expect(running).toMatchObject({ file: "a.test.ts", run: 2 });
+    expect(overrun).toEqual({
+      file: "a.test.ts",
+      runsEnded: 1,
+      fastestSeconds: 300,
+      projectedSeconds: 1200,
+    });
+    // The run the stop names is the one after the runs the projection counts as ended.
+    expect(running.run).toBe(overrun.runsEnded + 1);
   },
   rowLimit()
 );
@@ -1227,7 +1273,7 @@ driverRow(
       { graceMs: 120_000, namesMs: 120_000 }
     );
     expect(code).toBe(1);
-    expect(report.stop?.signal).toBe("SIGTERM");
+    expect(report.stop?.cause).toEqual({ by: "signal", signal: "SIGTERM" });
     const running = [...(report.stop?.running ?? [])].sort((one, other) =>
       one.file.localeCompare(other.file)
     );
@@ -1393,7 +1439,7 @@ driverRow(
     expect(code).toBe(1);
     expect(report.stop).toEqual(
       expect.objectContaining({
-        signal: "SIGTERM",
+        cause: { by: "signal", signal: "SIGTERM" },
         afterBun: true,
         running: [],
         unreported: [],
@@ -1602,7 +1648,7 @@ driverRow(
     const report = JSON.parse(
       readFileSync(join(runner, "unit-repeat", "report.json"), "utf8")
     ) as Report;
-    expect(report.stop?.signal).toBe("SIGINT");
+    expect(report.stop?.cause).toEqual({ by: "signal", signal: "SIGINT" });
     expect(report.stop?.running).toEqual([
       expect.objectContaining({
         file: "e2e/__tests__/spins.test.ts",
@@ -1650,12 +1696,14 @@ driverRow(
     );
     expect(code).toBe(1);
     expect(report.stop?.afterSeconds).toBeLessThan(600);
-    const overruns = report.stop?.overruns ?? [];
+    const cause = report.stop?.cause;
+    if (cause?.by !== "projection")
+      throw new Error(`the leg was not stopped by the projection: ${JSON.stringify(cause)}`);
+    expect(cause.deadlineSeconds).toBe(600);
+    const { overruns } = cause;
     expect(overruns).toEqual([
       expect.objectContaining({
         file: "e2e/__tests__/slow.test.ts",
-        reruns: 1000,
-        deadlineSeconds: 600,
         reproduce: `bun run test:harness e2e/__tests__/slow.test.ts --seed=${SEED} --rerun-each=1000`,
       }),
     ]);
@@ -1682,7 +1730,7 @@ driverRow(
         `packages/dispatch: bun run test:harness e2e/__tests__/slow.test.ts --seed=${SEED} --rerun-each=1000\n`
     );
     expect(stdout).toContain(
-      `unit-repeat: stopped after ${report.stop?.afterSeconds.toFixed(1)} s, since e2e/__tests__/slow.test.ts: ${facts}.`
+      `unit-repeat: stopped after ${report.stop?.afterSeconds.toFixed(1)} s, since 1 test file's runs are projected past the leg's 600 s deadline: e2e/__tests__/slow.test.ts: ${facts}.`
     );
     expect(markdown(report)).toContain(
       "### 1 test file's runs projected past the deadline\n\n#### `e2e/__tests__/slow.test.ts`\n\n" +

@@ -316,35 +316,22 @@ test(
         }
       })
     ).toEqual([{ lane: null, rule: "step-run" }]);
-    // The tool given another deadline than `timeout`'s, or none: its projection would hold the
-    // files' runs to a deadline the leg does not have.
-    expect(
-      broken((copy) => {
+    // The tool given another deadline than `timeout`'s, none, a second one after it, or one a
+    // shell comment hides: its projection would hold the files' runs to a deadline the leg does
+    // not have. Each replaces the step's `--deadline` with the text beside it.
+    const otherDeadlines = {
+      another: "--deadline 600 ",
+      none: "",
+      "a second after it": `${TOOL_DEADLINE}--deadline 600 `,
+      "behind a comment": `# ${TOOL_DEADLINE}`,
+    };
+    for (const [how, replacement] of Object.entries(otherDeadlines)) {
+      const problems = broken((copy) => {
         const step = testStep(copy);
-        if (step !== undefined)
-          step.run = String(step.run).replace(TOOL_DEADLINE, "--deadline 600 ");
-      })
-    ).toEqual([{ lane: null, rule: "step-deadline" }]);
-    expect(
-      broken((copy) => {
-        const step = testStep(copy);
-        if (step !== undefined) step.run = String(step.run).replace(TOOL_DEADLINE, "");
-      })
-    ).toEqual([{ lane: null, rule: "step-deadline" }]);
-    expect(
-      broken((copy) => {
-        const step = testStep(copy);
-        if (step !== undefined)
-          step.run = String(step.run).replace(TOOL_DEADLINE, `${TOOL_DEADLINE}--deadline 600 `);
-      })
-    ).toEqual([{ lane: null, rule: "step-deadline" }]);
-    expect(
-      broken((copy) => {
-        const step = testStep(copy);
-        if (step !== undefined)
-          step.run = String(step.run).replace(TOOL_DEADLINE, `# ${TOOL_DEADLINE}`);
-      })
-    ).toEqual([{ lane: null, rule: "step-deadline" }]);
+        if (step !== undefined) step.run = String(step.run).replace(TOOL_DEADLINE, replacement);
+      });
+      expect({ how, problems }).toEqual({ how, problems: [{ lane: null, rule: "step-deadline" }] });
+    }
   },
   rowLimit()
 );
