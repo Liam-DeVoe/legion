@@ -167,7 +167,7 @@ func fillTakeOverAfterDeath(t *testing.T, lane benchtime.Lane) time.Duration {
 // event. Its events are woken only once it is seen to hold the hold, so a standby that needs an
 // event's wake to take it fails. Each wait is on its fact, bounded by the test binary's deadline
 // alone: a fixed span from the stop would include the pass's wait on the event horizon, which
-// waits on the whole Postgres instance (textversionstest.AwaitRows), not on the standby.
+// waits on the database's open event writes (textversionstest.AwaitRows), not on the standby.
 func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -227,8 +227,8 @@ func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 //
 // Each wait is on its fact, bounded by the test binary's deadline alone: the hold coming free, the
 // retry's take, and the row, which the pass writes only once the event horizon, which waits on the
-// whole Postgres instance, has passed the event (textversionstest.AwaitRows). A fixed span from
-// the holder's stop, the ticker's 10 s and 5 s more, read the instance's load as well as the
+// database's open event writes, has passed the event (textversionstest.AwaitRows). A fixed span
+// from the holder's stop, the ticker's 10 s and 5 s more, read the instance's load as well as the
 // standby (merge-group run 44963211024: `the events [1] had 0 rows within 14.996081355s; want 1`).
 func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	database := storetest.Open(t)

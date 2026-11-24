@@ -1035,10 +1035,10 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		t.Fatalf("a read naming no kind answered %s; want no unknown_kinds", response.Body.String())
 	}
 	// A since read waits for an observation taken after it to be proven safe; the server's clock
-	// never reaches referencesSinceWait, so an open transaction elsewhere on the shared test
-	// cluster only delays the answer, and each such read runs on the shared wait's context
-	// (awaitSinceRead). Since the introducing event, the read owes no edge; since the event before
-	// the message, it answers the message committed before it.
+	// never reaches referencesSinceWait, so an event write of the server's database held open, as
+	// a loaded machine can keep one, only delays the answer, and each such read runs on the shared
+	// wait's context (awaitSinceRead). Since the introducing event, the read owes no edge; since
+	// the event before the message, it answers the message committed before it.
 	awaitSinceRead(t, "since the introducing event, ?to= "+askRef+", wanting no edges", handler,
 		func(bounded http.Handler) model.GraphReferences {
 			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}})
@@ -1073,17 +1073,17 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 }
 
 // awaitSinceRead reads once, and fails the test unless holds accepts the answer. A since read
-// answers only the edges at or below the event log's safe horizon, and any transaction holding a
-// transaction id on the Postgres instance holds that horizon back: in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase). Its caller's server runs on a clocktest.Held fake
-// the test never moves, so the read is never cut at referencesSinceWait: it waits until the
-// horizon passes every event committed before it, and what it lists is every edge it owes, so
-// holds failing on it - a missing edge as much as a duplicate or a wrongly stamped one - is a
-// product failure. The read is served under testwait.Context, so a horizon that never passes ends
-// it at the shared wait's deadline rather than at the binary's alarm: its request ends, which
-// fails the test naming the read. The what argument names the read in the failure. It returns the
-// answer.
+// answers only the edges at or below the event log's safe horizon, and an event write of the
+// server's database holds that horizon back for as long as it stays open - the test's own
+// fixtures, the server's own request writes - while a transaction in another database, or one
+// that writes no event, holds nothing (events.Horizon). Its caller's server runs on a
+// clocktest.Held fake the test never moves, so the read is never cut at referencesSinceWait: it
+// waits until the horizon passes every event committed before it, and what it lists is every edge
+// it owes, so holds failing on it - a missing edge as much as a duplicate or a wrongly stamped one
+// - is a product failure. The read is served under testwait.Context, so a horizon that never
+// passes ends it at the shared wait's deadline rather than at the binary's alarm: its request
+// ends, which fails the test naming the read. The what argument names the read in the failure. It
+// returns the answer.
 func awaitSinceRead(
 	t *testing.T,
 	what string,
@@ -1107,16 +1107,15 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route on a server of the real
-// clock that answers only what stands at or below the event log's safe horizon (sinceHorizon): any
-// transaction holding a transaction id on the Postgres instance holds that horizon back - in this
-// package, storetest's own "create database … template …" and "drop database … with (force)"
-// transactions (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other
-// package's. Such a read waits out referencesSinceWait and then answers at the horizon it was left
-// with, which may be short of what committed before it, so it is read again through the horizon's
-// wait (horizontest.Watch), however long the horizon is held back: that wait fails at once on a
-// hold of the test's own database, and at the test binary's deadline names the horizon's account
-// of itself. database is the one the server reads; what names the read and show its last answer in
-// a failure.
+// clock that answers only what stands at or below the event log's safe horizon (sinceHorizon): an
+// event write of the server's database holds that horizon back for as long as it stays open - the
+// test's own fixtures, the server's own request writes - and a transaction in another database,
+// or one that writes no event, holds nothing (events.Horizon). Such a read waits out
+// referencesSinceWait and then answers at the horizon it was left with, which may be short of
+// what committed before it, so it is read again through the horizon's wait (horizontest.Watch),
+// however long the horizon is held back: that wait gives up only at the test binary's deadline,
+// where it names the horizon's account of itself. database is the one the server reads; what
+// names the read and show its last answer in a failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
 	warnings, stop := horizontest.Listen(t)
@@ -1139,8 +1138,8 @@ func showEdges(read model.GraphReferences) string { return fmt.Sprintf("%#v", re
 // Each observation is proven safe only by a later one, so a read that stopped at the horizon
 // proven so far would answer nothing here, the first after boot, and each later read would stop
 // at the previous read's observation, however old. The server runs on a clocktest.Held fake the
-// test never moves, so the one read is never cut at referencesSinceWait: an open transaction
-// elsewhere on the test cluster only delays its answer, and the answer must hold the mention
+// test never moves, so the one read is never cut at referencesSinceWait: an open event write of
+// the server's database only delays its answer, and the answer must hold the mention
 // (awaitSinceRead). A read again would let a read that stops at the horizon proven so far pass
 // on its second try.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {

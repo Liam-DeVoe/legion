@@ -249,8 +249,8 @@ func (claimedRole) LastSeen(string) int64 { return time.Now().UnixMilli() }
 func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 
 // runOutboxUntilSettled runs the outbox through publisher until every event of issueKey is
-// published and every copy of commentID it held back for a resent mention is settled, for at most
-// 10 s.
+// published and every copy of commentID it held back for a resent mention is settled
+// (awaitOutboxSettled).
 func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, issueKey, commentID string) {
 	t.Helper()
 	stop := runOutbox(t, outbox.Deps{
@@ -259,9 +259,17 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		RoleClaims: claimedRole{}, Sessions: claimedRole{},
 	})
 	defer stop()
+	awaitOutboxSettled(t, deps.Store, issueKey, commentID)
+}
+
+// awaitOutboxSettled waits, through the shared wait, until the outbox running beside the test has
+// published every event of issueKey and settled every copy of commentID it held back for a
+// mention.
+func awaitOutboxSettled(t *testing.T, database *store.Store, issueKey, commentID string) {
+	t.Helper()
 	testwait.Until(t, "the outbox to publish every event of "+issueKey+" and settle every held copy of "+commentID, func() (string, bool) {
 		var unpublished, unsettled int
-		if err := deps.Store.Pool.QueryRow(context.Background(), `
+		if err := database.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
 			       (select count(*) from comment_fallback_copies where comment_id = $2 and settled_at is null)
 		`, issueKey, commentID).Scan(&unpublished, &unsettled); err != nil {
@@ -695,5 +703,58 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 	if sendsOfTheComment != 2 {
 		t.Fatalf("the listener took %d sends of the queued comment, want the refused Retry and the lane's "+
 			"own refused send: the attempt a failed Retry overtook is sent all the same", sendsOfTheComment)
+	}
+}
+
+// A copy the outbox holds back for a mention waiting on a held lane is the comment as written,
+// kept to publish should that mention fail. The author's delete of the comment before the fallback
+// pass decides the copy settles it with nothing published: the text it carries is withdrawn, and
+// the session is told of the comment.deleted event instead. The delete also fails the mention it
+// waited on (queueDeletedPostSettlement), which is the very state in which a pass publishes a
+// held copy (TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails), so a pass that runs
+// after the delete with the copy due publishes nothing of the comment to s1's own topic.
+func TestADeleteSettlesAHeldCopyOfTheCommentWithNothingPublished(t *testing.T) {
+	t.Parallel()
+	lane := aMentionQueuedBehindAStalledSend(t, "session:s1")
+	ageAttempts(t, lane.database, lane.sending, lane.queued)
+	published := &recordingOutboxPublisher{}
+	runOutboxBeside(t, lane.deps, published)
+	ownTopic := contracts.LegacyAgentSubject("s1")
+	awaitPublishedCommentCreated(t, lane.database, lane.queued)
+	awaitFallbackCopies(t, lane.database, lane.queued, []string{ownTopic}, false)
+
+	deleteThreadComment(t, lane.handler, lane.queued, "alice")
+	if copies := fallbackCopiesOf(t, lane.database, lane.queued); len(copies) != 1 || !copies[0].settled || copies[0].published {
+		t.Errorf("the held copy after the delete = %#v, want it settled with nothing published", copies)
+	}
+	if _, err := lane.database.Pool.Exec(context.Background(), `
+		update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where comment_id = $1
+	`, lane.queued); err != nil {
+		t.Fatalf("make the held copy due: %v", err)
+	}
+	awaitOutboxSettled(t, lane.database, lane.issue, lane.queued)
+	if copies := fallbackCopiesOf(t, lane.database, lane.queued); len(copies) != 1 || copies[0].published {
+		t.Errorf("the held copy once the outbox has run = %#v, want it never published", copies)
+	}
+	published.mu.Lock()
+	defer published.mu.Unlock()
+	var toS1 []string
+	for _, item := range published.items {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID string `json:"id"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope published to %s: %v", item.Topic, err)
+		}
+		if item.Topic == ownTopic && event.Payload.ID == lane.queued {
+			toS1 = append(toS1, event.Type)
+		}
+	}
+	if slices.Contains(toS1, "comment.created") || !slices.Contains(toS1, "comment.deleted") {
+		t.Errorf("the outbox published %v of the deleted comment to s1's own topic, want its comment.deleted "+
+			"and no comment.created", toS1)
 	}
 }

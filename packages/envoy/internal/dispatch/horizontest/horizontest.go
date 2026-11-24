@@ -4,30 +4,29 @@
 // ordinary package rather than a _test.go file because Go cannot share test-only code across
 // packages (internal/logtest says the same).
 //
-// The event horizon's proof is instance-wide (internal/dispatch/events/horizon.go, "Costs"): any
-// transaction that holds a transaction id, in any database on the Postgres instance, holds the
-// horizon back until it ends - Dispatch's own writes, another service's on the same instance, an
-// operator's open psql session, and on CI's one Postgres another package's test. Work that waits
-// on the horizon - the event feed's events_start, which feedEvents writes only once the relay's
-// first cursor has awaited it (firstRelayCursor, internal/dispatch/api/event_stream_relay.go), an
-// event the feed sends live, a horizon persisted above the log's newest event - is therefore as
-// late as the longest such transaction, which no test owns. No fixed deadline bounds that
-// (docs/testing.md, "A test that waits for the event feed's first frame"): a deadline raised to fit
-// the worst run anyone has seen is the same flake on the day someone holds a transaction for a
-// minute.
+// Every event write of Dispatch's database holds the event horizon back until it ends
+// (internal/dispatch/events/horizon.go, "Costs"): a test's own fixture, the server's own request
+// writes, a migration, an operator's psql session that writes the event log. A transaction in
+// another database, or one that writes no event, holds nothing. Work that waits on the horizon -
+// the event feed's events_start, which feedEvents writes only once the relay's first cursor has
+// awaited it (firstRelayCursor, internal/dispatch/api/event_stream_relay.go), an event the feed
+// sends live, a horizon persisted above the log's newest event - is therefore as late as the
+// longest such write, which a loaded machine can keep open for seconds. No fixed deadline bounds
+// that (docs/testing.md, "A test that waits for the event feed's first frame"): a deadline raised
+// to fit the worst run anyone has seen is the same flake on the day a write is held for a minute.
 //
 // So the wait is the shared one (internal/testwait), with no bound of its own: a hold of any
 // length only delays it, and only the test binary's deadline ends it. When it ends there, its last
 // read is the horizon's own account of itself (Watch.String): how many stall warnings
 // (events.StallWarning) the horizon logged while the test waited, none included, and the newest of
-// them, which names the holder's kind, pid, database and query from the horizon's own diagnosis.
-// When that holder is a client of the test's own database - the defect class of
+// them, which names the oldest event writer's kind, pid, database and query from the horizon's own
+// diagnosis. When that holder is a client of the test's own database - the defect class of
 // dispatch://INFRA-636, a Dispatch write transaction left open across the horizon's proof, among
 // its causes - the account says so, naming the client and how long its transaction had stood
 // when it was named. The wait does not end on such a hold before the give-up: a hold in that
-// database can be anyone's ordinary transaction - the test's own fixtures, an operator's psql
-// session - stretched as long as a loaded machine stretches it, and any age the wait ended at
-// would be a bound of its own, which the shared wait has none of.
+// database can be any ordinary event write - the test's own fixtures, the server's own requests -
+// stretched as long as a loaded machine stretches it, and any age the wait ended at would be a
+// bound of its own, which the shared wait has none of.
 package horizontest
 
 import (

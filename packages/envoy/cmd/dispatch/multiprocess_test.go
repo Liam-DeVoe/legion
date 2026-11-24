@@ -317,7 +317,7 @@ func (p *dispatchProcess) releaseLiveWritePause(t *testing.T, artifactID string,
 // the process's stall warnings), and fails the test naming what, with the process's output, when
 // the wait gives up, its last reading the horizon's account, which names a hold in the process's
 // own database as one. Work behind the horizon, such as an event the process's relay publishes,
-// is as late as the longest transaction open anywhere on the instance, which no fixed deadline
+// is as late as the longest event write open in the process's database, which no fixed deadline
 // bounds.
 func (p *dispatchProcess) pollBehindHorizon(t *testing.T, what string, condition func() bool) {
 	t.Helper()
@@ -8636,7 +8636,7 @@ func (o *listenerTakeOver) next() bool {
 //
 // The handing-over phase is a replacement in which both listeners take requests behind the one
 // address: the registry read reaches the outgoing listener, which still holds the session, and
-// the send reaches its successor, still behind its starting gate (cmd/listener/main.go
+// the send reaches its successor, still behind its starting gate (cmd/listener/starting_gate.go
 // startingGate). It is the one phase in which a send itself meets that gate, because every try
 // reads the registry before it sends.
 func (f *fakeListener) takeOver(refused, starting, gated, unknown int) {
@@ -8698,7 +8698,7 @@ func (f *fakeListener) sendsGatedUnder(key string) int {
 	return f.gatedSends[key]
 }
 
-// answerStarting answers as the real listener's starting gate does (cmd/listener/main.go
+// answerStarting answers as the real listener's starting gate does (cmd/listener/starting_gate.go
 // startingGate).
 func answerStarting(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusServiceUnavailable)
@@ -10434,9 +10434,9 @@ const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Secon
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
 // it and writes the events written since, whose rows wait on the event horizon, which waits on the
-// whole Postgres instance (textversionstest.AwaitRows). Every batch before the kill is the first
-// process's and every batch after is the second's, and every event has exactly its row. How soon
-// after the kill the second process takes the hold is a service level, which
+// database's open event writes (textversionstest.AwaitRows). Every batch before the kill is the
+// first process's and every batch after is the second's, and every event has exactly its row. How
+// soon after the kill the second process takes the hold is a service level, which
 // TestTheKeywordFillMovesWithinItsBoundWhenItsHolderIsKilled holds in benchtime's timing lane.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	keywordFillTakeOverAfterKill(t)
@@ -10444,7 +10444,7 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 
 // The process that stood by takes a killed holder's hold within keywordFillTakeOverWithin of the
 // kill. The rows of the events written after the kill wait on the event horizon, which waits on
-// the whole Postgres instance, so no span bounds them. The processes' timers are inside child
+// the database's open event writes, so no span bounds them. The processes' timers are inside child
 // processes, which no clock of the test's reaches, so the reading is of the machine's clock, and
 // the row runs only in benchtime's timing lane (benchtime.Timing); that the hold moves at all is
 // TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled's, which the suite runs.

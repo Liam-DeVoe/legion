@@ -70,6 +70,7 @@ func registrationLockTimeout(t *testing.T, s *Store) []string {
 // row's waits give up (setFleetLockTimeout), so no bound but the function's can refuse it while
 // the row waits.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	if config, bound := registrationLockTimeout(t, s), fmt.Sprintf("lock_timeout=%ds", int(registrationGateBound/time.Second)); !slices.Contains(config, bound) {

@@ -12,12 +12,12 @@ import (
 // waitEventsStart waits for subscription sub's events_start frame on conn, which the caller has
 // just subscribed, and returns once it has arrived. events_start is the last thing a new
 // subscription sends: the relay awaits the event horizon and writes the frame only once Await has
-// returned, and the horizon's proof is instance-wide, so no fixed deadline bounds the wait. It is
-// the shared wait (internal/dispatch/horizontest, through testwait), reading the server's own
-// account of itself as it goes: it fails only when the shared wait gives up, its last reading
-// naming how many warnings the process logged and the newest of them, and, when that one names a
-// holder in the process's own database, the client and how long its transaction had held the
-// horizon back.
+// returned, and every event write of the process's database holds the horizon back until it ends,
+// so no fixed deadline bounds the wait. It is the shared wait (internal/dispatch/horizontest,
+// through testwait), reading the server's own account of itself as it goes: it fails only when the
+// shared wait gives up, its last reading naming how many warnings the process logged and the newest
+// of them, and, when that one names a holder in the process's own database, the client and how long
+// its transaction had held the horizon back.
 // Every process these tests start warns at horizontest.StallWarning (startDispatchProcessWith).
 //
 // Nothing here touches the connection after this returns, because the caller reads it next

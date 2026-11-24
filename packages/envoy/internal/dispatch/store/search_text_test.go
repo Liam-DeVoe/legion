@@ -1,5 +1,7 @@
 package store
 
+//ci:reads packages/envoy/**/*.md TestSearchTextKeepsEveryLexeme walks packages/envoy (infra included, node_modules and out passed over) and opens each .md file, and no other
+
 import (
 	"context"
 	"errors"
@@ -39,6 +41,7 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 // test has: an index that rescans its runs takes hours at this size and fails there, naming the
 // shape, while a loaded machine's linear one passes however long it takes.
 func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	artifactID := seedSearchDocument(t, ctx, store)
@@ -77,6 +80,7 @@ func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
 // identifiers, paths and URLs; of 3,336 documents (the repository's and production's), none
 // changed its vector when the function was chosen.
 func TestSearchTextKeepsEveryLexeme(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	same := func(name, body string) {

@@ -150,7 +150,7 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 			holder := createSearchIssue(t, handler, "COORD", "Zymurgy ledger quokka", "")
 			refreshTermStats(t, database, "COORD")
 
-			suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
+			suggestions := meaningVerdictServer(deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
 			if suggestions.Search != stage.search {
 				t.Fatalf("suggestions = %+v, want searched by %s", suggestions, stage.search)
 			}
@@ -167,6 +167,30 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	return handler, database, directServer(deps)
+}
+
+// onHeldClock puts s on a clock whose timers never fire (clocktest.Held), for a case whose verdict
+// is what the related-item check's meaning stage found: none of the check's bounds - its meaning
+// allowance (relatedMeaningAllowance), its wait for the cross-project leg (crossProjectGrace) and
+// its own allowance - ends on that clock, so the stage's own answer decides. Under production's
+// bounds on the real clock a loaded machine's meaning stage answered after three seconds, and the
+// check answered by keywords alone and offered nothing of another project, so the case failed on
+// the machine's speed and not on what the stage found. A registered server takes the same clock
+// through testServerOptions.clock. It answers s.
+//
+// Production's bounds keep rows of their own, each on a fake clock it moves to the bound:
+// TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly and the second check of
+// TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing hold the three-second meaning allowance,
+// and TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer the grace.
+func onHeldClock(s *server) *server {
+	s.clock = clocktest.Held()
+	return s
+}
+
+// meaningVerdictServer is a direct server on deps whose related-item check runs on a held clock
+// (onHeldClock).
+func meaningVerdictServer(deps Deps) *server {
+	return onHeldClock(directServer(deps))
 }
 
 // answeredBeforeTheBinaryDeadline runs run on a goroutine of its own and answers what it answers,
@@ -216,7 +240,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 	key := createSearchIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
+	suggestions := onHeldClock(srv).relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -276,7 +300,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 		}
 	}
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
+	suggestions := onHeldClock(srv).relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -310,7 +334,12 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 	keeper := createSearchIssue(t, handler, "MWIN", keeperTitle, "")
 	processAllPending(t, database, embedder)
 
+	onHeldClock(srv)
 	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "MWIN", text: text})
+	if crowded.Outcome != relatedFound || crowded.Search != relatedMeaningAndKeywords ||
+		crowded.SearchNote != "" || len(crowded.Related) != suggestionRelatedCount {
+		t.Fatalf("the check with nothing excluded = %+v, want %d nearer issues found by meaning and keywords: an empty keyword fallback would prove nothing about the meaning window", crowded, suggestionRelatedCount)
+	}
 	if owners := relatedOwnerKeys(crowded.Related); slices.Contains(owners, keeper) {
 		t.Fatalf("related owners with nothing excluded = %v, want %s behind the %d nearer issues", owners, keeper, len(excluded))
 	}
@@ -331,7 +360,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 	createSuggestionProject(t, handler, "MFAIL")
 	key := createSearchIssue(t, handler, "MFAIL", "Nightly backups overrun their window", "")
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
+	suggestions := onHeldClock(srv).relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "the text could not be embedded for meaning search" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the embedding having failed", suggestions)
@@ -479,7 +508,7 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	indexDeps := deps
 	indexDeps.Store = indexStore
 
-	suggestions := directServer(indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
+	suggestions := meaningVerdictServer(indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
 	if suggestions.Search != "meaning_and_keywords" {
 		t.Fatalf("suggestions = %+v, want the meaning search to have answered", suggestions)
 	}

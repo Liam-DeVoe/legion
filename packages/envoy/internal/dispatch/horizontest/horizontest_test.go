@@ -166,7 +166,7 @@ func TestTheAccountNamesAHolderInTheTestsOwnDatabase(t *testing.T) {
 		held    time.Duration
 	}{
 		{
-			"a foreign holder, another service's transaction on the same Postgres instance, is named by its warning alone: it is no client of the test's own database",
+			"a foreign holder, an event write of another database that a horizon reading that database reports, is named by its warning alone: it is no client of the test's own database",
 			FromLine(stallWarningLine("legion_daemon", 2*fixtureHolderAge)),
 			false, fixtureHolderAge,
 		},

@@ -70,6 +70,7 @@ func firstSend(t *testing.T, w *window, what string) (err error) {
 // gives up, and its first sends do not both reach their wait for a connection while the handshake
 // is held.
 func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
+	t.Parallel()
 	pinsAgain := func(t *testing.T, client *Client, hold *testnats.HandshakeHold) {
 		t.Helper()
 		heard := heardReconnects(client)
@@ -177,6 +178,7 @@ func heardReconnects(client *Client) <-chan struct{} {
 // event lets the old window send before the client hears of the drop; a check that takes any client
 // event since the pin for a loss refuses the new window once the client heard.
 func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
+	t.Parallel()
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	before := conn.Stats().Reconnects
@@ -255,6 +257,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 // answer ErrUnavailable, which costs the outbox the publisher hold for a connection that never
 // dropped.
 func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
+	t.Parallel()
 	client, hold := heldHandshakeClient(t)
 	w := client.WindowUntil(nil).(*window)
 	if err := firstSend(t, w, "control: the window's first send to pin the connection before the held write"); err != nil {

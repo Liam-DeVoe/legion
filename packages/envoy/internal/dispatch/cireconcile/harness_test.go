@@ -98,6 +98,9 @@ type harness struct {
 	// neighbour rather than the same one, so a pass cut at its five-minute bound moves no tick of
 	// the loop; settlement and the helpers beside it move it (driveLoop).
 	ciClock *clocktest.Fake
+	// verdict is the verdict App's id this test's listener was built with, "" for none:
+	// startListener gives it to the webhook handler, as cmd/listener does.
+	verdict string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
@@ -280,7 +283,7 @@ func (h *harness) startListener() {
 	cistore.StartSummaryLoop(loop, listener, h.bus, listenerDebounce, listenerTick,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // driveLoop moves the CI store's clock to the earliest moment armed on it when that moment is no

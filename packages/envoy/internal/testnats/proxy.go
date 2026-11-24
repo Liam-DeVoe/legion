@@ -3,6 +3,7 @@ package testnats
 import (
 	"bytes"
 	"context"
+	"maps"
 	"net"
 	"net/url"
 	"sync"
@@ -44,6 +45,9 @@ type Proxy struct {
 	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
 	// It holds only server-to-client reads and writes.
 	serverGate chan struct{}
+	// atGate holds, by the client's address, each connection whose client-to-server reader waits at
+	// a freeze's gate: that reader reads nothing more of its client until Restore (gatedReaders).
+	atGate map[string]bool
 }
 
 // ProxyOption configures a Proxy.
@@ -94,6 +98,7 @@ func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 		ctx:      ctx,
 		stop:     stop,
 		conns:    map[net.Conn]struct{}{},
+		atGate:   map[string]bool{},
 	}
 	for _, option := range options {
 		option(p)
@@ -231,11 +236,16 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 		due  time.Time
 	}
 	queue := make(chan chunk, 4096)
+	// reader names the connection's client-to-server reader to gatedReaders, by the client's address.
+	var reader string
+	if !serverToClient {
+		reader = src.RemoteAddr().String()
+	}
 	go func() {
 		defer close(queue)
 		buffer := make([]byte, proxyReadBuffer)
 		for {
-			p.pass(serverToClient)
+			p.pass(serverToClient, reader)
 			read, err := src.Read(buffer)
 			if read > 0 {
 				queue <- chunk{data: bytes.Clone(buffer[:read]), due: p.clock.Now().Add(p.delay)}
@@ -257,7 +267,7 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 				break
 			}
 		}
-		p.pass(serverToClient)
+		p.pass(serverToClient, "")
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
@@ -269,16 +279,25 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 }
 
 // pass waits for any active gate before a relay read or write proceeds. serverToClient selects the
-// server-to-client gate in addition to the bidirectional one.
-func (p *Proxy) pass(serverToClient bool) {
+// server-to-client gate in addition to the bidirectional one. A client-to-server reader passes its
+// client's address as reader, and is named in atGate while it waits at a freeze's gate.
+func (p *Proxy) pass(serverToClient bool, reader string) {
 	p.mu.Lock()
 	gate := p.gate
 	serverGate := p.serverGate
+	if gate != nil && reader != "" {
+		p.atGate[reader] = true
+	}
 	p.mu.Unlock()
 	if gate != nil {
 		select {
 		case <-gate:
 		case <-p.ctx.Done():
+		}
+		if reader != "" {
+			p.mu.Lock()
+			delete(p.atGate, reader)
+			p.mu.Unlock()
 		}
 	}
 	if serverToClient && serverGate != nil {
@@ -287,6 +306,16 @@ func (p *Proxy) pass(serverToClient bool) {
 		case <-p.ctx.Done():
 		}
 	}
+}
+
+// gatedReaders is the set of client addresses whose connection's client-to-server reader waits at
+// a freeze's gate now. Such a reader has made its last read of its client: it reads nothing more of
+// it until Restore, so the client's socket and the proxy's end of it move no more bytes than the
+// kernel already lets them.
+func (p *Proxy) gatedReaders() map[string]bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.atGate)
 }
 
 // close stops listening, closes every relayed connection and releases every copy a freeze holds.

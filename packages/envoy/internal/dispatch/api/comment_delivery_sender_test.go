@@ -315,6 +315,30 @@ func (l *mentionListener) hasAnswered(path string) bool {
 	return l.answeredLookups[path] > 0
 }
 
+// postMentionedCommentInBackground posts the comment as postMentionedComment does, on a goroutine
+// of its own, and answers the channel its response arrives on, for a test that waits for that
+// response with testwait.Receive. The request is built here, on the test's goroutine, so the one
+// that serves it calls nothing that can fail the test.
+func postMentionedCommentInBackground(
+	t *testing.T, handler http.Handler, issueKey string, input map[string]any,
+) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("encode the comment: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issueKey+"/comments", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- response
+	}()
+	return answered
+}
+
 // awaitSend waits for the next send to arrive and returns the session it is for.
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
@@ -405,15 +429,12 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions after the answer", "before")
 
-	posted := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		posted <- postMentionedComment(t, handler, issue.Key, map[string]any{
-			"body":     "All three of you.",
-			"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
-		})
-	}()
-	response := testwait.Receive(t, "the comment to answer while its three mention sends are held", posted)
-	created := decodeMentionedComment(t, response)
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
+		"body":     "All three of you.",
+		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
+	})
+	created := decodeMentionedComment(t, testwait.Receive(t,
+		"the comment's answer while its three mention sends are held at the listener", answered))
 	if len(created.Deliveries) != 3 {
 		t.Fatalf("the create answered deliveries %#v, want the three attempts", created.Deliveries)
 	}
@@ -554,17 +575,19 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 			mu.Lock()
 			first := !looked[session]
 			looked[session] = true
-			arrived := len(looked)
+			if first && len(looked) == 3 {
+				close(together)
+			}
 			mu.Unlock()
-			// Only the comment's own lookup of each session waits for the others; the recheck
-			// its send makes later is not this test's.
+			// Only the comment's own lookup of each session waits for the others; the recheck its
+			// send makes later is not this test's. A test that has ended lets a held lookup go,
+			// so its cleanups do not wait on it.
 			if first {
-				if arrived == 3 {
-					close(together)
-				}
 				select {
 				case <-together:
 				case <-r.Context().Done():
+					return
+				case <-t.Context().Done():
 					return
 				}
 			}
@@ -575,7 +598,8 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer listener.Close()
+	// A cleanup, not a defer: it runs once the test's context has ended, which lets a held lookup go.
+	t.Cleanup(listener.Close)
 	// A clock whose timers never fire: a lookup the listener holds waits until the listener answers
 	// it and is never ended by its bound (mentionLookupTimeout), so a comment that looked its
 	// mentions up one after another never answers, where a real bound would end each held lookup in
@@ -583,15 +607,12 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent lookups", "before")
 
-	posted := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		posted <- postMentionedComment(t, handler, issue.Key, map[string]any{
-			"body":     "Three lookups.",
-			"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
-		})
-	}()
+	answered := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
+		"body":     "Three lookups.",
+		"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}, {"target": "session:s3"}},
+	})
 	created := decodeMentionedComment(t, testwait.Receive(t,
-		"the comment to answer once its three mention lookups had all reached the listener together", posted))
+		"the comment to answer, which it does only once its three mention lookups have reached the listener together", answered))
 	settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -670,8 +691,7 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 		}
 	}
 	bound := clock.Now().Add(mentionLookupTimeout)
-	posted := make(chan *httptest.ResponseRecorder, 1)
-	go func() { posted <- postMentionedComment(t, handler, issue.Key, input) }()
+	posted := postMentionedCommentInBackground(t, handler, issue.Key, input)
 	// The bound is pending for exactly mentionLookupTimeout from the start for every lookup in
 	// flight, and an answered lookup's bound ends once the server has taken the answer. So the
 	// clock moves to it once the stand-in has answered every lookup it does not hold, is holding
@@ -891,12 +911,9 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 	}
 
 	bound := clock.Now().Add(mentionLookupTimeout)
-	posted := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		posted <- postMentionedComment(t, handler, issue.Key, map[string]any{
-			"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
-		})
-	}()
+	posted := postMentionedCommentInBackground(t, handler, issue.Key, map[string]any{
+		"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
+	})
 	// Each lookup arms its bound and then the listener client's own window (envoy.CallWindow)
 	// before its request leaves, so the deadlines pending say the two lookups are in flight only
 	// once two of them stand at the bound. The stand-in holding both says their requests reached

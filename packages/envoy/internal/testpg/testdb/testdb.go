@@ -6,13 +6,14 @@
 // Server.Database is an empty database on the server a variable names, which the caller migrates
 // itself, skipping the test when the variable is unset. DatabaseOn is the helper for a test that
 // already holds the URL of the server it runs on: it reads no variable and starts nothing.
-// WithParameter sets a query parameter on any of these URLs, and Now and ClockTimestamp read the
-// clock of a database a test holds. Template is a migrated database a binary makes once and copies
-// for each test; Dispatch's and the broker's storetest packages give out its clones as migrated
-// stores, and a test of either store that wants one calls its storetest instead. Every URL a
-// Server hands out carries the test binary's deadline as its connect bound
-// (WithConnectDeadline), and every drop of a database here waits out the backends still attached
-// to it until that same deadline (dropDatabase).
+// ProcessDatabaseOn is one database of the test binary's own on such a server, which Main (or
+// Run) drops after the binary's tests. WithParameter sets a query parameter on any of these URLs,
+// and Now and ClockTimestamp read the clock of a database a test holds. Template is a migrated
+// database a binary makes once and copies for each test; Dispatch's and the broker's storetest
+// packages give out its clones as migrated stores, and a test of either store that wants one calls
+// its storetest instead. Every URL a Server hands out carries the test binary's deadline as its
+// connect bound (WithConnectDeadline), and every drop of a database here but ProcessDatabaseOn's
+// waits out the backends still attached to it until that same deadline (dropDatabase).
 //
 // It imports no testcontainers package, so a test helper every Postgres-backed test links (the
 // broker's storetest among them) does not pay testcontainers' package init, which walks every
@@ -29,6 +30,7 @@ import (
 	"math"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,12 +38,14 @@ import (
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
-// test ends, and returns adminURL with its path replaced by that database and its query kept. The
-// name is prefix, an underscore and eight random bytes in hex: it is random because every test of
-// every package sharing one server takes a name there.
+// test ends, and returns a URL of that database (databaseURL: adminURL with its path replaced by
+// it, and its query's pairs kept byte for byte but for any dbname or database). The name is
+// prefix, an underscore and eight random bytes in hex: it is random because every test of every
+// package sharing one server takes a name there.
 //
 // Both statements run on adminURL itself, which is exact for every caller because a caller passes
-// the URL its own statements run on, and that URL and the result differ only in the path.
+// the URL its own statements run on, and that URL and the result differ only in the database they
+// select.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
@@ -54,11 +58,10 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
 	}
-	suffix, err := randomSuffix()
+	name, err := newDatabaseName(prefix)
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Fatal(err)
 	}
-	name := prefix + "_" + suffix
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
 	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
@@ -76,32 +79,62 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	return databaseURL(*server, name)
 }
 
-// databaseURL is server's URL with its path replaced by database, its query kept.
+// newDatabaseName is prefix, an underscore and eight random bytes in hex (randomSuffix).
+func newDatabaseName(prefix string) (string, error) {
+	suffix, err := randomSuffix()
+	if err != nil {
+		return "", err
+	}
+	return prefix + "_" + suffix, nil
+}
+
+// databaseURL is server's URL naming database in every field pgx selects a database by: its path
+// is replaced by database, and its query loses each dbname or database pair, which pgx reads over
+// the path, so a server URL that carried one would put every caller in the one database it names.
+// Every other pair is kept byte for byte, as are the pairs' order and escapes: re-encoding the
+// query (url.Values.Encode) would write a space as a plus, which pgx reads as a plus, so an
+// options pair such as -c%20statement_timeout%3D5000 would stop connecting. An empty pair is
+// dropped.
 func databaseURL(server url.URL, database string) string {
-	server.Path = "/" + database
+	server.Path, server.RawPath = "/"+database, ""
+	var kept []string
+	for _, pair := range strings.Split(server.RawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(pair, "=")
+		if name, err := url.PathUnescape(key); err == nil && (name == "dbname" || name == "database") {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	server.RawQuery = strings.Join(kept, "&")
 	return server.String()
 }
 
-// adminExec runs one statement over a connection of its own to adminURL (adminConnect).
+// adminExec runs one statement over a connection of its own to adminURL, failing t: neither
+// create database nor drop database may run inside a transaction or against the database it
+// names.
 func adminExec(t testing.TB, adminURL, host, statement string) {
 	t.Helper()
-	conn := adminConnect(t, adminURL, host)
-	defer conn.Close(context.Background())
-	if _, err := conn.Exec(context.Background(), statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
+	if err := execOn(adminURL, host, statement); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// adminConnect opens a connection of its own to adminURL: neither create database nor drop
-// database may run inside a transaction or against the database it names. host is that server's
-// host, printed in place of adminURL, which carries a credential.
-func adminConnect(t testing.TB, adminURL, host string) *pgx.Conn {
-	t.Helper()
-	conn, err := pgx.Connect(context.Background(), adminURL)
+// execOn runs statement over a connection of its own to adminURL. host is that server's host,
+// printed in place of adminURL, which carries a credential.
+func execOn(adminURL, host, statement string) error {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		t.Fatalf("connect to the Postgres server at %s: %v", host, err)
+		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
 	}
-	return conn
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, statement); err != nil {
+		return fmt.Errorf("%s on %s: %w", statement, host, err)
+	}
+	return nil
 }
 
 // WithParameter returns databaseURL with its query parameter key set to value. A test that has a

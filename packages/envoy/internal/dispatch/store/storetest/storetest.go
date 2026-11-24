@@ -111,11 +111,11 @@ func OtherDatabase(t testing.TB) string {
 
 // HoldClusterTransactionID opens a transaction in the binary's other database on the test cluster
 // (OtherDatabase) and takes a transaction id, as a job in another database or another package's
-// test does. Snapshots are instance-wide, so until it ends no horizon on the cluster proves an
-// observation taken after it began, while only a transaction in Dispatch's own database can write
-// its event log. It commits when release runs, and by the time the test ends; release returns once
-// it has. Nothing else ends it. Its round trips run on the shared wait's context
-// (testwait.Context), so one the server never answers fails t by name.
+// test does. It holds no event id of Dispatch's database, so it holds no horizon back
+// (events.Horizon) and no mark either (Horizon.WriterFloor): only a transaction in Dispatch's own
+// database can write its event log. It commits when release runs, and by the time the test ends;
+// release returns once it has. Nothing else ends it. Its round trips run on the shared wait's
+// context (testwait.Context), so one the server never answers fails t by name.
 func HoldClusterTransactionID(t testing.TB) (release func()) {
 	t.Helper()
 	ctx := testwait.Context(t)
@@ -126,7 +126,7 @@ func HoldClusterTransactionID(t testing.TB) (release func()) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
+		t.Fatalf("begin the transaction in the binary's other database: %v", err)
 	}
 	var xid string
 	if err := tx.QueryRow(ctx, `select pg_current_xact_id()::text`).Scan(&xid); err != nil {

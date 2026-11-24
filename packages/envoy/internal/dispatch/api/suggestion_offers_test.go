@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -144,7 +145,7 @@ func seedCrossProjectOffers(t *testing.T, asking, other string, count int) offer
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
 	}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 	_, _, host, hostArtifact := crossProjectAsker(t, handler, database, embedder, asking)
 	createSuggestionProject(t, handler, other)
 	owner := createSearchIssue(t, handler, other, "Backlog runbook", "What to do when the backlog grows.")

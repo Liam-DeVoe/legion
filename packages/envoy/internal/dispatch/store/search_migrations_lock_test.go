@@ -20,6 +20,7 @@ import (
 // on a lock. Once the holder ends, the runner finishes. This is what dispatch_rollout_rehearsal.sh,
 // which holds one table at a time, cannot see across tables.
 func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 55)
 	holder, err := store.Pool.Begin(ctx)

@@ -303,12 +303,9 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		defer cancel()
 		first, second := row.stopUnder(ctx), row.stopUnder(ctx)
 		// The link comes back and the hold holds the next attempt; the handler is given up, and
-		// hands its message back, once that attempt is held.
+		// hands its message back, once that attempt is held (AwaitAttempt).
 		row.hold.Restore()
-		waitFor(t, func() bool { return row.hold.Attempts() > between }, func() string {
-			return "control: no next attempt reached the hold"
-		})
-		testnats.AwaitLockHeld(t, row.conn)
+		row.hold.AwaitAttempt(t, row.conn, between)
 		cancel()
 		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", first, second)
 		row.reconnect(t)

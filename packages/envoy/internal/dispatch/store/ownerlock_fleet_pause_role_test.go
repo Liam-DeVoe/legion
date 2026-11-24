@@ -19,6 +19,7 @@ import (
 // the test: the check is registered before the store is opened, so it runs after the test
 // database's own drop, and it drops any role it finds, so this test leaves nothing either way.
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The role spans the cluster, so it is looked for on a database of the test's own
 	// (AdminURL), which outlives the store's.

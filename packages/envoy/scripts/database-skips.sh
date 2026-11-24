@@ -90,7 +90,8 @@ github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadratic
 github.com/sjawhar/envoy/internal/dispatch/api TestPrioritiesReadSpeed is a service level only the timing lane reads (benchtime.Timing, DISPATCH_BENCH_TIMING), which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled is a service level only the timing lane reads (benchtime.Timing)
 github.com/sjawhar/envoy/internal/dispatch/api TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound is a service level only the timing lane reads (benchtime.Timing)
-github.com/sjawhar/envoy/internal/dispatch/api TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds is a service level only the timing lane reads (benchtime.Timing)'
+github.com/sjawhar/envoy/internal/dispatch/api TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds is a service level only the timing lane reads (benchtime.Timing)
+github.com/sjawhar/envoy/internal/dispatch/api TestTheLegionReadMatchesACapturedDaemonState needs LEGION_STATE_CAPTURE, a capture of GET /legion/v1/state from a Legion daemon, which CI does not have'
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

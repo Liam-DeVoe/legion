@@ -29,10 +29,12 @@ import (
 // in a transaction of the test's own on the test's context, committed only once the comment's
 // write waits behind that lock (storetest.WaitForQueuedBehind, on the one connection the comment
 // runs on). So the comment resolved the route before the move and reads it after the move however
-// slow the machine is. The listener only answers. A move it made itself, inside the lookup, ran
-// on that lookup's request context, which ends when Dispatch stops waiting for the lookup
-// (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
-// later than that raced the comment's locked read.
+// slow the machine is. The listener only answers. A move it made itself, inside the lookup, would
+// run on that lookup's request context, which in production ends when Dispatch stops waiting for
+// the lookup (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that
+// started later than that raced the comment's locked read. So the moves are made outside the
+// lookup, and this test's lookups and the listener client's window run on a clock that never
+// fires, so every resolution here is the listener's answer.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

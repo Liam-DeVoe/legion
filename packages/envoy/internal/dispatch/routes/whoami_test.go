@@ -486,13 +486,12 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 	}
 }
 
-// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: the safe horizon waits on every transaction
-// holding a transaction id anywhere on the Postgres instance, snapshots being instance-wide, but
-// only a transaction in Dispatch's own database can write its event log. whoami's event_head waits
-// on those alone (Horizon.WriterFloor), so another service's job on the same instance, or another
-// package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
-// wait -- and the head it answers is still the log's newest id. The transaction stands until the
-// row releases it after whoami's answer, so a whoami that waited on it would never answer.
+// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: only a transaction in Dispatch's own
+// database can write its event log, so whoami's event_head waits on those alone
+// (Horizon.WriterFloor), and another service's job on the same instance, or another package's
+// test, does not hold every page's load for the two seconds eventFeedHead would otherwise wait --
+// and the head it answers is still the log's newest id. The transaction stands until the row
+// releases it after whoami's answer, so a whoami that waited on it would never answer.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)

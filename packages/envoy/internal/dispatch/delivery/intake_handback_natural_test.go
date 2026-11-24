@@ -34,6 +34,7 @@ import (
 // row lets the link move, waits until the hand-back's publish has returned, flushes the holder's
 // connection unless it has closed, and takes a barrier of its watch before it reads the events.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -149,6 +150,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // and only then lapses the hold's row (lapseHoldRow) and waits for the standby's creation of the
 // durable.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

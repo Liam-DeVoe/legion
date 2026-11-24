@@ -128,6 +128,11 @@ func (c checkedDocsAPI) SnapshotVersion(ctx context.Context, artifactID string, 
 	return c.next.SnapshotVersion(ctx, artifactID, actor)
 }
 
+func (c checkedDocsAPI) SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (docs.VersionResult, error) {
+	c.check(ctx, "SettleVersion")
+	return c.next.SettleVersion(ctx, artifactID, actor)
+}
+
 func (c checkedDocsAPI) SettleIssueDocuments(ctx context.Context, issueKey string) error {
 	c.check(ctx, "SettleIssueDocuments")
 	return c.next.SettleIssueDocuments(ctx, issueKey)
@@ -203,6 +208,11 @@ func (c checkedDocsAPI) AcceptSuggestion(ctx context.Context, artifactID, id, re
 func (c checkedDocsAPI) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
 	c.check(ctx, "RejectSuggestion")
 	return c.next.RejectSuggestion(ctx, artifactID, id, actor)
+}
+
+func (c checkedDocsAPI) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
+	c.check(ctx, "RejectDeletedCommentSuggestion")
+	return c.next.RejectDeletedCommentSuggestion(ctx, artifactID, id, actor)
 }
 
 func (c checkedDocsAPI) ProjectMark(ctx context.Context, artifactID, markID string, record docs.MarkRecord, actor model.Actor) error {
