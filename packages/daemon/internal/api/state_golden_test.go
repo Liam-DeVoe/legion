@@ -1196,8 +1196,9 @@ func populatedState(t *testing.T) State {
 		}),
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
-	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// that tree, which its `tree` names, both show the draw as internal/projection fills them (a
+	// tree row is its root's, shown to each issue of the tree), while every other issue of the
+	// fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
 	// that name (config.Project.ExperimentsDeclared), and the three memory fields are that one
 	// assignment spelled out as the readers of contract 49 have always read it.
 	//
@@ -1225,6 +1226,7 @@ func populatedState(t *testing.T) State {
 		Generation:    1,
 		Phase:         phase.Admitted,
 		Status:        "in_progress",
+		Tree:          "LEGION-208",
 		Repo:          "acme/widgets",
 		DefaultBranch: "main",
 		Workers:       map[claim.Role]PhaseView{},
@@ -1251,10 +1253,10 @@ func populatedState(t *testing.T) State {
 	state.LowestPluginContract = &lowest
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
 	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
-	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
-	// fixture, so neither of them is measured, which is what a reader is served for an issue no
-	// live tree holds. Every pair is one reading, at quietReadAt, a little after the newest step
-	// record of this state.
+	// carries the same pair, LEGION-209, a child of LEGION-208's tree, carrying that tree's.
+	// LEGION-207's tree closed, so its issue is not measured, which is what a reader is served for
+	// an issue no live tree holds. Every pair is one reading, at quietReadAt, a little after the
+	// newest step record of this state.
 	//
 	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
 	// members and the step times of their claims (record.QuietTrees) — and its hours are the
@@ -1339,8 +1341,10 @@ func TestStateGolden(t *testing.T) {
 // with the sentence naming its phase and that claim, and no other issue reads it (projection's
 // whyStates reads that very list first). Every other issue in the workflow that stands in none
 // of `active`, `waiting` and `blocked` reads `unlisted`, unless its work runs past its review,
-// and no other issue reads it. A golden that breaks any of these rules shows every reader of
-// state.json a state the daemon never serves.
+// and no other issue reads it. Every issue the workflow records names the root of its tree, a
+// root the state records, and carries that root's `memory` draw (internal/projection's
+// assignmentViews). A golden that breaks any of these rules shows every reader of state.json a
+// state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1538,6 +1542,27 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 			t.Errorf("%s stands in the workflow at %s, in none of `active`, `waiting` and `blocked`, no stranded claim names it, and its `why` is %+v, want %s with a sentence", key, issue.Phase, issue.Why, WhyUnlisted)
 		case !unlisted && reads:
 			t.Errorf("%s reads %s (%q), and it is not an issue in the workflow standing in none of `active`, `waiting` and `blocked` that no stranded claim names", key, WhyUnlisted, issue.Why.Reason)
+		}
+	}
+	// The tree: the projection copies each record's tree, the key of its tree's root, which the
+	// issues table holds for every record (`tree text not null`); only an issue the workflow does
+	// not record stands in no tree (api.Issue.Tree). The `memory` experiment draws for a tree,
+	// since config refuses it any other unit, and a tree row is its root's, shown to each issue of
+	// the tree (assignmentViews): so every recorded issue carries its root's `memory` draw, the
+	// group, the mode and the instant, or none where its root carries none.
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		if issue.Phase == Unrecorded {
+			continue
+		}
+		root, recorded := state.Issues[issue.Tree]
+		if issue.Tree == "" || !recorded {
+			t.Errorf("%s is recorded at %s, and names no root the state records as its tree (tree %q)", key, issue.Phase, issue.Tree)
+			continue
+		}
+		if root.MemoryGroup != issue.MemoryGroup || root.MemoryDrawMode != issue.MemoryDrawMode || !reflect.DeepEqual(root.MemoryDrawnAt, issue.MemoryDrawnAt) {
+			t.Errorf("%s carries the memory draw %q (mode %q, at %v), and %s, the root of its tree, carries %q (mode %q, at %v)",
+				key, issue.MemoryGroup, issue.MemoryDrawMode, issue.MemoryDrawnAt, issue.Tree, root.MemoryGroup, root.MemoryDrawMode, root.MemoryDrawnAt)
 		}
 	}
 }
