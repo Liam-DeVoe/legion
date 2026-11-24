@@ -35,7 +35,7 @@ func TestABootedDaemonsStateNamesTheFixsDirectory(t *testing.T) {
 	t.Cleanup(st.Close)
 	key := cfg.Project + "-1"
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Project: cfg.Project, Tree: key, Title: key,
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Phase: phase.Reviewing, Generation: 1, Status: "needs_review"}); err != nil {
