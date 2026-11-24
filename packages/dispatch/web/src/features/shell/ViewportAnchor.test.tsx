@@ -392,6 +392,64 @@ test("a commit while the focus moves from one row to another keeps the row the f
   }
 });
 
+// A press of the pointer on no row lets the row the focus is in go just the same: a click on the
+// list's background between two cards, or a tap on the page's margin beside them, whose
+// `mousedown` takes the focus to an element in no row (the page's `main`) or to none, and the
+// Inbox commits the held card's move up its group inside that move. Measured at 99f90b1e: the
+// anchor held the row at the list's centre - that very card - and the view followed it up,
+// 1,351 px in the Inbox's cards at 1024 px and 1,711 px on a phone. The reader's place is where
+// the press landed: the row nearest the height it landed at in the list's column, and never the
+// row the focus left, which the press let go: level with that row, the row before it.
+test("a press on no row that takes the focus out of the row at the centre keeps the row nearest the press in place, not the row the focus left", () => {
+  // Each press is made level with `level` - on it, or at x 150, on the page beside the list's
+  // column (x 0 to 100) - with a heading drawn right before each row of `headings`. `beside` is the
+  // row that keeps its place: the row below a heading under r8; the row before r8 for a press on a
+  // heading over it, which the probe reaches r8 from first; and the row before r8 for a press level
+  // with r8 between two headings, where r8 is the only row the probe reaches, as it is level with
+  // the middle of a card taller than the probe's reach.
+  for (const { beside, headings, level, onPage, y } of [
+    { beside: "r9", headings: ["r9"], level: '[data-heading="r9"]', onPage: false, y: 325 },
+    { beside: "r7", headings: ["r8"], level: '[data-heading="r8"]', onPage: false, y: 275 },
+    { beside: "r9", headings: ["r9"], level: '[data-heading="r9"]', onPage: true, y: 325 },
+    { beside: "r7", headings: ["r8", "r9"], level: '[data-row="r8"]', onPage: true, y: 325 },
+  ]) {
+    const view = render(<List headings={headings} rows={ids(12)} />);
+    const leaving = document.querySelector<HTMLElement>('[data-row="r8"] button');
+    const pressed = onPage ? document.body : document.querySelector<HTMLElement>(level);
+    if (leaving === null || pressed === null) throw new Error("r8's button or the heading missing");
+    const x = onPage ? 150 : 50;
+    // r8 goes to the top of its group as the focus leaves it, under a heading of its own there.
+    const moveUp = () =>
+      view.rerender(
+        <List headings={["r8", "r9"]} rows={["r8", ...ids(12).filter((id) => id !== "r8")]} />
+      );
+    try {
+      setScrollY(200);
+      leaving.focus();
+      expect(chosen()).toEqual({ id: "r8", via: "focus" });
+      expect(
+        document.elementFromPoint(50, y)?.matches(level),
+        `the press is level with ${level}`
+      ).toBe(true);
+      const besideTop = viewportTop(beside);
+      leaving.addEventListener("focusout", moveUp, { once: true });
+      // The press's `mousedown`, then its default action: the focus leaves r8 for no element.
+      fireEvent.mouseDown(pressed, { clientX: x, clientY: y });
+      leaving.blur();
+      expect(viewportTop("r8"), "r8 moved to the top of its group").toBe(
+        LIST_TOP + ROW_HEIGHT - window.scrollY
+      );
+      expect(viewportTop(beside), `${beside} stands where it stood`).toBe(besideTop);
+      fireEvent.mouseUp(pressed, { clientX: x, clientY: y });
+      // The press is over: with the focus on no row and no pointer resting on one, the centre is
+      // the reader's place again.
+      expect(chosen()?.via).toBe("center");
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
 test("a disabled anchor measures nothing and leaves the scroll alone", () => {
   const view = render(<List enabled={() => false} rows={ids(12)} />);
   try {

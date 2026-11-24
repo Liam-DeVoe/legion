@@ -9639,3 +9639,122 @@ test("k-phone: right after a tap on P1 moves a card, a tap on another card's Sno
     `k-phone: the tapped Snooze stays where the finger tapped it (y ${before} before, ${after} after)`
   ).toBeLessThanOrEqual(4);
 });
+
+// W9 of round 17 (R15): on a phone, right after a tap on P1 moves a card, a tap on the page beside
+// the cards lets that card go and moves the page nowhere. At 99f90b1e the tap takes the focus out
+// of the card to the page's `main`, the Inbox lets the card go inside that move, and the view
+// follows the card up into the P1 band, 1,711 px.
+/** k-phone after a pick that moves a card, then a tap on no card: six asks at P2 on a phone. Twice,
+ *  a tap on P1 in the fourth card's priority menu, which moves that card into the P1 band once the
+ *  focus leaves it, the card scrolled to the middle of the screen, then a tap on the page's margin:
+ *  the first time level with the gap between that card and the card after it, which stays where
+ *  the finger saw it, the second time level with the card's middle, where the card before it
+ *  stays. Each time the card goes to the P1 band and the tap opens nothing. The taps are in the
+ *  margin and not in the 12 px gap itself, since Chromium moves a tap that close to a card onto
+ *  that card's link. */
+// SLOW(>=2s): six asks on a phone, two priorities picked by taps, and the page beside them tapped.
+test("k-phone: right after a tap on P1 moves a card, a tap on the page beside the cards lets the card go and leaves the cards beside the tap where they stood @phone @phone-only", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issueOf = new Map<string, string>();
+  for (const title of ["Ledger", "Mirror", "Lease", "Replay", "Quota", "Clock"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `${title} rollout` });
+    await patchIssue(issue.key, { priority: 2 });
+    const ask = await createAsk(
+      issue.key,
+      { question: `Ship the ${title.toLowerCase()} rollout?` },
+      asker
+    );
+    issueOf.set(ask.id, issue.key);
+  }
+  await page.goto("/");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(6);
+  for (const level of ["the gap after it", "its middle"] as const) {
+    const step = (text: string) => `k-phone: a tap on the page level with ${level}: ${text}`;
+    // The fourth card down is in the P2 band both times: the first pick puts its card above all.
+    const order = await rows.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+    );
+    const [before, moved, after] = order.slice(2, 5);
+    const movedKey = issueOf.get(moved ?? "");
+    if (
+      before === undefined ||
+      moved === undefined ||
+      after === undefined ||
+      movedKey === undefined
+    ) {
+      throw new Error("the Inbox lists other asks than the six seeded");
+    }
+    const card = inboxRow(page, moved);
+    const writes = issueWrites(page, movedKey);
+    const priority = priorityTrigger(card, movedKey);
+    await priority.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - innerHeight * 0.8);
+    });
+    await settledScrollTop(page, 5);
+    await priority.tap();
+    await expect(
+      listOf(priority),
+      step("a tap on the card's priority opens its menu")
+    ).toBeVisible();
+    await listOf(priority).getByRole("option", { exact: true, name: "P1" }).tap();
+    await expect
+      .poll(() => writesSent(writes), { message: step("a tap on P1 sends one write") })
+      .toBe(1);
+    // The server answers the pick's write within this second and a half.
+    await page.waitForTimeout(1500);
+    await expect(
+      card,
+      step("the picked card stays in the P2 band while the focus is in it")
+    ).toHaveAttribute("data-inbox-group", "P2");
+
+    await card.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      window.scrollBy(0, box.top + box.height / 2 - innerHeight / 2);
+    });
+    await settledScrollTop(page, 5);
+    const kept = level === "the gap after it" ? after : before;
+    const [cardBox, afterBox, keptBox] = await Promise.all([
+      card.boundingBox(),
+      inboxRow(page, after).boundingBox(),
+      inboxRow(page, kept).boundingBox(),
+    ]);
+    if (cardBox === null || afterBox === null || keptBox === null) {
+      throw new Error("k-phone: a card has no box");
+    }
+    // The page's margin, 24 px wide beside the cards, farther from them than a tap is moved.
+    const x = 3;
+    const y =
+      level === "the gap after it"
+        ? (cardBox.y + cardBox.height + afterBox.y) / 2
+        : cardBox.y + cardBox.height / 2;
+    const onNothing = await page.evaluate(
+      (at) => {
+        const under = document.elementFromPoint(at.x, at.y);
+        return under !== null && under.closest("[data-inbox-row], a[href], button") === null;
+      },
+      { x, y }
+    );
+    expect(
+      onNothing,
+      step("the finger taps the page beside the cards, on no card and no control")
+    ).toBe(true);
+    const address = page.url();
+    await page.touchscreen.tap(x, y);
+    await expect(card, step("the tap lets the picked card go into the P1 band")).toHaveAttribute(
+      "data-inbox-group",
+      "P1"
+    );
+    await settledScrollTop(page, 10);
+    const now = (await inboxRow(page, kept).boundingBox())?.y;
+    expect(
+      Math.abs((now ?? Number.NaN) - keptBox.y),
+      step(
+        `the card ${level === "the gap after it" ? "after the gap" : "before the picked card"} stays where it stood (y ${keptBox.y} before, ${now} after)`
+      )
+    ).toBeLessThanOrEqual(4);
+    expect(page.url(), step("the tap opens nothing")).toBe(address);
+  }
+});
