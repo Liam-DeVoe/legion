@@ -294,6 +294,7 @@ func (r *ownerHoldRig) queuedRow(t *testing.T, what string, matches func(record.
 	if err != nil {
 		t.Fatalf("read LEGION-1's outbox: %v", err)
 	}
+	defer rows.Close()
 	var found []record.OutboxRow
 	for rows.Next() {
 		row := record.OutboxRow{Issue: "LEGION-1"}
@@ -310,7 +311,6 @@ func (r *ownerHoldRig) queuedRow(t *testing.T, what string, matches func(record.
 			found = append(found, row)
 		}
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read LEGION-1's outbox: %v", err)
 	}
