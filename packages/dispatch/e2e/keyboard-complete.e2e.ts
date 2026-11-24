@@ -9216,3 +9216,49 @@ test("k-priority-menu: on the Inbox's cards p opens the priority menu while the 
   await keyFromOtherTrigger(page, priority, "b", snooze, step);
   expect(requestsSent(watched), step("nothing is written")).toBe(0);
 });
+
+// The tester's red rows of round 16 (R5, plan D5): in card mode, a press on a control far down
+// the page while the Snooze menu is open closes the menu, writes nothing, and acts in that one
+// press, as the same press does with no menu open. At 9d3e0777 the focus the menu gives back to
+// the first card scrolls the cards between the press's mousedown and its mouseup, so the press
+// lands on another element and the control does nothing.
+for (const target of ["the Later band's toggle", "the last card's Snooze"] as const) {
+  // SLOW(>=2s): five asks in card mode, a control pressed with no menu open and with one open.
+  test(`k-snooze-menu: in card mode, with the Snooze menu b opened on the first card, a press on ${target}, far down the page, closes the menu, writes nothing and acts in that one press @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) => `k-snooze-menu: card mode, a press on ${target}: ${text}`;
+    const seed = await seedAsksAtP2(5);
+    const later = itemAt(seed.asks, 4);
+    await snoozeAsk(later, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+    const inbox = await openInboxAt(page, "card mode", 4);
+    const first = itemAt(inbox.order, 0);
+    const last = itemAt(inbox.order, 3);
+    const snoozes = seed.asks.flatMap((id) => [snoozeWrites(page, id), unsnoozeWrites(page, id)]);
+    const menu = openList(page);
+    const band = target === "the Later band's toggle";
+    const control = band
+      ? laterBand(inbox, 1)
+      : rowOf(inbox, last).getByRole("button", { name: /^Snooze / });
+    const acted = band
+      ? rowOf(inbox, later)
+      : rowOf(inbox, last).locator('[aria-haspopup="listbox"][aria-expanded="true"]');
+    await control.click();
+    await expect(acted, step("with no menu open, one press acts")).toHaveCount(1);
+    if (band) await control.click();
+    else await page.keyboard.press("Escape");
+    await expect(acted, step("the control is put back")).toHaveCount(0);
+    await goTo(inbox, first);
+    await page.keyboard.press("b");
+    await expect(menu, step("b opens the first card's menu")).toBeVisible();
+    await control.click();
+    await expect(
+      rowOf(inbox, first).locator('[aria-haspopup="listbox"][aria-expanded="true"]'),
+      step("the press closes the first card's menu")
+    ).toHaveCount(0);
+    await expect(acted, step("the one press acts")).toHaveCount(1);
+    // A write the press sent reaches the page's request events within this second and a half.
+    await page.waitForTimeout(1_500);
+    expect(requestsSent(snoozes), step("nothing is written")).toBe(0);
+  });
+}
