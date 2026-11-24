@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/schemas/dispatch-openapi-v2.json newTourContract (the path built runtime-relative ../../../../.., then opened: the committed /api/v2 document the route tour's contract subtest holds every answer to)
+
 // routes_v2_tour_test.go is the route tour of dispatch://INFRA-4071: one step per /api/v2 route
 // the rules of /api/v2 bind - every route but the rows of the INFRA-979 tree and the test hooks -
 // each a request the route answers with a status the step names, on a server of its own

@@ -1,5 +1,8 @@
 package api
 
+//ci:reads packages/contracts/schemas/dispatch-openapi.json committedOpenAPIOf (the path built runtime-relative ../../../../.., then read: the committed /api/v1 document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)
+//ci:reads packages/contracts/schemas/dispatch-openapi-v2.json committedOpenAPIOf, the same read of the committed /api/v2 document, which TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares too and TestTheV2DocumentRequiresWhatTheStructsTag and TestTheV2DocumentListsEveryCodeItCanAnswer hold to the Go types and the code list
+
 import (
 	"bytes"
 	"cmp"
