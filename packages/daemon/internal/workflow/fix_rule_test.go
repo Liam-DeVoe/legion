@@ -431,7 +431,8 @@ func TestAFailureInTheRetroGoesToTheMerger(t *testing.T) {
 
 // A task of a run that started before this release takes no fix: a failure while its review runs
 // writes no failure and starts no fix, and the listener's settlement tells the owner, the
-// reviewer and the implementer, as before.
+// reviewer and the implementer, as before. The implementer also hears of the failed CI job from
+// tellCIFailure, which tells a task that takes no fix.
 func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 	r := reviewing(t)
 	if _, err := r.pool.Exec(t.Context(), `update plan_tasks set fixes_ci = false where issue = 'LEGION-208'`); err != nil {
@@ -442,7 +443,10 @@ func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), nil)
 	settled := settledBody
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer} {
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleReviewer} {
 		assertStrings(t, "the "+string(role)+"'s messages", r.told(role), []string{settled})
 	}
+	ciFailed := "Pull request #42: check k-ci fails at " + fixHead + ", where its CI job ended failure; its state there is no (fail). " +
+		"Nothing moved on it: read the job's log and decide whose failure it is."
+	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{ciFailed, settled})
 }
