@@ -117,9 +117,12 @@ func TestAPriorityRuleGivesTheFreedSlotToTheP0(t *testing.T) {
 // asked a person to approve its design and has had no turn for an hour. ACME-1 takes the one slot
 // at 09:00, its architect writes the design and asks for approval, and its turn ends at 09:10; the
 // person approves at 12:00, and ACME-1 runs to its accepting at 13:15, where the record gives the
-// slot to ACME-2. Replayed under main, ACME-2's first slot is 13:15, as recorded; under
-// idle-return-1h ACME-1 is idle from 10:10 and the first pass after it gives ACME-2 the slot, the
-// hourly tick at 11:00. ACME-1's slot was taken at 09:00, which its mark keeps (record.Waiting).
+// slot to ACME-2. Replayed under main, ACME-2's first slot is 13:15, as recorded. Under
+// idle-return-1h ACME-1 is idle an hour after its architect's last turn in the replay, and the first
+// pass after that gives ACME-2 the slot: not before 10:10, the earliest ACME-1 can be idle, and
+// before 12:00, the approval that sets ACME-1 to work again. The hourly tick and the moment the
+// replay's own turn of the architect ends place that pass, so the test holds the interval and not
+// a minute. ACME-1's slot was taken at 09:00, which its mark keeps (record.Waiting).
 func TestAnIdleHolderGivesItsSlotBack(t *testing.T) {
 	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
 	b.capped(1)
@@ -150,17 +153,17 @@ func TestAnIdleHolderGivesItsSlotBack(t *testing.T) {
 	b.leaves(clock(14, 0), "ACME-1", record.DoneStatus)
 	window := b.build()
 	for _, c := range []struct {
-		rule string
-		want time.Time
-	}{{"main", clock(13, 15)}, {"idle-return-1h", clock(11, 0)}} {
+		rule      string
+		from, end time.Time
+	}{{"main", clock(13, 15), clock(13, 16)}, {"idle-return-1h", clock(10, 10), clock(12, 0)}} {
 		t.Run(c.rule, func(t *testing.T) {
 			result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1,
 				Slowdown: 1, PGDSN: replayDSN(t), Out: t.TempDir()})
 			if err != nil {
 				t.Fatalf("replay the window under %s: %v", c.rule, err)
 			}
-			if first, ok := result.Scorecard.FirstSlot["ACME-2"]; !ok || !first.Truncate(time.Minute).Equal(c.want) {
-				t.Errorf("ACME-2's first slot is %s, want %s", stamp(first), stamp(c.want))
+			if first, ok := result.Scorecard.FirstSlot["ACME-2"]; !ok || first.Before(c.from) || !first.Before(c.end) {
+				t.Errorf("ACME-2's first slot is %s, want at or after %s and before %s", stamp(first), stamp(c.from), stamp(c.end))
 			}
 		})
 	}

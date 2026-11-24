@@ -327,8 +327,8 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 
 // newChain builds the daemon's handler chain afresh, as each of the daemon's boots does: a new
 // engine and admission pass under the run's rule, on the simulated clock, with the window's
-// settings and the cap the daemon served under at at (the run's own cap where it names one,
-// RunConfig.Cap), the replay's tables of what a rule the
+// settings and the cap the daemon process running from at served under (processCap; the run's own
+// cap where it names one, RunConfig.Cap), the replay's tables of what a rule the
 // daemon does not run records (ruleTables), and the replay's own handler before the chain.
 func (d *driver) newChain(at time.Time) {
 	w := d.window
@@ -359,7 +359,8 @@ func (d *driver) newChain(at time.Time) {
 }
 
 // capAt is the admission cap w's daemon ran with at at: the last change at or before it, or the
-// first where at is before every change.
+// first where at is before every change. A change is dated by the first line naming it, which a
+// process writes minutes into its boot, so the cap a process starts under is processCap's.
 func capAt(w Window, at time.Time) int {
 	if len(w.Caps) == 0 {
 		return 0
@@ -369,6 +370,45 @@ func capAt(w Window, at time.Time) int {
 		if !change.At.After(at) {
 			limit = change.Cap
 		}
+	}
+	return limit
+}
+
+// processCap is the admission cap the daemon process running from at served under (capOfProcess),
+// reading the record's boots: at a boot, that boot's own start and the line saying it finished
+// booting; the next boot's start bounds the process.
+func (d *driver) processCap(at time.Time) int {
+	var started, until time.Time
+	for _, boot := range d.trace.Boots {
+		if boot.At.Equal(at) {
+			started = boot.Started
+		}
+		if boot.At.After(at) && (until.IsZero() || boot.At.Before(until)) {
+			until = boot.At
+		}
+	}
+	return capOfProcess(d.window, at, started, until)
+}
+
+// capOfProcess is the admission cap of the daemon process that runs from from: the first cap change
+// at or after from that the process's own lines name — no later than started, the line saying it
+// finished its boot, where the record holds one, and before until, the next process's start — and
+// the cap that stood at from where its lines name no change. The cap is the process's configuration,
+// read before its first pass, so it holds from the process's first line, though the window dates the
+// change by the first line naming it (collect's caps): a slot line of the boot's first pass, or its
+// `legion daemon started` line, minutes after the process began. Every cap change the windows hold
+// falls inside a restart so. Read at the process's start alone (capAt), a raise served the old cap
+// until the next restart.
+func capOfProcess(w Window, from, started, until time.Time) int {
+	limit := capAt(w, from)
+	for _, change := range w.Caps {
+		if change.At.Before(from) {
+			continue
+		}
+		if (!started.IsZero() && change.At.After(started)) || (!until.IsZero() && !change.At.Before(until)) {
+			break
+		}
+		return change.Cap
 	}
 	return limit
 }
