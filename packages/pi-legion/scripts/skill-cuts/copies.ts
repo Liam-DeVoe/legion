@@ -156,8 +156,12 @@
  *    marketplace plugin's skill at `**\/plugins/cache/plugins/<marketplace>___<plugin>___*\/<dir>/`
  *    (Oh My Pi's cache) and `**\/plugins/cache/<marketplace>/<plugin>/*\/<dir>/` (Claude Code's);
  *    the plugin the build script generates, in a directory named as the plugin, at
- *    `/opt/legion/<package directory>/<plugin>/skills/<name>/`; a skill an installer links into a
- *    host's user skills at `**\/.omp/agent/skills/<name>/` or `**\/.claude/skills/<name>/`; a
+ *    `/opt/legion/<package directory>/<plugin>/skills/<name>/`. A prepack script stages its own
+ *    repository's skills into its own repository's package, and a build script generates its
+ *    plugin from its own repository's stages: the script of a fork that stages the same package
+ *    name gives its parent's package and plugin none of the fork's copies. A skill an installer
+ *    links into a host's user skills is at `**\/.omp/agent/skills/<name>/` or
+ *    `**\/.claude/skills/<name>/`; a
  *    skill an installer's `gh skill install` puts in the agents' user skills at
  *    `**\/.agents/skills/<name>/`; a skill a worker image installs as an Oh My Pi plugin under
  *    `/opt` at `<that plugin's directory>/skills/<name>/`; a
@@ -3327,18 +3331,31 @@ export function resolveInstallers(
   }
   const stages = factsOf(manifests, "stages");
   const builds = factsOf(manifests, "generated-plugin");
-  /** The copies the prepack script stages for a package, at `<dir>/<name>` (dist/skills). */
-  const staged = (name: string, dir?: string): Member[] =>
-    stages
-      .filter((stage) => stage.fact.package === name)
-      .flatMap((stage) =>
-        stage.fact.skills.flatMap((skill) => {
-          const copy = index.at(stage.manifest.repository, joinPath(stage.fact.sourceDir, skill));
-          return copy === undefined
-            ? []
-            : [{ copy, rel: joinPath(dir ?? stage.fact.destDir, skill) }];
-        })
-      );
+  /** The stages of `repository`'s prepack script for the package `name`. A prepack script stages
+   *  its own repository's skills into its own repository's package, so the script of a fork,
+   *  which stages the same package name, stages nothing into its parent's package, nor the
+   *  parent's into the fork's. */
+  const stagesOf = (name: string, repository: string) =>
+    stages.filter(
+      (stage) => stage.fact.package === name && stage.manifest.repository === repository
+    );
+  /** The copies `repository`'s prepack script stages for the package `name`, at `<dir>/<name>`
+   *  (dist/skills). */
+  const staged = (name: string, repository: string, dir?: string): Member[] =>
+    stagesOf(name, repository).flatMap((stage) =>
+      stage.fact.skills.flatMap((skill) => {
+        const copy = index.at(repository, joinPath(stage.fact.sourceDir, skill));
+        return copy === undefined
+          ? []
+          : [{ copy, rel: joinPath(dir ?? stage.fact.destDir, skill) }];
+      })
+    );
+  /** Whether `repository`'s Claude Code build script generates its plugin from the package at
+   *  `root` of the same repository. */
+  const built = (repository: string, root: string | undefined) =>
+    builds.some(
+      (build) => build.manifest.repository === repository && build.fact.packageRoot === root
+    );
   const imageRoot = (name: string) => `/opt/legion/${name.split("/").pop() ?? name}/`;
 
   // Oh My Pi plugin packages: the skills Oh My Pi scans in each (`parsePackage`: the directories
@@ -3362,8 +3379,8 @@ export function resolveInstallers(
           ...scans.flatMap(({ rel, members: found }) =>
             found.map((member) => ({ copy: member.copy, rel: joinPath(rel, member.rel) }))
           ),
-          ...staged(name),
-        ].map((member) => [`${member.copy.path}\0${member.rel}`, member])
+          ...staged(name, manifest.repository),
+        ].map((member) => [`${member.copy.repository}\0${member.copy.path}\0${member.rel}`, member])
       ).values(),
     ];
     const undescribed = scans.flatMap((scan) => scan.undescribed);
@@ -3394,8 +3411,7 @@ export function resolveInstallers(
         : []),
     ];
     const inImage =
-      stages.some((stage) => stage.fact.package === name) ||
-      builds.some((build) => build.fact.packageRoot === fact.root);
+      stagesOf(name, manifest.repository).length > 0 || built(manifest.repository, fact.root);
     const unit: Unit = {
       id: `package:${name}`,
       host: "omp",
@@ -3418,19 +3434,22 @@ export function resolveInstallers(
   for (const { manifest, fact } of stages) {
     for (const skill of fact.skills) {
       const copy = index.at(manifest.repository, joinPath(fact.sourceDir, skill));
+      const unit = packageUnits.get(fact.package);
       const note =
         copy === undefined
           ? `no SKILL.md at ${joinPath(fact.sourceDir, skill)}`
-          : packageUnits.has(fact.package)
-            ? ""
-            : `no package.json of ${fact.package} that is an Oh My Pi plugin was read`;
+          : unit === undefined
+            ? `no package.json of ${fact.package} that is an Oh My Pi plugin was read`
+            : unit.manifest.repository !== manifest.repository
+              ? `the package.json of ${fact.package} read is ${unit.manifest.repository}'s, and a prepack script stages into its own repository's package alone`
+              : "";
       row(manifest, "stages", `package:${fact.package}`, "omp", skill, copy, note);
     }
   }
 
   // The plugin the build script generates from a package's staged skills.
   for (const { manifest, fact } of builds) {
-    const members = staged(fact.package, "skills");
+    const members = staged(fact.package, manifest.repository, "skills");
     units.push({
       id: `plugin:${fact.plugin}`,
       host: "claude-code",
@@ -3477,8 +3496,7 @@ export function resolveInstallers(
       `**/plugins/cache/plugins/${fact.marketplace}___${fact.plugin}___*/`,
       `**/plugins/cache/${fact.marketplace}/${fact.plugin}/*/`,
     ];
-    if (fact.npm !== "" && builds.some((build) => build.fact.packageRoot === root))
-      locations.push(imageRoot(fact.npm));
+    if (fact.npm !== "" && built(repository, root)) locations.push(imageRoot(fact.npm));
     const unit: Unit = {
       id,
       host: "claude-code",
@@ -3956,11 +3974,16 @@ export function formerStagePrefixes(
         )
         .join(" and ");
       const said = `staged ${staged.skill} for ${staged.package} at ${staged.rel}/ ${held}, and stages it there no longer`;
-      const unit = resolved.units.find((each) => each.id === `package:${staged.package}`);
+      // A prepack script stages into its own repository's package alone (`resolveInstallers`).
+      const unit = resolved.units.find(
+        (each) =>
+          each.id === `package:${staged.package}` &&
+          each.manifest.repository === manifest.repository
+      );
       const copy = index.at(manifest.repository, staged.from);
       if (unit === undefined || copy === undefined) {
         note(
-          `${said}; no prefix row maps that path: ${unit === undefined ? `${staged.package} is no package unit of the trees read` : `the tree read holds no SKILL.md at ${staged.from}`}`
+          `${said}; no prefix row maps that path: ${unit === undefined ? `${staged.package} is no package unit of ${manifest.repository}` : `the tree read holds no SKILL.md at ${staged.from}`}`
         );
         continue;
       }

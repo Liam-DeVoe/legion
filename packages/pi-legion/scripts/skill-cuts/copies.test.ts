@@ -25,6 +25,7 @@ import {
 import { parseConfig } from "./config";
 import {
   CopyIndex,
+  formerStagePrefixes,
   type Gh,
   type GhResult,
   type InstallerRow,
@@ -1567,6 +1568,183 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
       installerPins([installer(assignment)]).map((each) => each.repository);
     expect(pinned('TOOL_REPO="acme/cli"')).toEqual(["acme/cli"]);
     expect(pinned(`TOOL_REPO="'acme/cli'"`)).toEqual([]);
+  });
+});
+
+// A repository and a fork of it, each with its own prepack script that stages the same package
+// name and its own build script, as cybermonklabs/legion and theorem-labs/legion each stage
+// @sjawhar/pi-envoy and @sjawhar/pi-legion. Only the parent's package.json is the package's unit
+// (the first of its name read), as in R4's list of the three owners.
+describe("the prepack and build scripts of a fork that stage its parent's package name", () => {
+  const PARENT = "acme/legion";
+  const FORK = "acme-fork/legion";
+  const copyOf = (repository: string, name: string): SkillCopy => ({
+    repository,
+    path: `skills/${name}`,
+    file: `skills/${name}/SKILL.md`,
+    blob: sha1(`${repository} ${name}`),
+    fork: repository === FORK,
+    archived: false,
+    parent: repository === FORK ? PARENT : "",
+    name,
+    nameFrom: "frontmatter",
+    description: "Use when a made-up skill is needed.",
+    descriptionBytes: 35,
+    fault: "",
+  });
+  const index = () =>
+    new CopyIndex([
+      ...["agent-secrets", "dispatch", "envoy"].map((name) => copyOf(PARENT, name)),
+      ...["dispatch", "envoy", "brainstorm", "retired"].map((name) => copyOf(FORK, name)),
+    ]);
+  /** A prepack script in the shape of scripts/pi-plugin-prepack.sh: one arm per package, its
+   *  skills=( … ) copied from skills/ into dist/skills. */
+  const prepackText = (skills: readonly string[]) =>
+    [
+      "#!/usr/bin/env bash",
+      "plugin() {",
+      '  case "$1" in',
+      "  @acme/pi-envoy)",
+      `    skills=(${skills.join(" ")})`,
+      "    ;;",
+      "  esac",
+      "}",
+      "stage_skills dist/skills",
+      "",
+    ].join("\n");
+  const prepack = (repository: string, skills: readonly string[]) =>
+    madeManifest(repository, "scripts/pi-plugin-prepack.sh", "prepack-script", prepackText(skills));
+  const pkg = (repository: string) =>
+    madeManifest(
+      repository,
+      "packages/pi-envoy/package.json",
+      "omp-package",
+      JSON.stringify({ name: "@acme/pi-envoy", omp: { skills: ["dist/skills"] } })
+    );
+  const build = (repository: string) =>
+    madeManifest(
+      repository,
+      "packages/claude-envoy/scripts/build.ts",
+      "build-script",
+      [
+        'const args = ["--stage-skills", "@acme/pi-envoy"];',
+        'writeFileSync(join(out, "plugin.json"), JSON.stringify({ name: "legion" }));',
+        "",
+      ].join("\n")
+    );
+  const manifests = () => [
+    pkg(PARENT),
+    prepack(PARENT, ["agent-secrets", "dispatch", "envoy"]),
+    build(PARENT),
+    pkg(FORK),
+    prepack(FORK, ["dispatch", "envoy", "brainstorm"]),
+    build(FORK),
+  ];
+  /** The installer rows of `unit` whose manifest is of `repository`, with `action`, as
+   *  `<skill> <copy repository> <copy path>`. */
+  const rowsOf = (
+    rows: readonly InstallerRow[],
+    unit: string,
+    repository: string,
+    action: string
+  ) =>
+    rows
+      .filter(
+        (row) => row.unit === unit && row.manifestRepository === repository && row.action === action
+      )
+      .map((row) => `${row.skill} ${row.copyRepository} ${row.copyPath ?? "-"}`);
+
+  // Catches: R4's list of the three owners, where cybermonklabs/legion's @sjawhar/pi-envoy
+  // shipped theorem-labs/legion's dispatch, envoy and dispatch-first (the fork's stages taken
+  // with the parent's, and keyed without their repository, so the fork's copy overwrote the
+  // parent's), and the image rows /opt/legion/pi-envoy/dist/skills/<name>/ named the fork, a
+  // repository outside the targets, so the table held no row for them: 49,375 of the 60,233
+  // unattributed read sessions of R1 on that list.
+  test("the package ships its own repository's staged copies, at node_modules and the image, and none of the fork's", () => {
+    const resolved = resolveInstallers(manifests(), index());
+    const own = [
+      "agent-secrets acme/legion skills/agent-secrets",
+      "dispatch acme/legion skills/dispatch",
+      "envoy acme/legion skills/envoy",
+    ];
+    expect(rowsOf(resolved.rows, "package:@acme/pi-envoy", PARENT, "ships")).toEqual(own);
+    expect(rowsOf(resolved.rows, "package:@acme/pi-envoy", PARENT, "stages")).toEqual(own);
+    expect(
+      resolved.prefixes
+        .filter((row) => row.via.startsWith("package:"))
+        .map((row) => `${row.prefix} ${row.repository} ${row.path}`)
+        .sort()
+    ).toEqual(
+      ["agent-secrets", "dispatch", "envoy"]
+        .flatMap((name) => [
+          `**/node_modules/@acme/pi-envoy/dist/skills/${name}/ acme/legion skills/${name}`,
+          `/opt/legion/pi-envoy/dist/skills/${name}/ acme/legion skills/${name}`,
+        ])
+        .sort()
+    );
+    // The fork's own stages stay its installer rows, each saying the package read is not its own.
+    expect(
+      resolved.rows
+        .filter((row) => row.manifestRepository === FORK && row.action === "stages")
+        .map((row) => `${row.skill} ${row.copyRepository}: ${row.note}`)
+    ).toEqual(
+      ["dispatch", "envoy", "brainstorm"].map(
+        (name) =>
+          `${name} acme-fork/legion: the package.json of @acme/pi-envoy read is acme/legion's, and a prepack script stages into its own repository's package alone`
+      )
+    );
+  });
+
+  test("each build script's plugin ships its own repository's staged copies alone", () => {
+    const resolved = resolveInstallers(manifests(), index());
+    expect(rowsOf(resolved.rows, "plugin:legion", PARENT, "ships")).toEqual([
+      "agent-secrets acme/legion skills/agent-secrets",
+      "dispatch acme/legion skills/dispatch",
+      "envoy acme/legion skills/envoy",
+    ]);
+    expect(rowsOf(resolved.rows, "plugin:legion", FORK, "ships")).toEqual([
+      "dispatch acme-fork/legion skills/dispatch",
+      "envoy acme-fork/legion skills/envoy",
+      "brainstorm acme-fork/legion skills/brainstorm",
+    ]);
+    expect(
+      resolved.prefixes
+        .filter((row) => row.name === "dispatch" && row.via.startsWith("plugin:legion"))
+        .map((row) => `${row.prefix} ${row.repository} ${row.via}`)
+        .sort()
+    ).toEqual([
+      "/opt/legion/claude-envoy/legion/skills/dispatch/ acme-fork/legion plugin:legion (acme-fork/legion:packages/claude-envoy/scripts/build.ts)",
+      "/opt/legion/claude-envoy/legion/skills/dispatch/ acme/legion plugin:legion (acme/legion:packages/claude-envoy/scripts/build.ts)",
+    ]);
+  });
+
+  test("a path the fork's prepack script staged at and stages no longer gets no row of its parent's package", () => {
+    const copies = index();
+    const resolved = resolveInstallers(manifests(), copies);
+    const read = ["dispatch", "envoy", "brainstorm"];
+    const older = sha1("an older fork script");
+    const current = sha1("the fork script read");
+    const former = formerStagePrefixes(
+      [
+        {
+          manifest: prepack(FORK, read),
+          versions: [
+            {
+              commit: older,
+              date: "2026-10-30T00:00:00Z",
+              text: prepackText([...read, "retired"]),
+            },
+            { commit: current, date: "2026-11-10T00:00:00Z", text: prepackText(read) },
+          ],
+        },
+      ],
+      resolved,
+      copies
+    );
+    expect(former.prefixes).toEqual([]);
+    expect(former.notes.map((note) => note.note)).toEqual([
+      `staged retired for @acme/pi-envoy at dist/skills/retired/ from ${older} (2026-10-30T00:00:00Z) until ${current} (2026-11-10T00:00:00Z), and stages it there no longer; no prefix row maps that path: @acme/pi-envoy is no package unit of acme-fork/legion`,
+    ]);
   });
 });
 
