@@ -558,7 +558,8 @@ It writes no handoff record: it reports its step with `handoff_complete`, the ve
 Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's.
 Under `runtime: kubernetes` every issue pod is built for it beside Legion's six, whatever the issue's plan names, with its Secret and its launcher connection.
 The launcher starts its shim, with a state home of its own, only when the daemon starts the role.
-An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod, and until then the role's start waits.
+An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod.
+Until then a start the workflow asks for waits, and a launch the supervisor makes itself, such as an operator's resume or a retry, is refused and charged as a launch failure ([Kubernetes](kubernetes.md)).
 
 ## Phase workers on Claude Code
 
