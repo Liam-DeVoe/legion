@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   ColumnDef,
@@ -14,7 +14,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
-import { settle } from "../__tests__/fake-clock";
+import { jump, realClock, settle } from "../__tests__/fake-clock";
 import { panelOf } from "../__tests__/list-picks";
 import {
   type FakeLiveSocket,
@@ -33,6 +33,9 @@ import { AgentsPage } from "../features/agents/AgentsPage";
 import { DeliveryPage } from "../features/delivery/DeliveryPage";
 import { IssuesTable } from "../features/project/IssuesTable";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { PendingWritesIndicator } from "../features/writes/PendingWritesIndicator";
+import { plainWrite, writesOf } from "../features/writes/write-store";
 import { Chip } from "./Chip";
 import { ControlRow } from "./ControlRow";
 import { DataTable, DataTableCells, useDataTable } from "./DataTable";
@@ -388,6 +391,51 @@ test("SelectionBar: Escape from a control inside the bar arms the bar's hand-off
   expect(screen.queryByRole("toolbar")).toBeNull();
   expect(screen.getByRole("checkbox", { name: "Select CORE-2" })).toHaveFocus();
 });
+
+/** The shell's pending-writes panel over one app's write queue, as
+ *  `PendingWritesIndicator.test.tsx` draws it: CORE-1, which Dispatch refused, with Retry and
+ *  Discard, and CORE-2, still out past its deadline, with Stop trying. Moves the fake clock the
+ *  case installed. */
+async function drawPendingWrites(): Promise<void> {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  draw(
+    <QueryClientProvider client={client}>
+      <PendingWritesIndicator />
+    </QueryClientProvider>
+  );
+  const writes = writesOf(client);
+  const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
+  act(() => {
+    for (const [label, write] of [
+      ["CORE-1 set to done", () => Promise.reject(verdict)],
+      ["CORE-2 set to done", () => new Promise<never>(() => undefined)],
+    ] as const) {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label,
+          method: "PATCH",
+          presentation: "indicator",
+          write,
+        })
+        .catch(() => undefined);
+    }
+  });
+  await jump(SEND_DEADLINE_MS);
+}
+
+for (const press of ["Stop trying", "Retry", "Discard"]) {
+  test(`PendingWritesIndicator: ${press} arms the panel's hand-off`, async () => {
+    jest.useFakeTimers();
+    restores.push(realClock);
+    await drawPendingWrites();
+    expectArms(within(screen.getByTestId("pending-writes")).getByRole("button", { name: press }));
+    // What the press started - Retry's attempt, which Dispatch refuses again - settles in `act`.
+    await act(() => settle());
+  });
+}
 
 /** The shell's main content, which a page is drawn in as the app draws it, after a link that
  *  stands for the shell's navigation, with no rescue mounted; both go after the case. */
