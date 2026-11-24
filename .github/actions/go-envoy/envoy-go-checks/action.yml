@@ -42,10 +42,10 @@ runs:
       shell: bash
       working-directory: packages/envoy
       run: bash scripts/airlock-check.test.sh
-    - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+    - name: Process-start test for lib/exec-env.sh, which dev-stack.sh starts its processes with (no stack)
       shell: bash
       working-directory: packages/envoy
-      run: bash scripts/judge-check.test.sh
+      run: bash scripts/exec-env.test.sh
     - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
       shell: bash
       working-directory: packages/envoy

@@ -914,7 +914,7 @@ describe("cleanDetail", () => {
       // The limit is a hang guard: on bun 1.4.4 a per-test limit is reported for a body that
       // blocks the thread only once that body comes back, so it ends a blow-up that returns at
       // all, and a rule that never returns is ended by the pi-legion job's own limit
-      // (timeout-minutes: 28, .github/workflows/ci-job-pi-legion.yaml).
+      // (timeout-minutes: 28, ci.yaml's pi-held job, `pi-legion / pi-legion`).
     }, 10_000);
   }
 });

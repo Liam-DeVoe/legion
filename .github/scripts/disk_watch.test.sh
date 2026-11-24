@@ -41,7 +41,7 @@ source "$script_dir/test-lib.sh"
 # --kill-child then sends the first process a SIGKILL, and setpriv's --pdeathsig does the same to
 # the unshare when this bash itself is SIGKILLed, so every way to stop the started pid ends the
 # namespace and the samplers in it. Where the kernel refuses an unprivileged namespace, a run by
-# hand goes on without one and says so, and CI, whose job allows them first (ci-job-test.yaml),
+# hand goes on without one and says so, and CI, whose job allows them first (.github/actions/scripts/test),
 # fails instead.
 if [ "$$" -ne 1 ]; then
   namespace=(setpriv --pdeathsig KILL unshare --user --map-root-user --mount --pid --fork --kill-child --mount-proc)
@@ -213,7 +213,7 @@ echo "case: the least value falls when the watched file system fills"
 # write that tmpfs ever takes is the case's 64 MiB, so the least free must fall by all of it.
 # Where the kernel refuses an unprivileged mount, there is no file system only this case writes:
 # a run by hand says SKIP and counts nothing rather than measuring a shared one, and CI, whose job
-# turns Ubuntu's AppArmor restriction off first (ci-job-test.yaml), fails the case instead.
+# turns Ubuntu's AppArmor restriction off first (.github/actions/scripts/test), fails the case instead.
 private="$work/private"
 private_state="$work/private.json"
 private_ready="$work/private.status"

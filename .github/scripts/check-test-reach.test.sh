@@ -376,6 +376,49 @@ GO
 run_check "$root"
 check "an if that is itself an assertion about the environment is no gate" "$(is "$status" 0)"
 
+echo "case: 3 - a read of a variable its package's TestMain sets for the whole test process"
+root=$(fixture test-main-setting)
+cat > "$root/packages/envoy/unit/own_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+func TestReadsWhatItsTestMainSet(t *testing.T) {
+	if os.Getenv("FIXTURE_OWN") != ownValue(t) {
+		t.Fatal("FIXTURE_OWN is not what TestMain set")
+	}
+}
+
+func ownValue(t *testing.T) string {
+	t.Helper()
+	return "from-main"
+}
+GO
+run_check "$root"
+check "with no TestMain setting it, the read is a gate" "$(is "$status" 1)"
+check "names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/own_test.go:9: FIXTURE_OWN: TestReadsWhatItsTestMainSet gates on it')"
+cat > "$root/packages/envoy/unit/main_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	if err := os.Setenv("FIXTURE_OWN", "from-main"); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+GO
+run_check "$root"
+check "once its package's TestMain sets it, the read is no gate" "$(is "$status" 0)"
+
 echo "case: 3 - the other classes, each held to its gate"
 root=$(fixture prerequisite)
 cat > "$root/packages/envoy/unit/prerequisite_test.go" <<'GO'

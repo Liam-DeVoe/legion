@@ -130,7 +130,9 @@
 # about the environment (its condition names nothing but reads, their holders, an error and
 # constants, and its branches only assert: `if _, set := os.LookupEnv(X); set { t.Fatal(…) }`), and,
 # inside a block a read guards, an `if err != nil` or such a check of the value, which is the
-# block's own reading or writing of what the variable names. A Bun or Playwright test file (one
+# block's own reading or writing of what the variable names. A read of a variable its package's
+# TestMain sets for the whole test process (`os.Setenv(NAME, …)`) is no gate either: the test binary
+# hands itself that value, from what its own reads gave it. A Bun or Playwright test file (one
 # that imports `bun:test` or `@playwright/test`) is read for its `skipIf`, `if`, `skip` and `fixme`
 # conditions and the `if` blocks that hold an `expect(` or a skip, each resolved through the
 # file's own declarations and functions and those of a module of the same package it imports. A
@@ -1310,6 +1312,7 @@ class GoGates:
                 self.imports[go_file.path] = go_imports(go_file.text)
             self.constants[directory] = constants
         self._child: dict[str, set[str]] = {}
+        self._main: dict[str, set[str]] = {}
         self._package_taint: dict[str, dict[str, set]] = {}
         self._reruns: dict[str, set[str]] = {}
         self._functions: dict[str, list[GoFunc]] = {}
@@ -1354,6 +1357,29 @@ class GoGates:
                             names.add(name)
             self._child[directory] = names
         return self._child[directory]
+
+    def main_env(self, directory: str) -> set[str]:
+        """The variables a TestMain of the package sets for its whole test process, by
+        `os.Setenv(NAME, …)` with NAME a literal or a constant."""
+        if directory not in self._main:
+            names = set()
+            for go_file in self.tree.by_directory.get(directory, []):
+                if not go_file.is_test or "TestMain" not in go_file.text:
+                    continue
+                for function in self.functions(go_file):
+                    if function.name != "TestMain" or function.receiver:
+                        continue
+                    tokens = [t for t in function.body if t.kind != "nl"]
+                    for index in range(len(tokens) - 3):
+                        if not (tokens[index].text == "os" and tokens[index + 1].text == "."
+                                and tokens[index + 2].text == "Setenv" and tokens[index + 3].text == "("):
+                            continue
+                        arguments = split_commas(tokens[index + 4:match_close(tokens, index + 3)])
+                        name = self.constant(directory, go_file.path, self.spelled(arguments[0])) if arguments else None
+                        if name:
+                            names.add(name)
+            self._main[directory] = names
+        return self._main[directory]
 
     def spelled(self, tokens: list[Tok]) -> str:
         return "".join(t.text for t in tokens if t.kind != "nl")
@@ -1538,7 +1564,8 @@ class GoGates:
         go_file = function.file
         if function.name in self.reruns(go_file.directory):
             return  # a helper process its own package's test starts, with the environment it hands it
-        names = frozenset(n for n in names if n not in self.child_env(go_file.directory))
+        names = frozenset(n for n in names
+                          if n not in self.child_env(go_file.directory) and n not in self.main_env(go_file.directory))
         if not names:
             return
         test = function.name if (go_file.is_test and not function.receiver
