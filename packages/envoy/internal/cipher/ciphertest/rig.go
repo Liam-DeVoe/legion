@@ -483,14 +483,15 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 }
 
 // request issues method against baseURL+path through client, with an optional body (marshaled to
-// JSON) and headers, and answers the status and the body bytes. It asserts no status itself: a
-// caller does that, so a mismatch names the actual body.
+// JSON) and headers, under ctx, and answers the status and the body bytes. It asserts no status
+// itself: a caller does that, so a mismatch names the actual body.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
-// name, the client they go out on, and at — the process a failure is about, " (at host:port)"
-// for a Client pinned to one of two processes serving one database, and empty for a Rig, which
-// has one broker and so nothing to tell apart.
+// name, the client they go out on, the context they send under, and at — the process a failure is
+// about, " (at host:port)" for a Client pinned to one of two processes serving one database, and
+// empty for a Rig, which has one broker and so nothing to tell apart.
 func request(
+	ctx context.Context,
 	t *testing.T,
 	client *http.Client,
 	baseURL, method, path string,
@@ -507,7 +508,7 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -534,7 +535,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(context.Background(), t, http.DefaultClient, r.URL, method, path, headers, body, "")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the

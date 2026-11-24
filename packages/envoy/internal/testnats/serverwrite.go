@@ -2,10 +2,13 @@ package testnats
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The server writes a KV record itself when a request names that record's subject as its reply
@@ -42,13 +45,14 @@ func ServerCopiesKey(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBuck
 
 // ServerCopyRefused sends the direct get ServerCopiesKey sends - a copy of srcKey's record onto
 // dstKey, its reply dstKey's subject - for a copy the server refuses to store, and fails the test
-// unless dstBucket's stream holds no newer message on dstKey's subject through a short wait. A copy
-// of a record this build wrote (bound to its key by a conditional write) carries that write's
-// stored Nats-Expected-Last-Subject-Sequence, so the server stores it only where dstKey's subject
-// holds that many messages; onto a key that holds another session's record it is refused, and a
+// unless dstBucket's stream still holds no newer message on dstKey's subject once span, the
+// caller's, has passed (testwait.Span, for the reason refusedCopyUnread gives). A copy of a record
+// this build wrote (bound to its key by a conditional write) carries that write's stored
+// Nats-Expected-Last-Subject-Sequence, so the server stores it only where dstKey's subject holds
+// that many messages; onto a key that holds another session's record it is refused, and a
 // direct-get copy can never overwrite a different occupied key this way. It returns dstKey's
 // unchanged newest sequence.
-func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBucket, srcKey string) uint64 {
+func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBucket, srcKey string, span time.Duration) uint64 {
 	t.Helper()
 	before := LastSequence(t, conn, dstBucket, dstKey)
 	request := "$JS.API.DIRECT.GET.KV_" + srcBucket
@@ -59,16 +63,18 @@ func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBu
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if stored := LastSequence(t, conn, dstBucket, dstKey); stored != before {
-			t.Fatalf("the server stored a copy of %s under %s at sequence %d, want it refused and %s left at %d",
-				KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), stored, KVSubject(dstBucket, dstKey), before)
-		}
-		time.Sleep(20 * time.Millisecond)
+	testwait.Span(t, span, refusedCopyUnread)
+	if stored := LastSequence(t, conn, dstBucket, dstKey); stored != before {
+		t.Fatalf("the server stored a copy of %s under %s at sequence %d, want it refused and %s left at %d",
+			KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), stored, KVSubject(dstBucket, dstKey), before)
 	}
 	return before
 }
+
+// refusedCopyUnread is the why of ServerCopyRefused's span: no state the test can read records the
+// refusal, and no later action's effect is ordered after it.
+const refusedCopyUnread = "no state the test can read records the refusal: a stream answers a publish it refuses on the publish's reply subject, and the server publishes its answer to a direct get with none; " +
+	"and no later action's effect is ordered after it: the server answers the direct get on a path of its own, apart from what the test sends after it, and a marker write to the bucket would put a record there that the code under test reads"
 
 // StreamInfo is the request for stream's info, answered with a JSON document.
 func StreamInfo(stream string) string { return "$JS.API.STREAM.INFO." + stream }
@@ -94,11 +100,11 @@ func NoWaitPull(t testing.TB, conn *natsgo.Conn, bucket string) (string, []byte)
 }
 
 // ServerWritesKey sends request with data, its reply subject key's subject in bucket, so the
-// server's own answer is stored as key's newest record. It waits until the bucket's stream holds a
-// message on that subject newer than the one it held before, and returns that message's stream
-// sequence. Both are read from the stream's leader (a stream message get), never with a direct
-// get: a direct get of a copied record reports the sequence its copied headers name, the source
-// record's, and not the one the copy is stored at.
+// server's own answer is stored as key's newest record. It waits through the shared wait
+// (awaitStored) until the bucket's stream holds a message on that subject newer than the one it
+// held before, and returns that message's stream sequence. Both are read from the stream's leader
+// (a stream message get), never with a direct get: a direct get of a copied record reports the
+// sequence its copied headers name, the source record's, and not the one the copy is stored at.
 func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request string, data []byte) uint64 {
 	t.Helper()
 	before := LastSequence(t, conn, bucket, key)
@@ -108,16 +114,8 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if stored := LastSequence(t, conn, bucket, key); stored > before {
-			return stored
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server's answer to %s was not stored under %s within 10 s (newest sequence %d)", request, KVSubject(bucket, key), before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return awaitStored(t, fmt.Sprintf("the server's answer to %s to be stored under %s past sequence %d", request, KVSubject(bucket, key), before),
+		conn, bucket, key, before)
 }
 
 // RepublishesKey stores body as key's newest record in bucket the way a RePublish does: a stream
@@ -125,8 +123,9 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 // subject, so the server stores body there with that stream's Nats-Stream, Nats-Subject and
 // Nats-Sequence headers, the last naming that stream's sequence (1) and not the one the bucket
 // stores it at. Any user that may create a stream and publish to it can write one this way. It
-// waits until the bucket's stream holds a message on key's subject newer than the one it held
-// before, read from the stream's leader, and returns that message's stream sequence.
+// waits through the shared wait (awaitStored) until the bucket's stream holds a message on key's
+// subject newer than the one it held before, read from the stream's leader, and returns that
+// message's stream sequence.
 func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []byte) uint64 {
 	t.Helper()
 	js, err := conn.JetStream()
@@ -143,17 +142,26 @@ func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []
 	if _, err := js.Publish(subject, body); err != nil {
 		t.Fatalf("publish the body to %s: %v", subject, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if stored := LastSequence(t, conn, bucket, key); stored > before {
-			return stored
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's RePublish was not stored under %s within 10 s (newest sequence %d)", stream, KVSubject(bucket, key), before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return awaitStored(t, fmt.Sprintf("%s's RePublish to be stored under %s past sequence %d", stream, KVSubject(bucket, key), before),
+		conn, bucket, key, before)
 }
+
+// awaitStored waits through the shared wait (testwait.Until) until bucket's stream holds a message
+// on key's subject newer than before, read from the stream's leader (LastSequence), and returns that
+// message's stream sequence. what names the write the wait is for, and its last reading is the
+// newest sequence it read.
+func awaitStored(t testing.TB, what string, conn *natsgo.Conn, bucket, key string, before uint64) uint64 {
+	t.Helper()
+	return uint64(testwait.Until(t, what, func() (newestSequence, bool) {
+		stored := LastSequence(t, conn, bucket, key)
+		return newestSequence(stored), stored > before
+	}))
+}
+
+// newestSequence is the newest stream sequence a wait read for a key, which its failure prints.
+type newestSequence uint64
+
+func (s newestSequence) String() string { return fmt.Sprintf("newest sequence %d", uint64(s)) }
 
 // LastSequence is the stream sequence of the newest message bucket's stream holds for key, read
 // from the stream's leader, and 0 when it holds none.

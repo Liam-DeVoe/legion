@@ -103,8 +103,10 @@ func TestASessionRecordNamingAnotherKeyReadsAbsent(t *testing.T) {
 	requireAbsent(t, r, "ses_absent", "a copy of ses_priv's record onto a never-used key")
 
 	// The same copy onto S_pub's occupied key is refused: a direct-get copy of a bound record can
-	// never overwrite a different session's live record, and S_pub keeps its own.
-	testnats.ServerCopyRefused(t, client.Conn, bus.SessionBucket, "ses_pub", bus.SessionBucket, "ses_priv")
+	// never overwrite a different session's live record, and S_pub keeps its own. Two seconds, main's
+	// span, is how long the refusal is watched for: ServerCopyRefused says why no state of the server
+	// and no later action reaches it.
+	testnats.ServerCopyRefused(t, client.Conn, bus.SessionBucket, "ses_pub", bus.SessionBucket, "ses_priv", 2*time.Second)
 	if entry, err := r.Refresh(context.Background(), "ses_pub"); err != nil || entry.MachineID != "shared-a" {
 		t.Fatalf("Refresh(ses_pub) after the refused copy = %+v, %v; want its own record, machine shared-a", entry, err)
 	}

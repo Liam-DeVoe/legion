@@ -18,19 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// clientTimeout bounds every request a Client makes. It sits past the broker's own request
-// deadline (cmd/cipherd's requestDeadline, 45 seconds) so a handler that takes its whole budget —
-// one waiting on a row another process holds, say — still answers this client rather than being
-// turned into a transport error that names nothing.
-const clientTimeout = 90 * time.Second
-
-// deviceTokenTimeout bounds a device-code exchange. x/oauth2's DeviceAccessToken polls until the
-// device code expires (fifteen minutes here) whenever the broker answers authorization_pending or
-// slow_down, so an exchange that goes wrong in that direction would otherwise hang a row for the
-// whole of it instead of failing with what the broker kept saying.
-const deviceTokenTimeout = 60 * time.Second
 
 // pollInterval is the interval a Client's device-code exchange polls on, overriding the one the
 // device authorization answered: every code a test exchanges has already been approved, so the
@@ -72,7 +61,9 @@ type Client struct {
 // NewClient drives a broker reachable at addr as though it were reachable at publicURL: its
 // transport dials addr whatever host a URL names, so every URL it builds — and so every proof's
 // htu and every request object's audience — can name publicURL, which need not resolve to
-// anything.
+// anything. It sets no timeout of its own: each request, its dial included, carries the shared
+// wait's context of the t it is made with (testwait.Context), so it ends on the broker's answer, a
+// handler that takes the broker's whole request deadline among them, or where that wait gives up.
 //
 // That indirection is the whole reason this type exists. The broker authenticates against the URL
 // it believes it is published at, never the one the client dialled: api/server.go's authenticate
@@ -93,14 +84,14 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 		// client exists to be pinned to, and publicURL resolves nowhere, so the failure would be
 		// a DNS error naming a host no test chose.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
 		},
 	}
 	t.Cleanup(transport.CloseIdleConnections)
 	return &Client{
 		PublicURL: publicURL, Addr: addr,
 		transport: transport,
-		http:      &http.Client{Transport: transport, Timeout: clientTimeout},
+		http:      &http.Client{Transport: transport},
 	}
 }
 
@@ -109,7 +100,7 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 // asserts no status itself: a caller does that, so a mismatch names the actual body.
 func (c *Client) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
+	return request(testwait.Context(t), t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -154,7 +145,9 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 
 // deviceClient is the OAuth client a machine logs in with: this broker's device authorization and
 // token endpoints under its public URL, over a transport that both pins the connection to this
-// client's process and signs a DPoP proof of key for every request, as the helper's own does.
+// client's process and signs a DPoP proof of key for every request, as the helper's own does. Its
+// context is the shared wait's (testwait.Context), so each OAuth request, and a device-code
+// exchange's polling, ends on the broker's answer or where that wait gives up.
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
@@ -168,8 +161,7 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 				AuthStyle:     oauth2.AuthStyleInParams,
 			},
 		},
-		context.WithValue(context.Background(), oauth2.HTTPClient,
-			&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout})
+		context.WithValue(testwait.Context(t), oauth2.HTTPClient, &http.Client{Transport: c.DPoP(key, c.transport)})
 }
 
 // DeviceLogin asks this broker for a device code for a machine of person on host, as the helper's
@@ -206,7 +198,10 @@ func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credent
 }
 
 // DeviceToken exchanges an approved device code for the machine's token pair, over a DPoP
-// transport signing with key exactly as the helper's own exchange does.
+// transport signing with key exactly as the helper's own exchange does. x/oauth2's
+// DeviceAccessToken polls until the device code expires (fifteen minutes here) while the broker
+// answers authorization_pending or slow_down; the exchange's context is the shared wait's
+// (deviceClient), so an exchange that goes wrong in that direction ends where that wait gives up.
 //
 // It answers the exchange's error instead of failing t, unlike every other helper here, because
 // the rows it exists for are about what the loser of a race is told: two processes exchanging one
@@ -216,8 +211,6 @@ func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credent
 func (c *Client) DeviceToken(t *testing.T, key *ecdsa.PrivateKey, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
 	t.Helper()
 	config, ctx := c.deviceClient(t, key)
-	ctx, cancel := context.WithTimeout(ctx, deviceTokenTimeout)
-	defer cancel()
 	// A copy, so polling faster than the broker asked for is this exchange's business and not a
 	// mutation of the device authorization its caller still holds and may exchange again.
 	poll := *da
