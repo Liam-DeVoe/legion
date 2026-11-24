@@ -1086,8 +1086,8 @@ percentile as the one job it was), held back behind the envoy-held job's output
 the tests the tag adds, one call per package: envoy-infra-build's "Unit test envoy-infra" step
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
-envoy-held is ci-areas.yaml's go-envoy area under another name (`envoy-held: *gea`), so a change
-that starts the tagged run starts the untagged one with it. The gcp
+envoy-held's area in ci-areas.yaml is go-envoy's lines less what only go-envoy's legs read, so a
+change that starts the tagged run starts the untagged one with it. The gcp
 natslive tests pull no image: they install helm, nats-server, the config reloader and the
 exporter with go install, at the versions the clustered hub runs, and render the vendored chart
 in gcp/testdata. The per-target compile runs in the notices job.
