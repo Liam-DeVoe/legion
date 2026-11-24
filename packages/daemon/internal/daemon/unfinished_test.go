@@ -142,8 +142,9 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	t.Parallel()
 	cfg := testConfig(t)
 	token, _ := putUnfinished(t, cfg, "LEGION-3", claim.RolePlanner)
-	// One wait of the launcher bounds the boot: a boot that waits for the relaunch answers only
-	// after launch_failure_limit (3) of them.
+	// Each relaunch attempt waits launcherWait for the daemon to answer /healthz and counts each
+	// wait that times out (rt.timedOut): a boot that waited for the relaunch would answer only after
+	// launch_failure_limit (3) of them had timed out, which is what the row reads once it answers.
 	const launcherWait = 5 * time.Second
 	rt := &clusterRoutedRuntime{
 		Runtime: fake.NewRuntime(), base: "http://127.0.0.1:" + strconv.Itoa(cfg.Port), wait: launcherWait,
@@ -157,9 +158,11 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
 	}
 	var spec runtime.SpawnSpec
+	// The relaunch is waited for with no span of its own (testwait.Remaining): one that never comes
+	// fails by name, and one a loaded machine makes slow is waited for.
 	select {
 	case spec = <-rt.started:
-	case <-time.After(2 * launcherWait):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatalf("the unfinished launch was never relaunched; the runtime saw %v", rt.Methods())
 	}
 	if spec.Claim != token || spec.Generation != 2 {
@@ -216,7 +219,11 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
-	deadline := time.After(10 * time.Second)
+	// Relaunches run one after another leave the second outside the runtime until the first is let
+	// through, which the test does only after this wait, so the wait has no span of its own
+	// (testwait.Remaining): one of them never entering fails by name, and both entering late on a
+	// loaded machine is waited for.
+	deadline := time.After(testwait.Remaining(t))
 	for len(waiting) < len(tokens) {
 		select {
 		case spec := <-rt.entered:

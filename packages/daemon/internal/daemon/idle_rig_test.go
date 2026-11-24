@@ -253,6 +253,10 @@ func (r *idleWakeRig) awaitListenerReady() {
 		if found {
 			return true
 		}
+		// A durable consumer this daemon has just created starts at the next message
+		// (intake's createConsumer), so the report the listener published at its own start is
+		// behind it. The listener is started again on the same port, which publishes a fresh
+		// one that the consumer does see and leaves every URL already handed out valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
 			port := r.listener.port
@@ -869,10 +873,17 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 	var quieted time.Time
 	// This is every launch undone at once, the rig's longest wait.
 	idleRigEventually(r.t, "every pod of the rig released", func() bool {
+		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
+		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quiet()
 		}
+		// One listing for every pod of the rig, not one each: the operator's route answers every
+		// claim at once (daemon.claims, which daemon.claim reads to find one), and the pass this
+		// waits for reads the same rows through the same pool, so a wait that asked once for each
+		// pod every poll would be taking the daemon's own Postgres away from the release it is
+		// waiting for.
 		claims := r.api.claims()
 		released := true
 		for i, issue := range issues {

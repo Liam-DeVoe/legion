@@ -602,7 +602,8 @@ func (r *sessionsRun) boot() {
 	r.d = startDaemonLogging(t, r.cfg, overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-
+			// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
+			// plan), and no pane starts before the runtime exists.
 			if r.arm == sessionsBase {
 				if err := r.s.writeBasePrompts(r.cfg.StateDir); err != nil {
 					return nil, err
@@ -614,7 +615,6 @@ func (r *sessionsRun) boot() {
 		listen:         heldListen,
 		workflowTokens: &workflowTokenRecorder{},
 	}, slog.New(r.daemon))
-
 	r.deadline = time.Now().Add(sessionsRunBound)
 	for _, member := range r.members {
 		for _, role := range member.roles {
