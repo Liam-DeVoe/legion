@@ -120,7 +120,8 @@ type Config struct {
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
-	// issue on to its task's next step (accepting, in the default steps); and, by the gate
+	// issue on to its task's next step (accepting, in the default steps), or to its retro where the
+	// review is the task's last step; and, by the gate
 	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
 	// (classify.MergeForwardStands: its task at the implementer's place, or a place after it on the
 	// task's line) and a base push of an issue whose task stands at a place after the
@@ -963,13 +964,13 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // while no role was named for that phase. The two holds of an owner's plan are read where their
 // issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
 // as it is without the hold. A parent held for its children stands at its retro: the pass of its
-// last step moved it there in place of the retro, as an approval moves an issue into accepting, so
-// the report of the run that pass ended is taken as it is there. A task its owner stopped stands at
-// the step the stop ended: the report of a run that left that phase earlier - a review the review
-// event moved back to implementing before the stop - is taken as it is there, and the report of the
-// role that works the phase it stands at is none of a phase that role has left, so it is answered
-// as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
-// step it stands at now; the test of the run itself is ranUnreported.
+// last step moved it there in place of the retro, as an approval moves an issue to its task's next
+// step, so the report of the run that pass ended is taken as it is there. A task its owner stopped
+// stands at the step the stop ended: the report of a run that left that phase earlier - a review
+// the review event moved back to implementing before the stop - is taken as it is there, and the
+// report of the role that works the phase it stands at is none of a phase that role has left, so
+// it is answered as the run the stop ended (pastReportOf). A task with plan rows takes it the same
+// way, whatever step it stands at now; the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	at := issue.Phase
 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {

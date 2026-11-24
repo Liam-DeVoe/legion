@@ -189,7 +189,8 @@ const conflictConfirmWait = time.Minute
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded, whatever the read decided - this read is the one that moves an
-// approved issue on to its task's next step (accepting, in the default steps), as often as not.
+// approved issue on to its task's next step (accepting, in the default steps), or to its retro
+// where the review is the task's last step, as often as not.
 // The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
@@ -1222,7 +1223,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 }
 
 // implementationReady moves issue from implementing to its task's next step (testing, in the
-// default steps) on the implementer's completion of
+// default steps), or to its retro where the implementer's step is the task's last, on the
+// implementer's completion of
 // the round that row records, once the pull request pr is recorded open or merged
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
