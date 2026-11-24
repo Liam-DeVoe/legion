@@ -286,7 +286,9 @@ export async function startCIResultsStack(options: {
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
-        `${SIGNIN_CLIENT}=${signInSecret}`,
+        // The broker's own callback, as dev-broker.sh registers it: dev-oidc-issuer refuses a
+        // code-flow client with no redirect URI, and redirects only to the one it registered.
+        `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
       { PATH: SHELL_PATH, HOME: work },
       issuerLog
