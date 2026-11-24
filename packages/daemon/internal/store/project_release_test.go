@@ -278,14 +278,7 @@ func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t 
 	// The proxy refuses every connection once the reply is lost, so the commit's own read of the
 	// outcome fails, and passes them again two seconds later, while the start still waits.
 	fired := fault.Cut("insert into project_releases", testdb.CutAfterCommitRefusing)
-	go func() {
-		select {
-		case <-fired:
-			time.Sleep(2 * time.Second)
-		case <-time.After(30 * time.Second):
-		}
-		fault.Refuse(false)
-	}()
+	fault.PassAgainAfter(fired)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	release, takenOver, stop, err := faulted.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)

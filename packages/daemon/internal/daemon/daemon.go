@@ -422,20 +422,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// A project release lives in the process that started it, so a release no boot has ended is
 	// one an earlier process left: this boot ends it before anything of the workflow runs, and the
 	// claims it stopped, still suspended by `project_release`, are started again by the boot's
-	// own fact (workflow's booted). The end's line is a hook of its commit.
-	if err := store.Transact(boot, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		ended, err := st.EndProjectReleasesAtBoot(ctx, plan.project, time.Now().UTC())
-		if err != nil || ended == 0 {
-			return err
-		}
-		store.OnCommit(ctx, func() {
-			log.Info("legion daemon: the boot ended the project releases an earlier process left; it starts the claims they stopped",
-				"project", cfg.Project, "releases", ended)
-		})
-		return nil
-	}); err != nil {
+	// own fact (workflow's booted). The line is logged after the end has committed: the end runs
+	// in a transaction of its own, which has committed once the call returns, so the line never
+	// tells of an end that rolled back.
+	ended, err := st.EndProjectReleasesAtBoot(boot, plan.project, time.Now().UTC())
+	if err != nil {
 		st.Close()
 		return err
+	}
+	if ended > 0 {
+		log.Info("legion daemon: the boot ended the project releases an earlier process left; it starts the claims they stopped",
+			"project", cfg.Project, "releases", ended)
 	}
 	if cfg.DispatchURL != "" {
 		log.Info("legion workflow boot stage", "stage", "store")

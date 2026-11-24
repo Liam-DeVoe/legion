@@ -6,7 +6,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,22 +49,6 @@ func faultedBundleRig(t *testing.T) (*store.Store, *testdb.CommitFault, runtime.
 		o.BootTimeout = 15 * time.Second
 	}))
 	return st, fault, saved, g
-}
-
-// releaseAfter lets the refused store answer again two seconds after fired closes, while the hop
-// it refused still waits inside its bound. The answer says whether fired closed at all.
-func releaseAfter(fault *testdb.CommitFault, fired <-chan struct{}) *atomic.Bool {
-	met := &atomic.Bool{}
-	go func() {
-		select {
-		case <-fired:
-			met.Store(true)
-			time.Sleep(2 * time.Second)
-		case <-time.After(30 * time.Second):
-		}
-		fault.Refuse(false)
-	}()
-	return met
 }
 
 // requireSentOnce wants exactly one whole slice sequence of saved before the role's start, the
@@ -140,7 +123,7 @@ func TestABundleTakeThatRolledBackIsTakenAgainInItsHop(t *testing.T) {
 func TestABundleTakeWhoseOutcomeIsUnknownIsSentOnceTheStoreAnswers(t *testing.T) {
 	st, fault, saved, g := faultedBundleRig(t)
 	fired := fault.Cut(bundleTake, testdb.CutAfterCommitRefusing)
-	met := releaseAfter(fault, fired)
+	met := fault.PassAgainAfter(fired)
 	spec := workerSpec(t)
 	g.spawn(spec)
 	if !met.Load() {
@@ -195,7 +178,7 @@ func TestARestoredBundleDeleteWhoseReplyIsLostDeletesIt(t *testing.T) {
 	}
 	faulted, fault := faultedBundleStore(t, st)
 	fired := fault.Cut("delete from workspace_bundles", testdb.CutAfterCommitRefusing)
-	met := releaseAfter(fault, fired)
+	met := fault.PassAgainAfter(fired)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := faulted.DeleteRestoredWorkspaceBundle(ctx, testTree, saved.Release); err != nil {
@@ -220,7 +203,7 @@ func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.
 	}
 	faulted, fault := faultedBundleStore(t, st)
 	fired := fault.Cut("delete from workspace_bundles", testdb.CutAfterCommitRefusing)
-	met := releaseAfter(fault, fired)
+	met := fault.PassAgainAfter(fired)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	held, dropped, err := faulted.DropHeldWorkspaceBundle(ctx, testProject, testTree, "pod-of-the-kept-volume", saved.At.Add(-time.Minute))
