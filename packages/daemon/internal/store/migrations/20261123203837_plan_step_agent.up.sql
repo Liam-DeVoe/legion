@@ -19,11 +19,13 @@
 -- record.NameAgents reserves each name for its key beside the plan_steps rows. The rows of a plan
 -- go when a later version gives the task again (PutPlan) or the first step of a run passes over
 -- an earlier owner's plan (DeletePlan); no deletion of a plan touches this table. A row ends only
--- with the issue's own record (on delete cascade), and no daemon removes an issue's record: a
--- stored claim keeps the session it records across the issue's generations (supervise's launch
--- resumes it, internal/supervise/machine.go:3027), so a name a key held names that key's session
--- for as long as the issue does. The table is filled below from the plan_steps rows this migration
--- names.
+-- with the removal of the issue's own record, which no daemon makes: a stored claim keeps the
+-- session it records across the issue's generations (supervise's launch resumes it), so a name a
+-- key held names that key's session for as long as the issue does. The table names no issues row,
+-- as the plan tables name none (20261117034837_issue_plans), because an owner can give a plan
+-- before the daemon records its issue, at generation 0, and PutPlan writes this table with it; so
+-- an operator who removes an issue's record by hand removes its rows here too. The table is filled
+-- below from the plan_steps rows this migration names.
 --
 -- Every row the table already holds is named by the update below with the name record.NameAgents
 -- gave it, where the rows it holds still show that name. A step with no key is named for its role:
@@ -107,12 +109,12 @@ update plan_steps s set agent = case when s.agent_key = '' then s.role else
 where s.agent_key <> 'owner';
 alter table plan_steps add column leave_session text not null default '';
 create table plan_key_names (
-  issue text not null references issues (key) on delete cascade,
+  issue text not null,
   name text not null check (name <> ''),
   agent_key text not null check (agent_key <> '' and agent_key <> 'owner'),
   primary key (issue, name));
 insert into plan_key_names (issue, name, agent_key)
 select distinct on (s.issue, s.agent) s.issue, s.agent, s.agent_key
-from plan_steps s join issues i on i.key = s.issue
+from plan_steps s
 where s.agent_key <> '' and s.agent_key <> 'owner' and s.agent <> ''
 order by s.issue, s.agent, s.generation desc, s.task desc, s.position desc;

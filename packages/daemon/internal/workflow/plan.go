@@ -136,15 +136,15 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 // first step, among them). The default steps cannot be refused as an owner's version is, so an
 // agent NameAgents left with no name takes the name it would have taken all the same, and handed
 // answers each such agent with the key that holds its name; its claim then starts it in a session
-// of its own (leaveKeySessions). A name a step with no key took so in an earlier generation
-// (handedBefore) is named and not handed again: its claim left the key's session then, and the
-// session it records now is that agent's own.
-func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held []record.KeyName) (record.PlanVersion, []record.PlanTask, []record.PlanStep, []record.UnnamedAgent) {
+// of its own (leaveKeySessions). Where default steps of an earlier generation took the name
+// already (handedBefore), the agent is handed on again with the session those steps left, so its
+// claim leaves that session if it still records it, and nobody is told a second time.
+func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held []record.KeyName) (record.PlanVersion, []record.PlanTask, []record.PlanStep, []handOn) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
 	steps := record.NameAgents(earlier, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps), held...)
-	var handed []record.UnnamedAgent
+	var handed []handOn
 	for _, agent := range record.UnnamedAgents(earlier, steps, held...) {
 		// A name another agent of these steps holds would make two agents one claim; only a name
 		// a key of an earlier generation holds is handed on.
@@ -156,42 +156,58 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held
 				steps[i].Agent = agent.Name
 			}
 		}
-		if !handedBefore(earlier, agent.Name) {
-			handed = append(handed, agent)
-		}
+		left, before := handedBefore(earlier, agent.Name)
+		handed = append(handed, handOn{UnnamedAgent: agent, before: before, left: left})
 	}
 	return version, []record.PlanTask{task}, steps, handed
 }
 
-// handedBefore is whether a row of earlier with no key holds name in a generation at or after
-// every row of earlier with a key that holds it: default steps of an earlier generation took the
-// name from its key then, and their claim left the key's session (leaveKeySessions). Where the
-// key's rows went and only the lasting record keeps its name, a row with no key that holds it can
-// only be such a later one.
-func handedBefore(earlier []record.PlanStep, name claim.Agent) bool {
+// handOn is an agent of the default steps that takes a name a key's agent held (defaultRows):
+// before is whether default steps of an earlier generation took that name already, and left the
+// session their step was written to leave (record.PlanStep.LeaveSession), empty where the claim
+// recorded none then.
+type handOn struct {
+	record.UnnamedAgent
+	before bool
+	left   string
+}
+
+// handedBefore answers whether a row of earlier with no key holds name in a generation at or after
+// every row of earlier with a key that holds it — default steps of an earlier generation took the
+// name from its key then — and the session the newest such row leaves. Where the key's rows went
+// and only the lasting record keeps its name, a row with no key that holds it can only be such a
+// later one.
+func handedBefore(earlier []record.PlanStep, name claim.Agent) (string, bool) {
 	var keyed, free uint64
 	var freeSeen bool
+	var left string
 	for _, row := range earlier {
 		if row.AgentName() != name {
 			continue
 		}
 		if row.AgentKey != "" {
 			keyed = max(keyed, row.Generation)
-		} else {
-			free, freeSeen = max(free, row.Generation), true
+			continue
+		}
+		if !freeSeen || row.Generation >= free {
+			free, freeSeen, left = row.Generation, true, row.LeaveSession
 		}
 	}
-	return freeSeen && free >= keyed
+	return left, freeSeen && free >= keyed
 }
 
 // leaveKeySessions is steps with the session each agent of handed must leave (record.PlanStep's
-// LeaveSession): an agent of the default steps that took a name a key's agent held in an earlier
-// generation (defaultRows) runs in that name's claim, whose session is the key's, so every start of
-// the agent carries the session the claim records now, and the claim leaves it (supervise's
+// LeaveSession): an agent of the default steps that took a name a key's agent held (defaultRows)
+// runs in that name's claim, whose session is the key's until the claim leaves it, so every start
+// of the agent carries the session the claim records now, and the claim leaves it (supervise's
 // revive). No agent but the key resumes a session of a name the key's rows held. The issue and its
-// owning architect, with the controller, are told, as for a lost session (sessionLost). A claim that
-// records no session has nothing to leave, and nobody is told.
-func (e *Engine) leaveKeySessions(ctx context.Context, tx pgx.Tx, issue record.Issue, steps []record.PlanStep, handed []record.UnnamedAgent) ([]record.PlanStep, error) {
+// owning architect, with the controller, are told, as for a lost session (sessionLost), once for
+// that name: an agent handed on before carries the session its earlier steps left where the claim
+// still records it, since no start of those steps ran to leave it, and tells nobody again; where
+// the claim records another session, or none, the claim left the key's session then, and the
+// session it records is that agent's own. A claim that records no session has nothing to leave,
+// and nobody is told.
+func (e *Engine) leaveKeySessions(ctx context.Context, tx pgx.Tx, issue record.Issue, steps []record.PlanStep, handed []handOn) ([]record.PlanStep, error) {
 	if len(handed) == 0 {
 		return steps, nil
 	}
@@ -205,16 +221,19 @@ func (e *Engine) leaveKeySessions(ctx context.Context, tx pgx.Tx, issue record.I
 			return nil, err
 		}
 		session, err := e.store.ClaimSession(ctx, tx, token)
-		if err != nil || session == "" {
-			if err != nil {
-				return nil, err
-			}
+		if err != nil {
+			return nil, err
+		}
+		if session == "" || (agent.before && session != agent.left) {
 			continue
 		}
 		for i := range steps {
 			if steps[i].PlanAgent() == agent.Step.PlanAgent() {
 				steps[i].LeaveSession = session
 			}
+		}
+		if agent.before {
+			continue
 		}
 		told := fmt.Sprintf("The %s of %s at generation %d takes the name %s, which key %s held in an earlier generation, so it starts in a session of its own: the claim %s leaves the session it recorded, %s, which was key %s's. "+
 			"The new agent has read none of that session's turns; only what was pushed and committed survives.",

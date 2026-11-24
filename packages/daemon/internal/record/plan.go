@@ -371,7 +371,7 @@ func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]
 
 // KeyNames is every name a key's agent held on issue, by name (plan_key_names): the lasting record
 // PutPlan writes for each step of a key, which no deletion of a plan removes. A row ends only with
-// the issue's own record (references issues on delete cascade), since a stored claim keeps the
+// the removal of the issue's own record, which no daemon makes, since a stored claim keeps the
 // session it records across the issue's generations (supervise's launch resumes it), so a name a
 // key held names that key's session for as long as the issue does. NameAgents reserves each name it
 // answers for its key, beside the names the issue's plan_steps rows hold.
