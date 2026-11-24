@@ -31,6 +31,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 - Every role writes the one workspace, so a file can change under your check.
   Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself.
+  Where `tar` fails with `Function not implemented`, extract the archive with `python3 -c 'import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer, mode="r|").extractall(sys.argv[1], filter="data")' <dir>`, or use `git clone --shared` under `$TMPDIR`.
   Run `git diff --quiet <head> -- <files the check reads>` before you record a result.
 
 - A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
