@@ -623,3 +623,123 @@ func TestALookAndAnotherTasksStepOfOneAgentGoToOneClaim(t *testing.T) {
 		t.Fatalf("the tester's step starts of %s after b's implementer step = %+v, want one naming the tester's claim %s, the look's", child.Key, steps, tester)
 	}
 }
+
+// storeClaim stores token as a claim of role on key, idle, in key's tree and at its generation, as
+// the supervisor stores the claim of each agent it ran there: what the close's walk over every
+// claim of an issue reads (record.Store.IssueClaims).
+func storeClaim(t *testing.T, pool *pgxpool.Pool, key string, token claim.Token, role claim.Role) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		select $1, 'legion', tree, key, $3, generation, '', '', 'idle', 0, 0, 0, 0 from issues where key = $2
+		on conflict (token) do nothing`, string(token), key, string(role)); err != nil {
+		t.Fatalf("store the claim %s of %s: %v", token, key, err)
+	}
+}
+
+// closeRowsNaming is how many issue_close rows of key name token as their claim.
+func closeRowsNaming(t *testing.T, pool *pgxpool.Pool, key string, token claim.Token) int {
+	t.Helper()
+	return len(claimRows(t, pool, key, "issue_close", token))
+}
+
+// The close of an issue keeps the claim of each production check that stays open past it: each
+// check of the issue already open, and each check the close opens itself. LEGION-209's a
+// (`implementer tester`) and b (`implementer`) both merge: a merges first, and its check goes to a's
+// tester; then b's merge ends the issue, and its check goes to the fresh check-b, since b has no
+// tester step. A claim of each role of Legion is stored, and so is check-b's, as the supervisor
+// stores each claim it runs. The close queues one issue_close row for each stored claim of the
+// issue but the tester's and check-b's, the claims of the two open checks, and no IssueSuspend: the
+// checks still look in the issue's pod, and each check's own close suspends it.
+//
+// The faults it catches are the close retiring the agent of an open check, so its next look starts
+// in a lost session (its control: the leave keeping the claim of the check role's worker alone,
+// under which check-b's claim gets an issue_close row), and the close retiring the agent of a check
+// it opens itself (its control: the leave keeping the claims of the checks open before it alone,
+// under which check-b's claim, the check this close opens, gets one too).
+func TestTheCloseOfTheIssueKeepsTheClaimOfEachOpenCheck(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	child := seedAWithATesterAndB(t, pool, engine, atStep(1))
+	seedRoleClaims(t, pool, child.Key)
+	fresh, err := claim.AgentToken("legion", child.Key, "check-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeClaim(t, pool, child.Key, fresh, claim.RoleTester)
+	apply := applyFacts(t, pool, engine)
+
+	mustSpend(t, "the merge of a's pull request", apply("merged-a", mergedFact(43, "a")))
+	taskMoves(t, pool, engine, child.Key, "b", TriggerImplementationReady, "")
+	taskMoves(t, pool, engine, child.Key, "b", TriggerRetroCompleted, "")
+	mustSpend(t, "the merge of b's pull request", apply("merged-b", mergedFact(45, "b")))
+	if got := issueAt(t, pool, child.Key); got != phase.Done {
+		t.Fatalf("%s after b's merge stands in %s, want done: b's merge was its last", child.Key, got)
+	}
+	checks := checksOfIssue(t, checkRig{pool: pool}, child.Key)
+	if len(checks) != 2 || !checks[0].Open() || checks[0].Task != "b" || !checks[1].Open() || checks[1].Task != "a" {
+		t.Fatalf("the checks of %s after its close = %+v, want b's and a's, both open", child.Key, checks)
+	}
+
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken("legion", child.Key, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if role == claim.RoleTester {
+			want = 0
+		}
+		if got := closeRowsNaming(t, pool, child.Key, token); got != want {
+			t.Errorf("the issue_close rows of %s naming the %s's claim = %d, want %d", child.Key, role, got, want)
+		}
+	}
+	if got := closeRowsNaming(t, pool, child.Key, fresh); got != 0 {
+		t.Errorf("the issue_close rows of %s naming check-b's claim = %d, want none: b's check is open", child.Key, got)
+	}
+	if rows := issueSuspensions(t, pool, child.Key); len(rows) != 0 {
+		t.Errorf("the issue_suspend rows of %s after its close = %+v, want none: its checks still look in its pod", child.Key, rows)
+	}
+}
+
+// The close of a child of one merge keeps the claim of the check that close opens, and the child's
+// Sandbox. LEGION-209's one task a (`implementer tester`) merges and ends the issue: its check opens
+// in that very close, after the close's walk over every claim, and its agent is a's tester. No
+// issue_close row names the tester's claim, no IssueSuspend is queued, and the check is open with
+// its first look's start row naming the tester's claim.
+//
+// The fault it catches is the close of a child retiring the agent of the check it opens, and
+// deleting the pod that check's look runs in (its control: the leave keeping the claims of the
+// checks open before it alone, under which the tester's claim gets an issue_close row and one
+// IssueSuspend is queued).
+func TestTheCloseOfAChildOfOneMergeKeepsItsCheckersClaimAndItsSandbox(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	stepRoot(t, pool, phase.Implementing)
+	child := stepChild(t, pool, heldParentChild, phase.Merging, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	seedTasks(t, pool, child.Key, child.Generation,
+		planTask{id: "a", steps: []string{"implementer", "tester"}, agents: []claim.Agent{"implementer", "tester"}, state: record.TaskRunning, place: atMerge})
+	seedTaskBranch(t, pool, child.Key, "a", claim.IssueBranch(child.Key))
+	seedRoleClaims(t, pool, child.Key)
+	tester, err := claim.NewToken("legion", child.Key, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustSpend(t, "the merge of a's pull request", applyFacts(t, pool, engine)("merged-a", mergedFact(43, "a")))
+	if got := issueAt(t, pool, child.Key); got != phase.Done {
+		t.Fatalf("%s after a's merge stands in %s, want done: a's merge was its last", child.Key, got)
+	}
+	if got := closeRowsNaming(t, pool, child.Key, tester); got != 0 {
+		t.Errorf("the issue_close rows of %s naming the tester's claim = %d, want none: the close opened the tester's check", child.Key, got)
+	}
+	if rows := issueSuspensions(t, pool, child.Key); len(rows) != 0 {
+		t.Errorf("the issue_suspend rows of %s after its close = %+v, want none: its check looks in its pod", child.Key, rows)
+	}
+	check := productionCheck(t, pool, child.Key)
+	starts := lookStarts(t, pool, child.Key)
+	if check == nil || !check.Open() || len(starts) != 1 || starts[0].Claim != tester || !starts[0].CheckOpenedAt.Equal(check.OpenedAt) {
+		t.Errorf("the check of %s after its close = %+v with look starts %+v, want it open, its first look naming the tester's claim %s", child.Key, check, starts, tester)
+	}
+}
