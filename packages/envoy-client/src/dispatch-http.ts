@@ -277,7 +277,8 @@ export class DispatchWriteLandedError extends Error {
 }
 
 /** `value`, a parsed body, as Dispatch's error shape: its members where it is an object, and none
- *  where it is not. A body is Dispatch's own refusal where its `error` is a string. */
+ *  where it is not, each read unchecked. A body is Dispatch's own refusal where its `error` is a
+ *  string (`refusalIn`). */
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
@@ -638,20 +639,38 @@ function parsedJson(response: Response, text: string): ParsedJson {
   }
 }
 
-/** Dispatch's own refusal, as an answer carries it: its code, where it names one, and its text. */
+/** Dispatch's own refusal, as an answer carries it: its code, where it names one, its text, and
+ *  the members some refusals carry beside them, which `DispatchServiceError` keeps. */
 export interface DispatchRefusal {
   readonly code: string | undefined;
   readonly error: string;
+  readonly candidates: DispatchServiceErrorShape["candidates"];
+  readonly current: DispatchServiceErrorShape["current"];
+  readonly mismatches: DispatchServiceErrorShape["mismatches"];
 }
 
 /**
- * Dispatch's own refusal in `response`, whose body is `text`, or undefined where the answer is
- * none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a string, as
- * Dispatch writes every refusal. The one rule every reader of a refusal reads it by.
+ * Dispatch's own refusal in `json`, an answer's body parsed (`parsedJson`), or undefined where the
+ * answer is none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a
+ * string, as Dispatch writes every refusal, and its `code` counts only where it is a string. The
+ * rule `writeAnswer`, `#payloadOf` and `dispatch api` (`dispatchRefusal`) read a refusal by;
+ * `tokenNotLive` reads a 401's code alone, whatever its `error`.
  */
+function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
+  const shape = asErrorShape(json?.value);
+  if (typeof shape.error !== "string") return undefined;
+  return {
+    code: typeof shape.code === "string" ? shape.code : undefined,
+    error: shape.error,
+    candidates: shape.candidates,
+    current: shape.current,
+    mismatches: shape.mismatches,
+  };
+}
+
+/** Dispatch's own refusal in `response`, whose body is `text`, by `refusalIn`'s rule. */
 export function dispatchRefusal(response: Response, text: string): DispatchRefusal | undefined {
-  const shape = asErrorShape(parsedJson(response, text)?.value);
-  return typeof shape.error === "string" ? { code: shape.code, error: shape.error } : undefined;
+  return refusalIn(parsedJson(response, text));
 }
 
 /**
@@ -709,7 +728,7 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   const text = await response.text();
   const typed = isJson(response);
   const json = parsedJson(response, text);
-  const refusal = response.ok ? undefined : dispatchRefusal(response, text);
+  const refusal = response.ok ? undefined : refusalIn(json);
   return {
     response,
     malformed: text !== "" && typed && json === undefined,
@@ -824,8 +843,9 @@ function stoppedEvent(
 const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 
 /**
- * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
- * so the body stays whole for whoever reads the answer.
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, read by its JSON's code alone,
+ * whatever its `error`. Its JSON is read from a clone, so the body stays whole for whoever reads
+ * the answer.
  */
 async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
@@ -2657,9 +2677,9 @@ export class DispatchClient {
     const { response, text, json } = answer;
     const payload: unknown = json === undefined ? text : json.value;
     if (!response.ok) {
-      const error = asErrorShape(payload);
-      if (typeof error.error === "string") {
-        if (response.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED) {
+      const refusal = refusalIn(json);
+      if (refusal !== undefined) {
+        if (response.status === 409 && refusal.code === IDEMPOTENCY_KEY_COMMITTED) {
           throw new DispatchWriteLandedError(
             IDEMPOTENCY_KEY_COMMITTED,
             response.status,
@@ -2668,12 +2688,12 @@ export class DispatchClient {
           );
         }
         throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
+          refusal.code ?? `HTTP_${response.status}`,
           response.status,
-          error.error,
-          error.candidates,
-          error.current,
-          error.mismatches
+          refusal.error,
+          refusal.candidates,
+          refusal.current,
+          refusal.mismatches
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

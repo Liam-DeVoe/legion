@@ -1368,9 +1368,9 @@ func TestAJobsNamedTokenIsHeldToItsProject(t *testing.T) {
 }
 
 // TestAJobsPublicTokenWritesEveryProjectAndTheDeployment: a job's token whose entry names public
-// writes each public project, whatever private projects its list names, and its writes that
-// belong to the deployment follow the rule of a token that names no project: the project check
-// lets them through.
+// writes wherever a token that names no project may, projects its list does not name included,
+// and its writes that belong to the deployment follow that rule too: the project check lets them
+// through.
 func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)

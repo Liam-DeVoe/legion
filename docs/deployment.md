@@ -546,7 +546,8 @@ project key, or `public` and at most 16 private project keys) and, where it fixe
 The token the exchange mints for that identity names it as its service and no person, so Dispatch
 records a daemon's or a workflow's write under its session and its own account, and under no
 person. A token whose entry names one project writes that project alone; one whose entry names
-`public` writes every public project. A GitHub Actions job trades its run's token with
+`public` writes wherever a token that names no project may, and its list limits no write at
+this release. A GitHub Actions job trades its run's token with
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`
 (`packages/envoy-client/README.md`, "The `dispatch` command"). A machine's token that names a
 service under the project scope `person`, of a machine nobody has signed in on and no job entry

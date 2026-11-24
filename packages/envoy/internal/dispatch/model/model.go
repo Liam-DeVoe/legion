@@ -85,10 +85,11 @@ type Credential struct {
 	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it
 	// (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry mapped to its one
 	// project; `person`, a token held to no one project; `none`, a read-only token's; or
-	// `public`, a job's token that reaches every public project beside the private projects of
-	// its list. Empty for every other credential. A broker-issued token that names a service and
-	// no person writes only under `named` or `public`, a job's two shapes, and is refused every
-	// write under any other (writeNeedsASignedInPerson).
+	// `public`, a job's token that names no one project, which writes wherever a token naming no
+	// project may, since no write check reads its list (Projects) at this release. Empty for every
+	// other credential. A broker-issued token that names a service and no person writes only under
+	// `named` or `public`, a job's two shapes, and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
 	// Projects is a broker token's list (ciphertoken.Caller.Projects), sorted: a `named` token's
 	// one project, or none for an account entry that names a person and no project; the projects

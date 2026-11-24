@@ -1793,6 +1793,10 @@ func mappedAccountRefusal(cfg *Config) error {
 // where Load merges the two into the machines of BROKER_VM_SERVICES.
 func exchangeListingRefusal(cfg *Config) error {
 	const account, workflow = "service account", "workflow"
+	// workflowName is a workflow as a refusal names it and as both workflow settings key it.
+	workflowName := func(entry exchange.WorkflowEntry) string {
+		return entry.Repository + "=" + entry.Workflow + "=" + entry.Ref
+	}
 	// listedBy is the setting that lists each identity, keyed by its kind and the identity as a
 	// refusal names it.
 	listedBy := map[[2]string]string{}
@@ -1800,7 +1804,7 @@ func exchangeListingRefusal(cfg *Config) error {
 		listedBy[[2]string{account, entry.Account}] = "BROKER_EXCHANGE_ACCOUNTS"
 	}
 	for _, entry := range cfg.ExchangeWorkflows {
-		listedBy[[2]string{workflow, entry.Repository + "=" + entry.Workflow + "=" + entry.Ref}] = "BROKER_EXCHANGE_WORKFLOWS"
+		listedBy[[2]string{workflow, workflowName(entry)}] = "BROKER_EXCHANGE_WORKFLOWS"
 	}
 	// list indexes identity, of kind, by setting, and refuses it when an earlier setting lists it,
 	// with reason, which says why a token of setting cannot share it.
@@ -1823,7 +1827,7 @@ func exchangeListingRefusal(cfg *Config) error {
 		}
 	}
 	for _, entry := range cfg.ExchangeJobWorkflows {
-		if err := list("BROKER_EXCHANGE_JOB_WORKFLOWS", workflow, entry.Repository+"="+entry.Workflow+"="+entry.Ref, "one workflow run has one answer, a token that acts for its person or a job's that names none"); err != nil {
+		if err := list("BROKER_EXCHANGE_JOB_WORKFLOWS", workflow, workflowName(entry), "one workflow run has one answer, a token that acts for its person or a job's that names none"); err != nil {
 			return err
 		}
 	}

@@ -641,7 +641,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if !accountPattern.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, true); err != nil {
+		if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := set.accounts[entry.Account]; listed {
@@ -687,7 +687,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -723,7 +723,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
 		if entry.Job.Listed() || entry.Person != "" {
-			if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, false); err != nil {
+			if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 				return nil, err
 			}
 		} else if entry.Session != "" && !ValidSession(entry.Session) {
@@ -846,7 +846,7 @@ func (c *Claims) grant(identity, service, person, project string, job JobProject
 // names it, the exchange stores and reads that list through oauthwire.ParseProjects, which takes
 // only project keys, so an entry naming anything else would boot and then fail every trade. Every
 // entry, of either kind, is refused a fixed session name no request could name back.
-func checkGrant(where string, job JobProjects, project, person, session string, noProject bool) error {
+func checkGrant(where, person, project string, job JobProjects, session string, noProject bool) error {
 	if job.Listed() {
 		if person != "" || project != "" {
 			return fmt.Errorf("exchange: %s: the entry names the job list %s beside a person or a project (person %q, project %q); an entry names a person and its project, or a job list, and never both", where, job, person, project)

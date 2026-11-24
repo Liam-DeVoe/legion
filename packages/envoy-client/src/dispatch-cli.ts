@@ -251,9 +251,6 @@ export async function runDispatchCli(
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
-  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
-  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
   // The host, worked out once and only when asked: the walk of the parent processes it may take
   // runs at most once per call, for the refusal ledger and the call alike.
   let resolvedHost: { readonly name: string | undefined } | undefined;
@@ -285,13 +282,14 @@ export async function runDispatchCli(
   // `dispatch api` sends one request of Dispatch's HTTP API (`dispatch-commands/api.ts`). Like
   // `dispatch login` it runs where no host is found, as in a GitHub Actions job, reading Dispatch
   // from the environment alone; under a host it acts as that host's session. Its refusals before
-  // a request is sent go to the ledger as every other command's do, an AskGate refusal with
+  // a request is sent go to the ledger as every other command's do, under the tool `dispatch_api`
+  // so a reader naming the command (`commandName`) names `dispatch api`, an AskGate refusal with
   // AskGate's mark.
   if (argv[0] === "api") {
     const hostName = ledgerHost();
     return await apiCommand(argv.slice(1), env, io, {
-      hosted: hostName === undefined ? undefined : hostSession(hostName, env, claudeSession),
-      ledger: (text, askgate) => ledgerRefusal(text, undefined, askgate),
+      hosted: hostName === undefined ? undefined : hostSession(hostName, env),
+      ledger: (text, askgate) => ledgerRefusal(text, "dispatch_api", askgate),
     });
   }
   const refuse = (
@@ -329,7 +327,7 @@ export async function runDispatchCli(
         );
   }
 
-  const hosted = hostSession(ledgerHost(), env, claudeSession);
+  const hosted = hostSession(ledgerHost(), env);
   if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
   const { host, sessionId, file } = hosted;
   let dir: string;

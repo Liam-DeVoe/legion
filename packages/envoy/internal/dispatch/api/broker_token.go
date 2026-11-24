@@ -222,10 +222,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// A token acting as its person carries the list its trade asked for
 	// (ciphertoken.Caller.Projects), and that list limits no write here: a dev box session's
 	// person writes wherever they may, and the token of a machine naming a service and no person
-	// names no project at all. A job's public token names no one project either: it reaches every
-	// public project beside the private projects of its list, which the credential carries
-	// (model.Credential.Projects) and no write check here reads. Nor does a read-only token, whose
-	// project scope none names no project and writes none.
+	// names no project at all. A job's public token names no one project either, so it writes
+	// wherever a token naming no project may: the private projects of its list, which the
+	// credential carries (model.Credential.Projects), limit no write here. A read-only token names
+	// none too: its project scope none names no project and writes none.
 	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
 		project := caller.Projects[0]
 		actor.Project = &project

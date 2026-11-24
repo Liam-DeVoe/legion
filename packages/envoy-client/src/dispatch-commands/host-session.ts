@@ -42,15 +42,14 @@ export type HostSession =
 
 /**
  * The session a command acts as under the host `hostName` names (`commandHost`): Claude Code's
- * `claudeSession`, Codex's `CODEX_THREAD_ID`, else `DISPATCH_SESSION_ID`; and the file the
- * session's plugin handed its shell (each plugin sets `DISPATCH_HOST` and `ENVOY_CONFIG_FILE`
- * together), else the host's own rule. A host that is none of `HOSTS`, or a session id that is not
- * set, is the usage error every command refuses with.
+ * session, Codex's `CODEX_THREAD_ID`, else `DISPATCH_SESSION_ID`; and the file the session's
+ * plugin handed its shell (each plugin sets `DISPATCH_HOST` and `ENVOY_CONFIG_FILE` together),
+ * else the host's own rule. A host that is none of `HOSTS`, or a session id that is not set, is
+ * the usage error every command refuses with.
  */
 export function hostSession(
   hostName: string | undefined,
-  env: Readonly<Record<string, string>>,
-  claudeSession: string | undefined
+  env: Readonly<Record<string, string>>
 ): HostSession {
   const host = HOSTS.find((name) => name === hostName);
   if (host === undefined) {
@@ -61,9 +60,14 @@ export function hostSession(
           : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
     };
   }
+  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
+  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
   const [sessionId, sessionVariable] =
     host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
+      ? [
+          env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID,
+          "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID",
+        ]
       : host === "codex"
         ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
         : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];

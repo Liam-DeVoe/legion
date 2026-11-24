@@ -255,12 +255,12 @@ function namesNoCredential(env: DispatchEnvironment): boolean {
   }
 }
 
-/** The answer's `code` where its body is Dispatch's own JSON refusal, by the rule `DispatchClient`
- *  reads one by (`dispatchRefusal`, dispatch-http.ts). Any other body, and a code that is no word
- *  of Dispatch's codes, is `with no code`. */
+/** The answer's `code` where its body is Dispatch's own JSON refusal naming one, by the rule
+ *  `DispatchClient` reads one by (`dispatchRefusal`, dispatch-http.ts). Any other body, and a code
+ *  that is no word of Dispatch's codes, is `with no code`. */
 function codeOf(answer: Response, text: string): string {
   const code = dispatchRefusal(answer, text)?.code;
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "with no code";
+  return code !== undefined && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "with no code";
 }
 
 /**

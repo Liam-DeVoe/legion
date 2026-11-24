@@ -143,10 +143,10 @@ type whoamiUser struct {
 // pod's Kubernetes service account (`system:serviceaccount:<namespace>:<name>`), a workflow
 // (`<repository>/<workflow path>@<ref>`) or a Google account; Session is the session the token
 // proved; Scopes is empty; Project is the one project an entry naming one project names, and
-// null for an entry naming `public`, whose token writes every public project and so no one
-// project limits it; and ProjectScope is `named` or `public`, which is what tells a job's token
-// from a machine's that names a service and no person too, whose ProjectScope is `person` and
-// whose every write Dispatch refuses (writeNeedsASignedInPerson).
+// null for an entry naming `public`, whose token names no one project and writes wherever a
+// token naming no project may; and ProjectScope is `named` or `public`, which is what tells a
+// job's token from a machine's that names a service and no person too, whose ProjectScope is
+// `person` and whose every write Dispatch refuses (writeNeedsASignedInPerson).
 type whoamiAgent struct {
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.

@@ -32,8 +32,8 @@ package api
 //     entry that names no project (`<service account>==<person>`, the shared public-session
 //     account's), which names its person and writes wherever Dispatch's own rules let it
 //     (brokerTokenActor). The fourth is a job's `public` token, which names its job's identity as
-//     its service and no person, reaches every public project beside the private projects its
-//     list names, and writes wherever Dispatch's own rules let a token naming no project:
+//     its service and no person, carries the private projects its list names, which no check
+//     here reads, and writes wherever Dispatch's own rules let a token naming no project:
 //     writeNeedsASignedInPerson lets it write, and a write that belongs to the deployment is not
 //     refused here. The fifth is a read-only token, which carries `project_scope` `none`
 //     and the scope `read` alone, names a service and no person, and never reaches this check:

@@ -539,7 +539,7 @@ describe("the session's ledger", () => {
     expect(logged).toEqual([
       {
         at: expect.any(String),
-        tool: "dispatch",
+        tool: "dispatch_api",
         error: refused.stderr.trimEnd(),
         askgate: { mode: "block", why: GATED_WHY },
       },
@@ -567,7 +567,7 @@ describe("the session's ledger", () => {
     expect(ledgerOf(stateDir, SESSION)).toEqual([
       {
         at: expect.any(String),
-        tool: "dispatch",
+        tool: "dispatch_api",
         error: refused.stderr.trimEnd(),
         askgate: { mode: "block", why: expect.stringContaining(file) },
       },
@@ -614,7 +614,7 @@ describe("the session's ledger", () => {
     expect(ran.code).toBe(2);
     expect(server.sent).toHaveLength(0);
     expect(ledgerOf(stateDir, session)).toEqual([
-      { at: expect.any(String), tool: "dispatch", error: ran.stderr.trimEnd() },
+      { at: expect.any(String), tool: "dispatch_api", error: ran.stderr.trimEnd() },
     ]);
   });
 });
