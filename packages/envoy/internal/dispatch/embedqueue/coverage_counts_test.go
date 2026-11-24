@@ -2,10 +2,13 @@ package embedqueue
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // countingTrigger is one trigger the coverage counts are kept by, as pg_trigger holds it: the
@@ -330,4 +334,729 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 		t.Fatalf("commit B: %v", err)
 	}
 	requireKeptCountsAreMains(t, database, "after A and B committed")
+}
+
+// ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
+
+// setForTest sets variable to value until the test ends, as shortenIdentityRecheck sets the
+// identity recheck's interval: the counts loop's periods, bounds, random sources and clock are
+// package variables, and no test that sets one runs in parallel.
+func setForTest[T any](t *testing.T, variable *T, value T) {
+	t.Helper()
+	saved := *variable
+	*variable = value
+	t.Cleanup(func() { *variable = saved })
+}
+
+// fractions is a random source that answers values in turn, from the first again after the last.
+func fractions(values ...float64) func() float64 {
+	var mu sync.Mutex
+	next := 0
+	return func() float64 {
+		mu.Lock()
+		defer mu.Unlock()
+		value := values[next%len(values)]
+		next++
+		return value
+	}
+}
+
+// fakeCountsClock is a counts clock (countsClock) a test moves itself: After records the wait it was
+// asked for, calls onWait with how many waits came before it, and moves the time on by the wait at
+// once, so the loop's periods run as fast as their work does and fake time stands still while
+// it works. Once onWait answers true it cancels the loop's context (stop) and answers a channel that
+// never fires.
+type fakeCountsClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	waits  []time.Duration
+	onWait func(index int) (stop bool)
+	stop   context.CancelFunc
+}
+
+func (c *fakeCountsClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeCountsClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	index := len(c.waits)
+	c.waits = append(c.waits, d)
+	c.mu.Unlock()
+	if c.onWait(index) {
+		c.stop()
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	fired := make(chan time.Time, 1)
+	fired <- c.now
+	return fired
+}
+
+// clockedLine is one line the counts loop logged, at the fake time it logged it.
+type clockedLine struct {
+	at      time.Time
+	level   slog.Level
+	message string
+	attrs   map[string]slog.Value
+}
+
+// clockedLog is a slog.Handler that keeps every line with clock's time, so a test reads when, in
+// the loop's own time, a recount started or failed.
+type clockedLog struct {
+	clock *fakeCountsClock
+	mu    sync.Mutex
+	lines []clockedLine
+}
+
+func (l *clockedLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l *clockedLog) Handle(_ context.Context, record slog.Record) error {
+	at := l.clock.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, clockedLine{at, record.Level, record.Message, attrsOf(record)})
+	return nil
+}
+
+func (l *clockedLog) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *clockedLog) WithGroup(string) slog.Handler      { return l }
+
+// logged is every line l holds of message, in order.
+func (l *clockedLog) logged(message string) []clockedLine {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var matched []clockedLine
+	for _, line := range l.lines {
+		if line.message == message {
+			matched = append(matched, line)
+		}
+	}
+	return matched
+}
+
+// The lines the counts loop logs.
+const (
+	recountStartedLine = "dispatch embedqueue: coverage counts recount started"
+	recountedLine      = "dispatch embedqueue: coverage counts recounted"
+	recountFailedLine  = "dispatch embedqueue: coverage counts recount failed; it runs again later"
+	fillFailedLine     = "dispatch embedqueue: coverage counts fill failed; it runs again later"
+	foldFailedLine     = "dispatch embedqueue: coverage counts fold failed; it runs again at the next period"
+)
+
+// clockedStatements records the SQL of every statement started on the pool it traces
+// (storetest.Traced), each with clock's time.
+type clockedStatements struct {
+	clock *fakeCountsClock
+	mu    sync.Mutex
+	sent  []clockedStatement
+}
+
+type clockedStatement struct {
+	at  time.Time
+	sql string
+}
+
+func (c *clockedStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	at := c.clock.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sent = append(c.sent, clockedStatement{at, data.SQL})
+	return ctx
+}
+
+func (c *clockedStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// of is when each statement whose SQL is sql started, in order.
+func (c *clockedStatements) of(sql string) []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var at []time.Time
+	for _, sent := range c.sent {
+		if sent.sql == sql {
+			at = append(at, sent.at)
+		}
+	}
+	return at
+}
+
+// servingNow is a Serving channel already closed: the process serves.
+func servingNow() <-chan struct{} {
+	serving := make(chan struct{})
+	close(serving)
+	return serving
+}
+
+// runCountsUntilStopped runs RunCounts on database with clock as the loop's clock (countsTime)
+// until clock stops it, and fails the test when it does not return within within.
+func runCountsUntilStopped(t *testing.T, database *store.Store, clock *fakeCountsClock, within time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clock.stop = cancel
+	setForTest[countsClock](t, &countsTime, clock)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunCounts(ctx, CountsDeps{Store: database, Serving: servingNow()})
+	}()
+	select {
+	case <-done:
+	case <-time.After(within):
+		cancel()
+		<-done
+		t.Fatalf("the counts loop did not reach the end of its run within %v (waits asked for: %v)", within, clock.waits)
+	}
+}
+
+// seedComponentsArchitecture writes the architecture source and snapshot project's components
+// hang from.
+func seedComponentsArchitecture(t *testing.T, q querier, project string, snapshot int) {
+	t.Helper()
+	mustExec(t, q, `insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing`, project)
+	mustExec(t, q, `insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
+		values ($1, 1, 'live/arch', 'main', 1, '{"kind":"system","id":"test"}')`, project)
+	mustExec(t, q, `insert into architecture_snapshots (id, project_key, commit, files) values ($2, $1, 'c1', '{}')`, project, snapshot)
+}
+
+// insertComponent writes component id of project, from the snapshot seedComponentsArchitecture
+// wrote.
+func insertComponent(t *testing.T, q querier, project, id string, snapshot int) {
+	t.Helper()
+	mustExec(t, q, `insert into components (project_key, id, title, prose, snapshot_id, source_id) values ($1, $2, $2, '', $3, 1)`,
+		project, id, snapshot)
+}
+
+// TestTheCountsLoopRecountsAtLeastEveryElevenMinutes holds R7e. Over 10,000 draws of the gap the
+// loop waits from one recount's start to the next (recountGap), for T (coverageRecountTimeout) at
+// 20 s (its floor), at 59 s, at 60 s and at 5 minutes, every gap is at least coverageRecountInterval and at most
+// that plus coverageRecountJitter, and that sum plus T is at most 11 minutes; the loop's own
+// values are the schedule of its own T. The loop starts each recount that gap after the one before
+// started, read in its own time with the random source injected. And with the interval shortened,
+// RunCounts, with no embedder and with one embedding beside it (Run), recounts twice, and the
+// counts follow a component and an issue's title written between the two with their tables'
+// triggers off.
+func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
+	if interval, jitter := recountSchedule(coverageRecountTimeout); coverageRecountInterval != interval || coverageRecountJitter != jitter {
+		t.Errorf("the loop recounts every %v plus up to %v, want its T's (%v) schedule, %v plus up to %v",
+			coverageRecountInterval, coverageRecountJitter, coverageRecountTimeout, interval, jitter)
+	}
+	for _, timeout := range []time.Duration{20 * time.Second, 59 * time.Second, time.Minute, 5 * time.Minute} {
+		interval, jitter := recountSchedule(timeout)
+		if interval+jitter+timeout > 11*time.Minute {
+			t.Errorf("T %v: the interval %v plus the jitter %v plus T pass 11 minutes", timeout, interval, jitter)
+		}
+		setForTest(t, &coverageRecountInterval, interval)
+		setForTest(t, &coverageRecountJitter, jitter)
+		for range 10000 {
+			if gap := recountGap(); gap < interval || gap > interval+jitter {
+				t.Fatalf("T %v: a recount starts %v after the one before, want %v to %v", timeout, gap, interval, interval+jitter)
+			}
+		}
+	}
+
+	t.Run("the loop's own gaps", func(t *testing.T) {
+		database := storetest.Open(t)
+		seedIssue(t, database, "GAPS", "GAPS-1", "An issue the recounts count")
+		fillCounts(t, database)
+		interval, jitter := recountSchedule(20 * time.Second)
+		setForTest(t, &coverageRecountInterval, interval)
+		setForTest(t, &coverageRecountJitter, jitter)
+		drawn := []float64{0, 0.999, 0.5}
+		setForTest(t, &coverageRecountRandom, fractions(drawn...))
+		clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
+		log := &clockedLog{clock: clock}
+		logtest.SetDefault(t, log)
+		clock.onWait = func(int) bool { return len(log.logged(recountStartedLine)) >= 4 }
+		runCountsUntilStopped(t, database, clock, 2*time.Minute)
+		started := log.logged(recountStartedLine)
+		for k := 1; k < len(started); k++ {
+			want := interval + time.Duration(drawn[(k-1)%len(drawn)]*float64(jitter))
+			if gap := started[k].at.Sub(started[k-1].at); gap != want {
+				t.Errorf("recount %d started %v after the one before, want %v", k+1, gap, want)
+			}
+		}
+	})
+
+	for _, withEmbedder := range []bool{false, true} {
+		name := "no embedder"
+		if withEmbedder {
+			name = "an embedder"
+		}
+		t.Run(name, func(t *testing.T) {
+			database := storetest.Open(t)
+			states := seedEveryCoverageState(t, database)
+			seedComponentsArchitecture(t, database.Pool, "ORCL", 902)
+			fillCounts(t, database)
+			setForTest(t, &coverageRecountInterval, time.Second)
+			setForTest(t, &coverageRecountJitter, 0)
+			records := &logtest.Recorder{}
+			logtest.SetDefault(t, records)
+			if withEmbedder {
+				runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				RunCounts(ctx, CountsDeps{Store: database, Serving: servingNow()})
+			}()
+			t.Cleanup(func() { cancel(); <-done })
+			eventually(t, 30*time.Second, "a first recount", func() bool {
+				return len(passRecords(records, slog.LevelInfo, recountedLine)) > 0
+			})
+
+			withTableTriggersOff(t, database, "components", func(q querier) {
+				insertComponent(t, q, "ORCL", "written-with-its-triggers-off", 902)
+			})
+			withTableTriggersOff(t, database, "issues", func(q querier) {
+				mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, states.titleEdited)
+			})
+			written := len(records.Records())
+			eventually(t, 30*time.Second, "a recount started after the writes, and its end", func() bool {
+				after := records.Records()[written:]
+				for position, record := range after {
+					if record.Message == recountStartedLine {
+						return slices.ContainsFunc(after[position:], func(record slog.Record) bool { return record.Message == recountedLine })
+					}
+				}
+				return false
+			})
+			requireReadIsMains(t, database, "after the recount that followed the writes with their triggers off")
+		})
+	}
+}
+
+// liveWrites is one live writer's writes, on q, of each of the three sorts of table the counts
+// keep: on embeddings, a window written, a window embedded and a window deleted; on issues, two
+// issues written, an issue's title edited, an issue's row embedded and an issue deleted; and on
+// components, two components written and one deleted. suffix names what the writer writes, so two
+// writers write different rows; the rows it embeds, edits and deletes are its arguments. Each
+// sort moves a count by more than nothing, so a count that lost or doubled the writes would show.
+type liveWrites struct {
+	suffix                       string
+	embedWindow, deleteWindow    [2]string // kind, id
+	editIssue, embedIssue        string
+	deleteIssue, deleteComponent string
+}
+
+func (w liveWrites) write(t *testing.T, q querier) {
+	t.Helper()
+	enqueueWindow(t, q, "document_block", "document_block/live", w.suffix, "A window a live writer wrote", "b1")
+	embedRowAs(t, q, w.embedWindow[0], w.embedWindow[1], configuredIdentity)
+	mustExec(t, q, `delete from embeddings where kind = $1 and id = $2`, w.deleteWindow[0], w.deleteWindow[1])
+	mustExec(t, q, `insert into issues (key, project_key, number, title, created_by, rank)
+		select 'LIVE-' || $1 || '-' || n, 'LIVE', 100 * n + $1::int, 'An issue a live writer wrote', '{"kind":"user","id":"alice"}', 'A'
+		from (values (1), (2)) written (n)`, w.suffix)
+	mustExec(t, q, `update issues set title = 'A title a live writer edited ' || $2 where key = $1`, w.editIssue, w.suffix)
+	embedRowAs(t, q, "issue", w.embedIssue, configuredIdentity)
+	mustExec(t, q, `delete from issues where key = $1`, w.deleteIssue)
+	insertComponent(t, q, "LIVE", "live-"+w.suffix, 903)
+	insertComponent(t, q, "LIVE", "live-"+w.suffix+"-b", 903)
+	mustExec(t, q, `delete from components where project_key = 'LIVE' and id = $1`, w.deleteComponent)
+}
+
+// countsHolds are the groups the recount and the fill count in a statement of their own, each with
+// the kind of a class every database requireCountsBesideLiveWrites seeds holds live, unmatched,
+// with no model: the statement of the group is held on that class's base row, which the fold
+// writes too.
+var countsHolds = []struct{ group, kind string }{
+	{"the issue group", issueKind},
+	{"the window group", "document_block"},
+	{"a not-indexed group", "component"},
+}
+
+// requireCountsBesideLiveWrites holds R7f for one of the three statements that write the base
+// (the recount, the fill, the fold), which run calls once, held in each group in turn. On other
+// connections, a first writer commits its writes (liveWrites) before the statement's snapshot, and
+// a second opens and writes before it and commits after it while the statement still runs: the
+// test holds the statement on a class's base row of the group (countsHolds), which a third
+// transaction holds - locked for update, or for the fill, which finds no base row, inserted and not
+// committed - and which no writer's commit needs, since a write inserts delta rows and never touches
+// the base. The second writer commits while the statement waits, then the hold ends. After the next
+// fold, the counts equal main's statement's.
+func requireCountsBesideLiveWrites(t *testing.T, fill bool, run func(context.Context, *store.Store) error) {
+	t.Helper()
+	for _, held := range countsHolds {
+		t.Run("held in "+held.group, func(t *testing.T) {
+			requireCountsBesideLiveWritesHeld(t, fill, run, held.kind)
+		})
+	}
+}
+
+// requireCountsBesideLiveWritesHeld is requireCountsBesideLiveWrites with the statement held on
+// the base row of kind's live unmatched class.
+func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context.Context, *store.Store) error, kind string) {
+	t.Helper()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seedEveryCoverageState(t, database)
+	seedComponentsArchitecture(t, database.Pool, "LIVE", 903)
+	for _, suffix := range []string{"0", "00"} {
+		mustExec(t, database.Pool, `insert into issues (key, project_key, number, title, created_by, rank)
+			values ('LIVE-' || $1, 'LIVE', length($1), 'An issue a live writer deletes', '{"kind":"user","id":"alice"}', 'A')`, suffix)
+		insertComponent(t, database.Pool, "LIVE", "live-"+suffix, 903)
+	}
+	if !fill {
+		fillCounts(t, database)
+	}
+	first := liveWrites{suffix: "1", embedWindow: [2]string{"document_block", "document_block/oracle#pending"},
+		deleteWindow: [2]string{"comment_block", "comment_block/oracle#current"},
+		editIssue:    "ORCL-1", embedIssue: "ORCL-13", deleteIssue: "LIVE-0", deleteComponent: "live-0"}
+	second := liveWrites{suffix: "2", embedWindow: [2]string{"message_block", "message_block/oracle#pending"},
+		deleteWindow: [2]string{"ask_part", "ask_part/oracle#current"},
+		editIssue:    "ORCL-2", embedIssue: "ORCL-12", deleteIssue: "LIVE-00", deleteComponent: "live-00"}
+
+	begin := func(what string) pgx.Tx {
+		t.Helper()
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin %s: %v", what, err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		return tx
+	}
+	writer := begin("the first writer")
+	first.write(t, writer)
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("commit the first writer: %v", err)
+	}
+	open := begin("the second writer")
+	second.write(t, open)
+	hold := begin("the hold on a base row")
+	if fill {
+		mustExec(t, hold, `insert into search_coverage_counts (kind, model, matched, dead, items) values ($1, '', false, false, 0)`, kind)
+	} else {
+		tag, err := hold.Exec(ctx, `select 1 from search_coverage_counts where kind = $1 and model = '' and not matched and not dead for update`, kind)
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("hold the base row of %s's live unmatched class: %v (rows %d)", kind, err, tag.RowsAffected())
+		}
+	}
+
+	ran := make(chan error, 1)
+	go func() { ran <- run(ctx, database) }()
+	if waiting := storetest.WaitForLockWaiters(t, hold, 1, 60*time.Second); waiting < 1 {
+		select {
+		case err := <-ran:
+			t.Fatalf("the statement ended (%v) without waiting on the hold", err)
+		default:
+			t.Fatal("the statement never waited on the hold within 60s")
+		}
+	}
+	committed := make(chan error, 1)
+	go func() { committed <- open.Commit(ctx) }()
+	select {
+	case err := <-committed:
+		if err != nil {
+			t.Fatalf("commit the second writer: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second writer's commit waited on the statement or the hold")
+	}
+	select {
+	case err := <-ran:
+		t.Fatalf("the statement ended (%v) while the hold still stood", err)
+	default:
+	}
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatalf("end the hold: %v", err)
+	}
+	select {
+	case err := <-ran:
+		if err != nil {
+			t.Fatalf("the statement beside the live writes: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the statement did not end within 60s of the hold's end")
+	}
+	foldCounts(t, database)
+	requireReadIsMains(t, database, "after the next fold")
+	if _, err := Coverage(ctx, database, configuredIdentity); err != nil {
+		t.Errorf("Coverage after the next fold: %v", err)
+	}
+}
+
+// TestARecountBesideLiveWritesLosesAndDoublesNothing holds R7f for the recount
+// (requireCountsBesideLiveWrites).
+func TestARecountBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	requireCountsBesideLiveWrites(t, false, RecountCoverage)
+}
+
+// TestAFillBesideLiveWritesLosesAndDoublesNothing holds R7f for the fill, on counts that hold
+// nothing yet (requireCountsBesideLiveWrites).
+func TestAFillBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	requireCountsBesideLiveWrites(t, true, FillCoverage)
+}
+
+// TestAFoldBesideLiveWritesLosesAndDoublesNothing holds R7f for the fold
+// (requireCountsBesideLiveWrites).
+func TestAFoldBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	requireCountsBesideLiveWrites(t, false, foldCoverage)
+}
+
+// countsLockWaits names, by backend, every session of this test's database that waits for the
+// counts lock (countsLock), with the backends that hold it from it (pg_blocking_pids), and how many
+// sessions hold it.
+const countsLockWaits = `
+	select coalesce(array_agg(pid) filter (where not granted), '{}'),
+	       coalesce(array_agg(blocker) filter (where not granted), '{}'),
+	       count(*) filter (where granted)
+	from (select l.pid, l.granted, (pg_blocking_pids(l.pid))[1] as blocker
+	      from pg_locks l
+	      where l.locktype = 'advisory' and l.objsubid = 1
+	        and l.database = (select oid from pg_database where datname = current_database())
+	        and l.objid::bigint = (hashtext('search-coverage-counts')::bigint & 4294967295)) counted`
+
+// TestAFoldAndARecountTakeTurnsOnOneTransactionLock holds R7g: a fold and a recount started at once
+// take turns on the one counts lock. The first is held, inside its transaction and so holding the
+// lock, on the component's base row, which the test holds; the second, started while it is held,
+// waits for the lock, and pg_locks names the first's backend as what it waits on. Once the hold
+// ends both end, the counts equal main's statement's, and pg_locks holds the counts lock for no
+// session, the two pooled connections that ran them still open: the lock ended with each
+// transaction.
+func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
+	ops := map[string]func(context.Context, *store.Store) error{"fold": foldCoverage, "recount": RecountCoverage}
+	for _, order := range [][2]string{{"recount", "fold"}, {"fold", "recount"}} {
+		t.Run("the "+order[1]+" waits for the "+order[0], func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			seedEveryCoverageState(t, database)
+			seedComponentsArchitecture(t, database.Pool, "TURN", 904)
+			fillCounts(t, database)
+			// A component's delta row, so the fold too writes the component's base row.
+			insertComponent(t, database.Pool, "TURN", "turns", 904)
+			hold, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the hold: %v", err)
+			}
+			t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
+			mustExec(t, hold, `select 1 from search_coverage_counts where kind = 'component' for update`)
+
+			ended := make(chan error, 2)
+			go func() { ended <- ops[order[0]](ctx, database) }()
+			if storetest.WaitForLockWaiters(t, hold, 1, 60*time.Second) < 1 {
+				t.Fatalf("the %s never waited on the hold", order[0])
+			}
+			var waiting, blockers []int32
+			var holders int
+			if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil || holders != 1 || len(waiting) != 0 {
+				t.Fatalf("while the %s is held, the counts lock is held by %d sessions and waited for by %v (%v), want held by it alone",
+					order[0], holders, waiting, err)
+			}
+			var holderPID int32
+			if err := database.Pool.QueryRow(ctx, `select pid from pg_locks where locktype = 'advisory' and granted
+				and database = (select oid from pg_database where datname = current_database())`).Scan(&holderPID); err != nil {
+				t.Fatalf("read the counts lock's holder: %v", err)
+			}
+			go func() { ended <- ops[order[1]](ctx, database) }()
+			eventually(t, 30*time.Second, "the "+order[1]+" waiting for the counts lock", func() bool {
+				if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil {
+					t.Fatalf("read the counts lock's waiters: %v", err)
+				}
+				return len(waiting) == 1
+			})
+			if blockers[0] != holderPID {
+				t.Errorf("the %s waits for the counts lock on backend %d, want the %s's backend %d", order[1], blockers[0], order[0], holderPID)
+			}
+			if err := hold.Rollback(ctx); err != nil {
+				t.Fatalf("end the hold: %v", err)
+			}
+			for range 2 {
+				select {
+				case err := <-ended:
+					if err != nil {
+						t.Fatalf("a fold or a recount: %v", err)
+					}
+				case <-time.After(60 * time.Second):
+					t.Fatal("the fold and the recount did not both end within 60s of the hold's end")
+				}
+			}
+			if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil || holders != 0 || len(waiting) != 0 {
+				t.Errorf("after both transactions ended the counts lock is held by %d sessions and waited for by %v (%v), want none",
+					holders, waiting, err)
+			}
+			requireReadIsMains(t, database, "after the fold and the recount")
+		})
+	}
+}
+
+// TestTheFoldRunsEveryTenSecondsPlusItsJitter holds R7h: with the fold's random source injected,
+// each fold starts 10 s plus the injected fraction of 1 s after the one before, read in the loop's
+// own time at the fold statement each sends (foldDeltas), the first that long after the loop's
+// first run ended. No recount falls due in the time it runs.
+func TestTheFoldRunsEveryTenSecondsPlusItsJitter(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "FOLD", "FOLD-1", "An issue the folds count")
+	fillCounts(t, database)
+	drawn := []float64{0, 0.25, 0.5, 0.75, 0.999}
+	setForTest(t, &coverageFoldRandom, fractions(drawn...))
+	start := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	clock := &fakeCountsClock{now: start}
+	statements := &clockedStatements{clock: clock}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	clock.onWait = func(int) bool { return len(statements.of(foldDeltas)) >= 6 }
+	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+
+	folds := statements.of(foldDeltas)
+	if len(folds) < 6 {
+		t.Fatalf("the loop folded %d times, want 6", len(folds))
+	}
+	gap := func(k int) time.Duration {
+		return 10*time.Second + time.Duration(drawn[k%len(drawn)]*float64(time.Second))
+	}
+	if first := folds[0].Sub(start); first != gap(0) {
+		t.Errorf("the first fold started %v after the first run, want %v", first, gap(0))
+	}
+	for k := 1; k < len(folds); k++ {
+		if got := folds[k].Sub(folds[k-1]); got != gap(k) {
+			t.Errorf("fold %d started %v after the one before, want %v", k+1, got, gap(k))
+		}
+	}
+}
+
+// TestAFailedFoldLogsAndTheNextOneCatchesUp holds R7i: a fold made to fail - the component's base
+// row refuses the sum the fold adds to it - logs an ERROR line; the fold of the next period runs
+// and succeeds, folding every delta row, and the counts then equal main's statement's.
+func TestAFailedFoldLogsAndTheNextOneCatchesUp(t *testing.T) {
+	database := storetest.Open(t)
+	seedEveryCoverageState(t, database)
+	seedComponentsArchitecture(t, database.Pool, "FAIL", 905)
+	fillCounts(t, database)
+	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
+	statements := &clockedStatements{clock: clock}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	clock.onWait = func(index int) bool {
+		switch index {
+		case 1: // before the first fold; the loop's first run, a recount, is done
+			insertComponent(t, database.Pool, "FAIL", "folded", 905)
+			mustExec(t, database.Pool, `alter table search_coverage_counts add constraint fold_refused check (kind <> 'component') not valid`)
+		case 2: // before the second fold
+			if failed := passRecords(records, slog.LevelError, foldFailedLine); len(failed) != 1 {
+				t.Errorf("the first fold logged %d ERROR lines, want 1: %v", len(failed), records.Records())
+			}
+			mustExec(t, database.Pool, `alter table search_coverage_counts drop constraint fold_refused`)
+		}
+		return index == 3
+	}
+	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+
+	if folds := statements.of(foldDeltas); len(folds) != 2 {
+		t.Fatalf("the loop sent %d folds, want the failed one and the next", len(folds))
+	}
+	if failed := passRecords(records, slog.LevelError, foldFailedLine); len(failed) != 1 {
+		t.Errorf("the loop logged %d failed folds, want 1", len(failed))
+	}
+	var unfolded int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from search_coverage_deltas`).Scan(&unfolded); err != nil || unfolded != 0 {
+		t.Errorf("after the next fold %d delta rows wait (%v), want the fold to have caught up", unfolded, err)
+	}
+	requireReadIsMains(t, database, "after the fold that caught up")
+}
+
+// requireBackoffWaits fails the test unless each of waits is the injected fraction (drawn, in turn)
+// of its bound: the first bound 10 s, each later one twice the one before, none past 10 minutes.
+func requireBackoffWaits(t *testing.T, waits []time.Duration, drawn []float64) {
+	t.Helper()
+	bound := 10 * time.Second
+	for k, wait := range waits {
+		if bound > 10*time.Minute {
+			t.Fatalf("wait %d: the bound passed 10 minutes", k+1)
+		}
+		if want := time.Duration(drawn[k%len(drawn)] * float64(bound)); wait != want {
+			t.Errorf("wait %d is %v, want %v of its bound %v, %v", k+1, wait, drawn[k%len(drawn)], bound, want)
+		}
+		bound = min(2*bound, 10*time.Minute)
+	}
+}
+
+// TestTheFillBacksOffExponentiallyWithFullJitter holds R7o: with the backoff's random source
+// injected and every fill made to fail before its first statement (FailCoverageFillsForTest), the
+// loop logs each failure at ERROR and waits after it the injected fraction of its bound, the first
+// bound 10 s and each later one twice the one before up to 10 minutes, never past them; no fold
+// runs while no fill has ended.
+func TestTheFillBacksOffExponentiallyWithFullJitter(t *testing.T) {
+	database := storetest.Open(t)
+	FailCoverageFillsForTest(1000)
+	t.Cleanup(func() { FailCoverageFillsForTest(0) })
+	drawn := []float64{0.5, 0.1, 0.999999, 0.75, 1e-9, 0.3}
+	setForTest(t, &coverageBackoffRandom, fractions(drawn...))
+	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
+	statements := &clockedStatements{clock: clock}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	clock.onWait = func(index int) bool { return index == 12 }
+	runCountsUntilStopped(t, traced, clock, time.Minute)
+
+	if len(clock.waits) != 13 {
+		t.Fatalf("the loop waited %d times, want 13", len(clock.waits))
+	}
+	requireBackoffWaits(t, clock.waits, drawn)
+	failed := passRecords(records, slog.LevelError, fillFailedLine)
+	if len(failed) != len(clock.waits) {
+		t.Errorf("the loop logged %d failed fills, want one before each of its %d waits", len(failed), len(clock.waits))
+	}
+	for _, record := range failed {
+		if logged, _ := attrsOf(record)["error"].Any().(error); !errors.Is(logged, errFillMadeToFail) {
+			t.Errorf("a failed fill's line logs %v, want the fill made to fail", logged)
+		}
+	}
+	if folds := statements.of(foldDeltas); len(folds) != 0 {
+		t.Errorf("the loop folded %d times while no fill had ended", len(folds))
+	}
+}
+
+// TestAFailedRecountBacksOffAsTheFillDoes holds R7x: with the backoff's random source injected and
+// the recount made to fail three times in a row (its deadline, coverageRecountTimeout, past before
+// its first statement), each failure is logged at ERROR, and the waits from each failure to the
+// recount that tries again, read in the loop's own time, are the injected fractions of 10 s, 20 s
+// and 40 s; the folds go on meanwhile. The recount that then ends puts the next one back on
+// coverageRecountInterval.
+func TestAFailedRecountBacksOffAsTheFillDoes(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "BACK", "BACK-1", "An issue the recounts count")
+	fillCounts(t, database)
+	drawn := []float64{0.5, 0.25, 0.75}
+	setForTest(t, &coverageBackoffRandom, fractions(drawn...))
+	setForTest(t, &coverageRecountInterval, 30*time.Second)
+	setForTest(t, &coverageRecountJitter, 0)
+	setForTest(t, &coverageRecountTimeout, time.Nanosecond)
+	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
+	statements := &clockedStatements{clock: clock}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
+	log := &clockedLog{clock: clock}
+	logtest.SetDefault(t, log)
+	clock.onWait = func(int) bool {
+		if len(log.logged(recountFailedLine)) == 3 {
+			coverageRecountTimeout = 2 * time.Minute
+		}
+		return len(log.logged(recountStartedLine)) == 5
+	}
+	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+
+	started, failed := log.logged(recountStartedLine), log.logged(recountFailedLine)
+	if len(started) != 5 || len(failed) != 3 || len(log.logged(recountedLine)) < 1 {
+		t.Fatalf("the loop started %d recounts, %d of them failed and %d ended, want 5 of which the first 3 failed",
+			len(started), len(failed), len(log.logged(recountedLine)))
+	}
+	var waits []time.Duration
+	for k := range 3 {
+		if failed[k].level != slog.LevelError {
+			t.Errorf("failure %d is logged at %v, want ERROR", k+1, failed[k].level)
+		}
+		waits = append(waits, started[k+1].at.Sub(failed[k].at))
+	}
+	requireBackoffWaits(t, waits, drawn)
+	if next := started[4].at.Sub(started[3].at); next != 30*time.Second {
+		t.Errorf("the recount after the one that ended started %v after it, want coverageRecountInterval, 30s", next)
+	}
+	if folds := statements.of(foldDeltas); len(folds) == 0 {
+		t.Error("the loop folded nothing while the recount backed off")
+	}
 }

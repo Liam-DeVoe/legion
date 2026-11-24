@@ -220,6 +220,12 @@ var settings = []setting{
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", Required: "no",
+		Description: "How long a test process's fill of the search coverage counts may run before it is a failed fill, in place of the bound a deployment runs it under; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", Default: "`10s`", Required: "no",
+		Description: "The statement_timeout of a test process's `GET /api/v1/search/coverage` read, in place of the 10 seconds a deployment holds it to; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_COVERAGE_FILL_FAILURES", Required: "no",
+		Description: "How many of a test process's fills of the search coverage counts fail before their first statement, each logged and tried again as a failed fill is; a whole number of 1 or more, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

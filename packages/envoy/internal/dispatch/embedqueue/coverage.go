@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +53,9 @@ func contentHash(expr string) string {
 
 // issueRows is every issue as (id, text, hash, written_at), the shape the two statements that
 // build the issue's rows read an item in (insertMissingIssues, through issueItems, and
-// repairStaleIssues). The report reads the issue's items its own way (coverageQuery), building an
+// repairStaleIssues). The coverage counts read an issue's class from its state row
+// (search_coverage_issues), which search_coverage_issue_refresh (migration
+// 20261124011834_search_coverage_counts) computes as main's coverage statement did, building an
 // issue's text only where the inputs it was built from have changed.
 //
 // id and text are the issue's write-time triggers' own expressions, byte for byte (issueText),
@@ -71,8 +74,8 @@ var issueRows = `select s.id, s.text, ` + contentHash("s.text") + ` as hash, s.w
 // issueItems is the issues worth a vector: those whose text has something to embed (not
 // nothingToEmbed, which is the empty string or white space alone). An item with nothing to embed
 // is not covered, since it matches nothing by meaning, so insertMissingIssues gives it no row
-// and the queue settles the row it already holds with no vector. The report applies the same
-// test its own way (issueHasText).
+// and the queue settles the row it already holds with no vector. The coverage counts apply the
+// same test their own way (search_coverage_issue_refresh's has_text).
 var issueItems = issueRows + " where not " + nothingToEmbed("s.text")
 
 // windowCoverageKinds is every kind whose rows the writers of windows own: one row per window
@@ -108,34 +111,36 @@ var windowCoverageKinds = []string{"document_block", "comment_block", "message_b
 // predicate holds the same regex. A kind list whose kinds shared a prefix, or a single kind, could
 // give a btree on kind a range to read again.
 //
-// Each half is, word for word, the predicate of the index the report reads that half through
-// (migrations 20261118011208_embeddings_window_embedded and
-// 20261118011258_embeddings_window_unembedded): the planner proves a predicate by comparing
-// parsed expressions, so the kind's regex there is this one too. The report's window arm ORs the
-// two as its WHERE (coverageQuery), so the planner proves that the two indexes together hold every
-// row the arm selects, reads the arm through a BitmapOr of both, and leaves those conditions to
-// them: the bitmap heap scan over that BitmapOr visits each heap page holding window rows once and
-// keeps the regexes to its recheck, which an exact bitmap never runs, so the statement tests no
-// window's text (planCoverage says why that is the plan in every state of the table). Each index
-// is keyed on kind alone and carries no other column, since that scan reads every column the
-// statement reads of a row from the heap anyway. The columns are named bare, as an index predicate
-// names them. A change to the kinds, either regex or either half is a change to those indexes too,
-// and owes a migration that builds them again with it; without one the answer stays right and the
-// statement reads embeddings by a sequential scan that tests every window's text again, the one
-// path to the window rows left.
+// Each half is, word for word, the predicate of the index that half is read through (migrations
+// 20261124011835_embeddings_window_unembedded_since and
+// 20261124011836_embeddings_window_embedded_since, which replaced INFRA-4241's two indexes with the
+// same predicates): the planner proves a predicate by comparing parsed expressions, so the kind's
+// regex there is this one too. The recount's window statement (windowClasses) ORs the two as its
+// WHERE, so the planner proves that the two indexes together hold every row it selects, reads it
+// through a BitmapOr of both, and leaves those conditions to them: the bitmap heap scan over that
+// BitmapOr visits each heap page holding window rows once and keeps the regexes to its recheck,
+// which an exact bitmap never runs, so the statement tests no window's text (planCoverage says why
+// that is the plan in every state of the table). The report's probes of the oldest lacking window
+// (coverageRead) each name one half, so each reads the first entry of that half's index. The
+// columns are named bare, as an index predicate names them. A change to the kinds, either regex or
+// either half is a change to those indexes too, and owes a migration that builds them again with
+// it; without one the answers stay right and both statements read embeddings by a scan that tests
+// every window's text again, the one path to the window rows left.
 var (
 	windowItems      = "kind ~ '^(" + strings.Join(windowCoverageKinds, "|") + ")$' and " + somethingToEmbed("text_snapshot")
 	windowEmbedded   = windowItems + " and embedding is not null and embedded_hash = content_hash"
 	windowUnembedded = windowItems + " and (embedding is null or embedded_hash is distinct from content_hash)"
 )
 
-// windowKindArray is windowCoverageKinds as a text[] literal, for the window arm of coverageQuery,
-// which groups its rows by a kind's position in it and names each kind from its position.
+// windowKindArray is windowCoverageKinds as a text[] literal, for the recount's window statement
+// (windowClasses), which groups its rows by a kind's position in it and names each kind from its
+// position.
 var windowKindArray = "'{" + strings.Join(windowCoverageKinds, ",") + "}'::text[]"
 
 // issueSourceFrom is every issue (issues i) beside what its source (issueSource) is computed from
-// and compared with, for the report (coverageQuery) and for the step that records sources
-// (recordIssueSources):
+// and compared with, for the step that records sources (recordIssueSources) and for the recount's
+// refresh of the issues' state rows (staleIssueStates), which migration
+// 20261124011834_search_coverage_counts's search_coverage_issue_refresh reads word for word:
 //
 //   - spec: the id and the row version (xmin) of the latest version of the issue's primary
 //     document, the version whose markdown issue_embedding_spec (0140) returns. That function
@@ -165,7 +170,7 @@ const issueSourceFrom = `issues i
 // recordIssueSources records it where the row's content_hash is the hash of the issue's current
 // text. Where the recorded source still equals it, the title, the latest primary version (by id
 // and row version) and content_hash are all the ones that step checked, so the issue's text is
-// the one whose hash is content_hash, and issueHash reads the hash from there.
+// the one whose hash is content_hash, and search_coverage_issue_refresh reads the hash from there.
 //
 // Every change of an input changes it: a title edit, with or without the trigger; a new spec
 // version; a version's markdown changed in place, with or without triggers, which gives the row a
@@ -176,23 +181,8 @@ const issueSourceFrom = `issues i
 const issueSource = `coalesce(spec.id::text, '-') || ':' || coalesce(spec.xmin::text, '-') || ':' || coalesce(e.content_hash, '-') || ':' || i.title`
 
 // issueTextHash is the hash of an issue's current text (issueText) over issues i, as its trigger
-// would store it (contentHash): what the report falls back to, and what the record step checks a
-// row's content_hash against.
+// would store it (contentHash): what the record step checks a row's content_hash against.
 var issueTextHash = contentHash(issueText)
-
-// issueHash is the hash of an issue's current text over issueSourceFrom: content_hash where the
-// recorded source is the current one (issueSource), and otherwise the text built and hashed. The
-// text is built in the else branch alone, never in a lateral of the FROM clause, where it would
-// read every issue's spec on every call.
-var issueHash = "case when r.source = (" + issueSource + ") then e.content_hash else " + issueTextHash + " end"
-
-// issueHasText is whether an issue's text, over issues i, has something to embed: the test
-// issueItems applies (not nothingToEmbed), in the report's terms. The text begins with the title,
-// so a title whose first character is printable ASCII other than the space (33 to 126) answers it
-// alone (ascii reads the first character, and answers 0 for the empty string); any other title -
-// empty, or beginning with white space or outside ASCII - builds the text and runs the regex
-// (somethingToEmbed). Such titles are rare.
-var issueHasText = "(ascii(i.title) between 33 and 126 or " + somethingToEmbed(issueText) + ")"
 
 // insertMissingIssues adds a pending row for up to $2 issues ($1::text is issueKind) that have
 // none, exactly as the trigger's embeddings_enqueue would insert it. ON CONFLICT DO NOTHING,
@@ -240,11 +230,12 @@ var repairStaleIssues = `
 
 // recordIssueSources records the source (issueSource) of up to $1 issues whose current source is
 // not the one recorded, or that have none recorded, and whose embeddings row holds the issue's
-// current text (its content_hash is issueTextHash), into embedding_issue_sources, so the report
-// reads those issues' hashes from their rows (issueHash). An issue with no row, or whose row's
-// text is stale, is not recorded, and the report builds and hashes its text: repairStaleIssues
-// points a stale row at the current text, and the next run records it. The source and the hash
-// are the very strings coverageQuery uses, so what this records is what the report compares.
+// current text (its content_hash is issueTextHash), into embedding_issue_sources, so the refresh of
+// an issue's state row (search_coverage_issue_refresh) reads those issues' hashes from their rows.
+// An issue with no row, or whose row's text is stale, is not recorded, and the refresh builds and
+// hashes its text: repairStaleIssues points a stale row at the current text, and the next run
+// records it. The source and the hash are the very strings the refresh uses, so what this records
+// is what the refresh compares.
 //
 // The hash is compared inside a CASE that asks first whether the recorded source differs, so the
 // text of an issue whose source is already recorded is neither built nor hashed. Written as a
@@ -261,8 +252,8 @@ var repairStaleIssues = `
 // It is idempotent and safe beside a live write and beside another process's run. It writes
 // embedding_issue_sources alone, never embeddings, so it changes nothing the triggers wrote. A
 // source names every input of the text it was checked against, so a write that commits after
-// this statement's snapshot leaves a source that no longer matches the inputs the report reads,
-// and the report falls back to the hash: a recorded source is never trusted beyond the inputs it
+// this statement's snapshot leaves a source that no longer matches the inputs the refresh reads,
+// and the refresh falls back to the hash: a recorded source is never trusted beyond the inputs it
 // names. Two runs recording one issue at once write the same source, and the DO UPDATE's WHERE
 // makes the second write nothing, so a run that finds only what another run recorded changes
 // nothing and ends (recordSources).
@@ -692,13 +683,20 @@ func runCoverage(ctx context.Context, deps Deps) {
 //
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
+//
+// The coverage counts keep each of these counts but the session one, which the report reads from
+// route_roster's one row, and the recount counts each from its table (countsGroups).
 var notIndexedKinds = []struct{ kind, items string }{
 	{"component", "(select count(*) from components)"},
-	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
+	{sessionKind, "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
 	{"document_version", "(select count(*) from artifact_versions)"},
 	{"result", "(select count(*) from check_results)"},
 	{"handoff", "(select count(*) from handoffs)"},
 }
+
+// sessionKind is the one not-indexed kind no count keeps: route_roster holds one row whatever the
+// sessions it lists, so the report reads that row.
+const sessionKind = "session"
 
 // notIndexedPositions is each notIndexedKinds kind's place in the report's list, so the rows of
 // one statement, whose order no union all promises, land in the order declared above.
@@ -710,101 +708,127 @@ var notIndexedPositions = func() map[string]int {
 	return positions
 }()
 
-// coverageQuery is the coverage statement: it counts, per covered kind, its items and how many of
-// them carry a current vector, are dead or lack one, and per uncovered kind (notIndexedKinds) the
-// items of it the database holds, in one statement so every count reads one snapshot. $1 is the
-// configured identity, the empty string when there is none, and then no item is current. greatest
-// ignores a null, so an item with no row ages from when it was written; the oldest age is null
-// when nothing of the kind lacks. The second column says which half a row came from: an uncovered
-// kind carries its count alone, with no current, failed or oldest age, none of which is defined
-// for a kind nothing indexes. Coverage runs it under the settings planCoverage sets.
+// coverageDeltaBound is how many delta rows (search_coverage_deltas) the report reads at most
+// before it refuses with ErrCoverageFoldBehind: R7 of dispatch://INFRA-4864's spec names 100,000.
+// Delta rows build up only while no fold runs - during a recount, which holds the counts lock for
+// at most its statement bound (coverageRecountTimeout), or while the fold fails - so the bound must
+// be at least four times twice the most rows production's counted tables changed in any span of
+// one recount bound and one fold period. T18 reads that number from pg_stat_user_tables over a
+// weekday hour of the agents' peak load; a measurement that asks for a larger bound than 100,000
+// goes to the architect, since the spec names 100,000.
+const coverageDeltaBound = 100000
+
+// ErrCoverageNotFilled is what Coverage answers while no fill of the coverage counts has ended
+// since the migration that made them (search_coverage_filled holds no row): the counts loop fills
+// them in the background after the server listens (RunCounts), and until a fill ends the counts
+// hold nothing to answer. The route answers it 503 SEARCH_COVERAGE_NOT_FILLED.
+var ErrCoverageNotFilled = errors.New("the search coverage counts are not filled yet")
+
+// ErrCoverageFoldBehind is what Coverage answers when it read more than coverageDeltaBound delta
+// rows: the counts are the base rows plus every delta row not yet folded into them, and the report
+// refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND.
+var ErrCoverageFoldBehind = fmt.Errorf("more than %d rows of writes are not folded into the search coverage counts", coverageDeltaBound)
+
+// CoverageDeltaBound is the most delta rows the report reads (coverageDeltaBound), for the
+// message the route answers ErrCoverageFoldBehind with.
+func CoverageDeltaBound() int64 {
+	return coverageDeltaBound
+}
+
+// coverageRead is the report's one statement (Coverage), so one snapshot and one now() answer
+// every count and every age. $1 is the identity, ” when none is configured, and then no item is
+// current. It reads:
 //
-// A window kind's items are its own rows whose text has something to embed, read in one arm whose
-// WHERE is the predicates of the two window indexes ORed, each word for word (windowEmbedded,
-// windowUnembedded), so that the planner reads the arm through a BitmapOr of both indexes
-// (planCoverage says why that is the plan). A row is current when it is of the embedded half and
-// its model is the identity, which is the halves' own two tests together; coalesce makes a null
-// in either a row that is not current, and a row of the other half is never current. A window is
-// its own item, so its written_at is its own pending_since, and its dead and pending_since are
-// read from the row itself; no window's text is tested and no row is joined back to itself.
+//   - search_coverage_filled's one row, by its key: whether a fill has ended
+//     (ErrCoverageNotFilled);
+//   - every base row (search_coverage_counts) and at most coverageDeltaBound + 1 delta rows
+//     (search_coverage_deltas), with how many delta rows it read (ErrCoverageFoldBehind), summed by
+//     class: a class is (kind, model, matched, dead), as the counting triggers and the recount
+//     write it (migration 20261124011834_search_coverage_counts), model being ” where not matched;
+//   - for each covered kind, the oldest lacking item, through the first entry of an index: for a
+//     window kind, of the unembedded half (windowUnembedded) by kind and not dead, of the embedded
+//     half (windowEmbedded) by kind, not dead and each model other than the identity's that one of
+//     the kind's live matched classes names, and of the embedded rows that name no model, which are
+//     current for no identity; for the issue, the same over search_coverage_issues' two partial
+//     indexes, by not dead and by not dead and model;
+//   - route_roster's one row, the session count, which no count keeps.
 //
-// The arm groups its rows by the kind's position in the window kinds (array_position over
-// windowKindArray) and names each group's kind from that position, not by the kind itself, so
-// that no index's order is of use to it: grouped by kind, a full scan of embeddings_pkey, keyed on
-// (kind, id), hands the rows over in the grouping's order, and with random reads priced near
-// nothing (random_page_cost = 0.001, cpu_tuple_cost and cpu_operator_cost 10) the planner read the
-// arm that way on the scale test's corpus at 0.05 x production's size, with the regex as a filter
-// over every window's text. A window kind's position names that kind alone, so the groups and
-// their counts are the ones grouping by kind gives.
+// A covered kind's items are the sum of its classes; current, of those matched under the
+// identity's model; failed, of the dead ones not current; lacking is computed in Go. A not-indexed
+// kind's count is its one class. Each kind's row answers the six columns main's coverage
+// statement answered (coverageQuery in this package's tests), after two that every row carries:
+// how many delta rows the statement read, and whether the counts are filled.
 //
-// The issue's items are the issues whose text has something to embed (issueHasText), each with
-// its embeddings row (issueSourceFrom), current when that row holds a vector from the identity of
-// the issue's current text (issueHash). That hash is the row's content_hash wherever the recorded
-// source is the current one, so an issue whose inputs have not changed since the last run of
-// recordIssueSources reads no spec at all; any other issue builds and hashes its text as the pass
-// does (issueRows), about 0.4 ms each on a test Postgres, and the issue's written_at is its
-// created_at. So the counts are the ones issueItems left-joined to their rows would give: an
-// issue whose inputs changed is slower to count, never counted from a stale text (but for the one
-// theoretical false match issueSource names).
-//
-// Each arm counts its own rows by kind (coverageCounts), the window arm by the kind's position,
-// before the arms meet, and the outer select adds those counts up per kind and takes the earliest
-// of their earliest waits: the answer one count over every arm's rows gives, since counts add up
-// and the earliest of the arms' earliest is the earliest of all. So no row of an arm passes one by
-// one through the union and a second aggregate. On the scale test's corpus at 0.3 x production's
-// size, on a test Postgres, that took about 15% less time than one count over the arms' rows, with
-// the table in each state of the visibility map it was measured in, and answered the same rows in
-// one snapshot.
-var coverageQuery = func() string {
-	uncovered := make([]string, 0, len(notIndexedKinds))
+// What it reads does not grow with the corpus: a base row for each class, the bounded delta rows,
+// one index entry for each probe, and route_roster's row. Under planCoverage's settings no other
+// path reads a probe's rows: each orders by the key after its index's equality keys, and the paths
+// that would sort or scan the table are off.
+var coverageRead = func() string {
+	const current = "matched and $1::text <> '' and model = $1::text"
+	// otherModels is the earliest wait of probe over each model a live matched class of kind names
+	// that is not current: every model when there is no identity, which then holds nothing current.
+	otherModels := func(kind, probe string) string {
+		return `(select min((` + probe + `)) from classes c
+			  where c.kind = '` + kind + `' and c.matched and not c.dead and c.items > 0 and ($1::text = '' or c.model <> $1::text))`
+	}
+	oldest := map[string]string{
+		issueKind: `least(
+			(select waited_since from search_coverage_issues where not dead and has_text and not matched order by waited_since limit 1),
+			` + otherModels(issueKind, `select waited_since from search_coverage_issues where not dead and model = c.model and has_text and matched order by waited_since limit 1`) + `)`,
+	}
+	for _, kind := range windowCoverageKinds {
+		window := "select pending_since from embeddings where kind = '" + kind + "' and not dead and "
+		oldest[kind] = `least(
+			(` + window + `(` + windowUnembedded + `) order by pending_since limit 1),
+			(` + window + `model is null and (` + windowEmbedded + `) order by pending_since limit 1),
+			` + otherModels(kind, window+`model = c.model and (`+windowEmbedded+`) order by pending_since limit 1`) + `)`
+	}
+	arms := make([]string, 0, len(coverageKinds)+len(notIndexedKinds))
+	for _, kind := range coverageKinds {
+		arms = append(arms, `select '`+kind+`'::text as kind, true as indexed, coalesce(sum(items), 0)::bigint as items,
+			       coalesce(sum(items) filter (where `+current+`), 0)::bigint as current,
+			       coalesce(sum(items) filter (where dead and not (`+current+`)), 0)::bigint as failed,
+			       floor(extract(epoch from now() - `+oldest[kind]+`))::bigint as oldest
+			from classes where kind = '`+kind+`'`)
+	}
 	for _, kind := range notIndexedKinds {
-		uncovered = append(uncovered, fmt.Sprintf(
-			"select '%s'::text, false, (%s)::bigint, 0::bigint, 0::bigint, null::bigint", kind.kind, kind.items))
+		items, from := "coalesce(sum(items), 0)", " from classes where kind = '"+kind.kind+"'"
+		if kind.kind == sessionKind {
+			items, from = kind.items, ""
+		}
+		arms = append(arms, "select '"+kind.kind+"'::text, false, ("+items+")::bigint, 0::bigint, 0::bigint, null::bigint"+from)
 	}
 	return `
-		with judged as (
-			select (` + windowKindArray + `)[position] as kind, ` + coverageCounts + `
-			from (select array_position(` + windowKindArray + `, kind) as position, pending_since as written_at, pending_since, dead,
-			             coalesce(embedding is not null and embedded_hash = content_hash and $1::text <> '' and model = $1::text, false) as current
-			      from embeddings
-			      where (` + windowEmbedded + `) or (` + windowUnembedded + `)) windows
-			group by position
-			union all
-			select kind, ` + coverageCounts + `
-			from (select '` + issueKind + `'::text as kind, i.created_at as written_at, e.pending_since, coalesce(e.dead, false) as dead,
-			             coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = ` + issueHash + `, false) as current
-			      from ` + issueSourceFrom + `
-			      where ` + issueHasText + `) issue_items
-			group by kind
+		with deltas as (
+			select kind, model, matched, dead, items from search_coverage_deltas limit ` + strconv.Itoa(coverageDeltaBound+1) + `
+		),
+		classes as (
+			select kind, model, matched, dead, sum(items)::bigint as items
+			from (select kind, model, matched, dead, items from search_coverage_counts
+			      union all
+			      select kind, model, matched, dead, items from deltas) kept
+			group by kind, model, matched, dead
 		)
-		select kind, true, sum(items)::bigint, sum(current)::bigint, sum(failed)::bigint,
-		       floor(extract(epoch from now() - min(waited_since)))::bigint
-		from judged
-		group by kind
-		union all ` + strings.Join(uncovered, "\n union all ")
+		select (select count(*) from deltas), exists (select 1 from search_coverage_filled where id), counted.*
+		from (` + strings.Join(arms, "\n\t\tunion all ") + `) counted`
 }()
 
-// coverageCounts is what each arm of coverageQuery counts of its rows, grouped by kind (the window
-// arm by the kind's position): its items, how many are current, how many are dead and not current
-// (failed), and when the longest-waiting lacking one, neither current nor dead, started waiting,
-// the later of its row's pending_since and its written_at. Every arm names its rows' columns
-// written_at, pending_since, dead and current, so every arm counts alike.
-const coverageCounts = `count(*) as items, count(*) filter (where current) as current,
-			       count(*) filter (where dead and not current) as failed,
-			       min(greatest(pending_since, written_at)) filter (where not current and not dead) as waited_since`
+// CoverageReadStatement is the text of the report's one statement (coverageRead), for a
+// measurement that runs it under EXPLAIN where the report runs (T15, on production).
+func CoverageReadStatement() string {
+	return coverageRead
+}
 
 // coverageStatementTimeout is the statement_timeout Coverage holds its statement to: Postgres ends
 // a statement that runs past it, and Coverage answers that as ErrCoverageTimedOut, which the
 // route answers 503 SEARCH_COVERAGE_TIMEOUT. 10 s, because it is a third of the 30 s socket
 // timeout of the search coverage probe (dispatch://INFRA-1482), so the route answers the probe
 // well before the probe gives up; it is below the 15 s the route's slowest answer of a day is
-// held to (dispatch://INFRA-4241, R1); it is about ten times what this statement is expected to
-// take at production's size, an estimate (about 1 s on a test Postgres at that size, where
-// production ran the statement before this one about twice as fast as that Postgres did); and it
-// is the 10 s line R2 measures the statement against, so the corpus size R2 states is the size at
-// which the route would start to refuse. A var, not a const, so another package's test can
-// shorten it (ShortenCoverageBoundForTest) rather than wait ten seconds out, as
-// endMeaningStatementsAt shortens search's bound.
+// held to (dispatch://INFRA-4241, R1); and the statement it bounds reads a number of rows that does
+// not grow with the corpus (coverageRead), so it is reached only by a database that does not
+// answer, which is what the 503 is for. A var, not a const, so another package's test can shorten
+// it (ShortenCoverageBoundForTest) rather than wait ten seconds out, as endMeaningStatementsAt
+// shortens search's bound.
 var coverageStatementTimeout = "10s"
 
 // coverageRollbackTimeout bounds Coverage's rollback, which runs after the statement whatever
@@ -836,43 +860,49 @@ func coverageFailed(ctx context.Context, err error) error {
 	return fmt.Errorf("search coverage: %w", err)
 }
 
-// coverageSettings are the settings planCoverage runs in Coverage's transaction before the
-// coverage statement (coverageQuery): sequential scans, sorts, parallel workers and JIT off, and
-// work_mem raised so that the bitmap stays exact (planCoverage says why). They are set local, in
-// one Exec: they carry no argument, so pgx sends them over the simple protocol, which takes a
-// statement list, as beginMeaningScan's settings go (api/search.go).
+// coverageSettings are the settings planCoverage runs before the report's statement (coverageRead)
+// and before the recount's window statement (windowClasses): sequential scans, sorts, parallel
+// workers and JIT off, and work_mem raised so that the bitmap stays exact (planCoverage says why).
+// They are set local, in one Exec: they carry no argument, so pgx sends them over the simple
+// protocol, which takes a statement list, as beginMeaningScan's settings go (api/search.go).
 const coverageSettings = `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`
 
-// planCoverage runs coverageSettings in Coverage's transaction tx, which then runs the coverage
-// statement (coverageQuery). Every setting is set local, so none outlives tx and the connection
+// planCoverage runs coverageSettings in tx, Coverage's transaction or the recount's window group's,
+// which then runs its statement. Every setting is set local, so none outlives tx and the connection
 // goes back to the pool with none of them. Coverage calls it once it has bounded the statement,
 // so the settings run under coverageStatementTimeout too. It is a function of its own so that a
-// test or a measurement of the statement sets tx as Coverage does. It reads nothing first: no
-// estimate of the planner's decides how the window rows are read, so there is no statistic to
-// read, and R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever the statistics
-// read and whatever share of the windows is embedded.
+// test or a measurement of a statement sets tx as Coverage does. It reads nothing first: no
+// estimate of the planner's decides how the rows are read, so there is no statistic to read, and
+// R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever the statistics read and
+// whatever share of the windows is embedded.
 //
-// Under these settings the window arm of coverageQuery has exactly one access path. The planner
-// reads a table's rows by a sequential scan, or through an index that reads one of the
+// Under these settings each probe of the report (coverageRead) has one path that is not off: it
+// orders by the key after the equality keys of the one index whose predicate its WHERE holds word
+// for word, so that index hands its entries over in that order and the first answers. Every other
+// path sorts, or scans the table, and both are off.
+//
+// Under these settings the recount's window statement (windowClasses), which reads the window rows
+// as the window arm of main's coverage statement read them, has exactly one access path. The
+// planner reads a table's rows by a sequential scan, or through an index that reads one of the
 // statement's conditions, whose predicate those conditions prove, whose order the statement can
-// use, or that holds every column the statement reads (an index-only scan). The arm's kind test is
-// a regex that no btree reads and that proves no other index's predicate (windowItems), as its
+// use, or that holds every column the statement reads (an index-only scan). The kind test is a
+// regex that no btree reads and that proves no other index's predicate (windowItems), as its
 // blank test is; it groups by the kind's position, an expression no index is ordered by
-// (coverageQuery); it reads columns no index holds; the HNSW index embeddings_cosine, on
-// embedding, answers an order by distance alone and has no bitmap scan; and the arm selects
-// embedded rows and dead ones, so its conditions do not prove embeddings_pending's predicate
+// (windowClasses); it reads columns no index holds; the HNSW index embeddings_cosine, on
+// embedding, answers an order by distance alone and has no bitmap scan; and it selects embedded
+// rows and dead ones, so its conditions do not prove embeddings_pending's predicate
 // (embedded_hash is distinct from content_hash and not dead). That leaves a sequential scan, which
 // would run the blank test over every window's text and which enable_seqscan = off disables, and
 // one bitmap heap scan over a BitmapOr of the two window indexes, each of whose predicates one side
-// of the arm's OR proves (the BitmapOr reads embeddings_window_unembedded twice, once for each test
+// of its OR proves (the BitmapOr reads embeddings_window_unembedded_since twice, once for each test
 // of that half's own OR). With both window indexes dropped, the window rows are read by the
 // disabled sequential scan and by nothing else (TestNoOtherIndexCanReadTheWindowKinds); with them,
 // the bitmap is the plan on a table of a few dozen rows and under costs pushed to extremes
 // (TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes).
 //
-// So the arm's cost is the data's: every entry of both window indexes, and each heap page holding
-// window rows once, in the table's order, with the regexes left to the recheck, which an exact
-// bitmap never runs. That holds whatever the visibility map holds, since the scan reads the rows'
+// So the window statement's cost is the data's: every entry of both window indexes, and each heap
+// page holding window rows once, in the table's order, with the regexes left to the recheck, which
+// an exact bitmap never runs. That holds whatever the visibility map holds, since the scan reads the rows'
 // columns from each such page whether it is all-visible or not; whatever the statistics read,
 // since no estimate chooses the path; and whatever share of the windows is embedded, since the one
 // bitmap holds both halves. work_mem is raised to 128MB so that the bitmap stays exact: an exact
@@ -881,20 +911,18 @@ const coverageSettings = `set local enable_seqscan = off; set local enable_sort 
 // the indexes' predicates, the regex over its windows' text among them. A bitmap takes only what
 // its pages need, so the setting is a ceiling, not an allocation.
 //
-// The planner's other choices by estimate are off too. enable_sort = off leaves the window arm's
-// grouping, and the one over the arms, to a HashAggregate, where the planner would otherwise weigh
-// a Sort and a GroupAggregate against it by its estimate of the rows (the issue arm's one group
-// needs neither). max_parallel_workers_per_gather = 0, since the planner chooses a parallel plan by
-// its estimated cost, and the parallel bitmap plan was the slower on a pod's test Postgres. jit =
-// off, since Postgres compiles a statement whose estimated cost passes a threshold, and every
-// measurement of this statement ran with JIT off (a pod's test server and the builds Job);
-// production's setting was never read. Index and index-only scans stay on, so the issue arm keeps
-// its index scans: 65 to 140 ms of the statement at 0.3 x production's size, where with index scans
-// off its lookups were bitmap heap scans and an issue's latest spec version was found by reading
-// every version of its document (issueSourceFrom), about 410 ms.
+// The planner's other choices by estimate are off too. enable_sort = off leaves the window
+// statement's grouping, and the report's, to a HashAggregate, where the planner would otherwise
+// weigh a Sort and a GroupAggregate against it by its estimate of the rows.
+// max_parallel_workers_per_gather = 0, since the planner chooses a parallel plan by its estimated
+// cost, and the parallel bitmap plan was the slower on a pod's test Postgres. jit = off, since
+// Postgres compiles a statement whose estimated cost passes a threshold, and every measurement of
+// the window statement ran with JIT off (a pod's test server and the builds Job); production's
+// setting was never read. Index and index-only scans stay on: they are the report's probes.
 //
-// Each earlier version of this statement left the planner a choice of paths, and INFRA-4241's
-// tester found each choice wrong in a state a production table spends time in. The planner cannot
+// Each version of main's coverage statement before the window statement left the planner a
+// choice of paths, and INFRA-4241's tester found each choice wrong in a state a production table
+// spends time in. The planner cannot
 // estimate either half of the window rows: both predicates compare embedded_hash with
 // content_hash, two columns of one row, which it prices at its default equality selectivity, half
 // a percent (at production's size, 4,868 rows estimated against 974,072 read for the embedded
@@ -929,6 +957,10 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 // each kind it covers nothing of (notIndexedKinds) holds. Its definitions are
 // model.SearchCoverageCounts'; Total sums the covered kinds, and its oldest lacking age is
 // theirs. An uncovered kind is in no total: it has no vector to be behind on.
+//
+// It reads the counts the writes keep (coverageRead), in one statement, and never counts an item's
+// rows: it answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind when more
+// than coverageDeltaBound delta rows wait for the fold, and otherwise the counts.
 //
 // It reads in a read-only transaction whose statement runs under coverageStatementTimeout, and a
 // statement Postgres ends at that bound while ctx is live answers ErrCoverageTimedOut
@@ -976,16 +1008,18 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	if err := planCoverage(ctx, tx); err != nil {
 		return model.SearchCoverage{}, err
 	}
-	rows, err := tx.Query(ctx, coverageQuery, identity)
+	rows, err := tx.Query(ctx, coverageRead, identity)
 	if err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
 	}
 	defer rows.Close()
+	var deltaRows int64
+	var filled bool
 	for rows.Next() {
 		var kind string
 		var indexed bool
 		var counts model.SearchCoverageCounts
-		if err := rows.Scan(&kind, &indexed, &counts.Items, &counts.Current, &counts.Failed, &counts.OldestLackingSeconds); err != nil {
+		if err := rows.Scan(&deltaRows, &filled, &kind, &indexed, &counts.Items, &counts.Current, &counts.Failed, &counts.OldestLackingSeconds); err != nil {
 			return model.SearchCoverage{}, coverageFailed(ctx, err)
 		}
 		if !indexed {
@@ -1010,6 +1044,12 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	}
 	if err := rows.Err(); err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
+	}
+	switch {
+	case !filled:
+		return model.SearchCoverage{}, ErrCoverageNotFilled
+	case deltaRows > coverageDeltaBound:
+		return model.SearchCoverage{}, ErrCoverageFoldBehind
 	}
 	for _, counts := range kinds {
 		report.Total.Items += counts.Items
