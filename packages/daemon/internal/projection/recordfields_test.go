@@ -259,7 +259,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
 			SendFailures: 2, LastSendFailureAt: projectedAt.Add(-5 * time.Minute),
-			LastSendError: "post to the worker stream: connection refused",
+			LastSendError: "worker-stream: legion-legion-legion-500-implementer refused adopt-working-copy: " +
+				"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-500/.git/index.lock " +
+				"was last written 31m ago",
 		},
 		BootTokenHash: []byte{0xb0, 0x07}, CapabilityHash: []byte{0xca, 0xfe},
 		UncertainStreak: 1,
