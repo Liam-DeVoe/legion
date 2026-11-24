@@ -3817,7 +3817,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // (RecordedDeath.Turn), and the zero time for died, whose relaunch the gate reserves.
 func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool, turn time.Time) error {
 	if uncharged {
-		return m.launchAfter(ctx, false, false, false, turn, ended)
+		return m.launchAfter(ctx, false, false, false, turn, ended, StartWork{})
 	}
 	return m.relaunchAfterFailure(ctx, CauseDied, ended, turn)
 }
