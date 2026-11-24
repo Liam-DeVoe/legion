@@ -354,3 +354,54 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 		})
 	}
 }
+
+// A reason quotes a word of the plan, a need, a role or a key, to at most MostQuotedBytes, cut at
+// the start of a character and marked with the word's length, and a word at the bound whole. And
+// FromBlocks takes a task id at MostTaskIDBytes and refuses one outside Dispatch's task form with
+// one reason, which states the form and quotes the id the same way. The fault is a reason that
+// quotes a word whole; the control is quoted with its cut taken out, under which the long need,
+// role and key are quoted whole and the 900 KB id's refusal grows with it.
+func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	atBound := strings.Repeat("x", MostQuotedBytes)
+	long := strings.Repeat("x", 1<<20)
+	// 201 bytes whose byte at the bound falls inside a two-byte é.
+	wide := "a" + strings.Repeat("é", 100)
+	role := "r" + strings.Repeat("o", 300)
+	for _, tc := range []struct {
+		name  string
+		got   []Refusal
+		quote string // the word as the one reason quotes it
+	}{
+		{"a need of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", long)), d), long[:MostQuotedBytes] + "… (cut from 1048576 bytes),"},
+		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), "needs " + atBound + ","},
+		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), wide[:127] + "… (cut from 201 bytes),"},
+		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), role[:MostQuotedBytes] + "… (cut from 301 bytes),"},
+		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role)), role[:MostQuotedBytes] + "… (cut from 301 bytes)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.got) != 1 || !strings.Contains(tc.got[0].Reason, tc.quote) || len(tc.got[0].Reason) > 300+len(tc.quote) {
+				t.Fatalf("the reasons %.400q, want one quoting %.200q", tc.got, tc.quote)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		id    string
+		taken bool
+	}{
+		{"an id of MostTaskIDBytes", "a" + strings.Repeat("0", MostTaskIDBytes-1), true},
+		{"an id one byte past it", "a" + strings.Repeat("0", MostTaskIDBytes), false},
+		{"an id with a dot", "a.b", false},
+		{"an id with a capital", "A", false},
+		{"an id of 900 KB", strings.Repeat("a", 900<<10), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := FromBlocks("plan-md", 1, []Block{taskNeeding(tc.id)})
+			if tc.taken != (err == nil) || err != nil && (len(err.Error()) > 500 ||
+				!strings.Contains(err.Error(), "the task "+quoted(tc.id)+" has an id") || !strings.Contains(err.Error(), "lowercase letters, digits and hyphens")) {
+				t.Fatalf("FromBlocks(an id of %d bytes) = %.600v, want taken %v, or one reason within 500 bytes stating the form", len(tc.id), err, tc.taken)
+			}
+		})
+	}
+}
