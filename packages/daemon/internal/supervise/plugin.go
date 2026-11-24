@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -491,7 +492,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	// that will move it — and is the lane's uncharged relaunch (relaunchStale).
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, runtime.OutcomeStalePlugin, endStalePlugin)
+		err = m.relaunchAfterFailure(ctx, runtime.OutcomeStalePlugin, endStalePlugin, time.Time{})
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

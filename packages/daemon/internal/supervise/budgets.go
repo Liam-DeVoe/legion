@@ -118,7 +118,9 @@ var FailureCauses = []FailureCause{
 // for the failures charged so far (backOff), or the claim fails when the budget is spent. Where it
 // does not, nothing is counted and no backoff is waited (Charges says which ends those are): the
 // backoff spaces out the failures charged against the claim, and this end is none of them. That
-// relaunch is launch itself, with the one lifecycle check and the retry every launch has.
+// relaunch is launch itself, on the caller's turn (launchAfter), with the one lifecycle check and
+// the retry every launch has. A death is charged once however often its relaunch is raised
+// (deathLaunchFailureCharged).
 //
 // A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
 // it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
@@ -138,21 +140,47 @@ var FailureCauses = []FailureCause{
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline). It is the record's words and no outcome: what the policy reads
 // is o alone.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string) error {
+//
+// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
+// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
+// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
+// anew, so it reserves afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, turn time.Time) error {
 	if !Charges(o) {
-		return m.launch(ctx, ending)
+		return m.launchAfter(ctx, false, false, false, turn, ending)
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, o, ending)
+			return m.relaunchAfterFailure(ctx, o, ending, time.Time{})
 		}, err)
 	}
 	cause := failureCause(o)
-	m.claim.PendingCause = cause
-	if m.chargeLaunch(o) {
+	// A death an earlier raise of this relaunch charged is in the count already: this raise counts
+	// nothing, and fails the claim only where that count spent the budget.
+	spent := m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures
+	if !m.deathLaunchFailureCharged(cause) {
+		m.claim.PendingCause = cause
+		spent = m.chargeLaunch(o)
+	}
+	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, time.Time{}, ending)
+	return m.launchAfter(ctx, true, false, false, turn, ending)
+}
+
+// deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
+// the same relaunch has already charged. A death's relaunch is raised as often as that one death
+// is: by the report that decided it (died), by the sweep's next report of the same death, where
+// the lifecycle check refused the relaunch before (relaunchRefused keeps such a claim over its
+// dead process and arms no retry), and by the boot's replay of the death after a restart
+// (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
+// failure, and the others charge none. What says the charge was made is the cause it records
+// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
+// the charge sets it to died in the same claim write as the count. So a write the claim makes
+// while the relaunch waits — a task a start queues meanwhile — stores the two together, and a
+// restart reads either both or neither.
+func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
+	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
 }
 
 // chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether
