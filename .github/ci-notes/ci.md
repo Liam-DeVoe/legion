@@ -684,8 +684,8 @@ inside it. That package's tests are where the rest of the time is.
 A job split into legs keeps its old check-run name on a job of its own, which needs the legs'
 job, runs under their gate and passes only when each of its own legs' newest record passed
 (.github/scripts/leg-verdict.sh): a failure in another suite's leg leaves it passing. daemon-go
-carries go-daemon's legs' name; envoy-go-checks carries go-envoy's two envoy-go-checks legs';
-envoy-go, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers and dispatch-memory
+carries go-daemon's plain legs' name and daemon-go-race its race legs'; envoy-go,
+envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers and dispatch-memory
 carry the old check-run names of go-envoy-held's split suites the same way. The legs of a split
 job are named `<name> (<i>/<n>)`, each index from 1 to n once (check-ci-layout.sh's rule 34), so
 the legs that read a sharded corpus (CORPUS_SHARD=<i>/<n>) read each of its documents once.
