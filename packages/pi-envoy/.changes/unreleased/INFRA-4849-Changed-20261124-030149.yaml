@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   The skills `agent-secrets`, `approval-review`, `dispatch`, `dispatch-first`,
-  `dispatch-writing-specs`, `envoy`, `outside-message` and `plain-words` are written in the style of
+  `dispatch-writing-specs`, `envoy` and `plain-words` are written in the style of
   writing-agent-skills. Each opens with its goal, and with a `**Done when:**` line where it asks for
   a check that ends its work. Each item holds one rule. The rules are the same. `plain-words` now
   lets a bold label start a rule in a skill.
