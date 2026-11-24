@@ -281,7 +281,7 @@ func sortedPairs(pairs map[string]bool) []string {
 func validateTable(line []phase.Phase, rows []Row) error {
 	for _, current := range phase.All {
 		for _, trigger := range allWorkflowTriggers {
-			hasRow := false
+			hasRow, retroEnd := false, current == phase.Retro && trigger == TriggerRetroCompleted
 			var retroEnds []phase.Phase
 			for _, row := range rows {
 				if row.From != current || row.Trigger != trigger {
@@ -291,7 +291,7 @@ func validateTable(line []phase.Phase, rows []Row) error {
 				if row.To == "" || row.Guard == nil || len(row.Effects) == 0 {
 					return fmt.Errorf("%s/%s is not a complete transition row", current, trigger)
 				}
-				if current == phase.Retro && trigger == TriggerRetroCompleted {
+				if retroEnd {
 					retroEnds = append(retroEnds, row.To)
 					continue
 				}
@@ -299,7 +299,7 @@ func validateTable(line []phase.Phase, rows []Row) error {
 					return fmt.Errorf("%s/%s moves to %s, want %s", current, trigger, row.To, want)
 				}
 			}
-			if hasRow && current == phase.Retro && trigger == TriggerRetroCompleted && !slices.Equal(retroEnds, retroTargets) {
+			if hasRow && retroEnd && !slices.Equal(retroEnds, retroTargets) {
 				return fmt.Errorf("%s/%s moves to %v, want %v", current, trigger, retroEnds, retroTargets)
 			}
 			if workflowTransitionRequired(line, current, trigger) {
