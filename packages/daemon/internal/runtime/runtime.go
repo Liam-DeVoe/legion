@@ -186,25 +186,61 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
 // BreakingDrift is the mark a reason of PodDrift starts with where the drift breaks the pod: no
-// role can keep working in it (R7 of dispatch://INFRA-3271). dispatch://INFRA-4754 declares which
-// kinds of drift break a pod, and a pod below a declared contract floor breaks too, and it opens
-// an update round over such a pod at once, whatever its spec names as the cause. A round records
-// its reasons as one string at its open (supervise.Claim.UpdateReasons), and the daemon reads a
-// round as one over a drift that breaks the pod where that string holds this mark
-// (internal/daemon's roundBreaksPod): such a round replaces its pod whatever the read of its
-// workspace finds, and tells the issue's architect what it took. Every other round is one the
-// pod's roles can keep working under, and a read that finds work, or that cannot be made, keeps
-// that pod. No reason PodDrift gives today carries the mark, so until INFRA-4754 lands every round
-// is one the roles can keep working under.
+// role can keep working in it (R7 of dispatch://INFRA-3271). The runtime sets it where it decides
+// the drift, at the start of that drift's reason (Breaks), and nowhere else: a value a reason
+// displays, an image name or an account among them, follows the reason's own first words, so it
+// can hold the mark's words without making the drift one that breaks the pod. The Sandbox
+// runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v22:
+// a role must not be able to keep a pod on an account the operator replaced by leaving its
+// working copy dirty or its read failing). dispatch://INFRA-4754 declares which other kinds of
+// drift break a pod, and a pod below a declared contract floor breaks too, and it opens an update
+// round over such a pod at once, whatever its spec names as the cause. A round records its
+// reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons), with every
+// marked reason first, so the string opens on the mark exactly where one of its reasons does
+// (BreaksPod). Such a round replaces its pod whatever the read of its workspace finds, and tells
+// the issue's architect what it took. Every other round is one the pod's roles can keep working
+// under, and a read that finds work, or that cannot be made, keeps that pod. The leak check
+// digest's drift is not marked: INFRA-4754 declares that it drains, and a kept pod's roles are
+// told the checker they run.
 const BreakingDrift = "[breaks the pod] "
 
-// TakenPod is what a launch's own replacement of a live issue pod took (R7 of
-// dispatch://INFRA-3271): the claim whose launch made it, the issue, the pod, why the launch
-// replaced the pod rather than keep it — the pod is not live, a facet of it fixed for its life
-// moved, its Sandbox has another disk shape, its launchers are not bound to it, or its stored
-// template cannot be read — and what a read of the workspace through the pod's launcher found
-// before the replacement (Work), or why no read could be made (Err). The daemon tells the issue's
-// architect what such a replacement took (LaunchTook).
+// Breaks is whether reason, one reason PodDrift gave, is of a drift that breaks the pod: it opens
+// on BreakingDrift.
+func Breaks(reason string) bool { return strings.HasPrefix(reason, BreakingDrift) }
+
+// RoundReasons is the one string an update round records of the reasons PodDrift gave for its pod
+// (supervise.Claim.UpdateReasons): each reason of a drift that breaks the pod (Breaks) first, then
+// every other, each group in the order given, joined with ", ". The string opens on BreakingDrift
+// exactly where a reason does (BreaksPod).
+func RoundReasons(reasons []string) string {
+	ordered := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		if Breaks(reason) {
+			ordered = append(ordered, reason)
+		}
+	}
+	for _, reason := range reasons {
+		if !Breaks(reason) {
+			ordered = append(ordered, reason)
+		}
+	}
+	return strings.Join(ordered, ", ")
+}
+
+// BreaksPod is whether a round whose recorded reasons are reasons (RoundReasons) is over a drift
+// that breaks the pod: its first recorded reason opens on BreakingDrift. The mark inside a
+// displayed value further on says nothing.
+func BreaksPod(reasons string) bool { return Breaks(reasons) }
+
+// TakenPod is what a launch's own replacement of an issue pod takes (R7 of dispatch://INFRA-3271):
+// the claim whose launch makes it, the issue, the pod ("" where the runtime does not record which
+// pod used the disk last: a kept volume of a Sandbox that runs no pod), why the launch replaces the
+// pod rather than keep it — the pod is not live, a facet of it fixed for its life moved, its
+// Sandbox has another disk shape or a kept volume to reset, its launchers are not bound to it, or
+// its stored template cannot be read — and what a read of the workspace through a launcher of the
+// pod found before the replacement (Work), or why no read could be made (Err). The daemon records
+// it before the replacement (LaunchTakes) and tells the issue's architect what such a replacement
+// took once it is made (LaunchTook).
 type TakenPod struct {
 	Claim  claim.Token
 	Issue  string
@@ -218,12 +254,31 @@ type TakenPod struct {
 // such work, or no read could be made.
 func (t TakenPod) Tells() bool { return t.Err != nil || t.Work.HoldsWork() }
 
+// LaunchTakes is the daemon's record of a launch's own replacement of an issue pod, which the
+// runtime hands it before the replacement takes anything (internal/daemon's recordLaunchTakes):
+// the daemon keeps what the replacement is about to take, durably, so that the architect's notice
+// of it goes out even where the launch or the daemon stops once the disk is taken (Sol's points 1
+// and 2 on #5285). An error is the launch's, which then takes nothing.
+type LaunchTakes func(ctx context.Context, taken TakenPod) error
+
 // LaunchTook is the daemon's word of a launch's own replacement of an issue pod, which the runtime
-// hands it once the suspension that takes the pod is written (internal/daemon's tellLaunchTook):
-// the daemon tells the issue's architect once what the replacement took, each commit and the
-// working-copy change by name, or that no read could be made. It returns nothing: the replacement
-// is made, and a telling that fails is the daemon's own line.
+// hands it once the act that takes the disk is done (internal/daemon's tellLaunchTook): the daemon
+// tells the issue's architect once what the replacement took, each commit and the working-copy
+// change by name, or that no read could be made. It returns nothing: the replacement is made, and
+// a notice the store does not take now stays on the daemon's record (LaunchTakes) until it does.
 type LaunchTook func(ctx context.Context, taken TakenPod)
+
+// PodTakenReader says whether a replacement of an issue's pod podUID has taken it, from the
+// runtime's own record and without waiting for the pod's launch turn: taken is true where the
+// runtime holds no Sandbox of the issue, where the Sandbox is suspended, and where it holds
+// another pod or none; it is false where the Sandbox runs podUID as its own pod. read is false
+// where the runtime cannot say. The daemon asks it of a replacement it recorded before the runtime
+// acted (internal/daemon's finishReplacements): a replacement whose call failed, or whose daemon
+// stopped, after the suspension landed is a replacement made, and one whose pod still runs is none.
+// A runtime whose processes run in no pod implements nothing here.
+type PodTakenReader interface {
+	PodTaken(issue, podUID string) (taken, read bool)
+}
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the

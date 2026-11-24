@@ -9,6 +9,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,26 +23,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// roundBreaksPod is whether a round whose recorded reasons are reasons (supervise.Claim's
-// UpdateReasons, the one string a round records at its open, roundReasons) is over a drift that
-// breaks the pod: the string holds runtime.BreakingDrift, the mark a reason of a drift kind that
-// dispatch://INFRA-4754 declares breaks the pod, or of a pod below a declared contract floor,
-// starts with. Every round INFRA-4754 opens at once is such a round, whatever its spec names as
-// the cause, and every other round is one the pod's roles can keep working under. No reason that
-// PodDrift gives today carries the mark, so until INFRA-4754 lands no round breaks its pod.
-func roundBreaksPod(reasons string) bool {
-	return strings.Contains(reasons, runtime.BreakingDrift)
-}
-
 // roundKeeps is whether read, the read of the workspace before one of round's replacements, keeps
 // the pod: it found work that no branch or tag on origin holds, or it could not be made, the round
-// is over a drift the pod's roles can keep working under (roundBreaksPod), and the pod's disk is no
-// kept volume that the issue's next pod mounts (roundKeptVolume), which no replacement deletes. A
-// round over a drift that breaks the pod is replaced whatever the read found, since no role can
-// keep working in that pod, and the issue's architect is told what the replacement took
-// (roundReplaced).
+// is over a drift the pod's roles can keep working under (its recorded reasons, which reasons is,
+// do not open on runtime.BreakingDrift: runtime.BreaksPod), and the pod's disk is no kept volume
+// that the issue's next pod mounts (roundKeptVolume), which no replacement deletes. A round over a
+// drift that breaks the pod (today a drift of the pod's service account, which the Sandbox
+// runtime's PodDrift marks where it decides it, spec v23) is replaced whatever the read found,
+// since no role can keep working in that pod, and the issue's architect is told what the
+// replacement took (roundReplaced). A round is read by the reasons it recorded at its open
+// (dispatch://INFRA-2981 R9): a drift that breaks the pod and comes while a round is open is the
+// next round's, which the keep of this round's read holds back no more than any other
+// (podKeptForWork).
 func (s *supervision) roundKeeps(issue string, group []supervise.Claim, round, reasons string, read workspaceRead) bool {
-	return !read.clean() && !roundBreaksPod(reasons) && !s.roundKeptVolume(issue, group, round)
+	return !read.clean() && !runtime.BreaksPod(reasons) && !s.roundKeptVolume(issue, group, round)
 }
 
 // keepPodForRound ends round with no replacement, because the read before its replacement found
@@ -78,6 +73,13 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // and the role told. The idle rule reads the same row, so the idle release of the kept pod waits
 // as for its own decline (pods.IdleDecline).
 //
+// The moment is read.at, taken before the claims the keep was decided on were read (group), moved
+// before the start of every turn that ran at the read: a turn group shows running, and a turn the
+// claims read again once the read is made show running with a start no later than read.at. Such a
+// turn may have changed the workspace after the read, and the read it owes comes once it has ended
+// (keptPodReadDue). A turn that started after read.at owes that read anyway (INFRA-341's
+// reviewer's point 1).
+//
 // The open phase's worker (workflow.OpenPhaseRole of issuePhase) is told, where its claim has a
 // process in the pod and is not gone, and the read could read: by a role message that the pod
 // waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
@@ -87,7 +89,11 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // once for each pod (store's recordDecline). So a read after a turn that finds the same work moves
 // the row's moment and tells nobody.
 func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase) (bool, error) {
-	at := keptMoment(read.at, group)
+	after, err := s.supervisor.Claims(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
+	}
+	at := keptMoment(read.at, append(slices.Clone(group), s.viewedGroup(after, issue)...))
 	decline := declineOf(claim.RoleArchitect, pod, at, read.work, read.err)
 	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
 		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work)}, at)
@@ -143,67 +149,115 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 }
 
 // podKeptForWork is whether an earlier round's keep of pod, the pod the issue's claims record, still
-// stands, so that no round opens over the pod at this sweep (reconcileIssuePodUpdate). The keep is
-// the issue's decline row naming pod (store.Store.PodKeepOf): a row naming another pod, or none,
+// stands, so that no round opens over the pod at this sweep (reconcileIssuePodUpdate), and the read
+// that may end the keep where the sweep's snapshot, group, finds it due (keptPodReadDue). The keep
+// is the issue's decline row naming pod (store.Store.PodKeepOf): a row naming another pod, or none,
 // holds nothing here, since the runtime holds another pod for the issue. reasons is the drift this
-// sweep read of the pod, which a message of the read below names.
+// sweep read of the pod, as a round would record it (runtime.RoundReasons). A drift that breaks
+// the pod (runtime.BreaksPod: today a drift of the pod's service account) is held back by no keep
+// (spec v23): the round over it opens, and replaces the pod after the read, as any round over such
+// a drift does. A store that cannot be read keeps the pod for this sweep: a reading nobody took may
+// not open a round that deletes a disk.
 //
-// The read that may end the keep is made here, without a round, once it is due
-// (keptPodReadDue): through a live role in the pod where one runs, else through the pod's
-// launcher (readPodWorkspace). A read that finds nothing that origin does not hold forgets the row
-// (store.Store.ForgetIdleDecline), and a round may open over the pod at this same sweep. A read
-// that finds work, or that cannot be made, writes the row again (recordPodKept): the same work
-// moves its moment and tells nobody, so each turn of the issue costs one read. A store that cannot
-// be read keeps the pod for this sweep: a reading nobody took may not open a round that deletes a
-// disk.
-func (s *supervision) podKeptForWork(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string) bool {
+// The read itself is no part of the walk (INFRA-341's reviewer's point 1): it is a step after it
+// (readKeptPod), handed back as a podReplacement with keptRead set, which reads the claims again,
+// as their machines hold them then, before it reads the workspace. A read made on the walk's
+// snapshot would miss a turn that started after the snapshot, and would hold every later issue of
+// the walk for as long as it runs.
+func (s *supervision) podKeptForWork(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string) (bool, *podReplacement) {
 	keep, err := s.supervisor.store.PodKeepOf(ctx, s.plan.project, issue)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: read whether an update round kept this issue's pod for its disk; no round opens over the pod at this sweep",
 				"issue", issue, "pod", pod, "error", err)
 		}
-		return true
+		return true, nil
 	}
 	declined := keep.Decline
 	if declined.At.IsZero() || declined.PodUID == "" || declined.PodUID != pod {
-		return false
+		return false, nil
+	}
+	if runtime.BreaksPod(reasons) {
+		s.log.Info("supervise: this issue's pod is kept for work on its disk, and it has drifted in a way that breaks it; an update round opens over it and replaces it after the read of its workspace",
+			"issue", issue, "pod", pod, "reason", declined.Reason, "reasons", reasons)
+		return false, nil
 	}
 	if !keptPodReadDue(declined, group, s.plan.clock.Now()) {
 		s.log.Info("supervise: this issue's pod is kept for work on its disk that no branch or tag on origin holds, or for a read that could not be made; no update round opens over it until a read finds nothing that origin does not hold",
 			"issue", issue, "pod", pod, "reason", declined.Reason)
-		return true
+		return true, nil
 	}
-	round := supervise.PodRound(pod)
+	return true, &podReplacement{issue: issue, round: supervise.PodRound(pod), pod: pod, reasons: reasons, keptRead: true}
+}
+
+// readKeptPod is the read that may end an earlier round's keep of the issue's pod, which the walk
+// found due (podKeptForWork), made after the walk. The moment the read records is taken first,
+// then the claims are read again as their machines hold them now, and the read is made only where
+// it is still due over them (keptPodReadDue): a turn that started since the walk's snapshot runs
+// now, and its read comes once it has ended. The read goes through a live role in the pod where
+// one runs, else through the pod's launcher (readPodWorkspace). A read that finds nothing that
+// origin does not hold forgets the row (store.Store.ForgetIdleDecline), and the next sweep may
+// open a round over the pod. A read that finds work, or that cannot be made, writes the row again
+// (recordPodKept): the same work moves its moment and tells nobody, so each turn of the issue
+// costs one read. A read or a write that fails leaves the row as it stands, and the next sweep
+// decides again.
+func (s *supervision) readKeptPod(ctx context.Context, step podReplacement) {
+	issue, round, pod := step.issue, step.round, step.pod
+	at := s.plan.clock.Now()
+	claims, err := s.supervisor.Claims(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read this issue's claims again before the read of its kept pod; the pod stays kept, and the next sweep decides again",
+				"issue", issue, "pod", pod, "error", err)
+		}
+		return
+	}
+	group := s.viewedGroup(claims, issue)
+	keep, err := s.supervisor.store.PodKeepOf(ctx, s.plan.project, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the keep of this issue's pod again before its read; the pod stays kept, and the next sweep decides again",
+				"issue", issue, "pod", pod, "error", err)
+		}
+		return
+	}
+	declined := keep.Decline
+	if declined.At.IsZero() || declined.PodUID != pod {
+		return
+	}
+	if !keptPodReadDue(declined, group, at) {
+		s.log.Info("supervise: the read of this issue's kept pod is not due over its claims as they stand now; a turn of the issue runs, and the read comes once it has ended",
+			"issue", issue, "pod", pod, "working", workingClaims(group))
+		return
+	}
 	process, running := podProcess(group, round)
 	by := viaIssue
 	if running {
 		by = viaProcess
 	}
-	read := s.readPodWorkspace(ctx, issue, round, process, by)
+	read := s.readPodWorkspace(ctx, issue, round, process, by, at)
 	if read.clean() {
 		if err := s.supervisor.store.ForgetIdleDecline(ctx, s.plan.project, issue); err != nil {
 			if ctx.Err() == nil {
-				s.log.Error("supervise: forget the keep of a pod whose read found nothing that origin does not hold; no round opens over the pod at this sweep",
+				s.log.Error("supervise: forget the keep of a pod whose read found nothing that origin does not hold; the pod stays kept, and the next sweep decides again",
 					"issue", issue, "pod", pod, "error", err)
 			}
-			return true
+			return
 		}
 		s.log.Info("supervise: the read of a kept pod found nothing that no branch or tag on origin holds; the pod is kept no longer, and an update round may open over it",
 			append([]any{"issue", issue, "pod", pod}, read.attrs()...)...)
-		return false
+		return
 	}
-	told, err := s.recordPodKept(ctx, issue, round, pod, reasons, read, group, keep.Phase)
+	told, err := s.recordPodKept(ctx, issue, round, pod, step.reasons, read, group, keep.Phase)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: record the read of a kept pod; no round opens over the pod, and the next sweep reads the workspace again",
 				append([]any{"issue", issue, "pod", pod, "error", err}, read.attrs()...)...)
 		}
-		return true
+		return
 	}
 	s.log.Info("supervise: the read of a kept pod found work that no branch or tag on origin holds, or could not be made; the pod stays kept, and no update round opens over it",
 		append([]any{"issue", issue, "pod", pod, "told", told}, read.attrs()...)...)
-	return true
 }
 
 // keptPodReadDue is whether the read that may end a round's keep of a pod (podKeptForWork) is due
@@ -298,7 +352,7 @@ func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work
 
 // tellWorkspaceTaken tells the issue's architect what a replacement of round's pod took, where the
 // read before the replacement found work that no branch or tag on origin holds or could not be
-// made (roundReplaced): a round over a drift that breaks the pod (roundBreaksPod), or a pod whose
+// made (roundReplaced): a round over a drift that breaks the pod (runtime.BreaksPod), or a pod whose
 // disk is a kept volume that the issue's next pod mounts (kept), where the work stays on that
 // volume. named is the claims the replacement's line names (notWaitedFor, or lostClaims for a
 // replacement by issue or at a launch). It is the workspace-taken notice
@@ -353,7 +407,7 @@ func (s *supervision) tellArchitectTaken(ctx context.Context, issue, reason stri
 // ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {
 	why := "The round was over a drift that breaks the pod, so no role could keep working in the pod."
-	if !roundBreaksPod(reasons) {
+	if !runtime.BreaksPod(reasons) {
 		why = "The pod's disk is a kept volume that the issue's next pod mounts, so the replacement did not delete the disk."
 	}
 	gone, lost := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."

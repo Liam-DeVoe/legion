@@ -705,7 +705,7 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // (R7 of dispatch://INFRA-3271, spec v21: INFRA-3118's architect ruled at 04:00Z on 2026-11-24 that
 // a pod's account is such a drift). The mark is set here, where the account's drift is decided, so
 // the daemon's update round over it replaces the pod after the read of its workspace, whatever the
-// read finds, and tells the issue's architect what it took (internal/daemon's roundBreaksPod).
+// read finds, and tells the issue's architect what it took (runtime.BreaksPod).
 func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 	// The phrase drift.go's PodDrift builds, runtime.BreakingDrift+"account "+<the account the
 	// pod runs as>+", now "+<the configured account>, pinned whole and spelled out: it is what an

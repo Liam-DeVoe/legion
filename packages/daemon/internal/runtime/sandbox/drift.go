@@ -472,9 +472,12 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
 	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
 	// kind gate above (!roundCovers) is what keeps the controller's pod out of this reason, as
-	// it does of every other.
+	// it does of every other. Its reason opens on runtime.BreakingDrift, which is set here, where
+	// the account's drift is decided: no role can keep working in a pod on an account the operator
+	// replaced, so the round over it replaces the pod after the read of its workspace whatever the
+	// read finds (R7 of dispatch://INFRA-3271, spec v23). No other reason carries the mark.
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
-		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
+		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
 	for _, moved := range r.driftedInPod(pod, role) {
 		drifted = append(drifted, moved.String())

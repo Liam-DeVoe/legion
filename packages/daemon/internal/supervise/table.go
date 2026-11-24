@@ -309,7 +309,12 @@ type PodUpdateOpen struct {
 // origin holds, or that fails, ends the round with no replacement and keeps the pod (R7 of
 // dispatch://INFRA-3271, internal/daemon's roundKeeps), so the text says that a round can end with
 // no replacement and the pod then stays, and says that the pod goes whatever runs in it only of a
-// replacement the daemon makes.
+// replacement the daemon makes. That keep has two exceptions, and the text names each where it
+// holds (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a pod whose disk is a kept volume
+// that the issue's next pod mounts is replaced whatever the read finds, and the volume keeps the
+// work; and a round over a drift that breaks the pod (runtime.BreaksPod: its recorded reasons open
+// on runtime.BreakingDrift, today a drift of the pod's service account) replaces the pod whatever
+// the read finds and tells the issue's architect what it took, so its ask promises no keep.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
@@ -322,11 +327,23 @@ type PodUpdateOpen struct {
 // and no word that has a second reading.
 func UpdateTask(round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
+	read := "When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. " +
+		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: " +
+		"the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. " +
+		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, " +
+		"and the work on the disk stays on that volume. Otherwise the daemon deletes the pod and the disk."
+	held := "The daemon holds your next task until your process runs again, or until the round ends with no replacement."
+	if runtime.BreaksPod(reasons) {
+		read = "This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds. " +
+			"Before it replaces the pod, the daemon reads the workspace on the pod's disk and tells the issue's architect what the read found. " +
+			"The daemon deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts."
+		held = "The daemon holds your next task until your process runs again."
+	}
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
 
-The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. Otherwise the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
+The round is %[1]s. The round ends at %[2]s (UTC). %[3]s The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
 If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.
 
@@ -352,7 +369,7 @@ These things go with the pod when the daemon replaces it:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again, or until the round ends with no replacement. Do not start new work now.`, round, ends)
+The daemon starts your process again on the new pod, in this same session. %[4]s Do not start new work now.`, round, ends, read, held)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the

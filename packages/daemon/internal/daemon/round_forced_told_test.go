@@ -3,10 +3,10 @@ package daemon
 // R7 of dispatch://INFRA-3271 (spec v20, verification v15's c-forced-replacement-told), the round's
 // case: a round over a drift that breaks the pod replaces it as before, whatever the read of its
 // workspace finds, and the issue's architect is told once what the replacement took. A round is one
-// over a drift that breaks the pod where the reasons it recorded hold the mark
-// runtime.BreakingDrift ("[breaks the pod] "), which a reason of a drift kind dispatch://INFRA-4754
-// declares breaks the pod starts with (roundBreaksPod). No reason PodDrift gives today carries it,
-// so this test scripts such a reason.
+// over a drift that breaks the pod where the reasons it recorded open on the mark
+// runtime.BreakingDrift ("[breaks the pod] "), which the runtime puts at the start of the reason of
+// a drift that breaks the pod (runtime.BreaksPod): today a drift of the pod's service account (spec
+// v23), and the kinds dispatch://INFRA-4754 declares. This test scripts such a reason of the image.
 
 import (
 	"strings"
