@@ -307,18 +307,12 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // that holds its write to the document already read the document standing under that lock
 // (joinLiveWrite), so it reads nothing again.
 func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return "", errUnjoined
+	retired, err := retiredOutsideLiveWrite(ctx, artifactID)
+	if err != nil {
+		return "", err
 	}
-	if joinedLiveWrite(ctx, artifactID) == nil {
-		retired, err := retiredUnderOwnerLock(ctx, tx, artifactID)
-		if err != nil {
-			return "", err
-		}
-		if retired {
-			return "", ErrRetiredDocumentKeepsText
-		}
+	if retired {
+		return "", ErrRetiredDocumentKeepsText
 	}
 	return s.applySuggestion(context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
 }
@@ -525,15 +519,8 @@ func suggestionKind(attrs pmdoc.Attrs, id string) (string, error) {
 // the document standing under that lock (joinLiveWrite), which no retirement passes before the
 // transaction ends, so it reads nothing again.
 func (s *Service) ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return errUnjoined
-	}
-	if joinedLiveWrite(ctx, artifactID) == nil {
-		retired, err := retiredUnderOwnerLock(ctx, tx, artifactID)
-		if err != nil || retired {
-			return err
-		}
+	if retired, err := retiredOutsideLiveWrite(ctx, artifactID); err != nil || retired {
+		return err
 	}
 	plain, err := toPlain(record)
 	if err != nil {
