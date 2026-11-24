@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -137,6 +138,60 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
     getMachineLogins.mockRestore();
   }
 });
+
+// Approve and Deny are both held while either decision is out (`CredentialDecisionButtons`,
+// `heldPress`), never `disabled`: a `disabled` button drops the focus the reader's press left on
+// it to the page's body. The pressed one keeps the focus and a second press of it sends nothing,
+// and the other is held beside it, so a press of it sends nothing either.
+for (const pressed of ["Approve", "Deny"] as const) {
+  const other = pressed === "Approve" ? "Deny" : "Approve";
+  test(`${pressed}, held while its decision is out, keeps the focus, and neither it nor ${other} sends a second decision`, async () => {
+    const user = userEvent.setup();
+    const answered = Promise.withResolvers<void>();
+    const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(
+      machineRecord()
+    );
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+    const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockImplementation(
+      async () => {
+        await answered.promise;
+        return { credential_id: "cred-9", state: "approved" };
+      }
+    );
+    const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockImplementation(async () => {
+      await answered.promise;
+      return { state: "denied" };
+    });
+    const decisions = { Approve: approveCredentialRecord, Deny: denyCredentialRecord };
+
+    try {
+      renderPage();
+
+      await user.click(screen.getByLabelText("Code shown on the machine"));
+      await user.paste("abcd1234");
+      await user.click(screen.getByRole("button", { name: "Look up" }));
+      expect(await screen.findByText("worker-7.example.com")).toBeDefined();
+
+      await pressHeld(user, screen.getByRole("button", { name: pressed }), {
+        name: pressed,
+        sent: () => decisions[pressed].mock.calls.length,
+      });
+      const otherButton = screen.getByRole<HTMLButtonElement>("button", { name: other });
+      expect(heldNotDisabled(otherButton, other)).toBe(true);
+      await user.click(otherButton);
+      expect(decisions[other]).not.toHaveBeenCalled();
+      expect(decisions[pressed]).toHaveBeenCalledTimes(1);
+
+      await act(async () => answered.resolve());
+    } finally {
+      cleanup();
+      lookupMachineCredential.mockRestore();
+      getMachineLogins.mockRestore();
+      approveCredentialRecord.mockRestore();
+      denyCredentialRecord.mockRestore();
+    }
+  });
+}
 
 // An approval Dispatch made and lost its answer for (`409 KEY_COMMITTED`) looks the code up again
 // for its decision, a lookup the approval starts outside Look up's guard and lets the guard go
