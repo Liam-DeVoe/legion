@@ -337,14 +337,16 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 // record of the same window (its project and span) is there, at ws's place, and otherwise read from
 // the window's inputs (windowInputs.record), as it is where the record there was written before it
 // held the waits that gave a slot back (WaitsGaveBack nil), the conflict model with its phases
-// (ConflictModel.Phases nil) or the measures its trace alone gives (Scorecard.GateClosedHours nil,
-// traceMeasures); either way it is written back with ws's place, where that changes the file.
+// (ConflictModel.Phases nil) or the measures its trace alone gives (Scorecard.GateClosedHours or
+// Scorecard.Priorities nil, traceMeasures); either way it is written back with ws's place, where
+// that changes the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
-		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil {
+		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil ||
+		rec.Scorecard.Priorities == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -620,10 +622,10 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	return read, nil
 }
 
-// dropIssueTimes empties card's times of each issue, and its first day's, which only a validation's,
-// a forecast's and a comparison's issues file's line scorecards are read for.
+// dropIssueTimes empties card's times and priorities of each issue, and its first day's, which only
+// a validation's, a forecast's and a comparison's issues file's line scorecards are read for.
 func dropIssueTimes(card *Scorecard) {
-	card.FirstSlot, card.DoneAt = nil, nil
+	card.FirstSlot, card.DoneAt, card.Priorities = nil, nil, nil
 	if card.FirstDayApart != nil {
 		day := *card.FirstDayApart
 		day.FirstSlot, day.DoneAt = nil, nil

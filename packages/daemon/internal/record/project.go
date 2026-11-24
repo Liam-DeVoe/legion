@@ -622,6 +622,74 @@ func (f LineFacts) InWaitGrace(key string) bool {
 	return holds && (since == nil || !rule.GraceOver(*since, f.Now))
 }
 
+// IdleReturns says whether the slot holder holder, holding slot, gives that slot back for
+// idleness under the facts' rule (SlotRule.IdleReturn) at Now. The rule names an idle return;
+// holder keeps a slot where it stands (KeepsSlot) and is no root whose architect writes its
+// design at admitted (AtWork) nor one that arrived carrying the row of another tree (QueuedRoot),
+// as the wait judgement leaves those out (blockers.waitsOf); it waits on its children or on a
+// person (IdleWaits, over members, the pass's own records); it owes no worker a start (Owed);
+// and no claim of it has work under way — a turn, a start or a task no turn has taken, as the
+// holder state reads them (HolderClaimFacts) — and none began or ended a turn, nor did holder take
+// its slot, within the idle return before Now. claims are the claims the caller read, of any
+// issue (Store.HolderClaims); holder's own are those on its issue.
+func (f LineFacts) IdleReturns(holder Issue, slot Slot, members []Issue, claims []HolderClaim) bool {
+	rule := f.Rule.OrMain()
+	if rule.IdleReturn <= 0 || !f.KeepsSlot(holder) || (holder.Phase == phase.Admitted && AtWork(holder, f.Gates[holder.Tree])) ||
+		QueuedRoot(holder, f.Gates[holder.Tree]) {
+		return false
+	}
+	if open, person := IdleWaits(holder, members); !person && len(open) == 0 {
+		return false
+	}
+	if _, owes := f.Owed[holder.Key]; owes {
+		return false
+	}
+	at := HolderFacts{Issue: holder, AdmittedAt: slot.AdmittedAt}
+	HolderClaimFacts(&at, claims, nil)
+	if len(at.InTurn) > 0 || len(at.Starting) > 0 || len(at.PendingTasks) > 0 {
+		return false
+	}
+	last := slot.AdmittedAt
+	for _, c := range claims {
+		if c.Issue == holder.Key {
+			last = later(last, later(c.LastTurnStart, c.LastTurnEnd))
+		}
+	}
+	return !f.Now.Before(last.Add(rule.IdleReturn))
+}
+
+// IdleWaits is what issue waits on as an idle return reads a wait (SlotRule.IdleReturn): the
+// issues beneath it in its tree that are still in the workflow, its children's work, sorted
+// (OpenBeneath over the members of its tree among members), and whether it is a root waiting on
+// a person whom nobody has answered yet (Issue.AwaitingPerson), a wait that names no issue.
+func IdleWaits(issue Issue, members []Issue) ([]string, bool) {
+	return OpenBeneath(issue, treeOf(issue, members)), issue.AwaitingPerson() && !issue.Answered()
+}
+
+// treeOf is the members of issue's tree among members, which the readers of a tree's own order
+// over its members (Beneath, OpenBeneath) are handed.
+func treeOf(issue Issue, members []Issue) []Issue {
+	tree := make([]Issue, 0, len(members))
+	for _, member := range members {
+		if member.Tree == issue.Tree {
+			tree = append(tree, member)
+		}
+	}
+	return tree
+}
+
+// idleKept is the moment that keeps issue's place in the line under a rule with an idle return
+// (SlotRule.IdleReturn): the mark of a release for a wait (Issue.ReleasedForWaitAt) of an issue
+// that holds no row, which the idle release writes as the release for a wait writes it (admit's
+// releaseIdleSlots). It answers false under every other rule, the daemon's own among them, and for
+// an issue that holds a row or carries no mark.
+func idleKept(issue Issue, holds bool, facts LineFacts) (time.Time, bool) {
+	if facts.Rule.OrMain().IdleReturn <= 0 || holds || issue.ReleasedForWaitAt == nil {
+		return time.Time{}, false
+	}
+	return *issue.ReleasedForWaitAt, true
+}
+
 // NeedsSlot is NeedsSlot under the facts' rule: issue's tree is live, its root does not linger,
 // and it keeps a slot where it stands (KeepsSlot). The release (admit's releaseSlots) and the
 // line (Waiting) both ask it, so no pass offers a slot to an issue the release would free.
@@ -1299,17 +1367,21 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // kept out by a tree that keeps filing children.
 //
 // Those two orders are the daemon's own rule's (LineReturnedOldestFirst). The facts carry the
-// rule the line is built under (LineFacts.Rule), and five other orders are a rule's to choose: a
+// rule the line is built under (LineFacts.Rule), and six other orders are a rule's to choose: a
 // rule may place the returned part by the board's rank as the starting part is placed
 // (LineReturnedByRank), or by the moment of each issue's first slot in its current generation
 // (LineReturnedByFirstSlot, LineFacts.FirstSlots), or put first in the starting part each issue
 // that an issue the daemon has started waits on (LineBlockersFirst); it may burn down work in
 // progress first in, first out — the returned part by first slots, then the issues of trees
 // already open by each tree's first slot and each issue's arrival, and only then the trees not yet
-// opened by the board (LineReworkFirst, LineFacts.Arrivals); or it may order the whole line by
-// each issue's arrival, with no part ahead of another and no rank (LineArrival). Which issues are
-// in the line is the same under each of them, save where the rule's phases decide whether an issue
-// needs a slot (LineFacts.NeedsSlot).
+// opened by the board (LineReworkFirst, LineFacts.Arrivals); it may order the whole line by each
+// issue's arrival, with no part ahead of another and no rank (LineArrival); or it may order the
+// whole line by priority first and the daemon's own order within one priority
+// (LinePriorityFirst). Which issues are in the line is the same under each of them, save where the
+// rule's phases decide whether an issue needs a slot (LineFacts.NeedsSlot). A rule with an idle
+// return (SlotRule.IdleReturn) places too an issue that gave its slot back for idleness by the
+// mark of that release, as a release for a wait places it, and passes it over while it waits on
+// its children (IdleWaits); one a person has not answered stands in no line until its answer.
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
@@ -1408,10 +1480,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			// An answered root belongs to this part whether or not its tree lifecycle still
 			// stands open, and whether or not it holds a slot row: its wait kept that row
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
-			// or, when a person's approval opened its gate later than that, the approval.
+			// or, when a person's approval opened its gate later than that, the approval. Under a
+			// rule with an idle return (SlotRule.IdleReturn) a root that gave its row back while
+			// it waited keeps the place of that release where it stands earlier (idleKept).
 			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
-				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
+			at := later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())
+			if kept, ok := idleKept(issue, holds, facts); ok && kept.Before(at) {
+				at = kept
+			}
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds}, at: at})
 			continue
 		}
 		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
@@ -1458,9 +1535,27 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			if marked {
 				at, id = *issue.ReleasedForWaitAt, 0
 			}
+			on := facts.Waits[issue.Key]
+			// Under a rule with an idle return (SlotRule.IdleReturn) a marked issue that owes no
+			// start waits on its children and on a person too (IdleWaits): a root a person has
+			// not answered stands in no line until its answer, as every such root does, and an
+			// issue whose children are still at work stands at its mark, passed over until they
+			// are done or a worker of it is owed a start.
+			if _, ok := idleKept(issue, false, facts); ok && !owes {
+				open, person := IdleWaits(issue, issues)
+				if person {
+					hold(issue)
+					continue
+				}
+				on = slices.Clip(on)
+				for _, key := range open {
+					if !slices.Contains(on, key) {
+						on = append(on, key)
+					}
+				}
+			}
 			releasedForWait[issue.Key] = struct{}{}
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue,
-				Waits: facts.Waits[issue.Key]}, at: at, id: id})
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue, Waits: on}, at: at, id: id})
 			continue
 		}
 		if !owes {
@@ -1694,7 +1789,32 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			return line[i].Issue.Key < line[j].Issue.Key
 		})
 	}
+	// A rule that orders by priority first (LinePriorityFirst) sorts the whole line, laid out above
+	// in the daemon's own order, by the band of the priority that places each entry (PriorityOf
+	// over its tree root's record, priorityBand), stably, so the daemon's own order stands within
+	// each band; each entry's place within its part is counted within its band and part, read off
+	// that final order.
+	if order == LinePriorityFirst {
+		band := func(entry LineEntry) Priority { return priorityBand(PriorityOf(entry.Issue, byKey[entry.Issue.Tree])) }
+		sort.SliceStable(line, func(i, j int) bool { return band(line[i]) < band(line[j]) })
+		for i := range line {
+			line[i].PartPlace = 1
+			if i > 0 && band(line[i-1]) == band(line[i]) && line[i-1].Part == line[i].Part {
+				line[i].PartPlace = line[i-1].PartPlace + 1
+			}
+		}
+	}
 	return line, heldRows
+}
+
+// priorityBand is where an entry placed by p stands in a line that orders by priority first
+// (LinePriorityFirst), lower first: P0 to P3 in their order, and NoPriority, an entry neither it
+// nor its tree root has a priority for, after P3.
+func priorityBand(p Priority) Priority {
+	if p == NoPriority {
+		return P3 + 1
+	}
+	return p
 }
 
 // FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,

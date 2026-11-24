@@ -51,6 +51,10 @@ const (
 	// TakenTreeLingers is the release of an issue whose tree's root lingers after its close
 	// (NeedsSlot, admit's releaseSlots).
 	TakenTreeLingers SlotTakenReason = "tree_lingers"
+	// TakenIdleReturn is the release, under a rule with an idle return (SlotRule.IdleReturn), of a
+	// holder that waits on its children or on a person and none of whose roles had a turn for that
+	// long (LineFacts.IdleReturns, admit's releaseIdleSlots).
+	TakenIdleReturn SlotTakenReason = "idle_return"
 )
 
 // SlotPassedReason is why the promotion passed over a candidate, the word SlotPassed carries.

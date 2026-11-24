@@ -71,6 +71,13 @@ type Scorecard struct {
 	// the gates has GateClosedHours nil, and one read since an empty map where no tree has a gate.
 	DoneByAnyone    int                `json:"doneByAnyone"`
 	GateClosedHours map[string]float64 `json:"gateClosedHours"`
+	// Priorities is each issue of the window's project that turned todo in [From, To) with a
+	// Dispatch priority on the event that turned it, by issue key: that priority and that moment,
+	// the issue's first todo in the span (IssuePriority). The comparison's measures of P0 and P1
+	// work read it beside each issue's first slot and done (priorityMeasures). It is read from a
+	// trace alone (traceMeasures), as DoneByAnyone is, by one code for the record and a replay; a
+	// record read before it held the priorities has it nil.
+	Priorities map[string]IssuePriority `json:"priorities"`
 	// Assumptions is the assumptions of the spec this run's measures rest on, by number.
 	Assumptions []int `json:"assumptions"`
 	// Scenario is the never-started scenario the run took (Branch.NeverStarted).
@@ -95,6 +102,14 @@ type LoopHours struct {
 type WaitHours struct {
 	Count int     `json:"count"`
 	Hours float64 `json:"hours"`
+}
+
+// IssuePriority is one issue's Dispatch priority as the issue event that turned it todo in a
+// window showed it (record.Priority.String: P0 to P3), and that event's moment, the issue's first
+// todo in the window.
+type IssuePriority struct {
+	Priority  string    `json:"priority"`
+	FirstTodo time.Time `json:"firstTodo"`
 }
 
 // Score is the scorecard of w read from its record alone, with no replay (spec R4: "The tool also

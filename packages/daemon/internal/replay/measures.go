@@ -196,11 +196,12 @@ func (card *Scorecard) addRound(cause Cause, lasted time.Duration) {
 // traceMeasures fills what a scorecard reads from a trace alone, beside the measures of R4 that
 // Measure reads from its timeline, by one code for the record's trace (scoreTrace) and a replay's
 // own (Run's line scorecard): the issues of t's project Dispatch shows reaching done in [From, To)
-// by any actor (Scorecard.DoneByAnyone), and each tree's hours of [From, To) its design gate stood
+// by any actor (Scorecard.DoneByAnyone), each tree's hours of [From, To) its design gate stood
 // closed, read as the line timeline reads the gate (gateStepsOf), for each tree whose gate stood
-// closed at all (Scorecard.GateClosedHours).
+// closed at all (Scorecard.GateClosedHours), and each issue's priority and first todo in the span
+// (Scorecard.Priorities, firstTodoIn).
 func traceMeasures(card *Scorecard, t Trace) {
-	card.GateClosedHours = map[string]float64{}
+	card.GateClosedHours, card.Priorities = map[string]float64{}, map[string]IssuePriority{}
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project {
@@ -208,6 +209,9 @@ func traceMeasures(card *Scorecard, t Trace) {
 		}
 		if doneIn(iss, t.From, t.To) {
 			card.DoneByAnyone++
+		}
+		if todo, ok := firstTodoIn(iss, t.From, t.To); ok {
+			card.Priorities[key] = todo
 		}
 		if len(iss.Gates) == 0 {
 			continue
@@ -246,6 +250,28 @@ func doneIn(iss *IssueTrace, from, to time.Time) bool {
 		wasDone = done
 	}
 	return false
+}
+
+// firstTodoIn is the first issue event of iss in [from, to) that shows it todo where the issue
+// event before it, of any moment, did not — the moment iss turned todo, its first todo in the span
+// — with the priority that event shows, and whether there is one with a priority at all: an issue
+// that stood todo from before the span, or that turned todo with no priority, has none.
+func firstTodoIn(iss *IssueTrace, from, to time.Time) (IssuePriority, bool) {
+	wasTodo := false
+	for _, event := range iss.Dispatch {
+		if event.Issue == nil {
+			continue
+		}
+		todo := event.Issue.Status == "todo"
+		if todo && !wasTodo && !event.At.Before(from) && event.At.Before(to) {
+			if event.Issue.Priority == record.NoPriority {
+				return IssuePriority{}, false
+			}
+			return IssuePriority{Priority: event.Issue.Priority.String(), FirstTodo: event.At}, true
+		}
+		wasTodo = todo
+	}
+	return IssuePriority{}, false
 }
 
 // heldHours is the slot-hours the issues keys names hold in tl's span: the time each stands in a

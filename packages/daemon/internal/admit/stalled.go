@@ -724,8 +724,10 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     the rule the promotion itself reads per kind) and the promotion starts it under the cap
 //     (capLets, the cap's half the promotion reads too, under the pass's own rule — facts — and
 //     with the slots its holders lend, covers): it takes a row the
-//     project holds fewer than the cap of, or it takes none at all, as a queued root in
-//     accepting, retro or merging takes none and opens its tree whatever the cap says. The
+//     project holds fewer than the cap of, it takes none at all, as a queued root in
+//     accepting, retro or merging takes none and opens its tree whatever the cap says, or its
+//     own priority is P0 under a rule that starts a P0 above the cap (record.SlotRule.P0AboveCap,
+//     which capLets reads). The
 //     promotion this same pass runs after the measure starts that entry's work. A slot comes
 //     free without a worker
 //     where a started issue gives its row back to wait on another issue (releaseSlotsForWaits),

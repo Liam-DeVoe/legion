@@ -72,6 +72,20 @@ type SlotRule struct {
 	// (PhaseRow.HandoffCommit) while the issue waits in merging for the merge itself. It is read
 	// only under a rule that keeps a slot in merging (KeepsSlotIn).
 	ReleaseAtReady bool
+	// P0AboveCap says whether an issue whose own Dispatch priority is P0 (Issue.Priority) starts
+	// above the cap: the pass that would start it but for the cap starts it, whatever the number
+	// of slots in use, and every other hold on a start holds it as before (admit's capLets). The
+	// issue's own priority alone counts: a root's priority places its tree's members in a line
+	// that orders by priority (PriorityOf) and starts none of them above the cap. Below P0 the cap
+	// holds as the daemon's own rule holds it.
+	P0AboveCap bool
+	// IdleReturn is how long a slot holder that waits on its children or on a person may go with
+	// no turn of any of its roles before it gives its slot back (LineFacts.IdleReturns, admit's
+	// releaseIdleSlots). Such a holder carries the mark of a release for a wait
+	// (Issue.ReleasedForWaitAt), and the line keeps its place by that mark, ahead of every slot
+	// given back after it, while it waits (Waiting). Zero, the daemon's own and every rule's but
+	// idle-return-1h's and p0-idle's, gives no slot back for idleness.
+	IdleReturn time.Duration
 }
 
 // LineOrder is the order of the waiting line, a SlotRule's choice.
@@ -105,6 +119,11 @@ const (
 	// issue of the line, started or not, by the moment it arrived in the line in its current
 	// generation (LineFacts.Arrivals), first in, first out.
 	LineArrival LineOrder = "arrival"
+	// LinePriorityFirst orders the whole line by the priority that places each entry
+	// (PriorityOf: the issue's own Dispatch priority, else its tree root's), P0 first and an entry
+	// with neither after P3, and within one priority by the daemon's own order: the issues whose
+	// work came back, oldest first, and then the issues that have not started, by rank.
+	LinePriorityFirst LineOrder = "priority_first"
 )
 
 // StartTake is what a start may take from the cap, a SlotRule's choice.
@@ -148,10 +167,11 @@ const (
 // MainRule is the daemon's own rule, the one it is built with: a slot is kept from the start
 // through the review and in held, and none past the review; a link wait and a children wait give
 // the slot back at the pass that finds them, with no grace, and stop nothing; work that came back
-// goes first, oldest first, then the line by rank; a start takes a slot of its own; a conflicting
-// head keeps its phase while the base is merged forward, and past the review waits for merging,
-// where the merger merges it (cybermonklabs/legion#4979). Its commit is the commit the rule was
-// first written as a value at.
+// goes first, oldest first, then the line by rank; a start takes a slot of its own, whatever its
+// priority; a conflicting head keeps its phase while the base is merged forward, and past the
+// review waits for merging, where the merger merges it (cybermonklabs/legion#4979); and no slot
+// goes back because its holder is idle. Its commit is the commit the rule was first written as a
+// value at.
 var MainRule = SlotRule{
 	Name:   "main",
 	Commit: "0d3786da536722f2eb26a793ab1b9827b6e90f47",
@@ -165,6 +185,8 @@ var MainRule = SlotRule{
 	Take:                  TakeOwnSlot,
 	Conflict:              ConflictMergeForward,
 	ReleaseAtReady:        false,
+	P0AboveCap:            false,
+	IdleReturn:            0,
 }
 
 // OrMain is r, or MainRule where r is the zero value a caller that names no rule holds: a
@@ -324,17 +346,19 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the ten candidates of the comparison
-// (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule
-// at two graces, returned-by-first-slot, rework-first and rework-first-keep, one order with and
-// without the slot kept past the review, and arrival-order). `legion replay rules` prints them.
-// Each answer is built afresh, so a caller that changes a rule it was handed changes no other
-// caller's.
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the fourteen candidates of the
+// comparison (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and
+// wait-grace-1h, one rule at two graces, returned-by-first-slot, rework-first and
+// rework-first-keep, one order with and without the slot kept past the review, arrival-order,
+// priority-first, and p0-at-once, idle-return-1h and p0-idle, two answers apart and together).
+// `legion replay rules` prints them. Each answer is built afresh, so a caller that changes a rule
+// it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
-		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule()}
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), priorityFirstRule(), p0AtOnceRule(), idleReturnRule(),
+		p0IdleRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -535,6 +559,58 @@ func reworkFirstKeepRule() SlotRule {
 func arrivalOrderRule() SlotRule {
 	return mainRuleWith("arrival-order", func(rule *SlotRule) {
 		rule.Order = LineArrival
+	})
+}
+
+// priorityFirstRule is the daemon's own rule with the line ordered by priority first
+// (LinePriorityFirst): the order the change that gives the daemon each issue's Dispatch priority
+// builds into the daemon's own rule, kept here for a comparison run before that change reaches
+// main. Once main carries that order this rule is removed, because main is then that rule. Until
+// the daemon's store keeps a priority, every record it builds reads NoPriority, so the rule orders
+// nothing a test or a replay does not set.
+func priorityFirstRule() SlotRule {
+	return mainRuleWith("priority-first", func(rule *SlotRule) {
+		rule.Order = LinePriorityFirst
+	})
+}
+
+// p0AtOnceRule is the daemon's own rule with an issue whose own priority is P0 started above the
+// cap (P0AboveCap): an owner's direction that a P0 issue starts at once, with the daemon's own
+// rule below P0. It reads the issue's own priority, which no record the daemon builds holds until
+// its store keeps one.
+func p0AtOnceRule() SlotRule {
+	return mainRuleWith("p0-at-once", func(rule *SlotRule) {
+		rule.P0AboveCap = true
+	})
+}
+
+// idleReturnRule is the daemon's own rule with a slot holder that waits on its children or on a
+// person giving its slot back once none of its roles has had a turn for idleReturn (IdleReturn),
+// so that the slot goes to work that can start, while the holder keeps its place in the line.
+// cybermonklabs/legion#2751 gave a slot back for those waits, and cybermonklabs/legion#3206 took
+// those releases away: the judgement of whether any agent of an issue had work read six states
+// and judged wrong in five of them on one day, holding slots whose architects were idle with
+// their next step with a person while other issues queued, and the cap was made to count the work
+// a project has in hand, a spec in a person's queue among it. This rule judges by no state of
+// the work but by the time since the holder's last turn, and only of a holder that waits on its
+// children or on a person.
+func idleReturnRule() SlotRule {
+	return mainRuleWith("idle-return-1h", func(rule *SlotRule) {
+		rule.IdleReturn = idleReturn
+	})
+}
+
+// idleReturn is the time without a turn after which a holder gives its slot back under
+// idle-return-1h and p0-idle: one hour, the longer of the two graces the comparison runs for a
+// wait on another issue (longWaitGrace).
+const idleReturn = time.Hour
+
+// p0IdleRule is p0-at-once and idle-return-1h together (P0AboveCap, IdleReturn), so the
+// comparison reads whether the two answers add up or overlap.
+func p0IdleRule() SlotRule {
+	return mainRuleWith("p0-idle", func(rule *SlotRule) {
+		rule.P0AboveCap = true
+		rule.IdleReturn = idleReturn
 	})
 }
 

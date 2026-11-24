@@ -1179,6 +1179,10 @@ type DispatchIssueState struct {
 	// Rank is Dispatch's fractional key of the issue, compared as bytes.
 	Rank   string
 	Labels []string
+	// Priority is the issue's own Dispatch priority as the record keeps it (record.Priority,
+	// record.DispatchPriority): P0 to P3, and record.NoPriority for none, for an event that
+	// carries none and for a level Dispatch never writes.
+	Priority record.Priority
 }
 
 // DispatchVerdict is a verdict on a version of an issue's document: its artifact, the document's
@@ -1214,10 +1218,12 @@ type DispatchHandoff struct {
 // It refuses an event that is not one JSON object, that lacks its id, seq, issue_key, type, actor
 // or created_at, or whose payload lacks a field its type's part reads: an issue event's status, a
 // verdict's artifact_id and version, an ask's id, a handoff's handoff_id, phase and version. An
-// issue event's changed, blocked_by, parent, rank and labels are read where it carries them, as
-// intake reads them, since an event retained from an older Dispatch lacks some; a field present
-// with another JSON type is refused all the same. A session actor's title (origin.session_title)
-// is read where the actor carries one (ActorClaim), and refused where it is of another JSON type.
+// issue event's changed, blocked_by, parent, rank, labels and priority are read where it carries
+// them, as intake reads them, since an event retained from an older Dispatch lacks some; a field
+// present with another JSON type is refused all the same. A priority outside Dispatch's levels 0
+// to 3 is none, as the daemon's decoder reads it (record.DispatchPriority). A session actor's
+// title (origin.session_title) is read where the actor carries one (ActorClaim), and refused where
+// it is of another JSON type.
 // The claim an issue event, an issue.claimed or an issue.released event shows is read as the
 // daemon's decoder reads it (Claim), and never refused. An event without its project is of the
 // project its key begins with.
@@ -1268,6 +1274,7 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 			Parent    *string         `json:"parent"`
 			Rank      *string         `json:"rank"`
 			Labels    []string        `json:"labels"`
+			Priority  *int            `json:"priority"`
 			Claim     json.RawMessage `json:"claim"`
 		}
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
@@ -1277,6 +1284,7 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 			return refuse(errors.New("its payload has no status"))
 		}
 		state := &DispatchIssueState{Changed: payload.Changed, Status: *payload.Status, BlockedBy: payload.BlockedBy, Labels: payload.Labels}
+		state.Priority, _ = record.DispatchPriority(payload.Priority)
 		if payload.Parent != nil {
 			state.Parent = *payload.Parent
 		}

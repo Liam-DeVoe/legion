@@ -821,6 +821,8 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
 			fmt.Fprintf(stdout, "  a conflicting head: %s\n", rule.Conflict)
 			fmt.Fprintf(stdout, "  the slot goes back at the ready mark: %t\n", rule.ReleaseAtReady)
+			fmt.Fprintf(stdout, "  a P0 starts above the cap: %t\n", rule.P0AboveCap)
+			fmt.Fprintf(stdout, "  an idle wait on children or a person gives the slot back after: %s\n", rule.IdleReturn)
 		}
 		return 0
 	})
@@ -828,8 +830,8 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 }
 
 // slotRuleView is a record.SlotRule as `legion replay rules --json` prints it: the rule's fields
-// under JSON names, since the rule itself is no wire type, and its grace as a Go duration
-// ("5m0s"), as the rule's text prints it.
+// under JSON names, since the rule itself is no wire type, and its grace and its idle return as Go
+// durations ("5m0s"), as the rule's text prints them.
 type slotRuleView struct {
 	Name                  string              `json:"name"`
 	Commit                string              `json:"commit"`
@@ -842,13 +844,16 @@ type slotRuleView struct {
 	Take                  record.StartTake    `json:"take"`
 	Conflict              record.ConflictPath `json:"conflict"`
 	ReleaseAtReady        bool                `json:"releaseAtReady"`
+	P0AboveCap            bool                `json:"p0AboveCap"`
+	IdleReturn            string              `json:"idleReturn"`
 }
 
 // slotRuleViewOf is rule as `legion replay rules --json` prints it (slotRuleView).
 func slotRuleViewOf(rule record.SlotRule) slotRuleView {
 	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
 		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
-		Order: rule.Order, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady}
+		Order: rule.Order, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady, P0AboveCap: rule.P0AboveCap,
+		IdleReturn: rule.IdleReturn.String()}
 }
 
 // missingFlag is the first of names cmd was not given, "" when each was.

@@ -555,6 +555,8 @@ The document gives:
 
 - the name of the issues file, and what it gives
 
+- for each window, the P0 issues and the P1 issues, in the record and under each rule: how many turned todo in the window, how many took a first slot after that first todo and how many reached done after it, and the median and the 90th percentile of the hours to each
+
 - the gap of each measure between the snapshot and the line timelines
 
 - each rule's break-even factor: the f at which its rank against `main` changes, or that no f up to 2 changes it
@@ -602,6 +604,25 @@ For a comparison of the tool's tests, one section of the issues file reads:
 | ACME-1 | 2001-03-05T09:30Z | 2001-03-05T09:00Z | 2001-03-05T12:00Z | 2001-03-05T10:40Z |
 | ACME-3 | 2001-03-05T10:00Z | no slot | not done | not done |
 | ACME-5 | no slot | 2001-03-05T10:40Z | not done | not done |
+```
+
+The part on P0 and P1 work reads the issues, their priorities and their first todos from each window's record (`priorities`).
+Each issue's first slot and done are the record's, or, under a rule, the median over the seeds of the main branch, as the issues file gives them.
+An issue counts in a time only where its first slot or its done in the window comes at or after its first todo.
+Each time is the median and the 90th percentile by nearest rank, in hours, over the issues that have one, and `none` where no issue has one.
+For a comparison of the tool's tests, one window's table reads:
+
+```text
+### window-1
+
+| priority | rule | issues | with a first slot | to the first slot, median | to the first slot, 90th percentile | done | to done, median | to done, 90th percentile |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P0 | the record | 2 | 2 | 0.4583 | 0.9167 | 2 | 2.4583 | 2.9167 |
+| P0 | `main` | 2 | 1 | 0 | 0 | 1 | 2 | 2 |
+| P0 | `p0-at-once` | 2 | 2 | 0 | 0 | 2 | 2 | 2 |
+| P1 | the record | 2 | 2 | 0.375 | 0.75 | 2 | 2.375 | 2.75 |
+| P1 | `main` | 2 | 0 | none | none | 0 | none | none |
+| P1 | `p0-at-once` | 2 | 1 | 0 | 0 | 2 | 2.375 | 2.75 |
 ```
 
 To split the work, run each part with `--only-window <name>` and `--only-rule <name>` into one `--runs` directory, with no `--out`.
@@ -713,6 +734,11 @@ At a moment with no pair, the share is 0.
   A tree whose gate never stood closed has no entry.
   Like `doneByAnyone`, only a trace gives it, the record's and a replay's own log, by one code, so `validate` can compare them.
 
+- `priorities[<KEY>]`: for each issue of the window's project that turned todo in the window with a Dispatch priority on the event that turned it, that priority (`P0` to `P3`) and the time of that event, its first todo in the window (`firstTodo`).
+  An issue that stood todo from before the window, or that turned todo with no priority, has no entry.
+  Like `doneByAnyone`, only a trace gives it, by one code for the record and a replay.
+  `compare` reads the record's entries for its part on P0 and P1 work.
+
 - `rule`, `branch`, `seed` and `slowdown`: what a replay ran.
   A record's scorecard carries none of them.
 
@@ -742,6 +768,10 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `rework-first` | `main` with the line in first in, first out order for started work, for the reason that an owner doubted that the board's rank is kept up to date: the returned issues first, by their first slot in their current generation, then the issues of trees that have started, each tree by its root's first slot and each issue by its arrival in the line, and the trees that have not opened last, by rank. | `0d3786da` |
 | `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot. | `0d3786da` |
 | `arrival-order` | `main` with the line as one queue in the order in which its issues arrived, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
+| `priority-first` | `main` with the line ordered by priority first, the issue's own or its tree root's, and in the order of `main` within one priority: the order of the change that gives the daemon each issue's priority, compared until that change reaches `main` ([the priority](#priority-first-p0-at-once-idle-return-1h-p0-idle-and-the-priority)). | `0d3786da` |
+| `p0-at-once` | `main` with an issue whose own priority is P0 started above the cap, for the reason that an owner asked why a P0 issue cannot start at once. | `0d3786da` |
+| `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the same owner's question. | `0d3786da` |
+| `p0-idle` | `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -758,6 +788,8 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -769,6 +801,8 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -780,6 +814,8 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -791,6 +827,8 @@ legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
   a start takes: own_slot
   a conflicting head: implementer_merges_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -802,6 +840,8 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -813,6 +853,8 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -824,6 +866,8 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -835,6 +879,8 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: cover
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -846,6 +892,8 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -857,6 +905,8 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -868,6 +918,8 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -879,6 +931,8 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -890,6 +944,8 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
 
 arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -901,6 +957,60 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
+
+priority-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: priority_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 0s
+
+p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: true
+  an idle wait on children or a person gives the slot back after: 0s
+
+idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: false
+  an idle wait on children or a person gives the slot back after: 1h0m0s
+
+p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  a P0 starts above the cap: true
+  an idle wait on children or a person gives the slot back after: 1h0m0s
 ```
 
 Each line of a rule gives one choice:
@@ -923,6 +1033,7 @@ Each line of a rule gives one choice:
   `blockers_first` places first, among the issues that have not started, each issue that a started issue waits on.
   `rework_first` places the returned issues by their first slot, then the issues of trees that have started, and then the trees that have not opened, by rank.
   `arrival` places every issue of the line by the time at which it arrived in the line, with no part ahead of another and no rank.
+  `priority_first` places every issue of the line by its priority first, its own or its tree root's, and then in the order of `returned_oldest_first`.
 
 - `a start takes`: `own_slot`, a slot of its own while the cap has one free.
   `cover` lets an issue that a waiter waits on start on that waiter's slot, whatever the cap says, one cover for each holder.
@@ -933,6 +1044,11 @@ Each line of a rule gives one choice:
   `implementer_merges_forward` keeps the phase in every phase and asks the implementer to merge the base forward at once, in accepting, retro and merging too.
 
 - `the slot goes back at the ready mark`: whether an issue in merging gives its slot back at the merger's ready mark, under a rule that keeps a slot in merging.
+
+- `a P0 starts above the cap`: whether an issue whose own priority is P0 starts whatever the number of slots in use.
+
+- `an idle wait on children or a person gives the slot back after`: how long a holder that waits on its children or on a person goes with no turn of any of its roles before it gives its slot back.
+  `0s` gives no slot back for that.
 
 ### `wait-grace` and its grace
 
@@ -1024,6 +1140,56 @@ A deployment that adopts any of them needs the daemon to record each issue's arr
 Under each rule that keeps one of these tables, `returned-by-first-slot` among them, the replay reads the start state as a pass reads it, in a transaction that writes nothing.
 That read keeps no first slot and no arrival, and reads the ones that the start state kept.
 The passes keep the rest.
+
+### `priority-first`, `p0-at-once`, `idle-return-1h`, `p0-idle` and the priority
+
+An owner asked why a P0 issue cannot start at once.
+These four candidates give the comparison what each answer does to P0 and P1 work and to the rest of the line.
+Each is `main` with one choice changed, or two for `p0-idle`, so each carries the commit of `main`.
+
+The record keeps each issue's own Dispatch priority, P0 to P3 or none (`record.Issue.Priority`).
+The daemon's store and its intake keep no priority yet, so every record that the daemon builds, and every record of a replay, has none.
+Until they keep one, these four candidates move no issue that has no priority, and they run as `main` in a replay.
+The tests of the admission pass hand the pass records with priorities set.
+
+`priority-first` orders the whole line by priority first.
+An entry stands in the band of the priority that places it: the issue's own priority, or its tree root's priority where it has none.
+P0 comes first, and an entry that has neither priority comes after P3.
+Within one band, the line keeps the order of `main`: the returned issues first, oldest first, and then the issues that have not started, by rank.
+This is the order of the change that gives the daemon each issue's priority, kept here for a comparison that runs before that change reaches `main`.
+When `main` carries that order, the repository removes this candidate, because `main` is then that rule.
+
+`p0-at-once` starts an issue whose own priority is P0 above the cap.
+Where the admission pass would start such an issue but for the cap, it starts it, whatever the number of slots in use.
+Every other hold on a start holds it as before: a wait on another issue, a hold of the Dispatch consumer or of the boot's catch-up, and a tree's cleanup.
+The issue's own priority alone counts: a child that has no priority of its own takes its root's priority only for its place in a line that orders by priority.
+Below P0, the cap holds as under `main`.
+The stall measure asks the cap what the promotion asks it, so a P0 that the promotion starts is a line that moves.
+
+`idle-return-1h` gives back the slot of a holder that waits on its children or on a person, when none of its roles had a turn for an hour.
+A holder waits on its children while an issue beneath it in its tree is still in the workflow.
+A holder waits on a person while it is a root in `awaiting_person` that nobody has answered.
+The turns are the last turn start and the last turn end of the holder's claims, read as the holder state reads them, and a slot taken less than an hour ago keeps it.
+A holder with a turn, a start or a task under way, or that is owed a start, keeps its slot.
+A root whose architect writes its design at `admitted`, and a root that arrived with the slot of another tree, keep their slots, as a wait on another issue keeps them.
+The holder keeps its place in the line by the time of the release, as a release for a wait keeps it, so it stands ahead of every slot given back after it.
+While it waits on its children, it stands in the line and the promotion passes it over.
+A root that waits on a person stands in no line until a person answers it, and then it stands at the time of its release.
+When its children are done, or when a worker of it is owed a start, it takes a slot again at its place.
+
+The daemon gave a slot back for these waits once, and then took that release away.
+cybermonklabs/legion#2751 gave a slot back while an issue waited on its children or on a person.
+cybermonklabs/legion#3206 took those releases away.
+Its rule asked whether any agent of an issue had work, which read six states, and on one day it judged wrong five times: slots stood with their architects idle and their next step with a person, while other issues waited.
+The cap was then made to count the work that a project has in hand, a spec in a person's queue among it.
+`idle-return-1h` asks no state of the work: it reads the time since the holder's last turn, and only of a holder that waits on its children or on a person.
+
+`p0-idle` is `p0-at-once` and `idle-return-1h` together, so that the comparison reads whether the two answers add up or overlap.
+
+The admission pass logs a slot that an idle holder gave back with the reason `idle_return`.
+The line timeline places such a holder in the returned part as it places an issue after a release for a wait.
+It does not read the children or the person that the holder waits on, so it counts the holder as waiting only for a slot.
+The snapshot timeline counts the same holder as passed over while its children work, and a root that waits on a person as in no line, and `compare` gives that difference as the gap between the two timelines.
 
 ## The branches
 

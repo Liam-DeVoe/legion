@@ -31,6 +31,15 @@ import (
 // backlog, is open and unreleased. ACME-5, a root in awaiting_person on an ask since six hours
 // before, and ACME-6, a root in awaiting_person on its design gate's version 1 since two hours
 // before, hold slots and have no claim in a turn.
+//
+// Under a rule with an idle return (record.SlotRule.IdleReturn, an hour in every kept rule that
+// names one) the three holders that wait on their children or on a person, none of whose roles
+// had a turn for longer than that, give their slots back at the tick's own pass
+// (record.LineFacts.IdleReturns): ACME-1, idle for two hours while its children work, and ACME-5
+// and ACME-6, with no turn since they took their slots. The two children at work hold the only
+// slots in use, and ACME-1 is started work without a slot from the tick on: it stands in the line
+// at the mark of its release, passed over while its children work, so it waits on more than a
+// slot. ACME-5 and ACME-6 stand in no line until a person answers them.
 func TestTheSlotsReadingNamesAnIdleRootAndARootWaitingOnAPerson(t *testing.T) {
 	lastTurnEnd := fixedNow.Add(-2 * time.Hour)
 	turnStarts := map[string]time.Time{"ACME-2": fixedNow.Add(-40 * time.Minute), "ACME-3": fixedNow.Add(-25 * time.Minute)}
@@ -87,6 +96,11 @@ func TestTheSlotsReadingNamesAnIdleRootAndARootWaitingOnAPerson(t *testing.T) {
 				Idle:    record.StateCount{Count: 1, Oldest: &lastTurnEnd},
 			}
 			want.Line = record.SlotsLine(want)
+			if rule.IdleReturn > 0 {
+				want = record.SlotsReading{InUse: 2, Cap: 5, Working: record.StateCount{Count: 2, Oldest: &oldestTurn},
+					StartedWithoutSlot: record.StateCount{Count: 1, Oldest: &fixedNow}}
+				want.Line = record.SlotsLine(want)
+			}
 			if got, wanted := slotsReadingSaid(t, *notice.Slots), slotsReadingSaid(t, want); got != wanted {
 				t.Fatalf("the tick notice's slots = %s, want %s", got, wanted)
 			}

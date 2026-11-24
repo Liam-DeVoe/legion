@@ -700,10 +700,12 @@ func (c comparison) breakEven(window, rule string) BreakEvenResult {
 // the forecast across the change, with the workflow commits it carries too; which window measures
 // how a rule changes conflicts; the value of every measure for every rule, window and branch, read
 // from the snapshot timeline, with the lowest and the highest seed; where each issue's times are;
-// the gap of each measure between the snapshot and the line timelines; each rule's break-even
-// slowdown factor; and the assumptions and the scenario each run used. Every number in it is
-// computed from the runs. Beside it, issues is the comparison's issues file (writeIssues), which
-// the document names by the base name of issuesFile, the path it is written to (IssuesFile).
+// the measures of each window's P0 and P1 work in its record and under each rule
+// (writePriorities); the gap of each measure between the snapshot and the line timelines; each
+// rule's break-even slowdown factor; and the assumptions and the scenario each run used. Every
+// number in it is computed from the runs. Beside it, issues is the comparison's issues file
+// (writeIssues), which the document names by the base name of issuesFile, the path it is written
+// to (IssuesFile).
 func (r Runs) Comparison(issuesFile string) (document, issues string, err error) {
 	c, err := r.readComparison()
 	if err != nil {
@@ -744,6 +746,7 @@ func (r Runs) Comparison(issuesFile string) (document, issues string, err error)
 	p.line("`%s`, beside this document, gives for each window and each rule each issue that held a slot in the record or in the rule's replay on the main branch (`%s`): its first slot and its done in the record and in the replay, each replayed time the median over the main branch's seeds.",
 		filepath.Base(issuesFile), MainBranchAt.Label())
 	p.line("")
+	c.writePriorities(p)
 	c.writeGaps(p)
 	c.writeBreakEven(p)
 	c.writeAssumptions(p)
@@ -805,6 +808,88 @@ func (c comparison) writeIssues(p *printer) {
 			}
 		}
 	}
+}
+
+// PriorityMeasure is the measures of the issues of one Dispatch priority in one window, in its
+// record or under one rule (priorityMeasures): how many issues of that priority turned todo in the
+// window (Scorecard.Priorities); how many of them took a first slot at or after that first todo,
+// and the median and the 90th percentile (nearest rank) of the hours from the first todo to it;
+// and the same of their done.
+type PriorityMeasure struct {
+	Issues                  int
+	Slotted                 int
+	ToSlotMedian, ToSlotP90 float64
+	Done                    int
+	ToDoneMedian, ToDoneP90 float64
+}
+
+// priorityMeasures is the measures of the issues of priorities whose priority is priority (P0 to
+// P3, record.Priority.String), each issue's first slot and done given by firstSlot and doneAt, the
+// zero time for none. An issue counts in a time only where that time stands at or after its first
+// todo: a first slot before it, taken before a person set the issue back to todo, says nothing of
+// how long its todo waited.
+func priorityMeasures(priorities map[string]IssuePriority, priority string, firstSlot, doneAt func(key string) time.Time) PriorityMeasure {
+	var m PriorityMeasure
+	var toSlot, toDone []float64
+	for key, issue := range priorities {
+		if issue.Priority != priority {
+			continue
+		}
+		m.Issues++
+		if at := firstSlot(key); !at.IsZero() && !at.Before(issue.FirstTodo) {
+			toSlot = append(toSlot, at.Sub(issue.FirstTodo).Hours())
+		}
+		if at := doneAt(key); !at.IsZero() && !at.Before(issue.FirstTodo) {
+			toDone = append(toDone, at.Sub(issue.FirstTodo).Hours())
+		}
+	}
+	m.Slotted, m.ToSlotMedian, m.ToSlotP90 = len(toSlot), median(toSlot), percentile(toSlot, 0.9)
+	m.Done, m.ToDoneMedian, m.ToDoneP90 = len(toDone), median(toDone), percentile(toDone, 0.9)
+	return m
+}
+
+// writePriorities writes, for each window, the measures of its P0 issues and of its P1 issues
+// (priorityMeasures), in its record and under each rule: the issues and their first todo are the
+// window's own, read from its record (Scorecard.Priorities), and each issue's first slot and done
+// are the record's, or the median over the main branch's seeds of the rule's replay (medianTime),
+// as the issues file gives them (writeIssues).
+func (c comparison) writePriorities(p *printer) {
+	p.line("## P0 and P1 work under each rule")
+	p.line("")
+	p.line("For each window, the issues of a priority are the issues of its project that turned todo in the window with that Dispatch priority on the event that turned them, read from the window's record.")
+	p.line("The time to an issue's first slot and the time to its done run from that first todo, and an issue counts in each only where the first slot or the done in the window comes at or after it.")
+	p.line("The record's times are its own; each rule's are the median over the main branch's seeds (`%s`), as the issues file gives them.", MainBranchAt.Label())
+	p.line("Each time is the median and the 90th percentile (nearest rank), in hours, over the issues that have one, and `none` where no issue has one.")
+	firstSlotOf := func(card Scorecard) map[string]time.Time { return card.FirstSlot }
+	doneAtOf := func(card Scorecard) map[string]time.Time { return card.DoneAt }
+	hours := func(count int, value float64) string {
+		if count == 0 {
+			return "none"
+		}
+		return formatNumber(value)
+	}
+	for _, w := range c.windows {
+		p.line("")
+		p.line("### %s", w.Name)
+		p.line("")
+		p.line("%s", tableHead("priority", []string{"rule", "issues", "with a first slot", "to the first slot, median", "to the first slot, 90th percentile",
+			"done", "to done, median", "to done, 90th percentile"}))
+		row := func(priority, source string, m PriorityMeasure) {
+			p.line("| %s | %s | %d | %d | %s | %s | %d | %s | %s |", priority, source, m.Issues, m.Slotted, hours(m.Slotted, m.ToSlotMedian),
+				hours(m.Slotted, m.ToSlotP90), m.Done, hours(m.Done, m.ToDoneMedian), hours(m.Done, m.ToDoneP90))
+		}
+		for _, priority := range []string{record.P0.String(), record.P1.String()} {
+			row(priority, "the record", priorityMeasures(w.Scorecard.Priorities, priority,
+				func(key string) time.Time { return w.Scorecard.FirstSlot[key] }, func(key string) time.Time { return w.Scorecard.DoneAt[key] }))
+			for _, rule := range c.rules {
+				cards := lineCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[MainBranchAt.Label()])
+				row(priority, "`"+rule+"`", priorityMeasures(w.Scorecard.Priorities, priority,
+					func(key string) time.Time { return medianTime(cards, key, firstSlotOf) },
+					func(key string) time.Time { return medianTime(cards, key, doneAtOf) }))
+			}
+		}
+	}
+	p.line("")
 }
 
 // medianTime is the median over cards of the time that times gives key, a card that gives none

@@ -2460,7 +2460,8 @@ func (b *traceBuilder) personWaitEnds(iss *IssueTrace) {
 	}
 }
 
-// forWait marks each of iss's slots that a pass took back for a wait on another issue: by the
+// forWait marks each of iss's slots that a pass took back for a wait on another issue, or for an
+// idle return, which marks its issue as a release for a wait does (record.TakenIdleReturn): by the
 // reason its record line gives, or, where the window holds no record line, by a link or children
 // wait of the issue that stands at the moment the slot went back. A slot the trace infers went back
 // where the rule gives it back (inferSlots), never for a wait, which a pass writes a line of.
@@ -2471,7 +2472,7 @@ func (b *traceBuilder) forWait(iss *IssueTrace) {
 			continue
 		}
 		switch span.Reason {
-		case record.TakenLinkWait, record.TakenChildrenWait:
+		case record.TakenLinkWait, record.TakenChildrenWait, record.TakenIdleReturn:
 			span.ForWait = true
 		case "":
 			span.ForWait = slices.ContainsFunc(iss.Waits, func(wait Wait) bool {

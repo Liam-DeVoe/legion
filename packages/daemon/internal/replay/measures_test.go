@@ -233,7 +233,7 @@ func TestScorecardOfTheRecord(t *testing.T) {
 			}
 			want.Source, want.Rule, want.Branch, want.Seed, want.Slowdown = "record", "", "", 0, 0
 			want.Assumptions, want.Scenario = []int{}, ""
-			want.DoneByAnyone, want.GateClosedHours = got.DoneByAnyone, got.GateClosedHours
+			want.DoneByAnyone, want.GateClosedHours, want.Priorities = got.DoneByAnyone, got.GateClosedHours, got.Priorities
 			for _, diff := range scorecardDiffs(got, want) {
 				t.Errorf("the record of %s: %s", name, diff)
 			}

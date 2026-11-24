@@ -1898,6 +1898,61 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 	return released, nil
 }
 
+// releaseIdleSlots takes back, under a rule with an idle return (record.SlotRule.IdleReturn), the
+// row of every issue of this project that holds one, waits on its children or on a person, and
+// none of whose roles has had a turn for that long (record.LineFacts.IdleReturns), and reports
+// the issues it took one from. It reads the claims of the project's slot holders once
+// (record.Store.HolderClaims, the narrow read the slots reading takes their turns from), and
+// under every other rule, the daemon's own among them, it reads nothing and frees nothing.
+//
+// It is a release for a wait, written as releaseSlotsForWaits writes one
+// (record.Store.ReleaseSlotForWait): the row goes and the mark that says why is written with it,
+// so the issue keeps its place in the line by the moment of the release, ahead of every slot given
+// back after it, and stands there passed over while it waits on its children, or out of the line
+// until a person answers it (record.Waiting). An issue that pass already freed for a wait on
+// another issue (record.LineFacts.Waits) is not judged again, and nothing else of the issue
+// moves: no claim is stopped, no phase changes and no Dispatch status is written. Each release is
+// recorded on moves as an idle return (record.TakenIdleReturn), for the pass's record line.
+func (a *Admission) releaseIdleSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+	slots []record.Slot, facts record.LineFacts, moves *passMoves,
+) ([]string, error) {
+	if facts.Rule.OrMain().IdleReturn <= 0 {
+		return nil, nil
+	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := a.store.HolderClaims(ctx, tx, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of %s's slot holders: %w", a.project, err)
+	}
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	own := ownSlots(issues, slots)
+	inUse := len(own)
+	var released []string
+	for _, slot := range own {
+		if _, waits := facts.Waits[slot.Issue]; waits {
+			inUse--
+			continue
+		}
+		if !facts.IdleReturns(byKey[slot.Issue], slot, issues, claims) {
+			continue
+		}
+		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
+			return released, fmt.Errorf("release the idle slot of %s: %w", slot.Issue, err)
+		}
+		inUse--
+		released = append(released, slot.Issue)
+		a.logSlot(ctx, "released", slot.Issue, inUse)
+		moves.take(slot.Issue, record.TakenIdleReturn, inUse)
+	}
+	return released, nil
+}
+
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
 // holds after the change, and the cap.
 func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int) {
@@ -2035,6 +2090,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, append(released, waiting...), err
 	}
 	released = append(released, waiting...)
+	// Under a rule with an idle return, each holder that waits on its children or on a person and
+	// none of whose roles had a turn for that long gives its row back here too, beside the release
+	// for a wait and on the same judgement (releaseIdleSlots); under every other rule nothing is
+	// read for it.
+	idle, err := a.releaseIdleSlots(ctx, tx, issues, slots, facts, &moves)
+	if err != nil {
+		return 0, append(released, idle...), err
+	}
+	released, waiting = append(released, idle...), append(waiting, idle...)
 	unslotted, err := a.releaseUnslotted(ctx, tx, issues, record.LiveRoots(issues, facts), facts.ChildWaits, respectHolds)
 	if err != nil {
 		return 0, released, err
@@ -2166,8 +2230,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// is no slot for it. own only grows inside this loop, so no candidate behind
 				// this one takes a slot either and the rank order of the issues that need one is
 				// kept whole, while the candidates the cap cannot bind — the ones slotFor is
-				// false for — are promoted as they are reached, which is what makes a hand-over
-				// and an answered root resume under a cap that is permanently full.
+				// false for, and under a rule that starts a P0 above the cap an issue whose own
+				// priority is P0 — are promoted as they are reached, which is what makes a
+				// hand-over and an answered root resume under a cap that is permanently full.
 				//
 				// An answered root this branch passes over is told nothing. It reads where it
 				// stands from its own record — `waitingLine`, which is the live place
@@ -2510,10 +2575,14 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 // starts while a row stands free or, under a rule whose start may take a cover
 // (record.TakeCover), while a counted waiter that waits on it offers its own, which the waiter
 // gives up for it (covers.take), so the start leaves the count where it stood. A covered waiter
-// holds no row, so held is the count the cap bounds. A cap that admits nothing lets nothing
-// start, since the promotion does not run under it.
+// holds no row, so held is the count the cap bounds. Under a rule that starts a P0 above the cap
+// (record.SlotRule.P0AboveCap) an entry whose issue's own priority is P0 (record.Issue.Priority,
+// never its tree root's) starts whatever the number of rows in use, so the count may stand above
+// the cap after it; below P0 the cap holds as it does under the daemon's own rule. A cap that
+// admits nothing lets nothing start, a P0 among it, since the promotion does not run under it.
 // It answers the cap's half alone: what an entry waits on is the other half
-// (blockers.LineWaitsOn), which each reader asks beside this.
+// (blockers.LineWaitsOn), which each reader asks beside this, so every hold on a start but the
+// cap holds a P0 as it holds any other entry.
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
@@ -2523,7 +2592,8 @@ func (a *Admission) capLets(entry record.LineEntry, held int, facts record.LineF
 	if a.cap <= 0 {
 		return false
 	}
-	return !slotFor(entry, facts) || held < a.cap || lending.offers(entry.Issue.Key)
+	aboveCap := facts.Rule.OrMain().P0AboveCap && entry.Issue.Priority == record.P0
+	return !slotFor(entry, facts) || held < a.cap || aboveCap || lending.offers(entry.Issue.Key)
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream

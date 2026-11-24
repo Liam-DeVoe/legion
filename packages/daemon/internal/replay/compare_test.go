@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // compareFrom is the start of every scorecard these tests make up: a window of compareHours hours.
@@ -1138,6 +1139,148 @@ func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 	for _, line := range []string{"## `main+conflicts=recorded@1`: a diagnostic, never a test of R5", "never in place of the main branch"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("the validation prints no %q:\n%s", line, out.String())
+		}
+	}
+}
+
+// priorityWorkWindow is a window from 09:00 to 14:00 under main at a cap of 2, its inputs reaching
+// back to the daemon's boot at 08:00, whose issues are worked by hand. ACME-1, at P0, is filed todo
+// and promoted at 09:00, and ACME-2, at P1, at 09:10; each works 15 minutes in each phase, gives its
+// slot back at its accepting 75 minutes after its promotion and is done 2 hours after it. ACME-3, at
+// P0, filed todo at 09:20, takes the slot ACME-1 gives back at 10:15, and ACME-4, at P1, filed todo
+// at 09:40, the slot ACME-2 gives back at 10:25; each is then worked the same way, to its done at
+// 12:15 and 12:25. ACME-5, at P2, filed todo at 09:50, and ACME-6, with no priority, filed todo at
+// 09:55, are never promoted; and ACME-7, at P0, filed todo at 08:30, before the window, is never
+// promoted either, its rank changing at 10:00 while it stays todo.
+func priorityWorkWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(14, 0))
+	b.capped(2)
+	b.boot(clock(8, 0))
+	level := func(n int) *int { return &n }
+	filed := func(at time.Time, key, rank string, priority *int) {
+		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion, Priority: priority})
+	}
+	worked := func(key string, promoted time.Time) {
+		b.rootThroughReview(promoted, key)
+		stepThrough(b, builtStep{promoted.Add(75 * time.Minute), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+			builtStep{promoted.Add(90 * time.Minute), key, phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+			builtStep{promoted.Add(105 * time.Minute), key, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+			builtStep{promoted.Add(120 * time.Minute), key, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	}
+	filed(clock(8, 30), "ACME-7", "a7", level(0))
+	filed(clock(9, 0), "ACME-1", "a1", level(0))
+	worked("ACME-1", clock(9, 0))
+	filed(clock(9, 10), "ACME-2", "a2", level(1))
+	worked("ACME-2", clock(9, 10))
+	filed(clock(9, 20), "ACME-3", "a3", level(0))
+	worked("ACME-3", clock(10, 15))
+	filed(clock(9, 40), "ACME-4", "a4", level(1))
+	worked("ACME-4", clock(10, 25))
+	filed(clock(9, 50), "ACME-5", "a5", level(2))
+	filed(clock(9, 55), "ACME-6", "a6", nil)
+	b.edit(clock(10, 0), "ACME-7", func(issue *builtIssue) { issue.Rank = "a0" })
+	return b.build()
+}
+
+// The comparison's document gives, for each window, the measures of its P0 issues and of its P1
+// issues, in its record and under each rule: how many turned todo in the window with that priority,
+// how many took a first slot at or after that first todo and how many reached done after it, and the
+// median and the 90th percentile (nearest rank) of the hours from the first todo to each. The
+// issues, their priorities and their first todos are read from the record's events, by one code
+// for the record and the replay (traceMeasures).
+//
+// The record is priorityWorkWindow's, worked by hand. Its scorecard names ACME-1 (P0, 09:00),
+// ACME-2 (P1, 09:10), ACME-3 (P0, 09:20), ACME-4 (P1, 09:40) and ACME-5 (P2, 09:50); not ACME-6,
+// which has no priority, nor ACME-7, which turned todo before the window. In the record the P0
+// issues take their first slot 0 and 55 minutes after their first todo (median 0.4583 hours, 90th
+// percentile 0.9167) and are done 2 hours and 2 hours 55 minutes after it (2.4583, 2.9167); the P1
+// issues 0 and 45 minutes (0.375, 0.75) and 2 hours and 2 hours 45 minutes (2.375, 2.75).
+//
+// The runs are made up, one seed of the main branch under each of two rules, both windows holding
+// that record. Under main only ACME-1 takes a slot, at 09:00, and is done at 11:00, so the P0 issues
+// have one time of each and the P1 issues none. Under p0-at-once ACME-1 and ACME-2 run as in the
+// record, ACME-3 takes its slot at its first todo, 09:20, and is done at 11:20, and ACME-4 takes a
+// slot at 09:30, before its first todo, which counts in no time, and is done at 12:25.
+func TestTheComparisonGivesTheP0AndP1MeasuresOfEachRule(t *testing.T) {
+	card, err := Score(priorityWorkWindow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPriorities := map[string]IssuePriority{"ACME-1": {"P0", clock(9, 0)}, "ACME-2": {"P1", clock(9, 10)}, "ACME-3": {"P0", clock(9, 20)},
+		"ACME-4": {"P1", clock(9, 40)}, "ACME-5": {"P2", clock(9, 50)}}
+	if !maps.EqualFunc(card.Priorities, wantPriorities, func(a, b IssuePriority) bool { return a.Priority == b.Priority && a.FirstTodo.Equal(b.FirstTodo) }) {
+		t.Errorf("the record's scorecard gives the priorities %+v, want %+v", card.Priorities, wantPriorities)
+	}
+	wantSlots := map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 10), "ACME-3": clock(10, 15), "ACME-4": clock(10, 25)}
+	wantDone := map[string]time.Time{"ACME-1": clock(11, 0), "ACME-2": clock(11, 10), "ACME-3": clock(12, 15), "ACME-4": clock(12, 25)}
+	if !maps.EqualFunc(card.FirstSlot, wantSlots, time.Time.Equal) || !maps.EqualFunc(card.DoneAt, wantDone, time.Time.Equal) {
+		t.Fatalf("the record's scorecard gives the first slots %v and the done %v, want %v and %v", card.FirstSlot, card.DoneAt, wantSlots, wantDone)
+	}
+	recorded := func(times map[string]time.Time) func(string) time.Time {
+		return func(key string) time.Time { return times[key] }
+	}
+	for priority, want := range map[string]PriorityMeasure{
+		"P0": {Issues: 2, Slotted: 2, ToSlotMedian: 0.458333, ToSlotP90: 0.916667, Done: 2, ToDoneMedian: 2.458333, ToDoneP90: 2.916667},
+		"P1": {Issues: 2, Slotted: 2, ToSlotMedian: 0.375, ToSlotP90: 0.75, Done: 2, ToDoneMedian: 2.375, ToDoneP90: 2.75},
+	} {
+		got := priorityMeasures(card.Priorities, priority, recorded(card.FirstSlot), recorded(card.DoneAt))
+		if got.Issues != want.Issues || got.Slotted != want.Slotted || got.Done != want.Done {
+			t.Errorf("the record's %s issues measure %+v, want %+v", priority, got, want)
+		}
+		for _, value := range []struct {
+			name      string
+			got, want float64
+		}{{"to the first slot, median", got.ToSlotMedian, want.ToSlotMedian}, {"to the first slot, 90th percentile", got.ToSlotP90, want.ToSlotP90},
+			{"to done, median", got.ToDoneMedian, want.ToDoneMedian}, {"to done, 90th percentile", got.ToDoneP90, want.ToDoneP90}} {
+			assertNear(t, priority+" "+value.name, value.got, value.want)
+		}
+	}
+
+	replays := map[string]struct{ firstSlot, doneAt map[string]time.Time }{
+		record.MainRule.Name: {firstSlot: map[string]time.Time{"ACME-1": clock(9, 0)}, doneAt: map[string]time.Time{"ACME-1": clock(11, 0)}},
+		"p0-at-once": {
+			firstSlot: map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 10), "ACME-3": clock(9, 20), "ACME-4": clock(9, 30)},
+			doneAt:    map[string]time.Time{"ACME-1": clock(11, 0), "ACME-2": clock(11, 10), "ACME-3": clock(11, 20), "ACME-4": clock(12, 25)},
+		},
+	}
+	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
+	for i := range windows {
+		windows[i].Scorecard.Priorities, windows[i].Scorecard.FirstSlot, windows[i].Scorecard.DoneAt = card.Priorities, card.FirstSlot, card.DoneAt
+	}
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "p0-at-once")},
+		runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1},
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
+			line.FirstSlot, line.DoneAt = replays[rule.Name].firstSlot, replays[rule.Name].doneAt
+			ran.Gaps = Gaps(snapshot, line)
+			return snapshot, line, ran
+		})
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := runs.Comparison("comparison-issues.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := tableHead("priority", []string{"rule", "issues", "with a first slot", "to the first slot, median", "to the first slot, 90th percentile",
+		"done", "to done, median", "to done, 90th percentile"})
+	rows := []string{
+		"| P0 | the record | 2 | 2 | 0.4583 | 0.9167 | 2 | 2.4583 | 2.9167 |",
+		"| P0 | `main` | 2 | 1 | 0 | 0 | 1 | 2 | 2 |",
+		"| P0 | `p0-at-once` | 2 | 2 | 0 | 0 | 2 | 2 | 2 |",
+		"| P1 | the record | 2 | 2 | 0.375 | 0.75 | 2 | 2.375 | 2.75 |",
+		"| P1 | `main` | 2 | 0 | none | none | 0 | none | none |",
+		"| P1 | `p0-at-once` | 2 | 1 | 0 | 0 | 2 | 2.375 | 2.75 |",
+	}
+	if !strings.Contains(document, "## P0 and P1 work under each rule\n") {
+		t.Errorf("the document holds no part of P0 and P1 work:\n%s", document)
+	}
+	for _, w := range windows {
+		section := "### " + w.Name + "\n\n" + head + "\n" + strings.Join(rows, "\n") + "\n"
+		if !strings.Contains(document, section) {
+			t.Errorf("the document holds no section\n%s\nin:\n%s", section, document)
 		}
 	}
 }

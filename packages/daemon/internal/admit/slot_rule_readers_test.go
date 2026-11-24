@@ -861,6 +861,173 @@ func slotRuleReaders() []slotRuleReader {
 			why: "an issue at work in a phase that keeps no slot is in none of the lists that place an issue and is served no answer; " +
 				"one whose phase keeps a slot it does not hold is unlisted",
 		},
+		slotRuleReader{
+			// The records carry priorities through a store that sets them (prioritized), since
+			// the daemon's own store keeps none yet.
+			reader:  "record.Waiting's order of the line: priority first",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with the line by priority first", func(rule *record.SlotRule) { rule.Order = record.LinePriorityFirst }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const cameBack, ranked, root, child, none = "ACME-210", "ACME-211", "ACME-212", "ACME-213", "ACME-214"
+				// A root at P1 whose work came back; a root at P2 that never ran, ranked ahead of a
+				// started tree whose root, at P0, stands past its review; that root's child at
+				// admitted, with no priority of its own, which takes its root's; and a root with no
+				// priority that never ran, ranked first of all.
+				acmeRoot(t, pool, cameBack, phase.Implementing, "in_progress", "d", nil, nil)
+				oweMemberStart(t, pool, cameBack, cameBack, phase.Implementing)
+				acmeQueuedRoot(t, pool, ranked, "b")
+				acmeRoot(t, pool, root, phase.Accepting, "needs_review", "c", nil, nil)
+				approvedGate(t, pool, root)
+				acmeChild(t, pool, child, root, phase.Admitted, "todo", "c")
+				acmeQueuedRoot(t, pool, none, "a")
+				priorities := prioritized{Store: record.NewStore(), of: map[string]record.Priority{cameBack: record.P1, ranked: record.P2, root: record.P0}}
+				line, _, _ := lineUnderStore(t, pool, priorities, rule, nil)
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-210 ACME-214 ACME-211 ACME-213]",
+			changed: "the line is [ACME-213 ACME-210 ACME-211 ACME-214]",
+			why: "the issues whose work came back stand first and then the issues that have not started by their tree root's rank, " +
+				"or, under a rule that orders by priority first, each stands in the band of its own priority, else its tree root's, " +
+				"P0 first and an issue with neither last, and in the daemon's own order within one band",
+		},
+		slotRuleReader{
+			reader:  "admit's capLets in the promotion: a P0 above the cap",
+			changes: []string{"P0AboveCap"},
+			rule:    ruleWith("main with a P0 above the cap", func(rule *record.SlotRule) { rule.P0AboveCap = true }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const holder, ranked, urgent, root, child = "ACME-220", "ACME-221", "ACME-222", "ACME-223", "ACME-224"
+				// The holder fills the cap of one. A root at P1 that never ran is ranked first and
+				// one at P0 second; and a started tree whose root is at P0 has a child at admitted
+				// with no priority of its own.
+				acmeRoot(t, pool, holder, phase.Implementing, "in_progress", "a", nil, nil)
+				takeSlot(t, pool, holder)
+				acmeQueuedRoot(t, pool, ranked, "b")
+				acmeQueuedRoot(t, pool, urgent, "c")
+				acmeRoot(t, pool, root, phase.Accepting, "needs_review", "d", nil, nil)
+				approvedGate(t, pool, root)
+				acmeChild(t, pool, child, root, phase.Admitted, "todo", "d")
+				admission := prioritizedAdmission(t, 1, rule, map[string]record.Priority{ranked: record.P1, urgent: record.P0, root: record.P0})
+				tickThrough(t, pool, admission, "the pass")
+				return openedWord(t, pool, ranked, urgent) + "; " + slotWord(t, pool, child) + "; " + slotWord(t, pool, holder)
+			},
+			main:    "the trees open of [ACME-221 ACME-222] are []; ACME-224 holds no slot; ACME-220 holds a slot",
+			changed: "the trees open of [ACME-221 ACME-222] are [ACME-222]; ACME-224 holds no slot; ACME-220 holds a slot",
+			why: "a full cap lets no start through that needs a slot; under a rule that starts a P0 above the cap, an issue whose own " +
+				"priority is P0 starts whatever the slots in use, and one that takes P0 from its tree root alone, or is P1, waits",
+		},
+		slotRuleReader{
+			reader:  "admit's capLets in lineCanMove: a P0 above the cap",
+			changes: []string{"P0AboveCap"},
+			rule:    ruleWith("main with a P0 above the cap", func(rule *record.SlotRule) { rule.P0AboveCap = true }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const awaiting, urgent = "ACME-225", "ACME-226"
+				registerControllerFor(t, pool, acmeProject)
+				acmeRoot(t, pool, awaiting, phase.AwaitingPerson, "in_progress", "a", nil, nil)
+				takeSlot(t, pool, awaiting)
+				seedClaimForProject(t, claimStore(t, pool), acmeProject, awaiting, awaiting, claim.RoleArchitect, supervise.StateIdle)
+				acmeQueuedRoot(t, pool, urgent, "b")
+				settled := settleMovements(t, pool, awaiting)
+				admission := prioritizedAdmission(t, 1, rule, map[string]record.Priority{urgent: record.P0})
+				admission.UseStalledTreeNotice(deploymentBound(t, ""))
+				admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
+				tickThrough(t, pool, admission, "the measure")
+				return stalledWord(stalledRoots(t, pool))
+			},
+			main:    "the controller is told that [ACME-225] stopped",
+			changed: "the controller is told of no stopped tree",
+			why: "the stall measure's free-slot term asks the cap what the promotion asks it: a root that never ran is held by a full " +
+				"cap and the line is stopped, and under a rule that starts a P0 above the cap a root at P0 starts and the line moves",
+		},
+		slotRuleReader{
+			reader:  "admit's releaseIdleSlots: a holder idle while its children work",
+			changes: []string{"IdleReturn"},
+			rule:    ruleWith("main with an idle return of an hour", func(rule *record.SlotRule) { rule.IdleReturn = time.Hour }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const parent, child, queued = "ACME-230", "ACME-231", "ACME-232"
+				// The parent, in implementing, has held its slot for three hours, and its
+				// implementer's last turn ended two hours ago; its child, in implementing, holds
+				// the other slot of the cap of two; a root that never ran waits.
+				acmeRoot(t, pool, parent, phase.Implementing, "in_progress", "a", nil, nil)
+				approvedGate(t, pool, parent)
+				takeSlotAt(t, pool, parent, fixedNow.Add(-3*time.Hour))
+				idleClaim(t, pool, parent, parent, claim.RoleImplementer, fixedNow.Add(-150*time.Minute), fixedNow.Add(-2*time.Hour))
+				acmeChild(t, pool, child, parent, phase.Implementing, "in_progress", "a")
+				takeSlotAt(t, pool, child, fixedNow.Add(-time.Hour))
+				acmeQueuedRoot(t, pool, queued, "b")
+				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
+				line, _, _ := lineUnder(t, pool, rule)
+				return slotWord(t, pool, parent) + "; " + markWord(t, pool, parent) + "; " + treeWord(t, pool, queued) + "; " + waitsWord(line, parent)
+			},
+			main: "ACME-230 holds a slot; ACME-230 carries no mark of a release for a wait; the tree of ACME-232 is not open; " +
+				"ACME-230 stands in no place of the line",
+			changed: "ACME-230 holds no slot; ACME-230 carries the mark of a release for a wait; the tree of ACME-232 is open; " +
+				"ACME-230 stands in the line waiting on [ACME-231]",
+			why: "a parent past admitted keeps its slot while its children work; under a rule with an idle return, a holder that waits " +
+				"on its children with no turn for that long gives its slot back to work that can start, and stands in the line at " +
+				"the mark of that release, passed over while its children work",
+		},
+		slotRuleReader{
+			reader:  "admit's releaseIdleSlots: a root idle while it waits on a person",
+			changes: []string{"IdleReturn"},
+			rule:    ruleWith("main with an idle return of an hour", func(rule *record.SlotRule) { rule.IdleReturn = time.Hour }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const awaiting, queued = "ACME-235", "ACME-236"
+				// The root waits on a person and has held the only slot for three hours; its
+				// architect's last turn ended two hours ago; a root that never ran waits.
+				acmeRoot(t, pool, awaiting, phase.AwaitingPerson, "in_progress", "a", nil, nil)
+				takeSlotAt(t, pool, awaiting, fixedNow.Add(-3*time.Hour))
+				idleClaim(t, pool, awaiting, awaiting, claim.RoleArchitect, fixedNow.Add(-150*time.Minute), fixedNow.Add(-2*time.Hour))
+				acmeQueuedRoot(t, pool, queued, "b")
+				tickThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "the pass")
+				line, _, _ := lineUnder(t, pool, rule)
+				return slotWord(t, pool, awaiting) + "; " + markWord(t, pool, awaiting) + "; " + treeWord(t, pool, queued) + "; " +
+					waitsWord(line, awaiting)
+			},
+			main: "ACME-235 holds a slot; ACME-235 carries no mark of a release for a wait; the tree of ACME-236 is not open; " +
+				"ACME-235 stands in no place of the line",
+			changed: "ACME-235 holds no slot; ACME-235 carries the mark of a release for a wait; the tree of ACME-236 is open; " +
+				"ACME-235 stands in no place of the line",
+			why: "a root waiting on a person keeps its slot; under a rule with an idle return, one with no turn for that long gives it " +
+				"back to work that can start, and stands in no line until a person answers it",
+		},
+		slotRuleReader{
+			reader:  "record.Waiting: an answered root keeps the place of its idle release",
+			changes: []string{"IdleReturn"},
+			rule:    ruleWith("main with an idle return of an hour", func(rule *record.SlotRule) { rule.IdleReturn = time.Hour }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const answered, waited = "ACME-237", "ACME-238"
+				// The root gave its slot back an hour ago while it waited on a person, who answered
+				// it ten minutes from now; the other issue gave its slot back for a wait that has
+				// since ended, now.
+				answeredAt := fixedNow.Add(10 * time.Minute)
+				acmeRoot(t, pool, answered, phase.AwaitingPerson, "in_progress", "b", nil, func(root *record.Issue) {
+					root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &answeredAt, record.AnsweredByAsk, "ask-"+answered
+				})
+				takeSlot(t, pool, answered)
+				releaseForWaitAt(t, pool, answered, fixedNow.Add(-time.Hour))
+				acmeRoot(t, pool, waited, phase.Implementing, "in_progress", "a", nil, nil)
+				takeSlot(t, pool, waited)
+				releaseForWaitAt(t, pool, waited, fixedNow)
+				line, _, _ := lineUnder(t, pool, rule)
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-238 ACME-237]",
+			changed: "the line is [ACME-237 ACME-238]",
+			why: "an answered root stands in the returned part at its answer; under a rule with an idle return, one that gave its slot " +
+				"back while it waited keeps the place of that release, ahead of every slot given back after it",
+		},
 	)
 }
 
@@ -1139,11 +1306,67 @@ func openChild(t *testing.T, pool *pgxpool.Pool, key, parent string) {
 // goes and the mark that says why is written with it (record.Store.ReleaseSlotForWait).
 func releaseForWait(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
+	releaseForWaitAt(t, pool, key, fixedNow.Add(-time.Hour))
+}
+
+// releaseForWaitAt is releaseForWait at the moment at, which the mark carries.
+func releaseForWaitAt(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
+	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().ReleaseSlotForWait(context.Background(), tx, key, fixedNow.Add(-time.Hour)); err != nil {
+		if err := record.NewStore().ReleaseSlotForWait(context.Background(), tx, key, at); err != nil {
 			t.Fatalf("release the slot of %s for a wait: %v", key, err)
 		}
 	})
+}
+
+// idleClaim records the claim of key's role in tree as an idle agent's: no turn under way and no
+// task, its last turn begun at start and ended at end, the two moments the holder state and the
+// idle return read a claim's turns by (record.HolderClaim).
+func idleClaim(t *testing.T, pool *pgxpool.Pool, key, tree string, role claim.Role, start, end time.Time) {
+	t.Helper()
+	if err := claimStore(t, pool).PutClaim(context.Background(), supervise.Claim{Token: acmeToken(t, key, role), Project: acmeProjectToken(t),
+		Tree: tree, Issue: key, Role: role, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle, Session: "ses_" + string(role) + "_" + key,
+		LastTurnStart: start, LastTurnEnd: end}); err != nil {
+		t.Fatalf("record the %s claim of %s: %v", role, key, err)
+	}
+}
+
+// prioritized is the daemon's own store with each issue's own Dispatch priority set as of names it
+// on every record the store reads of a project's live issues (record.Store.LiveIssues, the read the
+// admission pass and the line take their records from), and none where of names none. The daemon's
+// store keeps no priority yet (record.Issue.Priority), so a row whose rule reads one hands its pass
+// the records as they read once the store keeps it.
+type prioritized struct {
+	record.Store
+	of map[string]record.Priority
+}
+
+func (s prioritized) LiveIssues(ctx context.Context, tx pgx.Tx, project string) ([]record.Issue, error) {
+	issues, err := s.Store.LiveIssues(ctx, tx, project)
+	for i := range issues {
+		issues[i].Priority = s.of[issues[i].Key]
+	}
+	return issues, err
+}
+
+// prioritizedAdmission is ruledAdmission over a store that reads each issue's priority as
+// priorities names it (prioritized).
+func prioritizedAdmission(t *testing.T, cap int, rule record.SlotRule, priorities map[string]record.Priority) *Admission {
+	t.Helper()
+	admission := ruledAdmission(t, cap, rule, silent())
+	admission.store = prioritized{Store: admission.store, of: priorities}
+	return admission
+}
+
+// waitsWord says where key stands in a waiting line: in no place of it, or in it with what its
+// entry waits on (record.LineEntry.Waits), which the promotion passes it over for.
+func waitsWord(line []record.LineEntry, key string) string {
+	for _, entry := range line {
+		if entry.Issue.Key == key {
+			return key + " stands in the line waiting on [" + strings.Join(entry.Waits, " ") + "]"
+		}
+	}
+	return key + " stands in no place of the line"
 }
 
 // mergerReady records the merger's ready mark on key: its completion of merging, which records the
@@ -1174,11 +1397,17 @@ func lineUnder(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule) ([]record
 // read nothing, as the daemon's own pass reads nothing.
 func lineUnderTables(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule, tables RuleTables) ([]record.LineEntry, []record.HeldIssue, record.LineFacts) {
 	t.Helper()
+	return lineUnderStore(t, pool, record.NewStore(), rule, tables)
+}
+
+// lineUnderStore is lineUnderTables over the records records reads.
+func lineUnderStore(t *testing.T, pool *pgxpool.Pool, records record.Store, rule record.SlotRule, tables RuleTables) ([]record.LineEntry, []record.HeldIssue, record.LineFacts) {
+	t.Helper()
 	var line []record.LineEntry
 	var held []record.HeldIssue
 	var facts record.LineFacts
 	inTx(t, pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
+		ctx := context.Background()
 		issues, err := records.LiveIssues(ctx, tx, acmeProject)
 		if err != nil {
 			t.Fatalf("list the live issues: %v", err)
