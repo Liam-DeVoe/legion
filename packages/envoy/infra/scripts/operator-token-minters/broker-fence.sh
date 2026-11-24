@@ -222,7 +222,7 @@ fence_live() {
   fi
   backends="$(jq -r --arg ns "$FENCE_NS" '[.[] | select(.ns == $ns) | "\(.id) calls the Service \(.ns)/\(.name)"] | unique | join("; ")' <<<"$WEBHOOK_SERVICES")"
   if [ -n "$backends" ]; then
-    no_credit "$step" "a webhook this check reads calls a Service in $FENCE_NS, whose pods the fence does not keep anyone from entering: $backends"
+    no_credit "$step" "a webhook calls a Service in $FENCE_NS, whose pods the fence does not keep anyone from entering: $backends"
     return 0
   fi
   FENCE_CREDITED="$(fence_json | jq -c --arg declared "$FENCE_DECLARED" --arg live "$FENCE_DIGEST" --slurpfile read "$WORK/fence-live.json" \

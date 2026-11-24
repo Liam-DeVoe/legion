@@ -46,6 +46,13 @@
 #        member (which is an ALLOWANCE too);
 #   (fk) patch, or update, of pods in dispatch stays a finding: a label-only patch puts a pod that
 #        is not the broker's behind the broker's Services, which select app=envoy-broker alone;
+#   (fl) a Google account found through a Workload Identity member of an account with a finding,
+#        which also holds a credited exec, has its minters found, never allowed;
+#   (fm) a chain Google, Kubernetes, then Google to the residual: comment-delivery's member, a
+#        Google account that can mint the member's token, and that account's minter are each named
+#        by an ALLOWANCE;
+#   (fn) a chain to an account found partway through a round is a finding by the found right,
+#        never one by the residual's;
 #   (fs) each of the five binding specs broker-fence.json holds decides: widened in the contract and
 #        on the cluster alike, the fence is credited; in the contract alone, it is not;
 #   (fp) review-answer.jq gives an allowed credited right the policy and the flag `residual`, never
@@ -55,10 +62,11 @@
 #        CONNECT on pods, every rule naming the envoy-broker- prefix; the same reading of a contract
 #        whose connect policy lacks port forward, or names no prefix, fails that column.
 #
-# Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg), (fh), (fj)
-# and (fk) the same world with one fault, one grant more or the reviewed digests, (fd), (fe) and
-# (fs) a half without it, and (fr) a contract with one rule or one prefix taken out. The check as
-# at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), which it fails.
+# Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg), (fh), (fj),
+# (fk), (fl) and (fm) the same world with one fault, one grant more or the reviewed digests, (fd),
+# (fe) and (fs) a half without it, and (fr) a contract with one rule or one prefix taken out. The
+# check as at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), and as at
+# 9d08e087406 of (fl), (fm), (fn) and fb's webhook-unguarded, which it fails.
 
 # The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
 # is not credited. A credit's sentence names the use the policy refuses; the allowance's, the
@@ -198,7 +206,7 @@ fence_fail_row() {
       jq -n '[{apiVersion: "admissionregistration.k8s.io/v1", kind: "MutatingWebhookConfiguration", metadata: {name: "hooks"},
         webhooks: [{name: "inject.example.com", clientConfig: {service: {namespace: "dispatch", name: "hook"}}}]}]' \
         >"$world/clusters/operator-cluster/webhooks.json"
-      want="a webhook this check reads calls a Service in dispatch, whose pods the fence does not keep anyone from entering: MutatingWebhookConfiguration hooks/inject.example.com calls the Service dispatch/hook"
+      want="a webhook calls a Service in dispatch, whose pods the fence does not keep anyone from entering: MutatingWebhookConfiguration hooks/inject.example.com calls the Service dispatch/hook"
       ;;
     webhook-cluster)
       # A validating webhook backed in dispatch whose selector names legion alone, but whose rule
@@ -208,7 +216,18 @@ fence_fail_row() {
           namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["legion"]}]},
           rules: [{apiGroups: ["rbac.authorization.k8s.io"], apiVersions: ["v1"], operations: ["CREATE"], resources: ["clusterrolebindings"]}]}]}]' \
         >"$world/clusters/operator-cluster/webhooks.json"
-      want="a webhook this check reads calls a Service in dispatch, whose pods the fence does not keep anyone from entering: ValidatingWebhookConfiguration hooks/rbac.example.com calls the Service dispatch/hook"
+      want="a webhook calls a Service in dispatch, whose pods the fence does not keep anyone from entering: ValidatingWebhookConfiguration hooks/rbac.example.com calls the Service dispatch/hook"
+      ;;
+    webhook-unguarded)
+      # A mutating webhook backed in dispatch whose selector names an unguarded namespace alone and
+      # whose rules are namespaced: webhook-backends.jq leaves it out, but whoever enters its backend
+      # changes every pod made in that namespace, so the fence's credit still stands on its absence.
+      jq -n '[{apiVersion: "admissionregistration.k8s.io/v1", kind: "MutatingWebhookConfiguration", metadata: {name: "hooks"},
+        webhooks: [{name: "pods.example.com", clientConfig: {service: {namespace: "dispatch", name: "hook"}},
+          namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["unguarded"]}]},
+          rules: [{apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["pods"], scope: "Namespaced"}]}]}]' \
+        >"$world/clusters/operator-cluster/webhooks.json"
+      want="a webhook calls a Service in dispatch, whose pods the fence does not keep anyone from entering: MutatingWebhookConfiguration hooks/pods.example.com calls the Service dispatch/hook"
       ;;
     webhooks-unread)
       : >"$world/clusters/operator-cluster/refuse-webhooks"
@@ -249,8 +268,8 @@ fence_fail_row() {
 }
 if row fb; then
   each fence_fail_row removed warn ignore selector policy-selector exception drift unread pods-unread rogue-pod other-secret no-pod \
-    webhook webhook-cluster webhooks-unread webhooks-empty webhooks-object policies-empty pods-empty shared
-  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside a webhook backed in dispatch or webhooks unread, answered empty or as {}, or beside another guarded pair in dispatch, credits nothing"
+    webhook webhook-cluster webhook-unguarded webhooks-unread webhooks-empty webhooks-object policies-empty pods-empty shared
+  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or beside another guarded pair in dispatch, credits nothing"
 fi
 
 # --- (fc) Whoever can write the fence stays a finding while it is credited. ---
@@ -326,7 +345,7 @@ residual_chain_row() {
       # A Workload Identity member that acts as comment-delivery, and an agent that can become it.
       iam "$comment_delivery_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
       subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token agent-sessions runner-w
-      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can acts as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")"
+      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")"
       ;;
   esac
   fence_run
@@ -350,6 +369,74 @@ if row fj; then
   passed "(fj) an agent that can mint dispatch-measure's token, a Google account that can mint comment-delivery's, and an agent that can become comment-delivery's Workload Identity member each print an ALLOWANCE naming the chain and the residual"
 fi
 
+# --- (fl), (fm) and (fn): the Google service accounts the chains name are read to a fixed point,
+# so a chain that runs Google, Kubernetes, then Google again is named, and by the right verdict. ---
+# gsa_res NAME: the resource of the Google service account NAME@<project>.
+gsa_res() { echo "//iam.googleapis.com/projects/$project/serviceAccounts/$1@$project.iam.gserviceaccount.com"; }
+fixed_point_world() {
+  fence_world
+  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "agent-sessions", name: "runner-w"}, {namespace: "agent-sessions", name: "runner-y"},
+    {namespace: "agent-sessions", name: "runner-z"}]'
+}
+# (fl) An account found by a chain through a Workload Identity member, which also holds a credited
+# exec: its minters are findings, not ALLOWANCEs. fg@ can patch admission policies (a finding);
+# agent-sessions/runner-w is its Workload Identity member; g2@ can mint runner-w's token and holds
+# create pods/exec in dispatch; minter4@ can mint g2@'s token.
+if row fl; then
+  fixed_point_world
+  subject_grant operator-cluster "$(user_subject "fg@$project.iam.gserviceaccount.com")" patch admissionregistration.k8s.io validatingadmissionpolicies "" "" ""
+  iam "$(gsa_res fg)" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
+  subject_grant operator-cluster "$(user_subject "g2@$project.iam.gserviceaccount.com")" create "" serviceaccounts token agent-sessions runner-w
+  subject_grant operator-cluster "$(user_subject "g2@$project.iam.gserviceaccount.com")" create "" pods exec dispatch ""
+  iam "$(gsa_res g2)" roles/iam.serviceAccountTokenCreator "serviceAccount:minter4@$project.iam.gserviceaccount.com"
+  fence_run
+  want_status 1 "an account found through a member, holding a credited exec"
+  want_text "FINDING serviceAccount:g2@$project.iam.gserviceaccount.com: create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as fg@$project.iam.gserviceaccount.com through Workload Identity" \
+    "an account found through a member, holding a credited exec"
+  want_text "FINDING serviceAccount:minter4@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken" \
+    "an account found through a member, holding a credited exec"
+  ! has_prefix "ALLOWANCE serviceAccount:minter4@" || fail "an account found through a member, holding a credited exec: minter4 is an ALLOWANCE"
+  passed "(fl) a Google account found through a Workload Identity member, which also holds a credited exec, has its minters found, never allowed"
+fi
+# (fm) Google, Kubernetes, then Google: runner-w is comment-delivery's Workload Identity member, g3@
+# can mint runner-w's token, and minter5@ can mint g3@'s.
+if row fm; then
+  fixed_point_world
+  iam "$comment_delivery_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
+  subject_grant operator-cluster "$(user_subject "g3@$project.iam.gserviceaccount.com")" create "" serviceaccounts token agent-sessions runner-w
+  iam "$(gsa_res g3)" roles/iam.serviceAccountTokenCreator "serviceAccount:minter5@$project.iam.gserviceaccount.com"
+  fence_run
+  want_status 0 "a chain Google, Kubernetes, then Google to the residual"
+  [ "$(count_prefix "FINDING ")" -eq 0 ] || fail "a chain Google, Kubernetes, then Google to the residual: a FINDING line"
+  want_line "$(allowance_line "serviceAccount:g3@$project.iam.gserviceaccount.com" "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")" \
+    "a chain Google, Kubernetes, then Google to the residual"
+  want_text "ALLOWANCE serviceAccount:minter5@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken" \
+    "a chain Google, Kubernetes, then Google to the residual"
+  want_text ", so it can act as serviceAccount:g3@$project.iam.gserviceaccount.com, which can create serviceaccounts/token runner-w in agent-sessions" \
+    "a chain Google, Kubernetes, then Google to the residual"
+  want_text "PASS live: minters of g3@$project.iam.gserviceaccount.com, whose credited grant reaches the broker's pod fence's residual: " \
+    "a chain Google, Kubernetes, then Google to the residual"
+  passed "(fm) a chain Google, Kubernetes, then Google to the residual names its last minter by an ALLOWANCE"
+fi
+# (fn) A target found partway through a round: dispatch-measure, listed for the residual, can mint
+# runner-z's token, and runner-z can patch admission policies; runner-y can mint dispatch-measure's
+# token. runner-y's lines name dispatch-measure by the right its verdict reads: an ALLOWANCE by the
+# residual's, then a FINDING by the found one's, and no FINDING by the residual's.
+if row fn; then
+  fixed_point_world
+  subject_grant operator-cluster "$(sa_subject agent-sessions runner-z)" patch admissionregistration.k8s.io validatingadmissionpolicies "" "" ""
+  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" create "" serviceaccounts token agent-sessions runner-z
+  subject_grant operator-cluster "$(sa_subject agent-sessions runner-y)" create "" serviceaccounts token legion dispatch-measure
+  fence_run
+  want_status 1 "a target found partway through a round"
+  become_measure="create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can"
+  want_line "FINDING system:serviceaccount:agent-sessions:runner-y: $become_measure create serviceaccounts/token runner-z in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-z, which can patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide" \
+    "a target found partway through a round"
+  ! has_line "FINDING system:serviceaccount:agent-sessions:runner-y: $become_measure create pods/exec in dispatch" ||
+    fail "a target found partway through a round: a FINDING names the chain to the residual alone"
+  passed "(fn) a chain to an account found partway through a round is a finding by the found right, never by the residual's"
+fi
+
 # --- (fk) A change of a pod in dispatch is no credit: broker-pod-update admits a change of any
 # pod's metadata, and a pod given the broker's label app=envoy-broker takes its Services' traffic. ---
 pod_change_row() {
@@ -368,17 +455,14 @@ if row fk; then
 fi
 
 # --- (fs) Each binding spec the contract holds decides alone. ---
-# fence_variant NAME PROGRAM [ARGS...]: a copy of fence_check whose broker-fence.json is PROGRAM's
-# rewrite of fence_check's (jq, with ARGS); prints the copy's script.
+# fence_variant NAME PROGRAM [ARGS...]: a copy of the script (script_copy) whose broker-fence.json is
+# PROGRAM's rewrite of fence_check's (jq, with ARGS); prints the copy's script, for fence_run.
 fence_variant() {
-  local dir="$temporary_dir/fence-variant-$1" program="$2"
+  local copy program="$2"
+  copy="$(script_copy "fence-$1")"
   shift 2
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  cp "$fence_check" "$dir/operator-token-minters.sh"
-  cp -r "$(dirname "$fence_check")/operator-token-minters" "$dir/"
-  jq "$program" "$@" "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" >"$dir/operator-token-minters/broker-fence.json"
-  echo "$dir/operator-token-minters.sh"
+  jq "$program" "$@" "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" >"$(dirname "$copy")/operator-token-minters/broker-fence.json"
+  printf '%s' "$copy"
 }
 # The binding $b's selector widened to dispatch-canary too, which still holds dispatch: a contract
 # object ({kind, name, spec}) or a render's or a cluster's.
@@ -390,12 +474,12 @@ binding_spec_row() {
   # The contract, the renders and the cluster agree on the widened binding: credited.
   fence_world
   fence_edit both "$fence_widen" --arg b "$1"
-  run_script="$variant" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db
+  run_script="$variant" fence_run
   want_status 0 "the binding $1 widened in the contract and on the cluster alike"
   want_fence_credits "the binding $1 widened in the contract and on the cluster alike"
   # The contract's widened binding against the fence as fence_objects writes it: no credit.
   fence_world
-  run_script="$variant" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db
+  run_script="$variant" fence_run
   want_status 1 "the binding $1 widened in the contract alone"
   want_fence_findings "the binding $1 widened in the contract alone"
   want_text "in the renders, the ValidatingAdmissionPolicyBinding $1 differs from the reviewed fence in matchResources" \

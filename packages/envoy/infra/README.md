@@ -4745,17 +4745,18 @@ their bindings with the reviewed specs `scripts/operator-token-minters/broker-fe
 (each spec, or the sha256 of the two workload policies', less what the API server and GKE fill in);
 at least one `envoy-broker-*` pod runs as `envoy-broker`; no pod of `dispatch` named otherwise runs
 as `envoy-broker` or takes `--db-secret`, a token Secret there or a Secret a broker pod takes; and
-no webhook that can match a guarded namespace or a cluster-scoped object calls a Service in
-`dispatch`, a grant of exec, attach or port forward in `dispatch` prints a `CREDIT` line naming its
-use on the broker's pods instead of a finding, and goes into `--report`'s `credited` with the
-policy and the declared and live versions. Its use on the other pods of `dispatch` the fence does
-not refuse: Dispatch's own database login there can write the writer hold's tables, the residual
-`broker-fence.json` states and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE`
-line naming it and goes into `--report`'s `residuals`, and so does each chain to its holder: who can
-become such a ServiceAccount, or mint, sign as or act as such a Google service account (its
-minters' step), and so on along the chain. Everything else stays a finding: a pod patch or update
-in `dispatch` (`broker-pod-update` admits a change of any pod's metadata, and a pod given the
-broker's label `app: envoy-broker` takes the broker's Services' traffic), an ephemeral container
+no webhook, whatever its selectors and rules, calls a Service in `dispatch`, a grant of exec,
+attach or port forward in `dispatch` prints a `CREDIT` line naming its use on the broker's pods
+instead of a finding, and goes into `--report`'s `credited` with the policy and the declared and
+live versions. Its use on the other pods of `dispatch` the fence does not refuse: Dispatch's own
+database login there can write the writer hold's tables, the residual `broker-fence.json` states
+and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE` line naming it and goes into
+`--report`'s `residuals`, and so does each chain to its holder: who can become such a
+ServiceAccount, or mint, sign as or act as such a Google service account (its minters' step), and
+so on along the chain, Google and Kubernetes alike, read until a pass names no new account. A
+chain that also reaches an account with a finding is a finding. Everything else stays a finding: a
+pod patch or update in `dispatch` (`broker-pod-update` admits a change of any pod's metadata, and a
+pod given the broker's label `app: envoy-broker` takes the broker's Services' traffic), an ephemeral container
 there, `create pods` there, every workload write, the token, impersonation, Secrets, every Google
 IAM right, the hold writers, and whoever can write or delete the fence. A fence missing or held
 otherwise prints `NO CREDIT` naming why and credits nothing; one whose policies, pods or webhooks

@@ -276,9 +276,10 @@ fence_edit() {
   [ "$where" = live ] || edit "$world/render.json" ".items |= map($program)" "$@"
   [ "$where" = declared ] || edit "$world/clusters/operator-cluster/admission-policies.json" "map($program)" "$@"
 }
-# fence_run ARGS...: fence_check with the full flags, the broker as dispatch/envoy-broker with its
-# database login there, then ARGS, against the current world; sets output and status as run does.
-fence_run() { run_script="$fence_check" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@"; }
+# fence_run ARGS...: the check pinned to fence_objects (fence_check, or run_script's copy when a row
+# names one) with the full flags, the broker as dispatch/envoy-broker with its database login there,
+# then ARGS, against the current world; sets output and status as run does.
+fence_run() { run_script="${run_script:-$fence_check}" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@"; }
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
 # a few beside them it also holds.

@@ -219,8 +219,11 @@
 #   live: minters of  For each Google service account whose credited grant reaches the broker's pod
 #     a credited      fence's residual and which no RBAC finding names, the same holders, each an
 #     grant's         ALLOWANCE naming the chain to the account and the residual where the step above
-#     account         would find it; each Workload Identity member of the operator's pool it lists is
-#                     followed on every cluster read, each chain to it an ALLOWANCE too.
+#     account         would find it. Each Workload Identity member of the operator's pool either step
+#                     lists is followed on every cluster read, a chain to a found account's member a
+#                     finding and one to a residual account's an ALLOWANCE; a chain can name another
+#                     Google account, so both steps run until a pass names none, the found accounts
+#                     settling before any residual one is read.
 #   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
 #     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
 #                     and update, of the scopes' create, update and setIamPolicy, and of the
@@ -369,8 +372,8 @@
 # and GKE fill in), its pods in dispatch and its webhooks. Only when the renders and the cluster each
 # hold the five policies and bindings with the reviewed specs; no pod there named otherwise than
 # envoy-broker-* runs as envoy-broker or takes --db-secret, a token Secret of the namespace or a
-# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook
-# that can match a guarded namespace or a cluster-scoped object calls a Service in dispatch, does a
+# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook of
+# the cluster's configurations, whatever its selectors and rules, calls a Service in dispatch, does a
 # grant of create or get on pods/exec, pods/attach or pods/portforward in dispatch, outright or by
 # name, declared or live, or as a way to become envoy-broker, print a CREDIT line naming its use on
 # the broker's pods instead of a finding; in the guarded rights, only while dispatch/envoy-broker is
@@ -379,12 +382,14 @@
 # tables, the fence does not refuse: that is broker-fence.json's residual, tracked by INFRA-4604, and
 # each such grant (not a way to become envoy-broker) prints an ALLOWANCE line naming it, and so does
 # each chain to its holder: who can become a ServiceAccount, or mint, sign as or act as a Google
-# service account, whose credited grant carries the residual, and so on along the chain, where it
-# reaches nothing more. Every other right stays a finding: patch and update of pods in dispatch
-# (broker-pod-update admits a change of any pod's metadata, and a pod given the broker's label
-# app=envoy-broker takes the broker's Services' traffic) and of pods/ephemeralcontainers (on a pod
-# not the broker's an ephemeral container takes any Secret of the namespace), create pods in
-# dispatch (so does a new pod), every Google IAM right and every hold writer; so does whoever can
+# service account, whose credited grant carries the residual, and so on along the chain, Google and
+# Kubernetes alike, read to a fixed point, where it reaches nothing more; a chain that also reaches
+# an account with a finding is a finding. Every other right stays a finding: patch and update of
+# pods in dispatch (broker-pod-update admits a change of any pod's metadata, and a pod given the
+# broker's label app=envoy-broker takes the broker's Services' traffic) and of
+# pods/ephemeralcontainers (on a pod not the broker's an ephemeral container takes any Secret of the
+# namespace), create pods in dispatch (so does a new pod), every Google IAM right and every hold
+# writer; so does whoever can
 # write the fence: its create, update and patch are admission rights, and its delete and
 # deletecollection are asked while it is credited. A fence missing, held otherwise, or beside a pod
 # or a webhook backend as above credits nothing and prints NO CREDIT naming why; one whose policies,
