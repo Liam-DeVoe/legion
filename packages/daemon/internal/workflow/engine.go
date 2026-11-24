@@ -81,7 +81,7 @@ type Config struct {
 	DefaultSteps []plan.Step
 	// Deployment is what this deployment gives a plan (config.Config.Deployment): the roles a step
 	// names, Legion's own and each role of `roles`, each with its type, its model and its harness,
-	// the listed models and the owner's role. A stored step takes the type plan.RolesOf gives its
+	// and the listed models. A stored step takes the type plan.RolesOf gives its
 	// role, the plan's own role's before the deployment's (planSteps). A Config that sets no roles
 	// takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment

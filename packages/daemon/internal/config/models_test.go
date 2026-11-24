@@ -54,9 +54,8 @@ func TestTheModelsKeyIsReadAndRefused(t *testing.T) {
 // The deployment a plan is judged against lists its models, `models` then each model a role of
 // `roles` names that `models` lacks, so a deployment that set a role's model before `models`
 // existed lists that model; it gives each role the harness `worker_backends` names, Oh My Pi where
-// it names none, and each role of `roles` its model; and the owner's role is the architect's, on
-// the default model and the architect's harness. The names no role of the deployment takes are the
-// one list a role of a plan cannot take either (plan.LegionNames), and `owner` is in neither.
+// it names none, and each role of `roles` its model. The names no role of the deployment takes are
+// the one list a role of a plan cannot take either (plan.LegionNames), and `owner` is in neither.
 func TestTheDeploymentListsItsModelsAndHarnesses(t *testing.T) {
 	const checker = "roles: {checker: {type: testing, prompt_file: checker.md, model: m-two}}\n"
 	cfg, err := Load(rolesFile(t, "models: [m-one]\n"+checker+"worker_backends: {implementer: claude}\n", "checker.md"), noEnv)

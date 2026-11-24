@@ -235,9 +235,9 @@ func checkDeploymentRoleKeys(cfg *Config) error {
 
 // checkDefaultSteps holds each project's `default_steps` to the checks a plan of the one task
 // `default` with those steps passes (plan.Supported, then plan.Validate against the deployment:
-// its roles, Legion's and those of `roles`, with their models and harnesses, the models it lists
-// and the owner's role), so the steps a task with none runs are steps this release
-// carries out. The projects are judged in the order of their keys, and a refusal names the key,
+// its roles, Legion's and those of `roles`, with their models and harnesses, and the models it
+// lists), so the steps a task with none runs are steps this release carries out. The projects are
+// judged in the order of their keys, and a refusal names the key,
 // then gives every reason of both checks. One cause is taken with a warning first, since this
 // release is the first to judge it: a key naming one agent for roles of two models or two
 // harnesses (oneAgentOneModel), whose step this release runs as an agent of its own and the next

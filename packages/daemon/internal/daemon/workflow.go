@@ -981,8 +981,8 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), its own project's default steps are what an issue whose
 // owner gives no plan runs, the file's deployment (config.Config.Deployment: Legion's own roles of
-// a step and each role of `roles`, each with its type, its model and its harness, the listed
-// models and the owner's role) is the engine's, a stored step takes the type plan.RolesOf gives
+// a step and each role of `roles`, each with its type, its model and its harness, and the listed
+// models) is the engine's, a stored step takes the type plan.RolesOf gives
 // its role (the plan's own role's, else the deployment's), and its own project's declared experiments are what each issue the
 // engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
 // (readBoot), which engineHooks puts in the place of each such hook's path.

@@ -106,8 +106,8 @@ type Options struct {
 	Steps []record.DesignStep
 	// Deployment is what this deployment gives a plan (config.Config.Deployment): the roles a step
 	// can name, Legion's own and each role of `roles`, each with its type, its model and its
-	// harness, the models the deployment lists and the owner's own role. register_plan judges a
-	// plan against it. A server given none takes Legion's own (plan.BuiltinRoles).
+	// harness, and the models the deployment lists. register_plan judges a plan against it. A
+	// server given none takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
 	// daemon`): one controller runs per project, so the controller secret route refuses the operator
