@@ -1,5 +1,10 @@
 package textcheck
 
+//ci:reads docs/kubernetes.md TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines reads it under ../../../.. (shippedText)
+//ci:reads packages/daemon/internal/daemon/workspace_copy_doc_extract.txt TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines reads it as ../daemon/workspace_copy_doc_extract.txt, the committed copy it holds the guide's regions to (readExtract)
+//ci:reads packages/daemon/internal/runtime/sandbox/workspace_copy_doc_extract.txt TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines reads it as ../runtime/sandbox/workspace_copy_doc_extract.txt, the committed copy it holds the guide's regions to (readExtract)
+//ci:reads packages/daemon/internal/launcher/testpg_disk_doc_extract.txt TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines reads it as ../launcher/testpg_disk_doc_extract.txt, the committed copy it holds the guide's region to (readExtract)
+
 import (
 	"fmt"
 	"slices"

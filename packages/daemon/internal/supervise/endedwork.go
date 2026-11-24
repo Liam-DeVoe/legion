@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -182,6 +183,19 @@ func endDied(observation runtime.Observation) string {
 	default:
 		return plain + ". " + runtimeDetail + account
 	}
+}
+
+// endRecordedDeath is the cause of a death the previous daemon recorded, read back from the claim
+// (Claim.LastDeathCause, which deathCause wrote) by the boot that relaunches it
+// (relaunchRecordedDeath): its plain sentence and the runtime's account, quoted, where the death
+// had a cause the daemon tells in plain words, and otherwise the account behind "the process
+// died", as endDied writes them. The disk notes endDied adds come from the observation, which the
+// claim does not keep, so a recorded disk death is told without them.
+func endRecordedDeath(cause string) string {
+	if plain, account, ok := strings.Cut(cause, runtimeDetail); ok {
+		return plain + runtimeDetail + strconv.Quote(account)
+	}
+	return "the process died: " + strconv.Quote(cause)
 }
 
 // endStalled is the stall backstop's cause, with the bound the claim's last step passed. It names

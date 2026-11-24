@@ -1,5 +1,7 @@
 package launcher
 
+//ci:reads packages/daemon/docker/legion-testpg pgDiskRig runs it through the link it puts on PATH, whose target is pgDiskScript (../../docker/legion-testpg) made absolute
+
 import (
 	"context"
 	"errors"
