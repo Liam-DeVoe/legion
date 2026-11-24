@@ -5,3 +5,5 @@ body: |-
   A Dispatch message whose payload the session cannot read as a Dispatch event now shows none of
   that payload, only that it was unrecognised. Before, the session saw the payload whole, which
   could hold another project's event.
+  A Dispatch event too large to lay out as a card is shown as the event the session read, as
+  text, with a body read in full, and no longer as the raw payload.

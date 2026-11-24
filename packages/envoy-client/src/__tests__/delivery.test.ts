@@ -1907,6 +1907,8 @@ describe("renderInbound non-dispatch envelopes", () => {
       expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
     });
 
+    // A Dispatch card the layout cannot hold shows the event its reader read, as text: where it
+    // is, what it is, who did it and its payload, never the frame's payload.
     test("a Dispatch event whose payload is nested 9,999 deep is shown as its text", () => {
       const deepEvent = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":${nested}}`;
       const rendered = renderInbound(
@@ -1918,7 +1920,91 @@ describe("renderInbound non-dispatch envelopes", () => {
 
       const card = decode(rendered.content) as { envoy: Record<string, unknown> };
       expect(rendered.payloadShownAsText).toBe(BOUND);
-      expect(card.envoy).toMatchObject({ id: "dispatch-deep", dispatch: deepEvent });
+      expect(card.envoy).toMatchObject({
+        id: "dispatch-deep",
+        dispatch: `{"owner":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":${nested}}`,
+      });
+    });
+
+    // readDispatchPayload reads an event by the keys its schema names and drops the rest, so a key
+    // beside the event's own reaches no card, the one shown as text among them.
+    test("a Dispatch event the card cannot lay out shows no key its reader dropped", () => {
+      const sibling = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"event":{"project":"PUB","body":"PUB's comment"},"payload":{"body":"PRIV's comment","deep":${nested}}}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-sibling", source: "dispatch", payload: sibling })
+        ),
+        reader
+      );
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(rendered.content).toContain("PRIV's comment");
+      expect(rendered.content).not.toContain("PUB");
+    });
+
+    // A body read whole is never cut to the part the frame carried, in a card shown as text too.
+    test("a cut Dispatch comment the card cannot lay out shows its body read whole", () => {
+      const end = "the last words of the whole body.";
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deep-cut",
+            source: "dispatch",
+            payload: targetedCommentFrame({
+              ...targetedComment,
+              body: "The first paragraph.",
+              body_truncated: true,
+              deep: JSON.parse(nested),
+            }),
+          })
+        ),
+        reader,
+        undefined,
+        `${"word ".repeat(2_000)}${end}`
+      );
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(rendered.content).toContain(end);
+      expect(rendered.content).not.toContain("The first paragraph.");
+    });
+
+    // The text of an event holds a body read whole escaped twice, once by JSON and once by the
+    // card: a quotation mark is four bytes there, as many as the bound gives it (twice TOON's two),
+    // so a body of them brings such a card near its bound, and it stays within it.
+    test("a cut Dispatch comment shown as text with a 1,048,300-byte body read whole stays within the bound", () => {
+      const end = "the last words of the whole body.";
+      const wholeBody = `${'"'.repeat(1_048_300 - end.length)}${end}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deep-cut-whole",
+            source: "dispatch",
+            payload: targetedCommentFrame({
+              ...targetedComment,
+              body: "The first paragraph.",
+              body_truncated: true,
+              deep: JSON.parse(nested),
+            }),
+          })
+        ),
+        reader,
+        undefined,
+        wholeBody
+      );
+
+      const bound = Number(
+        /^its layout is larger than the (\d+) bytes a card holds$/.exec(
+          rendered.payloadShownAsText ?? ""
+        )?.[1]
+      );
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card shown as text with a body read whole: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(bound).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+      expect(cardBytes).toBeGreaterThan(4 * (1_048_300 - end.length));
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      expect(rendered.content).toContain(end);
     });
 
     // A Dispatch payload readDispatchPayload reads no event of is shown as unrecognised and

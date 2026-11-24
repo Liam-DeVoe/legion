@@ -1039,6 +1039,50 @@ function encodeWithin(value: unknown, maxBytes: number): string | undefined {
   return lines.join("\n");
 }
 
+/** The `dispatch` block of a card: where the event is, what it is and who did it, and the rest a
+ *  host lays out from the event (`relation`, a compact record or the payload). */
+type DispatchCardEvent = {
+  readonly owner: string;
+  readonly type: string;
+  readonly actor: DispatchEvent["actor"];
+};
+
+/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`: the event the
+ *  reader read, as its JSON text - its owner, type, actor and payload, with a body read whole in
+ *  place of the part the frame carried - and never the frame's payload, so a key readDispatchPayload
+ *  dropped reaches no card. An event JSON.stringify cannot write either (it recurses as the encoder
+ *  does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
+ *  `bound`, keeps its owner, type and actor and the reason alone. */
+function dispatchCardAsText(
+  rendered: Readonly<Record<string, unknown>>,
+  event: DispatchCardEvent,
+  reason: string,
+  bound: number
+): string {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(event);
+  } catch {
+    // No text to show: the header and the reason below.
+  }
+  return (
+    (text === undefined
+      ? undefined
+      : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound)) ??
+    encode({
+      envoy: {
+        ...rendered,
+        dispatch: {
+          owner: event.owner,
+          type: event.type,
+          actor: event.actor,
+          payload: `not shown: ${reason}`,
+        },
+      },
+    })
+  );
+}
+
 export function inboundTimestamp(milliseconds: number | undefined): string {
   if (milliseconds === undefined) return "unknown";
   const date = new Date(Math.floor(milliseconds / 1_000) * 1_000);
@@ -1086,7 +1130,7 @@ export function renderInbound(
     const data = tolerant.data as Partial<InboundEnvelope>;
     envelope = { ...data, source: data.source ?? "unknown" };
   }
-  let dispatchEvent: unknown;
+  let dispatchEvent: DispatchCardEvent | undefined;
   let dispatchActor: DispatchEvent["actor"] | undefined;
   let dispatchIssue: string | undefined;
   let dispatchReply: ReplyHint | undefined;
@@ -1405,9 +1449,9 @@ export function renderInbound(
   // lays out in bytes that grow with the square of its depth: a 20 KB array chain made a 100 MB
   // card. Either way the payload is the text its sender sent, so the card shows it as that text,
   // as it shows a payload that is no JSON, and the host takes the frame. That text is bounded as
-  // every message's is: by the frame, at most the hub's 1 MiB. A payload that already is text is
-  // bounded so already, and a throw the payload is not behind is thrown as before.
-  const payloadKey = dispatchRendered ? "dispatch" : "message";
+  // every message's is: by the frame, at most the hub's 1 MiB. A Dispatch card shows the event its
+  // reader read as text instead (`dispatchCardAsText`). A payload that already is text is bounded
+  // so already, and a throw the payload is not behind is thrown as before.
   const payloadValue = dispatchRendered ? dispatchEvent : message;
   // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
   // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
@@ -1433,7 +1477,10 @@ export function renderInbound(
   }
   if (card === undefined) {
     payloadShownAsText ??= `its layout is larger than the ${cardBound} bytes a card holds`;
-    card = encode({ envoy: { ...rendered, [payloadKey]: envelope.payload } });
+    card =
+      dispatchEvent === undefined
+        ? encode({ envoy: { ...rendered, message: envelope.payload } })
+        : dispatchCardAsText(rendered, dispatchEvent, payloadShownAsText, cardBound);
   }
 
   return {

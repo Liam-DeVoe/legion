@@ -34,9 +34,13 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
-A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
-(or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
-passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`:
+one nested deeper than the encoder's recursion reaches, and one whose layout passes the card's
+bound, as an array chain 1,400 levels deep does from a 3 KB frame. A Dispatch event is shown under
+`dispatch` as the text of the event `readDispatchPayload` read - its owner, type, actor and
+payload, with a body read whole in place of the part the frame carried - never as the frame's
+payload, so a key the reader drops reaches no card; an event too deep to write as JSON, or whose
+text still passes the bound, shows its owner, type and actor alone. The bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
 (its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
 still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
