@@ -207,7 +207,9 @@ func (p forcedPlan) warm(t *testing.T, target string, began time.Time, budget ti
 // listingStatementTime is statement's calls and total execution time in database, as
 // pg_stat_statements counts them, and false where the server does not preload it. The view holds
 // a statement's text with each constant made a parameter, so it is found by its text up to its
-// first constant, which only the one listing text a reading runs starts with.
+// first constant. Every listing text starts that way, the speed test's among them, so a reading
+// is the difference of two calls around one request's reads, which its caller holds to the
+// number of reads it made.
 func listingStatementTime(t *testing.T, database *store.Store, statement string) (int64, float64, bool) {
 	t.Helper()
 	ctx := context.Background()

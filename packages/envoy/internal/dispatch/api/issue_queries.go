@@ -59,8 +59,9 @@ var (
 // the generic plan estimates through issueListFilters' arms: each join that attaches a value to
 // the matched issues then reads its grouped term once rather than once for each issue. The array
 // holds each matched row's address (ctid), which the read takes back in the same statement and so
-// under the same snapshot, because Postgres finds an element of fixed width at its place at once
-// and the n-th key of an array of text only by reading the n-1 before it.
+// under the same snapshot. It holds addresses rather than keys because Postgres finds an element
+// of fixed width at its place at once, and the n-th key of an array of text only by reading the
+// n-1 before it.
 //
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
