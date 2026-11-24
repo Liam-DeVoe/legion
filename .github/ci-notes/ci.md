@@ -1452,13 +1452,14 @@ The browser image's build: browser-image.yaml builds .github/docker/browser.Dock
 pushes it when the package does not already hold an image built from it. Unlike the worker-image
 job, this job has no `pull_request` term: it runs on a merge group too, so the image a
 merged head's `container:` jobs pin — the shard and alone jobs of
-.github/workflows/dispatch-browser.yaml — is built from that head.
+.github/workflows/dispatch-browser.yaml — is built from that head. browser-image.yaml carries
+no `why:` line of its own: each of its bytes is part of the image's recipe
+(.github/scripts/ci_images.py, `recipe_sha256`), so a comment added there moves the hash the
+published image's label must equal, and the link lives on ci.yaml's call of it.
 
-## The browser-image job's scopes
-
-GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
-whatever their `if:`: its workflow-level block (the build's packages: write, and the
-actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
+The job's scopes: GitHub refuses a run whose calling job grants less than the called workflow's
+jobs declare, whatever their `if:`: its workflow-level block (the build's packages: write, and
+the actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
 and attestations: write. That `attest` job runs whenever the build pushed, whatever the
 event, a pull request's run included, because the two-push order .github/ci-images.yaml's
 header describes has a pull request's run push the image the rows then pin

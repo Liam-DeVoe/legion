@@ -884,7 +884,7 @@ jobs:
     if: needs.changes.outputs.browser-image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     name: ${{ 'browser-image' }}
     uses: ./.github/workflows/browser-image.yaml
-    # why: .github/ci-notes/ci.md#the-browser-image-jobs-scopes
+    # why: .github/ci-notes/ci.md#the-browser-image-job
     permissions:
       contents: read
       packages: write
