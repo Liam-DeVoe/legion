@@ -112,13 +112,14 @@ func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of
 }
 
 // ReviewedBefore is the commit the first run of agent's step of role at place of task is named as
-// the one its own reviews read, among rows: the commit agent's own nearest earlier row of role on
-// task holds (ReviewedHead), and "" where agent ran no earlier step of role on task, so an agent
-// whose step has no deciding review of its own on the task reads the whole change. Each row of one
-// agent's role on a task holds the commit that agent's newest deciding review there read
-// (AgentsOtherRow), so the row it is taken from holds the newest whichever step read it. agent ""
-// is the worker of an issue whose key names no claims, one for each role, whose every row of the
-// role is its own.
+// the one its own reviews read, and so is a run of a step whose row names another agent's claim (a
+// later version of the plan can give the step to another key's agent), among rows: the commit
+// agent's own nearest earlier row of role on task holds (ReviewedHead), and "" where agent ran no
+// earlier step of role on task, so an agent whose step has no deciding review of its own on the
+// task reads the whole change (workflow's stepRunRow). Each row of one agent's role on a task holds
+// the commit that agent's newest deciding review there read (AgentsOtherRow), so the row it is
+// taken from holds the newest whichever step read it. agent "" is the worker of an issue whose key
+// names no claims, one for each role, whose every row of the role is its own.
 func ReviewedBefore(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
 	own, _ := earlierStepRow(rows, role, task, place, func(row PhaseRow) bool { return agent == "" || row.Claim == agent })
 	return own.ReviewedHead
