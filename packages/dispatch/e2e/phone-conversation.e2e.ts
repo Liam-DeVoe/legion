@@ -1258,8 +1258,9 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
 });
 
 /** Sweeps the band from the top of the page down to `end` in the page: at every 4 px step it
- *  scrolls, lets two frames pass so the pill's own scroll listener and the render React queues
- *  for it have both landed, and records where a tap at the centre of a control does not reach
+ *  scrolls, lets a frame pass so the pill's own scroll listener has run, and, where the pill's
+ *  showing does not yet match the step, up to `RENDER_FRAMES` more for the render React queued
+ *  for it to land, and records where a tap at the centre of a control does not reach
  *  it as it should: a tab must take its own tap, and no control may lose its tap to `Jump to
  *  latest`. Every control above the turns is tapped - the issue's header, its tabs and the All
  *  / Open / Closed filter - and inside the turns the two that decide a suggestion, Accept and
@@ -1279,6 +1280,12 @@ async function tapsLostAcrossBand(
   band: { end: number; settled: number }
 ): Promise<string[]> {
   return page.evaluate(async ({ end, settled }) => {
+    /** How many frames a step that changes whether the pill shows waits for React's render of
+     *  it. That render is a task of its own after the scroll's frame, and lands by the next frame
+     *  on an idle page; under load it can land later: in WebKit on CI's runners the step past the
+     *  place the page settled at (420) drew no pill a frame after the listener ran (425, run
+     *  45399887379 at daf66efe, passed on retry). A pill still not drawn after these is lost. */
+    const RENDER_FRAMES = 10;
     const turns = document.querySelector('[aria-label="Conversation turns"]');
     if (turns === null) throw new Error("expected the Conversation's turns");
     const frame = () =>
@@ -1291,10 +1298,16 @@ async function tapsLostAcrossBand(
     for (let top = 1; top <= end; top += 4) {
       window.scrollTo(0, top);
       // One frame carries the scroll into layout and runs the pill's listener; a step that
-      // changes whether the pill shows takes one more for the render React queued for it.
+      // changes whether the pill shows waits for the render React queued for it.
       await frame();
       const shows = Math.abs(top - settled) > 1;
-      if (shows !== (pillBox()?.height ?? 0) > 0) await frame();
+      for (
+        let waited = 0;
+        waited < RENDER_FRAMES && shows !== (pillBox()?.height ?? 0) > 0;
+        waited += 1
+      ) {
+        await frame();
+      }
       const pill = document.querySelector('[data-testid="jump-to-latest"]');
       if (shows && (pill?.getBoundingClientRect().height ?? 0) === 0) {
         lost.push(`scrolled to ${top}: no Jump to latest`);
