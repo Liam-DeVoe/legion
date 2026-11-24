@@ -878,12 +878,25 @@ func (c *Client) noCredentialError() error {
 // their answers comes near it, and a longer one is cut there.
 const answerBytes = 1 << 16
 
-// do sends one broker call and reads its answer through redact.ReadBounded: its first limit bytes,
-// and whether the bound cut it, which a caller that must tell a whole answer from one cut short
-// reads (Carried), and so does refusal, which quotes a body that is not the contract's shape;
-// every other caller reads the cut body as its contract's shape or not. A read that fails is an
-// error.
+// do sends one broker call to c.URL+path on c.HTTP, http.DefaultClient where c names none, and
+// reads its answer (exchange).
 func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, bool, error) {
+	client := c.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return exchange(ctx, client, method, c.URL+path, path, body, limit, mutate)
+}
+
+// exchange sends one broker call to url on client, under ctx, with body JSON-encoded where it is
+// not nil and mutate's changes to the request (a caller's own authentication), and reads its answer
+// through redact.ReadBounded: its first limit bytes, and whether the bound cut it, which a caller
+// that must tell a whole answer from one cut short reads (Carried), and so does refusal, which
+// quotes a body that is not the contract's shape; every other caller reads the cut body as its
+// contract's shape or not. path is the route an error names, never with its query. A read that
+// fails is an error. The launcher's calls (Client.do) and a role's session calls (Session.call)
+// both go through it, each with its own client and authentication.
+func exchange(ctx context.Context, client *http.Client, method, url, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -892,7 +905,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
+	req, err := http.NewRequestWithContext(ctx, method, url, payload)
 	if err != nil {
 		return 0, nil, false, err
 	}
@@ -901,10 +914,6 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	if mutate != nil {
 		mutate(req)
-	}
-	client := c.HTTP
-	if client == nil {
-		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -17,8 +17,11 @@
 // when the broker's proxy answers 407, which it does for a grant the broker ended early; that one
 // connection fails, and the role's next call reads the new grant's placeholders. Before its first
 // grant, a CONNECT to one of GitHub's hosts waits for it while an ask can still bring it, and every
-// other CONNECT goes out at once. It revokes the grants it holds when it stops, at the end of the
-// role's generation, the grant of an ask still in flight included.
+// other CONNECT goes out at once. It owns a grant from the moment the broker names it, and every
+// revocation it makes, of a grant it cannot use as at its stop, reads that one ledger and drops a
+// grant from it only once the broker ended it. It revokes the grants it holds when it stops, at
+// the end of the role's generation: first every grant held then, then, once an ask still in
+// flight lands or its stop stops waiting for it, every grant held by then, within its stop bound.
 //
 // A grant it fails to revoke (its stop cut short, its process killed) is not ended by the daemon:
 // the daemon's revocation of the generation's enrollment ends the enrollment, and the broker
@@ -178,7 +181,7 @@ type keeper struct {
 
 	mu      sync.Mutex
 	current *Grant
-	held    map[string]time.Time // every grant asked for and not yet revoked, by id, with its expiry
+	held    map[string]time.Time // every grant the broker made for the forwarder that no revocation ended, by id, with its expiry
 	asking  *ask                 // the ask in flight, which every caller joins
 	// lastErr is how the last ask ended, nil for a grant or before any ask, lastEnded when it
 	// ended, and changed is closed and replaced each time an ask ends, so awaitFirst learns of the
@@ -198,8 +201,9 @@ type keeper struct {
 var errStopping = errors.New("the forwarder is stopping")
 
 // ask is one ask for a grant, which every caller that needs one while it runs joins. landed is
-// closed once the ask's grant, if it got one, is in keeper.held, before any line about it is
-// written; done is closed once its outcome is published.
+// closed once its broker work and bundle write are done, whatever the outcome, before any line
+// about it is written; done is closed once its outcome is published. Its grant is owned before
+// either (keeper.own).
 type ask struct {
 	landed chan struct{}
 	done   chan struct{}
@@ -333,19 +337,16 @@ func (a *ask) wait(ctx context.Context) (*Grant, error) {
 // and the release.
 const askBound = 50 * time.Second
 
-// run makes ask a. A grant goes into held at once, so a stop revokes it whatever the log does;
-// then run logs how the ask ended, and only then publishes the outcome (the current grant, the
-// last error, a.done), so every line about a grant is in the log before any caller can use that
-// grant or read that failure.
+// run makes ask a, and lands it as ask returns, its broker work and bundle write done, whatever
+// the outcome; the forwarder already owns the ask's grant from the moment the broker named it
+// (keeper.own, inside ask). Only once the ask landed does run log how it ended, the revocation of
+// a grant it could not use among it, and only after that does it publish the outcome (the current
+// grant, the last error, a.done), so every line about a grant is in the log before any caller can
+// use that grant or read that failure, and no line is written before the ask landed.
 func (k *keeper) run(a *ask, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), askBound)
 	defer cancel()
-	grant, err := k.ask(ctx)
-	if err == nil {
-		k.mu.Lock()
-		k.held[grant.ID] = grant.ExpiresAt
-		k.mu.Unlock()
-	}
+	grant, cleanup, err := k.ask(ctx)
 	close(a.landed)
 	switch {
 	case errors.Is(err, cipher.ErrNotEnrolled):
@@ -359,11 +360,23 @@ func (k *keeper) run(a *ask, why string) {
 	case err != nil:
 		k.log.Warn("forwarder: no grant of the role's GitHub secrets", "why", why, "names", k.names, "err", err)
 	default:
+		if _, held := grant.Accounts[k.defaultOwner]; !held && k.defaultOwner != "" {
+			k.log.Warn("forwarder: the grant holds no account for GH_CONFIG_DIR's directory", "default", k.defaultOwner,
+				"accounts", slices.Sorted(maps.Keys(grant.Accounts)))
+		}
 		k.log.Info("forwarder: holds a grant of the role's GitHub secrets", "why", why, "grant", grant.ID,
 			"expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339), "accounts", slices.Sorted(maps.Keys(grant.Accounts)), "hosts", grant.Hosts)
 		if lacking := k.unconfiguredHosts(grant); len(lacking) > 0 {
 			k.log.Warn("forwarder: the grant binds hosts runtime.kubernetes.agent_secrets.github_hosts lacks; before a forwarder's first grant a call to one goes out directly, so add them to that key",
 				"grant", grant.ID, "lacks", lacking, "configured", k.githubHosts)
+		}
+	}
+	if cleanup.openErr != nil {
+		k.log.Warn("forwarder: could not revoke the grant it refused; the stop tries again", "grants", cleanup.ids, "err", cleanup.openErr)
+	}
+	for _, id := range cleanup.ids {
+		if failed, ok := cleanup.failed[id]; ok {
+			k.log.Warn("forwarder: could not revoke the grant it refused; the stop tries again", "grant", id, "err", failed)
 		}
 	}
 	k.mu.Lock()
@@ -378,22 +391,35 @@ func (k *keeper) run(a *ask, why string) {
 	close(a.done)
 }
 
-// ask is one request of the role's names, its wait while it is pending, its release and the
-// bundle's write. A release the forwarder refuses is revoked before the refusal is answered, so
-// no grant it will not use stays live.
-func (k *keeper) ask(ctx context.Context) (*Grant, error) {
+// own records the grant the broker just named as the forwarder's, until a revocation ends it or
+// it expires: from here the stop revokes it whatever comes next, before its release is asked for,
+// its bundle written or any line about it logged. expires is an upper bound until the release
+// names the grant's own expiry.
+func (k *keeper) own(id string, expires time.Time) {
+	k.mu.Lock()
+	k.held[id] = expires
+	k.mu.Unlock()
+}
+
+// ask is one request of the role's names, its wait while it is pending, the forwarder's ownership
+// of the grant it makes (own), the grant's release and the bundle's write. A grant the forwarder
+// cannot use (a release that fails or that it refuses, a bundle it cannot write) is revoked through
+// revokeOwned, the one routine every revocation goes through, and stays owned where the broker
+// would not end it, so the stop tries again; that revocation's outcome is answered for run to
+// log. It writes no line.
+func (k *keeper) ask(ctx context.Context) (*Grant, revocation, error) {
 	broker, err := k.open()
 	if err != nil {
-		return nil, err
+		return nil, revocation{}, err
 	}
 	answer, err := broker.Request(ctx, k.names, k.reason, int(Lifetime/time.Second))
 	if err != nil {
-		return nil, fmt.Errorf("ask for %v: %w", k.names, err)
+		return nil, revocation{}, fmt.Errorf("ask for %v: %w", k.names, err)
 	}
 	for answer.State == "pending" {
 		id := answer.RequestID
 		if answer, err = broker.WaitRequest(ctx, id, 20*time.Second); err != nil {
-			return nil, fmt.Errorf("wait for request %s: %w", id, err)
+			return nil, revocation{}, fmt.Errorf("wait for request %s: %w", id, err)
 		}
 	}
 	if answer.State != "granted" || answer.GrantID == nil {
@@ -401,30 +427,38 @@ func (k *keeper) ask(ctx context.Context) (*Grant, error) {
 		if answer.Detail != nil {
 			detail = ": " + *answer.Detail
 		}
-		return nil, fmt.Errorf("request %s for %v is %s%s", answer.RequestID, k.names, answer.State, detail)
+		return nil, revocation{}, fmt.Errorf("request %s for %v is %s%s", answer.RequestID, k.names, answer.State, detail)
 	}
-	release, err := broker.Values(ctx, *answer.GrantID)
+	id := *answer.GrantID
+	lifetime := Lifetime
+	if answer.LifetimeSeconds != nil {
+		lifetime = time.Duration(*answer.LifetimeSeconds) * time.Second
+	}
+	k.own(id, time.Now().Add(lifetime))
+	release, err := broker.Values(ctx, id)
+	var grant *Grant
 	if err != nil {
-		return nil, fmt.Errorf("release grant %s: %w", *answer.GrantID, err)
-	}
-	grant, err := grantOf(*answer.GrantID, k.names, release)
-	if err == nil {
+		err = fmt.Errorf("release: %w", err)
+	} else if grant, err = grantOf(id, k.names, release); err == nil {
 		err = k.write(grant)
 	}
 	if err != nil {
-		if revoked := broker.Revoke(ctx, *answer.GrantID); revoked != nil {
-			k.log.Warn("forwarder: could not revoke the grant it refused", "grant", *answer.GrantID, "err", revoked)
-		}
-		return nil, fmt.Errorf("grant %s: %w", *answer.GrantID, err)
+		return nil, k.revokeOwned([]string{id}), fmt.Errorf("grant %s: %w", id, err)
 	}
-	return grant, nil
+	k.mu.Lock()
+	if _, owned := k.held[id]; owned {
+		k.held[id] = grant.ExpiresAt
+	}
+	k.mu.Unlock()
+	return grant, revocation{}, nil
 }
 
 // write brings the bundle to grant: one gh directory per account holding that account's
 // placeholder (ghconfig.Render, with the grant's expiry), the configured renames, and the default
-// directory GH_CONFIG_DIR names. A default the grant holds no account for is logged, and the
-// bundle's own default is then its first account: GH_CONFIG_DIR's directory holds no token, as a
-// role whose App is not installed on its issue's owner holds none today.
+// directory GH_CONFIG_DIR names. Where the grant holds no account for that default, the bundle's
+// own default is its first account: GH_CONFIG_DIR's directory holds no token, as a role whose App
+// is not installed on its issue's owner holds none today, and run warns of it once the ask has
+// landed. It writes no line.
 func (k *keeper) write(grant *Grant) error {
 	if len(grant.Accounts) == 0 {
 		return errors.New("the grant holds a placeholder for no GitHub account")
@@ -434,11 +468,7 @@ func (k *keeper) write(grant *Grant) error {
 		bundle.Dirs[account] = ghconfig.Render(placeholder, "proxy", grant.ExpiresAt)
 	}
 	if _, held := bundle.Dirs[bundle.Default]; !held {
-		accounts := bundle.DirNames()
-		if k.defaultOwner != "" {
-			k.log.Warn("forwarder: the grant holds no account for GH_CONFIG_DIR's directory", "default", k.defaultOwner, "accounts", accounts)
-		}
-		bundle.Default = accounts[0]
+		bundle.Default = bundle.DirNames()[0]
 	}
 	_, err := ghconfig.WriteBundle(k.ghDir, bundle)
 	return err
@@ -488,63 +518,101 @@ func (k *keeper) keep(ctx context.Context) {
 	}
 }
 
-// revokeHeld ends every grant the forwarder asked for that has not expired, within ctx: the
-// generation's end, when no call of the role's needs them. No ask starts once it began
-// (keeper.stopping), and it first waits, within ctx, for the ask in flight to land its grant in
-// held (ask.landed, which comes before any line about that grant is written), so a grant the broker
-// commits after the stop began is revoked with the rest. An ask that outlives ctx leaves its grant
-// live until its own expiry, as a stop cut short does (see the package doc). Every line revokeHeld
-// writes comes after its revocations, so a log that stalls (a stderr nothing drains) holds none
-// of them back.
-func (k *keeper) revokeHeld(ctx context.Context) {
+// revokeHeld ends the grants the forwarder owns, at the generation's end, in two passes, each
+// under a time limit of its own (revokeBound), so that neither an ask that hangs nor a log that
+// stalls holds a revocation back. The first pass revokes every grant held now, the current one
+// among them. Then, where an ask was in flight, it waits for that ask to land (ask.landed, within
+// landedBound), and the second pass revokes every grant held then, whether or not the ask landed:
+// the one that ask made, owned as soon as the broker named it, and any the first pass could not
+// end. No ask starts once revokeHeld began (keeper.stopping), so only the ask in flight can add a
+// grant after the first pass. A grant the broker names only after the second pass lives until its
+// own expiry, as a grant of a stop cut short does (see the package doc). Every line revokeHeld
+// writes comes after both passes.
+func (k *keeper) revokeHeld() {
 	k.mu.Lock()
 	k.stopping = true
 	asking := k.asking
+	first := slices.Sorted(maps.Keys(k.held))
 	k.mu.Unlock()
+	passes := []revocation{k.revokeOwned(first)}
 	outlived := false
 	if asking != nil {
+		landed := time.NewTimer(landedBound)
 		select {
 		case <-asking.landed:
-		case <-ctx.Done():
+		case <-landed.C:
 			outlived = true
 		}
-	}
-	k.mu.Lock()
-	held := k.held
-	k.held = map[string]time.Time{}
-	k.mu.Unlock()
-	ids := slices.Sorted(maps.Keys(held))
-	var revoked []string
-	failed := map[string]error{}
-	var openErr error
-	if len(ids) > 0 {
-		if broker, err := k.open(); err != nil {
-			openErr = err
-		} else {
-			for _, id := range ids {
-				if time.Now().After(held[id]) {
-					continue
-				}
-				if err := broker.Revoke(ctx, id); err != nil {
-					failed[id] = err
-					continue
-				}
-				revoked = append(revoked, id)
-			}
-		}
+		landed.Stop()
+		k.mu.Lock()
+		second := slices.Sorted(maps.Keys(k.held))
+		k.mu.Unlock()
+		passes = append(passes, k.revokeOwned(second))
 	}
 	if outlived {
-		k.log.Warn("forwarder: an ask in flight outlived the stop; its grant, if one comes, lives to its expiry")
+		k.log.Warn("forwarder: an ask in flight had not ended when the stop stopped waiting; a grant it is named later lives to its expiry")
 	}
-	if openErr != nil {
-		k.log.Warn("forwarder: could not revoke its grants at its stop", "grants", ids, "err", openErr)
-	}
-	for _, id := range ids {
-		if err, ok := failed[id]; ok {
-			k.log.Warn("forwarder: could not revoke a grant at its stop", "grant", id, "err", err)
+	for _, pass := range passes {
+		if pass.openErr != nil {
+			k.log.Warn("forwarder: could not revoke its grants at its stop", "grants", pass.ids, "err", pass.openErr)
+		}
+		for _, id := range pass.ids {
+			if err, ok := pass.failed[id]; ok {
+				k.log.Warn("forwarder: could not revoke a grant at its stop", "grant", id, "err", err)
+			}
+		}
+		for _, id := range pass.revoked {
+			k.log.Info("forwarder: revoked a grant at its stop", "grant", id)
 		}
 	}
-	for _, id := range revoked {
-		k.log.Info("forwarder: revoked a grant at its stop", "grant", id)
+}
+
+// revocation is how one revocation of owned grants went: the ids it was asked to end, those the
+// broker ended, those it would not end, and, where the broker could not be reached at all, why.
+type revocation struct {
+	ids     []string
+	revoked []string
+	failed  map[string]error
+	openErr error
+}
+
+// revokeOwned is every revocation the forwarder makes, of a grant an ask could not use as at the
+// stop: it revokes each of ids the keeper still owns, under a time limit of its own (revokeBound),
+// and removes an id from held only once the broker ended it or it expired, so an id the broker
+// would not end stays owned for the stop to try again. An id no longer owned was ended by another
+// revocation and is passed over. It writes no line: its caller does, after the work that must not
+// wait on a log.
+func (k *keeper) revokeOwned(ids []string) revocation {
+	r := revocation{ids: ids, failed: map[string]error{}}
+	if len(ids) == 0 {
+		return r
 	}
+	broker, err := k.open()
+	if err != nil {
+		r.openErr = err
+		return r
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), revokeBound)
+	defer cancel()
+	for _, id := range ids {
+		k.mu.Lock()
+		expires, owned := k.held[id]
+		if owned && time.Now().After(expires) {
+			delete(k.held, id)
+			owned = false
+		}
+		k.mu.Unlock()
+		if !owned {
+			continue
+		}
+		if err := broker.Revoke(ctx, id); err != nil {
+			r.failed[id] = err
+			continue
+		}
+		k.mu.Lock()
+		delete(k.held, id)
+		k.mu.Unlock()
+		r.revoked = append(r.revoked, id)
+	}
+	return r
 }

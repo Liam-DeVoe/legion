@@ -1445,10 +1445,6 @@ func reuseCandidates(ctx context.Context, q querier, enrollmentID string, lifeti
 		group by r.id, g.id order by g.created_at desc`, enrollmentID, lifetime, sorted)
 }
 
-// reuseRetried marks a createChecked call that reuseUnderLock sent back to the reuse read, so an
-// ask takes that way at most once.
-type reuseRetried struct{}
-
 // reuseUnderLock makes the choice between a reused grant and a new one atomic for an enrollment and
 // its names. Create's first reuse read is on the pool, with no lock, so concurrent asks for the
 // same names could each find no grant to reuse and each write one: every first ask, and every ask
@@ -1456,14 +1452,11 @@ type reuseRetried struct{}
 // lock per name of the enrollment (lockPendingNames), and this reads the reuse candidates again on
 // that transaction, against seen, the candidates the first read found: a candidate that read did
 // not see is a grant another ask wrote while this one waited on the locks, and it reports true, so
-// Create rolls back and goes through reuseLiveGrant again, which hands that grant over after every
-// check a reuse makes. A candidate the first read saw and reuseLiveGrant passed over for its own
-// checks (its chain, its target, a policy that changed) sends nothing back, so it is logged once.
-// A call that already went back once (reuseRetried) reports false, so no ask loops.
+// Create's first attempt writes nothing and its second goes through reuseLiveGrant again, which
+// hands that grant over after every check a reuse makes (createChecked). A candidate the first
+// read saw and reuseLiveGrant passed over for its own checks (its chain, its target, a policy that
+// changed) sends nothing back, so it is logged once.
 func reuseUnderLock(ctx context.Context, tx pgx.Tx, enrollmentID string, sorted []string, lifetime *int, seen []liveMatch) (bool, error) {
-	if ctx.Value(reuseRetried{}) != nil {
-		return false, nil
-	}
 	matches, err := reuseCandidates(ctx, tx, enrollmentID, lifetime, sorted)
 	if err != nil {
 		return false, err

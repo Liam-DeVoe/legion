@@ -10,7 +10,6 @@ package cipher
 // password goes into an error or a log line.
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -18,7 +17,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,8 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The two files of a role's key directory (AGENT_SECRETS_KEY_DIR): the shim's `agent-secrets
@@ -147,13 +143,10 @@ func (s *Session) Request(ctx context.Context, names []string, reason string, li
 	if err != nil {
 		return RequestAnswer{}, fmt.Errorf("sign the request object: %w", err)
 	}
-	body, err := json.Marshal(struct {
+	body := struct {
 		Request   string  `json:"request"`
 		SessionID *string `json:"session_id"`
-	}{Request: object})
-	if err != nil {
-		return RequestAnswer{}, err
-	}
+	}{Request: object}
 	var answer RequestAnswer
 	if err := s.call(ctx, http.MethodPost, "/v1/requests", "", body, &answer); err != nil {
 		return RequestAnswer{}, err
@@ -202,10 +195,11 @@ func (s *Session) Revoke(ctx context.Context, id string) error {
 	return err
 }
 
-// call sends one session call, its proof signed over method and the route without query, reads
-// the answer within answerBytes, and decodes a 2xx answer into into, or decodes nothing where into
-// is nil. Any other answer is the broker's refusal as an *APIError.
-func (s *Session) call(ctx context.Context, method, path, query string, body []byte, into any) error {
+// call sends one session call, its proof signed over method and the route without query, through
+// exchange on s.HTTP, directClient where s names none, under ctx, reading the answer within
+// answerBytes, and decodes a 2xx answer into into, or decodes nothing where into is nil. body is
+// JSON-encoded where it is not nil. Any other answer is the broker's refusal as an *APIError.
+func (s *Session) call(ctx context.Context, method, path, query string, body any, into any) error {
 	proof, err := signSessionProof(s.Key, s.EnrollmentID, method, s.URL+path, time.Now())
 	if err != nil {
 		return fmt.Errorf("sign the proof: %w", err)
@@ -214,33 +208,16 @@ func (s *Session) call(ctx context.Context, method, path, query string, body []b
 	if query != "" {
 		target += "?" + query
 	}
-	var payload io.Reader
-	if body != nil {
-		payload = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, payload)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Proof", proof)
 	client := s.HTTP
 	if client == nil {
 		client = directClient
 	}
-	resp, err := client.Do(req)
+	status, raw, cut, err := exchange(ctx, client, method, target, path, body, answerBytes, func(req *http.Request) { req.Header.Set("Proof", proof) })
 	if err != nil {
-		return fmt.Errorf("broker %s %s: %w", method, path, err)
+		return err
 	}
-	defer resp.Body.Close()
-	raw, cut, err := redact.ReadBounded(resp.Body, answerBytes)
-	if err != nil {
-		return fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return refusal(resp.StatusCode, raw, cut)
+	if status < 200 || status > 299 {
+		return refusal(status, raw, cut)
 	}
 	if into == nil {
 		return nil

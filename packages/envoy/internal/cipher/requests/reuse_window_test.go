@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"crypto/ecdsa"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -10,9 +11,9 @@ import (
 
 // concurrentAsks has n asks for names for an hour from one enrollment go to Create at once, each
 // signed beforehand, and answers the grant id of each, failing on an error or an ask granted no
-// grant. Each ask is held after its first reuse read until all n have read (testBeforeCreateTx),
-// so every run opens the window where two asks both find nothing to reuse, rather than a run the
-// scheduler happens to order.
+// grant. Each ask is held after its first attempt's reuse read until all n have read
+// (testBeforeCreateTx), so every run opens the window where two asks both find nothing to reuse,
+// rather than a run the scheduler happens to order. A second attempt is not held.
 func concurrentAsks(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, n int, names ...string) []string {
 	t.Helper()
 	objects := make([]string, n)
@@ -26,7 +27,10 @@ func concurrentAsks(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.Pr
 		arrived.Wait()
 		close(released)
 	}()
-	m.testBeforeCreateTx = func() {
+	m.testBeforeCreateTx = func(attempt int) {
+		if attempt != 1 {
+			return
+		}
 		arrived.Done()
 		select {
 		case <-released:
@@ -265,5 +269,42 @@ func TestASessionLongGrantIsHandedBackAWeekOn(t *testing.T) {
 	again, err := m.Create(ctx, enr, signRequest(t, m, key, "until the session ends", "AUTO_TOKEN"), "")
 	if err != nil || again.ID != first.ID {
 		t.Fatalf("an ask a week into the session-long grant = %+v, %v; want request %s handed back", again, err, first.ID)
+	}
+}
+
+// TestAnAskReadsAgainUnderTheLocksOnItsFirstAttemptAlone: an ask makes at most two attempts. Before
+// each of its attempts' transactions, another ask writes a grant for the same names whose chain
+// fails (a grant of anotherBroker, approvedGrant), which the read under the names' locks counts as
+// new and reuseLiveGrant passes over. The first attempt reads again, finds that grant and writes
+// nothing; the second does not read again, so it writes the ask's own pending request although a
+// grant came meanwhile once more.
+//
+// The named revert: have every attempt read again under the locks, and the second attempt finds
+// the second grant and writes nothing either, so the ask answers an error, or with a loop of
+// attempts, makes more than two.
+func TestAnAskReadsAgainUnderTheLocksOnItsFirstAttemptAlone(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	var attempts []int
+	nested := false
+	m.testBeforeCreateTx = func(attempt int) {
+		if nested {
+			return
+		}
+		attempts = append(attempts, attempt)
+		if len(attempts) > 5 {
+			return // so that a run without the bound ends
+		}
+		nested = true
+		approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
+		nested = false
+	}
+	defer func() { m.testBeforeCreateTx = nil }()
+
+	request, err := m.Create(context.Background(), enr, signRequest(t, m, key, "the ask whose attempts are counted", "DEEL_API_KEY"), "")
+	if err != nil || request.State != "pending" || request.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) with a grant written before each attempt = %+v, %v; want the ask's own pending request", request, err)
+	}
+	if !slices.Equal(attempts, []int{1, 2}) {
+		t.Fatalf("the ask made attempts %v; want [1 2], a second only after the first read again", attempts)
 	}
 }

@@ -133,38 +133,53 @@ func (p *brokerProxy) calls() []proxyCall {
 // a new grant g<n>, whose proxy password and two account placeholders name it, alive at the
 // proxy until the test ends it or the forwarder revokes it. With gate set, each ask signals
 // entered and then waits for gate to close before it answers: an ask the broker commits while the
-// forwarder stops. With denyFrom set, the ask of that number and every later one is denied, as a
-// broker whose policy no longer allows the names answers.
+// forwarder stops. With hangFrom set, the ask of that number and every later one signals entered
+// and then hangs until its context ends, as a slow broker or a request it holds pending does.
+// With denyFrom set, the ask of that number and every later one is denied, as a broker whose
+// policy no longer allows the names answers. With valuesErr set, every release fails with it after
+// the grant was made. Revoke fails on a context that has ended, as cipher.Session.Revoke's HTTP
+// call does, answers revokeErr where it is set, and fails its first revokeFailures calls.
 type fakeBroker struct {
-	proxy    *brokerProxy
-	lifetime time.Duration
-	hosts    []string
-	asValue  bool // release the name as its value, which the forwarder must refuse
-	gate     chan struct{}
-	entered  chan struct{}
-	denyFrom int
+	proxy          *brokerProxy
+	lifetime       time.Duration
+	hosts          []string
+	asValue        bool // release the name as its value, which the forwarder must refuse
+	gate           chan struct{}
+	entered        chan struct{}
+	hangFrom       int
+	denyFrom       int
+	valuesErr      error
+	revokeErr      error
+	revokeFailures int
 
-	mu      sync.Mutex
-	asked   int
-	revoked []string
+	mu       sync.Mutex
+	asked    int
+	attempts int // Revoke calls, failed ones included
+	revoked  []string
 }
 
-func (b *fakeBroker) Request(_ context.Context, names []string, reason string, lifetime int) (cipher.RequestAnswer, error) {
+func (b *fakeBroker) Request(ctx context.Context, names []string, reason string, lifetime int) (cipher.RequestAnswer, error) {
 	if lifetime != 3600 || reason == "" || !slices.Equal(names, []string{"ROLE_APP"}) {
 		return cipher.RequestAnswer{}, fmt.Errorf("asked for %v for %d s under %q", names, lifetime, reason)
-	}
-	if b.gate != nil {
-		select {
-		case b.entered <- struct{}{}:
-		default:
-		}
-		<-b.gate
 	}
 	b.mu.Lock()
 	b.asked++
 	n := b.asked
 	id := fmt.Sprintf("g%d", n)
 	b.mu.Unlock()
+	if b.gate != nil || (b.hangFrom > 0 && n >= b.hangFrom) {
+		select {
+		case b.entered <- struct{}{}:
+		default:
+		}
+	}
+	if b.gate != nil {
+		<-b.gate
+	}
+	if b.hangFrom > 0 && n >= b.hangFrom {
+		<-ctx.Done()
+		return cipher.RequestAnswer{}, ctx.Err()
+	}
 	if b.denyFrom > 0 && n >= b.denyFrom {
 		detail := "the policy refuses ROLE_APP"
 		return cipher.RequestAnswer{RequestID: "r-" + id, State: "denied", Detail: &detail}, nil
@@ -185,6 +200,9 @@ func (b *fakeBroker) WaitRequest(context.Context, string, time.Duration) (cipher
 }
 
 func (b *fakeBroker) Values(_ context.Context, id string) (cipher.Release, error) {
+	if b.valuesErr != nil {
+		return cipher.Release{}, b.valuesErr
+	}
 	expires := time.Now().Add(b.lifetime)
 	release := cipher.Release{ExpiresAt: &expires, Proxy: &cipher.ProxyRelease{
 		ProxyURL: "http://" + b.proxy.listener.Addr().String(), ProxyPassword: "pw-" + id, CACertificate: "unused",
@@ -199,12 +217,42 @@ func (b *fakeBroker) Values(_ context.Context, id string) (cipher.Release, error
 	return release, nil
 }
 
-func (b *fakeBroker) Revoke(_ context.Context, id string) error {
+func (b *fakeBroker) Revoke(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.revokeErr != nil {
+		return b.revokeErr
+	}
 	b.mu.Lock()
+	b.attempts++
+	if b.revokeFailures > 0 {
+		b.revokeFailures--
+		b.mu.Unlock()
+		return errors.New("the broker could not end the grant")
+	}
 	b.revoked = append(b.revoked, id)
 	b.mu.Unlock()
 	b.proxy.setLive("pw-"+id, false)
 	return nil
+}
+
+// revokeAttempts is how many Revoke calls reached the broker, failed ones included.
+func (b *fakeBroker) revokeAttempts() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.attempts
+}
+
+// requireEveryGrantRevoked fails t unless every grant the broker made, g1 to g<asks>, was revoked.
+func requireEveryGrantRevoked(t *testing.T, b *fakeBroker) {
+	t.Helper()
+	revoked := b.revokedIDs()
+	for n := 1; n <= b.asks(); n++ {
+		if id := fmt.Sprintf("g%d", n); !slices.Contains(revoked, id) {
+			t.Errorf("grant %s was never revoked; the broker saw revocations %v", id, revoked)
+		}
+	}
 }
 
 func (b *fakeBroker) revokedIDs() []string {
@@ -549,6 +597,131 @@ func TestAStalledLogDoesNotHoldBackTheRevokeAtTheStop(t *testing.T) {
 	case <-r.stopped:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the forwarder did not stop once its log drained")
+	}
+}
+
+// TestAnAskInFlightAtTheStopDoesNotKeepTheHeldGrantsLive: g1 lands and is live for an hour, then
+// the renewal ask hangs, as a slow broker or a request it holds pending makes it, and the forwarder
+// stops. g1 is revoked at once: the stop revokes the grants it holds before it waits for the ask in
+// flight, each with a time limit of its own, so the wait cannot use up the time the revocation
+// needs.
+//
+// The named revert: wait for the ask in flight first and revoke afterwards under the same limit
+// (as at aa1a419f), and the revocation runs on a context that has ended and revokes nothing.
+func TestAnAskInFlightAtTheStopDoesNotKeepTheHeldGrantsLive(t *testing.T) {
+	r := newRig(t, func(cfg *Config, b *fakeBroker) {
+		b.hangFrom, b.entered = 2, make(chan struct{}, 1)
+		cfg.RenewBefore = time.Hour - 300*time.Millisecond
+	})
+	if g := r.awaitGrant(); g.ID != "g1" {
+		t.Fatalf("the first grant is %s, want g1", g.ID)
+	}
+	select {
+	case <-r.broker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the forwarder made no renewal ask")
+	}
+	r.stop()
+	deadline := time.Now().Add(revokeBound)
+	for time.Now().Before(deadline) && !slices.Contains(r.broker.revokedIDs(), "g1") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if revoked := r.broker.revokedIDs(); !slices.Contains(revoked, "g1") {
+		t.Fatalf("the broker saw revocations %v %s into a stop with the renewal ask hanging; want g1, held and live for an hour, revoked at once", revoked, revokeBound)
+	}
+	select {
+	case <-r.stopped:
+	case <-time.After(stopBound + 5*time.Second):
+		t.Fatal("the forwarder did not stop")
+	}
+}
+
+// TestAGrantWhoseReleaseFailsIsStillRevoked: the broker made the grant, then its release fails.
+// The forwarder owns the grant from the moment the broker named it, before its release is asked
+// for, so the grant is revoked, and every grant the broker made is revoked by the stop at the
+// latest.
+//
+// The named revert: put the grant in held only once its release and bundle succeeded (as at
+// aa1a419f), and a grant whose release fails is never revoked.
+func TestAGrantWhoseReleaseFailsIsStillRevoked(t *testing.T) {
+	r := newRig(t, func(_ *Config, b *fakeBroker) { b.valuesErr = errors.New("the broker's database is down") })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !slices.Contains(r.broker.revokedIDs(), "g1") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.shutdown()
+	if r.broker.asks() == 0 {
+		t.Fatal("the forwarder made no ask")
+	}
+	requireEveryGrantRevoked(t, r.broker)
+}
+
+// TestARefusedGrantWhoseRevokeFailsIsRevokedAtTheStop: the forwarder refuses a release (a name
+// released as its value) and its revocation of that grant fails once. The grant stays in the one
+// ledger every revocation reads, so the stop revokes it.
+//
+// The named revert: revoke a refused grant once and drop it whatever the broker answered (as at
+// aa1a419f), and the stop never revokes it.
+func TestARefusedGrantWhoseRevokeFailsIsRevokedAtTheStop(t *testing.T) {
+	r := newRig(t, func(_ *Config, b *fakeBroker) { b.asValue, b.revokeFailures = true, 1 })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && r.broker.revokeAttempts() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.broker.revokeAttempts() == 0 {
+		t.Fatal("the forwarder tried no revocation of the grant it refused")
+	}
+	r.shutdown()
+	requireEveryGrantRevoked(t, r.broker)
+}
+
+// TestNoLineAboutAnAskIsWrittenBeforeItLands: every line an ask writes, whatever its outcome,
+// comes after the ask has landed (its grant, if any, in held), so a log that stalls on such a line
+// holds back no revocation at the stop. Three outcomes write a line: a grant it holds, a release it
+// refuses and cannot revoke, and a grant that holds no account for GH_CONFIG_DIR's directory.
+//
+// The named revert: write the refused grant's line in ask, or the missing default's in write
+// (as at aa1a419f), and that row's ask has not landed while its line stalls.
+func TestNoLineAboutAnAskIsWrittenBeforeItLands(t *testing.T) {
+	for _, tc := range []struct {
+		name, stallOn, defaultOwner string
+		asValue                     bool
+		revokeErr                   error
+	}{
+		{name: "a grant it holds", stallOn: "holds a grant", defaultOwner: "acct-a"},
+		{name: "a release it refuses and cannot revoke", stallOn: "the grant it refused", defaultOwner: "acct-a",
+			asValue: true, revokeErr: errors.New("the broker is down")},
+		{name: "a grant with no account for the default", stallOn: "GH_CONFIG_DIR's directory", defaultOwner: "acct-z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hosts := []string{"api.github.com", "github.com"}
+			broker := &fakeBroker{proxy: newBrokerProxy(t, echoServer(t, "bound").Addr().String()), lifetime: time.Hour,
+				hosts: hosts, asValue: tc.asValue, revokeErr: tc.revokeErr}
+			logs := newStallingWriter(tc.stallOn)
+			t.Cleanup(logs.free)
+			k := newKeeper(Config{Secrets: []string{"ROLE_APP"}, Reason: "the implementer of ACME-1", GitHubHosts: hosts,
+				GHDir: filepath.Join(t.TempDir(), "gh"), DefaultOwner: tc.defaultOwner, RenewBefore: RenewBefore,
+				Open: func() (Broker, error) { return broker, nil }}, slog.New(slog.NewTextHandler(logs, nil)))
+			a := &ask{landed: make(chan struct{}), done: make(chan struct{})}
+			k.asking = a
+			go k.run(a, "the test")
+			select {
+			case <-logs.stalled:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("the ask wrote no line holding %q", tc.stallOn)
+			}
+			select {
+			case <-a.landed:
+			case <-time.After(time.Second):
+				t.Fatalf("the ask has not landed while its line holding %q stalls", tc.stallOn)
+			}
+			logs.free()
+			select {
+			case <-a.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the ask did not end once its log drained")
+			}
+		})
 	}
 }
 

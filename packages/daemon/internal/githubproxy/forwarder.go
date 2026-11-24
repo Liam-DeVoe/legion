@@ -114,9 +114,10 @@ func (f *Forwarder) Addr() net.Addr { return f.listener.Addr() }
 func (f *Forwarder) Current() *Grant { return f.keeper.Current() }
 
 // Serve keeps the role's grant and serves connections until ctx ends or the listener fails for
-// good, then closes the listener and revokes the grants it holds, within stopBound, and answers
-// the listener's failure, or nil. The revocation runs before Serve waits for its keeper goroutine
-// to end, so a log write that stalls in that goroutine holds no revocation back.
+// good, then closes the listener, revokes the grants it holds (keeper.revokeHeld, within
+// stopBound), and answers the listener's failure, or nil. The revocation runs before Serve waits
+// for its keeper goroutine to end, so a log write that stalls in that goroutine holds no
+// revocation back.
 func (f *Forwarder) Serve(ctx context.Context) error {
 	f.log.Info("forwarder: listening", "addr", f.listener.Addr().String(), "names", f.cfg.Secrets, "gh_dir", f.cfg.GHDir)
 	ctx, cancel := context.WithCancel(ctx)
@@ -145,20 +146,25 @@ func (f *Forwarder) Serve(ctx context.Context) error {
 		}
 		go f.serveConn(ctx, conn)
 	}
-	stop, stopped := context.WithTimeout(context.Background(), stopBound)
-	defer stopped()
-	f.keeper.revokeHeld(stop)
+	f.keeper.revokeHeld()
 	wg.Wait()
 	return failed
 }
 
-// stopBound bounds the revocation of the forwarder's grants at its stop, the wait for an ask in
-// flight included: inside the four seconds its shim waits for it (internal/shim's
-// forwarderStopWait), within the role's stop grace. A revocation cut short leaves its grant live
-// until its own expiry, at most the hour of Lifetime, the bound the spec gives a missed
-// revocation; the daemon's revocation of the enrollment carries it to the session's next
-// enrollment rather than ending it (see the package doc).
-const stopBound = 3 * time.Second
+// revokeBound bounds each revocation the forwarder makes (keeper.revokeOwned): each of the stop's
+// two passes, and the revocation of a grant an ask could not use, under a time limit of its own,
+// so time one spent is never time another lacks. landedBound bounds the stop's wait for an ask in
+// flight to land, between its two passes. stopBound is the whole stop, both passes and that wait:
+// inside the four seconds its shim waits for it (internal/shim's forwarderStopWait), within the
+// role's stop grace. A revocation cut short leaves its grant live until its own expiry, at most
+// the hour of Lifetime, the bound the spec gives a missed revocation; the daemon's revocation of
+// the enrollment carries it to the session's next enrollment rather than ending it (see the
+// package doc).
+const (
+	revokeBound = time.Second
+	landedBound = time.Second
+	stopBound   = 2*revokeBound + landedBound
+)
 
 // serveConn answers one client connection: a CONNECT is tunnelled, through the broker's proxy for
 // a host the grant binds and directly otherwise; any other request is refused 405, since the role
