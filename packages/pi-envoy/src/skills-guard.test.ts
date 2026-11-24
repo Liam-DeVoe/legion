@@ -222,8 +222,8 @@ test("no skill or daemon prompt names a list of open items", () => {
 // is the record" (3). The duplicate bullet lost "read it", which the bullet on reading each hit
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
-// lost "or write an" (3). The three skills stood at 2,337 words on main; INFRA-4849's rewrite of them
-// stands at 2,338, each added goal and Done when line paid for by words that restate another line.
+// lost "or write an" (3). The three skills stood at 2,257 words on main at 7ccabcba; INFRA-4849's
+// rewrite of dispatch and dispatch-first takes them to 2,283, under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
@@ -287,7 +287,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
 // sentence conditioned on a Legion role (skills/dispatch/SKILL.md:14,
-// skills/dispatch-writing-specs/SKILL.md:14, skills/dispatch-first/SKILL.md:58), inert
+// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:58), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
 test.skipIf(omp === undefined && !onActions)(
