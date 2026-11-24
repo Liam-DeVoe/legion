@@ -7,9 +7,9 @@
 // reader makes in a built block is in the Yjs document before the last batch, another person's
 // change to a built block is in the editor in the task it arrives in, and the end of the build is
 // three tasks - the last batch, the binding's adoption, and the host's swap - rather than the one
-// task of 1,370 ms the three were on a phone at 4x CPU throttling. The last rows read how the
-// thread goes back between batches, which decides whether anything else on the page runs while
-// the build lasts, and the hold a host may put there in its place.
+// task of 1,370 ms the three were on a phone at 4x CPU throttling. What the host has of the build
+// beside those blocks - its own node views, the thread each batch hands back, and the hold it may
+// put there in that hand-back's place - is `progressive-build-host.test.ts`'s.
 import { describe, expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { Plugin, TextSelection } from "@milkdown/kit/prose/state";
@@ -18,31 +18,17 @@ import type { Window as HappyWindow } from "happy-dom";
 import { prosemirrorToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
-import {
-  type CreateProofEditorOptions,
-  constructProofEditor,
-  createProofEditor,
-  type ProofEditorConstruction,
-  type ProofEditorHandle,
-} from "../src/lib";
+import { constructProofEditor, createProofEditor, type ProofEditorConstruction } from "../src/lib";
 import { createHeadlessProof } from "../src/lib-headless.js";
-import { endOfTask } from "../src/progressive-build";
 import { withDomWindow } from "./dom-window";
 import { pastePlainText, withHTMLElementGlobal } from "./paste";
-
-/** Blocks enough that the build takes several batches: the first takes eight and each one after
- *  it is sized by what the one before cost, growing fourfold at most. */
-const BLOCKS = 160;
-
-/** The words the paragraph at `index` of the generated document is made of. */
-function paragraph(index: number): string {
-  return `Paragraph ${index} of the ledger.`;
-}
-
-/** A document of `blocks` paragraphs, each with words of its own so a test can name one. */
-function paragraphs(blocks: number): string {
-  return `${Array.from({ length: blocks }, (_, index) => paragraph(index)).join("\n\n")}\n`;
-}
+import {
+  type Batch,
+  BLOCKS,
+  blocksBuilt,
+  paragraph,
+  paragraphs,
+} from "./progressive-build-fixture";
 
 /** A document of `BLOCKS` top-level blocks whose first is `opening` - a list, a quote, a table:
  *  a block whose own content is blocks, which the first batch builds, so another person's edit
@@ -62,19 +48,6 @@ function sections(count: number): string {
     { length: count },
     (_, index) => `## Section ${index}\n\n${paragraph(index)}`
   ).join("\n\n")}\n`;
-}
-
-/** The blocks the editor's root holds, at whatever depth. */
-function blocksBuilt(root: HTMLElement): number {
-  return root.querySelectorAll("[data-block-id]").length;
-}
-
-/** What one batch told the host: the ids it was about to build, how many blocks the editor held
- *  when it said so, and how many it held once they were in. */
-interface Batch {
-  readonly after: number;
-  readonly before: number;
-  readonly ids: readonly string[];
 }
 
 /** What one look at the build found: how many blocks the editor's root held, and whether the
@@ -978,317 +951,5 @@ describe("another person's edit inside a nested block", () => {
         ")"
     );
     expect(built.documentAfter.length).toBe(BLOCKS);
-  });
-});
-
-// A host's node views have to be on the view before the build, not after it: `view.setProps`
-// with a new `nodeViews` map re-runs ProseMirror's view update over the whole document, which
-// destroys every node view the batches made and creates the host's in its place. For Dispatch's
-// typed blocks over the 406,319-character document that was one task of 1,218 ms on a phone at
-// 4x CPU throttling, longer than any batch of the build it followed (dispatch://INFRA-341, R11).
-describe("the host's own node views", () => {
-  test("are installed before the first batch, and built a batch at a time with it", async () => {
-    const { parseMarkdown } = await createHeadlessProof({});
-    const ydoc = new Y.Doc();
-    prosemirrorToYXmlFragment(
-      parseMarkdown(paragraphs(BLOCKS)),
-      ydoc.getXmlFragment("prosemirror")
-    );
-    await withDomWindow(async (window) => {
-      const root = window.document.body.appendChild(
-        window.document.createElement("div")
-      ) as unknown as HTMLElement;
-      /** How many blocks the fragment had put in the editor when the host was called. */
-      let whenCalled = -1;
-      let created = 0;
-      // How many of the host's node views existed at each look, one look per task, which is
-      // what says they were created across the batches rather than in one task after them. A
-      // real `setTimeout(0)` chain, as `watchTheBuild` is and for the same reason: what it
-      // watches for is the build's own yield between batches, which a fake clock would drive
-      // rather than observe.
-      const seen: number[] = [];
-      let watching = true;
-      const look = () => {
-        if (!watching) return;
-        seen.push(created);
-        setTimeout(look, 0);
-      };
-      setTimeout(look, 0);
-      const handle = await createProofEditor(root, {
-        beforeBuild: (view) => {
-          whenCalled = blocksBuilt(root);
-          view.setProps({
-            nodeViews: {
-              ...view.props.nodeViews,
-              paragraph: () => {
-                created += 1;
-                const dom = window.document.createElement("p") as unknown as HTMLElement;
-                return { contentDOM: dom, dom };
-              },
-            },
-          });
-        },
-        heatMapMode: "hidden",
-        onMarkClick: () => {},
-        onMarkHover: () => {},
-        user: { color: "#0369a1", name: "alice" },
-        ydoc,
-      });
-      watching = false;
-      const { view } = handle;
-      try {
-        // Called over the empty document Milkdown created, before a block of the fragment was
-        // in it: a node view installed here is the one each batch builds with.
-        expect(whenCalled).toBe(0);
-        expect(view.state.doc.childCount).toBe(BLOCKS);
-        expect(created).toBeGreaterThanOrEqual(BLOCKS);
-        expect(
-          seen.filter((count) => count > 0 && count < BLOCKS).length,
-          "every one of the host's node views was created in one task: a host that installs " +
-            "them after the build pays for the whole document a second time"
-        ).toBeGreaterThan(0);
-      } finally {
-        handle.destroy();
-        while (!view.isDestroyed) await Promise.resolve();
-      }
-    });
-  });
-});
-
-/** Runs `act` with `scheduler` standing in for the browsing context's own, and puts back
- *  whatever was there. `undefined` runs it in a context that has none. */
-async function withScheduler(scheduler: unknown, act: () => Promise<void>): Promise<void> {
-  const had = Object.getOwnPropertyDescriptor(globalThis, "scheduler");
-  if (scheduler === undefined) {
-    Reflect.deleteProperty(globalThis, "scheduler");
-  } else {
-    Object.defineProperty(globalThis, "scheduler", {
-      configurable: true,
-      value: scheduler,
-      writable: true,
-    });
-  }
-  try {
-    await act();
-  } finally {
-    Reflect.deleteProperty(globalThis, "scheduler");
-    if (had !== undefined) Object.defineProperty(globalThis, "scheduler", had);
-  }
-}
-
-/** A real 0 ms timer, not a fake clock: what these rows read is the order the browsing
- *  context's own queue serves two tasks in, which a fake clock would drive rather than
- *  observe. Neither waits for anything. */
-function thePageSetsATimer(order: string[]): void {
-  setTimeout(() => order.push("the page's own timer"), 0);
-}
-
-// How the thread goes back between batches is the whole of whether anything else on the page
-// runs while a build lasts. `scheduler.yield()` stood here, and the browser serves its
-// continuation ahead of every posted task: for as long as a build lasted - about 35 s over one
-// screenful of the 406,319-character document and minutes over a whole drawn one - no socket
-// message, no fetch callback and no timer ran. `scheduler.postTask()` at its default priority
-// left the socket message served in 7 ms and a timer waiting 19,945 ms, because Chromium runs
-// a web-scheduling task of that priority ahead of a timer (dispatch://INFRA-341, R11).
-describe("the thread a batch hands back", () => {
-  test("is handed back behind a task the page is already waiting on", async () => {
-    const order: string[] = [];
-
-    await withScheduler(undefined, async () => {
-      thePageSetsATimer(order);
-      await endOfTask();
-      order.push("the build's next batch");
-    });
-
-    expect(order).toEqual(["the page's own timer", "the build's next batch"]);
-  });
-
-  test("is a timer even where the browsing context has a scheduler of its own", async () => {
-    const order: string[] = [];
-    const taken: string[] = [];
-    const scheduler = {
-      postTask: (work: () => void) => {
-        taken.push("postTask");
-        work();
-        return Promise.resolve();
-      },
-      yield: () => {
-        taken.push("yield");
-        return Promise.resolve();
-      },
-    };
-
-    await withScheduler(scheduler, async () => {
-      thePageSetsATimer(order);
-      await endOfTask();
-      order.push("the build's next batch");
-    });
-
-    expect(taken).toEqual([]);
-    expect(order).toEqual(["the page's own timer", "the build's next batch"]);
-  });
-});
-
-/** Runs `act` with `performance.now()` standing still, and puts back the clock that was there.
- *  Every batch then costs nothing by the build's own measure, so each is sized off the batch
- *  before it alone and two builds of one document take the same batches, which a clock that
- *  moves with the machine's load does not promise. */
-async function withTheClockStopped<T>(act: () => Promise<T>): Promise<T> {
-  const had = Object.getOwnPropertyDescriptor(performance, "now");
-  Object.defineProperty(performance, "now", {
-    configurable: true,
-    value: () => 0,
-    writable: true,
-  });
-  try {
-    return await act();
-  } finally {
-    Reflect.deleteProperty(performance, "now");
-    if (had !== undefined) Object.defineProperty(performance, "now", had);
-  }
-}
-
-/** `paragraphs(BLOCKS)` as one Yjs update, so that two builds can each take a Y.Doc of their
- *  own holding the very same blocks: a parse gives every block an id of its own at random. */
-async function theDocumentAsAnUpdate(): Promise<Uint8Array> {
-  const { parseMarkdown } = await createHeadlessProof({});
-  const ydoc = new Y.Doc();
-  prosemirrorToYXmlFragment(parseMarkdown(paragraphs(BLOCKS)), ydoc.getXmlFragment("prosemirror"));
-  return Y.encodeStateAsUpdate(ydoc);
-}
-
-/** The ids of the blocks the editor's root holds, in document order. */
-function idsBuilt(root: HTMLElement): string[] {
-  return Array.from(
-    root.querySelectorAll("[data-block-id]"),
-    (block) => block.getAttribute("data-block-id") ?? ""
-  );
-}
-
-/** A build `startTheBuild` has started and not waited for. */
-interface Started {
-  /** The ids each call of `onBatch` was handed, one entry per call. */
-  readonly asked: (readonly string[])[];
-  /** Each batch once its blocks were in the editor. */
-  readonly batches: Batch[];
-  /** The handle the build ends in. */
-  readonly building: Promise<ProofEditorHandle>;
-  readonly root: HTMLElement;
-  /** Both halves of every `onBatch` call, and after the second half the page's own 0 ms timer,
-   *  set in that batch's task (`thePageSetsATimer`): where that timer falls among the batches
-   *  is where the build handed the thread back. */
-  readonly seen: string[];
-}
-
-/** Starts the editor's build in `window` over a Y.Doc holding `update`, with `hold` among its
- *  options, and answers without waiting for the build to end. */
-function startTheBuild(
-  window: HappyWindow,
-  update: Uint8Array,
-  hold: Pick<CreateProofEditorOptions, "betweenBatches">
-): Started {
-  const ydoc = new Y.Doc();
-  Y.applyUpdate(ydoc, update);
-  const root = window.document.body.appendChild(
-    window.document.createElement("div")
-  ) as unknown as HTMLElement;
-  const asked: (readonly string[])[] = [];
-  const batches: Batch[] = [];
-  const seen: string[] = [];
-  const building = createProofEditor(root, {
-    ...hold,
-    heatMapMode: "hidden",
-    onBatch: (ids) => {
-      const before = blocksBuilt(root);
-      asked.push(ids);
-      seen.push(`building ${ids.join(" ")} over ${before} blocks`);
-      return () => {
-        const after = blocksBuilt(root);
-        batches.push({ after, before, ids });
-        seen.push(`built: ${after} blocks`);
-        thePageSetsATimer(seen);
-      };
-    },
-    onMarkClick: () => {},
-    onMarkHover: () => {},
-    user: { color: "#0369a1", name: "alice" },
-    ydoc,
-  });
-  return { asked, batches, building, root, seen };
-}
-
-// A host may hold the build between two batches (`betweenBatches`): an end-to-end row needs it
-// to put another person's write between two batches it names, rather than wherever the
-// machine's speed leaves it. A host that passes no hold leaves the build handing the thread back
-// exactly as it did before there was a hold to pass (dispatch://INFRA-341, R11).
-describe("a hold between two batches", () => {
-  test("is the build's own hand-back where the host passes none", async () => {
-    const update = await theDocumentAsAnUpdate();
-    /** What one build of the document showed, with `hold` among its options. */
-    const seenWith = (hold: Pick<CreateProofEditorOptions, "betweenBatches">) =>
-      withDomWindow((window) =>
-        withTheClockStopped(async () => {
-          const { batches, building, seen } = startTheBuild(window, update, hold);
-          const handle = await building;
-          const { view } = handle;
-          handle.destroy();
-          while (!view.isDestroyed) await Promise.resolve();
-          return { batches: batches.length, seen };
-        })
-      );
-
-    const withNone = await seenWith({});
-    const withEndOfTask = await seenWith({ betweenBatches: endOfTask });
-
-    expect(withNone.batches).toBeGreaterThan(1);
-    expect(withNone.seen).toEqual(withEndOfTask.seen);
-  });
-
-  test("holds the build at the batch it holds at, and the build ends once it lets go", async () => {
-    const update = await theDocumentAsAnUpdate();
-    await withDomWindow(async (window) => {
-      /** Never the last batch: the first takes eight of the document's blocks and the second
-       *  at most four times as many, which leaves blocks for a third. */
-      const heldAt = 2;
-      const told: number[] = [];
-      const holding = Promise.withResolvers<"held">();
-      const letGo = Promise.withResolvers<void>();
-      const { asked, batches, building, root } = startTheBuild(window, update, {
-        betweenBatches: (batchesDone) => {
-          told.push(batchesDone);
-          if (batchesDone !== heldAt) return endOfTask();
-          holding.resolve("held");
-          return letGo.promise;
-        },
-      });
-
-      const first = await Promise.race([holding.promise, building.then(() => "ended" as const)]);
-      expect(first, "the build ended without ever stopping at the hold").toBe("held");
-      // Held: the editor holds the blocks of the batches done, and not one block more.
-      const done = batches.flatMap((batch) => batch.ids);
-      expect(told).toEqual(Array.from({ length: heldAt }, (_, index) => index + 1));
-      expect(asked.length).toBe(heldAt);
-      expect(batches.length).toBe(heldAt);
-      expect(done.length).toBeLessThan(BLOCKS);
-      expect(idsBuilt(root)).toEqual(done);
-      // Twenty tasks, in any one of which a build nothing held would have placed its next batch.
-      for (let task = 0; task < 20; task += 1) await endOfTask();
-      expect(asked.length, "the build placed a batch while it was held").toBe(heldAt);
-      expect(idsBuilt(root)).toEqual(done);
-
-      letGo.resolve();
-      const handle = await building;
-      try {
-        expect(blocksBuilt(root)).toBe(BLOCKS);
-        expect(idsBuilt(root)).toEqual(asked.flat());
-        expect(batches.length).toBeGreaterThan(heldAt);
-        // Told after every batch but the last, the count of batches placed each time.
-        expect(told).toEqual(Array.from({ length: batches.length - 1 }, (_, index) => index + 1));
-      } finally {
-        const { view } = handle;
-        handle.destroy();
-        while (!view.isDestroyed) await Promise.resolve();
-      }
-    });
   });
 });
