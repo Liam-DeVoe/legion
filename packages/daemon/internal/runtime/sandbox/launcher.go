@@ -48,6 +48,10 @@ type launchers struct {
 	leakCheckSetting leakguard.Setting
 	leakCheck        LeakCheckReader
 	leakCheckHop     time.Duration
+	// beforeStart is set by tests alone: start runs it between the session serveLeakCheck chose
+	// and the Start's write, the window in which a launcher that reconnects leaves the start on a
+	// closed session (TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts).
+	beforeStart      func(ctx context.Context, token claim.Token)
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
@@ -374,6 +378,9 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// The start stays on it: a replacement session has not received that push, so this launch
 	// refuses and the supervisor retries from the new hello rather than starting a role without
 	// the checker its environment names.
+	if d.beforeStart != nil {
+		d.beforeStart(ctx, token)
+	}
 	answer, _, err := d.requestSession(ctx, session, command, command.ID)
 	if err != nil {
 		return err
@@ -658,16 +665,18 @@ func (d *launchers) stop(ctx context.Context, token claim.Token, podUID string, 
 	return nil
 }
 
-// bindLauncherSecrets binds each launcher role's Secret of the pod l launches to the new pod's uid,
-// so only that pod's launchers authenticate with it. A write the API server refuses as a conflict
-// — the gh-credential refresher rewrote the Secret between this read and this write
-// (refreshGitHubCredential) — is retried once over a fresh read, so the refresher's gh files and the
-// binding both land; a launch that failed here instead would leave the new pod running, unbound,
-// until the supervisor's next attempt replaced it. Any other failure, or a second conflict, is
-// returned.
-func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, l launch, uid string) error {
+// bindLauncherSecrets binds the Secret of each of roles, launcher roles of s's pod, to that pod's
+// uid, so only that pod's launchers authenticate with it, and holds each binding it wrote as its
+// role's credential (cacheLauncherCredential). A launch binds every role of the new pod it made
+// (relaunch); a hello binds the roles of a pod no launch made that no held credential binds yet
+// (bindAtHello). A write the API server refuses as a conflict — the gh-credential refresher
+// rewrote the Secret between this read and this write (refreshGitHubCredential) — is retried once
+// over a fresh read, so the refresher's gh files and the binding both land; a launch that failed
+// here instead would leave the new pod running, unbound, until the supervisor's next attempt
+// replaced it. Any other failure, or a second conflict, is returned.
+func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []claim.Role, uid string) error {
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
-	for _, role := range l.roles {
+	for _, role := range roles {
 		name := roleSecretName(s.Name, role)
 		read := func() (*corev1.Secret, error) {
 			secret, err := secrets.Get(ctx, name, metav1.GetOptions{})
@@ -710,7 +719,9 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, l launch,
 // owner), which every role of one pod shares and l takes as its gitHubDefault, every agent's
 // GH_CONFIG_DIR. A running pod an older runtime made (one worker container, no launchers, or one
 // gh directory where a bundle now stands) or one whose binding never landed is replaced rather than
-// trusted. Any other failure to read a Secret, such as the client's timeout, or a throttled request
+// trusted. A pod the Agent Sandbox controller recreated outside a launch is bound once one of its
+// launchers says hello with its role's current token (bindAtHello), so a launch after that hello
+// keeps it. Any other failure to read a Secret, such as the client's timeout, or a throttled request
 // or a server error the launch's deadline for it outlasted (resend), proves nothing about the pod:
 // it is returned, so only the launch that read it fails, and the caller stops that role's previous
 // process (runtime.Runtime's Spawn and Resume); the pod and every other role running in it are left
