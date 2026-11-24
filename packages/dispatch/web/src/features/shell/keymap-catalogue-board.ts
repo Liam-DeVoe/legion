@@ -97,7 +97,7 @@ export const BOARD_ACTIONS = {
     surface: "board",
   },
   priority: {
-    label: "Open the card's priority menu",
+    label: "Open the focused card's priority menu",
     keys: ["p"],
     palette: true,
     surface: "board",

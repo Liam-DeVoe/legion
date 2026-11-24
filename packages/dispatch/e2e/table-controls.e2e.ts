@@ -5972,6 +5972,10 @@ interface PickList {
   /** The digit that picks the option at once, for a list in a menu's place, whose digit writes
    *  its own choice whatever the word left (D5): pressed after the word in place of Enter. */
   readonly digit?: string;
+  /** Whether the list stands in a menu's place (D5): a Snooze or a priority, on whose closed
+   *  trigger a typed character is the page's key, not the list's search (`typedOnMenuTrigger`,
+   *  `components/key-targets.ts`), so the row opens it by Enter before it types a character. */
+  readonly menu?: boolean;
   /** What `value` reads once Enter, or the digit, has picked the option the word left. */
   readonly picked: RegExp;
   /** Where the pick leaves the focus, where that is not the trigger: the control the panel
@@ -6285,6 +6289,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "p",
       left: [/P0/, /P1/, /P2/, /P3/],
       digit: "1",
+      menu: true,
       picked: /^P1$/,
     },
     {
@@ -6298,6 +6303,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "p",
       left: [/P0/, /P1/, /P2/, /P3/],
       digit: "2",
+      menu: true,
       picked: /^P2$/,
     },
     {
@@ -6328,6 +6334,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       value: later,
       word: "tom",
       left: [/^Tomorrow/],
+      menu: true,
       picked: laterAfter(1),
       // The pick takes the row away once its write lands, and hands the reader on to the item
       // after it (dispatch://INFRA-2160, R8): that item is selected where the reading column is
@@ -6343,6 +6350,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       value: later,
       word: "week",
       left: [/^Next week/],
+      menu: true,
       picked: laterAfter(2),
       // The bar goes with the row it deferred, and R8 hands the focus to the row of the item
       // after it, the row that moves up into its place.
@@ -6362,6 +6370,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "p",
       left: [/P0/, /P1/, /P2/, /P3/],
       digit: "0",
+      menu: true,
       picked: /^P0$/,
     },
     {
@@ -6585,9 +6594,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // the text box (Shift+Tab at the second width) picks nothing and leaves the reader on the
 // trigger, `?` pressed then on the closed trigger opens the list with `?` in its text box and no
 // Keyboard shortcuts, since a character typed on a closed trigger is the list's search
-// (`MultiSelect`), and Enter picks the option the word left - in a list in a menu's place, the
-// priority's, a letter narrows and the digit of the option it left picks it at once
-// (dispatch://INFRA-2160, D5) - the trigger shows it with the focus back on it, or where the pick
+// (`MultiSelect`) - on the closed trigger of a list in a menu's place, the Snooze's and the
+// priority's, a typed character is the page's key (dispatch://INFRA-2160, D5), so the row opens
+// that list by Enter and types `?` in its text box - and Enter picks the option the word left -
+// in a list in a menu's place, the priority's, a letter narrows and the digit of the option it
+// left picks it at once (D5) - the trigger shows it with the focus back on it, or where the pick
 // takes the trigger away the panel hands the focus on. A Snooze's pick shows in the Inbox's Later
 // band, which holds one more row once the write lands, and the reader is handed on to the row of
 // the item after the one the pick took away (R8). A list that holds no text box is named and the
@@ -6718,26 +6729,31 @@ test("every list of options a reader picks from holds a text box that narrows it
       expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
       // A single key of the page, pressed on the closed trigger, is the list's: it opens the list
-      // with that character in its text box, and the shell's `?` opens no Keyboard shortcuts.
+      // with that character in its text box, and the shell's `?` opens no Keyboard shortcuts. On
+      // the closed trigger of a list in a menu's place a typed character is the page's key (D5),
+      // so that list is opened by Enter first, and the `?` typed then in its text box is the
+      // list's.
+      const typedAt = list.menu ? "in the list Enter opened" : "on the closed trigger";
+      if (list.menu) {
+        await page.keyboard.press("Enter");
+        await expect(
+          listOf(list.trigger).locator(TEXT_BOXES),
+          `${at}: Enter on the closed trigger left the focus off its list's text box`
+        ).toBeFocused();
+      }
       await page.keyboard.press("?");
       await nextFrames(page);
       // One read after the press's frames is the answer: the shell draws Keyboard shortcuts in
       // the render the key's binding starts, which nextFrames has let run.
       if ((await shortcuts.count()) > 0) {
-        keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+        keyed.push(`${at}: ? ${typedAt} opened the Keyboard shortcuts`);
         await page.keyboard.press("Escape");
         await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
         await list.trigger.focus();
       } else {
         const typed = listOf(list.trigger).locator(TEXT_BOXES);
-        await expect(
-          typed,
-          `${at}: ? on the closed trigger is not in its list's text box`
-        ).toHaveValue("?");
-        await expect(
-          typed,
-          `${at}: ? on the closed trigger left the focus off its list`
-        ).toBeFocused();
+        await expect(typed, `${at}: ? ${typedAt} is not in its list's text box`).toHaveValue("?");
+        await expect(typed, `${at}: ? ${typedAt} left the focus off its list`).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(list.trigger, `${at}: Escape left the list ? opened open`).toHaveAttribute(
           "aria-expanded",
@@ -9405,7 +9421,9 @@ test("a second Enter on the held Snooze selected asks leaves the focus where the
       holding = true;
       await page.keyboard.press("Enter");
       await page.keyboard.type("tom");
-      await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+      // The Snooze list stands in a menu's place and draws each choice's digit after its words
+      // (dispatch://INFRA-2160, D5), so the option is read by the words it starts with.
+      await expect(listOf(trigger).getByRole("option")).toHaveText([/^Tomorrow/]);
       await page.keyboard.press("Enter");
       await expect
         .poll(() => held.length, { message: `${where}: the bar sent no snooze` })

@@ -399,7 +399,7 @@ test("Reset is refused, naming the action, where another action holds one of its
     await user.click(reset);
     const refusal = within(line("inbox.dismiss")).getByRole("alert");
     expect(refusal.textContent).toBe(
-      "Reset is refused: e is already the key of Snooze the focused ask, or every selected ask. Change that action's keys first."
+      "Reset is refused: e is already the key of Open the snooze menu. Change that action's keys first."
     );
     expect(reset.getAttribute("aria-describedby")).toBe(refusal.id);
     expect(document.activeElement).toBe(reset);

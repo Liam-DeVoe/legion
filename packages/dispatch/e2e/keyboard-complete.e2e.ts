@@ -1005,7 +1005,8 @@ async function tabTo(page: Page, control: Locator, message: string): Promise<voi
 
 /** Presses `CHOICE_KEYS` and then `choice.letter`, reading before and after each press that it
  *  sent no request, and that at least one press showed a choice other than the item's value
- *  (`rest`). The choice shown after the last press is the answer. */
+ *  (`rest`). The choice shown after the last press is the answer. A press that sent a request
+ *  fails on that step's own words, also where the request took the control off the page. */
 async function pressChoiceKeys(
   page: Page,
   choice: ChoiceControl,
@@ -1018,9 +1019,21 @@ async function pressChoiceKeys(
   for (const key of [...CHOICE_KEYS, choice.letter]) {
     const before = requestsSent([choice.writes]);
     await page.keyboard.press(key);
+    // A request the press sends goes out in its handler, or in the render and the effects that
+    // handler queued, all done within two frames. The control is waited for after them with the
+    // bound of the row's own waits, and the count is read before that wait's answer is: a press
+    // that wrote can take the control off the page - the hand-on's write hands the question on,
+    // and its card leaves - and the step then fails as a press that sent a request, not on a read
+    // of a control that left.
+    await nextFrames(page);
+    const gone = await choice.control.waitFor({ state: "attached", timeout: expectTimeout }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(requestsSent([choice.writes]), `${say}: ${key} sends no request`).toBe(before);
+    if (gone !== undefined) throw gone;
     shown = await shownBy(choice.control);
     other ||= showsOther(shown, rest);
-    expect(requestsSent([choice.writes]), `${say}: ${key} sends no request`).toBe(before);
   }
   expect(other, `${say}: a key shows a choice other than the item's value, ${rest.text}`).toBe(
     true
@@ -5462,7 +5475,7 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^Approve( v\d+)?$/, { key: "a", label: "Approve" }],
   [/^Request changes$/, { key: "Shift+R", label: "Request changes" }],
   // The bar's Snooze selected asks is the same action, on every marked ask.
-  [/^Snooze /, { key: "borh", label: "Snooze the focused ask, or every selected ask" }],
+  [/^Snooze /, { key: "borh", label: "Open the snooze menu" }],
   [/^Un-snooze /, { label: "Un-snooze" }],
   [/^Priority of /, { key: "p", label: "Open the priority menu" }],
   [/^Assign \S+ to me$/, { label: "Assign to me" }],
@@ -6576,7 +6589,7 @@ test("k-pane-head: no control drawn before Next change moves when Next change ap
 // ---------------------------------------------------------------------------
 
 /** Snooze's label, as Settings, `?` and ⌘K write it. */
-const SNOOZE_LABEL = "Snooze the focused ask, or every selected ask";
+const SNOOZE_LABEL = "Open the snooze menu";
 
 /** The Inbox's Copy reference, as Settings, `?` and ⌘K write it. */
 const COPY_REFERENCE_LABEL = "Copy the row's reference";

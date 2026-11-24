@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -219,6 +219,44 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
     expect(trigger).toHaveFocus();
     expect(chosen).toEqual(["right"]);
   } finally {
+    unmount();
+  }
+});
+
+// The rule of the shared single pick's press outside (`MultiSelect`'s `handBackOverPress`, the
+// tester's round 16 of dispatch://INFRA-2160): the focus a press outside gives back, at its
+// `pointerdown` and again once it is over, comes with no scroll. A scroll then would move the
+// page under the press between its `mousedown` and its `mouseup`, so a press on a control far
+// from the trigger would release on another element and not act. Escape and Tab give the focus
+// back as the engine focuses, which brings the trigger into view where it is out of sight.
+test("a press outside gives the focus back with no scroll, and Escape and Tab as the engine focuses", async () => {
+  const { chosen, trigger, unmount, user } = renderPage();
+  const focus = spyOn(trigger, "focus");
+  // How each focus given to the trigger since the menu opened asked to scroll.
+  const givenBack = async (close: () => Promise<void>) => {
+    await user.click(trigger);
+    expect(menu()).toBeInTheDocument();
+    const from = focus.mock.calls.length;
+    await close();
+    expect(menu()).not.toBeInTheDocument();
+    return focus.mock.calls.slice(from).map(([options]) => options);
+  };
+  try {
+    const noScroll = { preventScroll: true };
+    expect(
+      await givenBack(() => user.click(screen.getByRole("button", { name: "Elsewhere" })))
+    ).toEqual([noScroll]);
+    expect(
+      await givenBack(() => user.click(screen.getByText("Some prose beside the menu.")))
+    ).toEqual([noScroll, noScroll]);
+    expect(trigger).toHaveFocus();
+    for (const keys of ["{Escape}", "{Tab}"]) {
+      expect(await givenBack(() => user.keyboard(keys)), keys).toEqual([undefined]);
+      expect(trigger, keys).toHaveFocus();
+    }
+    expect(chosen).toEqual([]);
+  } finally {
+    focus.mockRestore();
     unmount();
   }
 });

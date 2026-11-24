@@ -131,7 +131,7 @@ test("the help draws a section, with the catalogue's keys, for each scope that h
     expect(kbds("Architecture", "Up one level")).toEqual(["h", "←"]);
     expect(kbds("Agents", "Search agents")).toEqual(["/"]);
     expect(kbds("Delivery", "Next pull request")).toEqual(["↓"]);
-    expect(kbds("Inbox", "Snooze the focused ask, or every selected ask")).toEqual(["b", "h"]);
+    expect(kbds("Inbox", "Open the snooze menu")).toEqual(["b", "h"]);
     expect(kbds("Inbox", "Pick an option of the ask in hand")).toEqual(["1", "9", "0"]);
     expect(kbds("Inbox", "Scroll the open document up")).toEqual(["Shift+Space"]);
     expect(kbds("Issue", "Set priority P0–P3")).toEqual(["0", "3"]);

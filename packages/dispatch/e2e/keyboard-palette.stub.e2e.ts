@@ -370,9 +370,7 @@ inboxTest(
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    const snooze = actions.getByRole("option", {
-      name: "Snooze the focused ask, or every selected ask",
-    });
+    const snooze = actions.getByRole("option", { name: "Open the snooze menu" });
     await page.keyboard.press("Control+k");
     await expect(snooze).toHaveCount(1);
     await expect

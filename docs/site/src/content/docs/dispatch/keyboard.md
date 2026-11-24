@@ -262,7 +262,7 @@ the focus.
 | `o` | Open issue |
 | `Enter` | Open the focused card's issue (from the card) |
 | `Shift+O` | Open the focused card's issue in a new tab |
-| `p` | Open the card's priority menu |
+| `p` | Open the focused card's priority menu |
 | `y` | Copy the card's issue reference |
 | `Shift+Y` | Copy the card's issue key |
 | `Escape` | Back to the card, then off it |

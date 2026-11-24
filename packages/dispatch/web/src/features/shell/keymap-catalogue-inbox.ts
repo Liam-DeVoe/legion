@@ -104,7 +104,7 @@ export const INBOX_ACTIONS = {
     surface: "inbox",
   },
   snooze: {
-    label: "Snooze the focused ask, or every selected ask",
+    label: "Open the snooze menu",
     keys: ["b", "h"],
     palette: true,
     surface: "inbox",

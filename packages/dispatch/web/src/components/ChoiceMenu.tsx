@@ -177,7 +177,10 @@ export function ChoiceMenu<V extends string>({
   // The press outside, in the capture phase: a board card's priority and an ask's hand-on stop
   // their own presses from bubbling, and a press on either must still close this menu. The focus
   // goes back at once and again once the press is over where it left it on the document
-  // (`focusBackOverPress`).
+  // (`focusBackOverPress`), each time with no scroll, as the shared single pick gives it back
+  // (`MultiSelect`'s `handBackOverPress`): a scroll then would move the page under the press
+  // between its `mousedown` and its `mouseup`, so a press on a control far from the trigger would
+  // release on another element and not act.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `wayBack` reads only refs, so the listener the menu's opening adds is current for as long as the menu stays open
   useEffect(() => {
     if (!open) return;
@@ -188,7 +191,7 @@ export function ChoiceMenu<V extends string>({
       if (document.getElementById(menuId)?.contains(target)) return;
       setOpen(false);
       const back = wayBack();
-      focusBackOverPress(() => back?.focus());
+      focusBackOverPress(() => back?.focus({ preventScroll: true }));
     };
     document.addEventListener("pointerdown", press, true);
     return () => document.removeEventListener("pointerdown", press, true);
