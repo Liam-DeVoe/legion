@@ -337,11 +337,9 @@ func (r *ownerHoldRig) ran(t *testing.T, row record.OutboxRow, what string) {
 // owner for an act as another role. The owner's review step of `implementer:owner reviewer:owner`
 // and its acceptance of `implementer:owner acceptance:owner`, told while the ask is open, wait as a
 // notice held for its architect, with no stale line, since their runs go on. The merge then lands
-// through the workflow (landsThroughTheWorkflow), which queues the write-back of the owner's slot
-// and the landed to the owner, addressed by the step's role (record.Issue.StepWorkerRole), as a
-// fresh worker of that step is told. Once the write-back ran, each notice is told once. The landed,
-// which tells the owner's step to go on at the new head, waits for the slot's gh files to hold the
-// App of that step's role, and then is told.
+// through the workflow (landsThroughTheWorkflow), which queues the write-back of the owner's slot.
+// Once the write-back ran, each notice is told once. No landed is queued: the owner was asked the
+// merge as the agent of the task's implementation step and pushed it itself.
 func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -360,13 +358,7 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			r.started(t, "step", 1, true)
 			r.started(t, "step", 2, false)
 			r.askedOf(t, r.owner, tc.at)
-			// The phases row step 2's start raised under the owner's claim (workflow's
-			// startOwnersStep), which a message to that step's worker is addressed by.
-			if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-				return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-1", Role: tc.role, Claim: r.owner, Entry: 1, StepTask: "a", StepPlace: 2})
-			}); err != nil {
-				t.Fatalf("record the phases row of step 2: %v", err)
-			}
+			r.stepTwoRaised(t, tc.role)
 			r.rt.ScriptSlotHolds(nil)
 			notice := record.Notice{Kind: record.OwnerStepNotice, Role: tc.role, Phase: tc.at, Reason: "Step 2 of 2.",
 				OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 2, Starts: 1}}
@@ -393,22 +385,64 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			if got := r.published(); len(got) != 1 {
 				t.Fatalf("the owner-step of step 2 published %v once the merge forward landed, want one", got)
 			}
-			landed := r.queuedRow(t, "the landed to the owner's step", func(payload record.OutboxPayload) bool {
-				message, ok := payload.(record.MergeForwardMessage)
-				return ok && message.Step == record.MergeForwardLanded
-			})
-			if message, _ := record.DecodeOutboxPayload(landed); message.(record.MergeForwardMessage).Claim != r.owner ||
-				message.(record.MergeForwardMessage).Role != tc.role {
-				t.Fatalf("the landing queued the landed %+v, want it to the owner's claim %s as the %s", message, r.owner, tc.role)
-			}
-			r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
-			waits(t, r.runner.execute(ctx, landed), "the landed to the owner's step while its slot's files hold another App")
-			r.rt.ScriptSlotHolds(nil)
-			landed.LeaseToken = leaseOutboxRow(t, r.pool, landed.ID)
-			r.ran(t, landed, "the landed to the owner's step once its slot holds the App of the step's role")
-			if got := r.published(); len(got) != 2 {
-				t.Fatalf("the notices published %v after the landed, want the owner-step and the landed", got)
+			var landed int
+			if err := r.pool.QueryRow(ctx, "select count(*) from outbox where kind = $1 and payload->>'step' = $2",
+				string(record.OutboxKindMergeForward), string(record.MergeForwardLanded)).Scan(&landed); err != nil || landed != 0 {
+				t.Fatalf("the landing queued %d landed messages (%v), want none: the owner pushed the merge itself", landed, err)
 			}
 		})
+	}
+}
+
+// stepTwoRaised records the phases row step 2's start raised under the owner's claim (workflow's
+// startOwnersStep) on role's row, which a message to that step's worker is addressed by.
+func (r *ownerHoldRig) stepTwoRaised(t *testing.T, role claim.Role) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-1", Role: role, Claim: r.owner, Entry: 1, StepTask: "a", StepPlace: 2})
+	}); err != nil {
+		t.Fatalf("record the phases row of step 2: %v", err)
+	}
+}
+
+// The landed of a merge forward that another agent pushed reaches the owner at its own step, by the
+// step's role (record.Issue.StepWorkerRole), as a fresh worker of that step is told, and it asks the
+// owner to go on with that step at the new head, so it waits for the owner's slot to hold the App of
+// that step's role. On `implementer reviewer:owner` at the owner's review step, the ask went to the
+// fresh implementer; the merge lands through the workflow, which queues the landed to the owner's
+// claim as the reviewer and no write-back of the owner's slot. While the slot's gh files do not hold
+// the review App the landed waits; once they do, it is told.
+func TestTheLandedReachesTheOwnerAtItsOwnStepOnceItsSlotHoldsTheStepsApp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer", "reviewer:owner")
+	r.started(t, "step", 2, false)
+	r.askedOf(t, mustClaimToken(t, "LEGION-1", claim.RoleImplementer), phase.Reviewing)
+	r.stepTwoRaised(t, claim.RoleReviewer)
+	r.landsThroughTheWorkflow(t)
+	var writeBacks int
+	if err := r.pool.QueryRow(ctx, "select count(*) from outbox where kind = $1 and payload->>'op' = 'slot_credential'",
+		string(record.OutboxKindSupervise)).Scan(&writeBacks); err != nil || writeBacks != 0 {
+		t.Fatalf("the landing queued %d write-backs (%v), want none: the ask was the fresh implementer's", writeBacks, err)
+	}
+	landed := r.queuedRow(t, "the landed to the owner's review step", func(payload record.OutboxPayload) bool {
+		message, ok := payload.(record.MergeForwardMessage)
+		return ok && message.Step == record.MergeForwardLanded
+	})
+	if message, _ := record.DecodeOutboxPayload(landed); message.(record.MergeForwardMessage).Claim != r.owner ||
+		message.(record.MergeForwardMessage).Role != claim.RoleReviewer {
+		t.Fatalf("the landing queued the landed %+v, want it to the owner's claim %s as the reviewer", message, r.owner)
+	}
+	r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
+	waits(t, r.runner.execute(ctx, landed), "the landed to the owner's review step while its slot's files hold another App")
+	if got := r.published(); len(got) != 0 {
+		t.Fatalf("the landed published %v while the slot's files hold another App, want nothing", got)
+	}
+	r.rt.ScriptSlotHolds(nil)
+	landed.LeaseToken = leaseOutboxRow(t, r.pool, landed.ID)
+	r.ran(t, landed, "the landed to the owner's review step once its slot holds the review App")
+	if got := r.published(); len(got) != 1 {
+		t.Fatalf("the landed published %v once the slot holds the review App, want one", got)
 	}
 }
