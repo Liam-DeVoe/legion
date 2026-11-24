@@ -335,6 +335,7 @@ var DispatchEventTypes = []string{
 	"message.created",
 	"message.delivery",
 	"priority.updated",
+	"project.access_changed",
 	"project.created",
 	"project.updated",
 	"result.recorded",

@@ -3086,22 +3086,23 @@ Who owned the project before, and whether that person is still a member, makes n
 It exits 0 once the change commits;
 2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
 and 1 when the database cannot be opened or written.
-No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`), and so is an owner that is empty or not lowercase (the column's check).
+Giving a project to the person who owns it already writes nothing, and the command says so.
 
 Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
 An insert that names no owner, every project create included, takes its default assignee as owner (`projects_owner_from_default`).
-A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
-set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
-or give each one an owner with the command above.
-The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.
-So read them before the deploy, on the release still serving, with the query `20261116015736_project_access.census.sql`'s header gives:
+A project whose default assignee had never signed in when the migration ran would keep no owner, so the migration's census counts such projects, and a count above `0` refuses the deploy.
+Repair them before it, on the release still serving: give each a default assignee who has signed in with `PUT /api/v1/projects/{key}/default-assignee`, then deploy again.
+They are listed there by the query `20261116015736_project_access.census.sql`'s header gives:
 
 ```sql
 select key, default_assignee from projects p
 where not exists (select 1 from people where email = p.default_assignee);
 ```
 
-When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
+Should a project still have no owner at boot, the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project, each grant recorded as the command's is (`project.access_changed`, written by the actor `{"kind": "system", "id": "DISPATCH_PROJECT_OWNER_FALLBACK"}`);
+or give each one an owner with the command above.
 
 ### Pre-deploy census
 

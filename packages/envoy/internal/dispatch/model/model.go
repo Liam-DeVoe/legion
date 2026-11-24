@@ -108,9 +108,9 @@ func (c *Credential) Holds(scope string) bool {
 var browserCredential = &Credential{Scopes: Scopes}
 
 // BrowserActor is the caller a person's signed-in browser is: the person, with the cookie's
-// credential. Every reader of a cookie builds its caller here - api's optionalActor, the GitHub
-// proxy and the document socket - so access.Resolve, which reads the credential, reads each of
-// them as the browser it is.
+// credential, so access.Resolve, which reads the credential, reads it as the browser it is. A later
+// slice builds the caller of every reader of a cookie here: api's optionalActor, the GitHub proxy
+// and the document socket.
 func BrowserActor(login string) Actor {
 	return Actor{Kind: "user", ID: login, Credential: browserCredential}
 }
@@ -203,8 +203,7 @@ const (
 // it - every credential's but a broker token's, whose list is answered only while some project is
 // private or its person is a restricted member, as before projects could be private - and nil
 // otherwise: which projects it would see were its person to see them, which tells a read whether
-// the credential read a project before a change took it away (api: eventGapSQL), and which whoami
-// answers as projects.
+// the credential read a project before a change took it away, and which whoami answers as projects.
 type Viewer struct {
 	Person, Session string
 	Restricted      bool
@@ -499,9 +498,8 @@ type PrivateProjectChannels struct {
 // AsOf is the database time of the read the answer rests on: Standing's, or the database's now()
 // where Standing did not answer. NotHeldUntil is set under IAP identity alone, on every answer that
 // is not held: when it stops being served, the last Active Workspace Directory answer plus 24
-// hours, or AsOf itself for an answer that is unavailable (identity.Standing.Unavailable), a
-// person no Active answer confirmed in 24 hours or no row holds. It is left out of a held answer and
-// everywhere outside IAP.
+// hours, or AsOf itself for an answer that is unavailable, a person no Active answer confirmed in
+// 24 hours or no row holds. It is left out of a held answer and everywhere outside IAP.
 type PersonAnswer struct {
 	Person       string     `json:"person"`
 	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`

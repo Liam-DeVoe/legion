@@ -1172,6 +1172,26 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
 					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
 				}
+				// The grant is recorded as an operator's grant is: one project.access_changed of
+				// change owner on STRAY, by the fallback's system actor, and the server's record of
+				// it, naming no previous owner and the operator as the owner it left.
+				var appended, records int
+				var actor, payload, recordOwner string
+				if err := database.Pool.QueryRow(ctx, `
+					select count(*), coalesce(max(e.actor->>'kind') || ':' || max(e.actor->>'id'), '<none>'),
+						coalesce(max(e.payload::text), '<none>'), count(c.event_id),
+						coalesce(max(c.principal), '<none>') || '|' || coalesce(max(c.owner), '<none>')
+					from events e left join project_access_changes c on c.event_id = e.id
+					where e.project_key = 'STRAY' and e.type = 'project.access_changed'
+				`).Scan(&appended, &actor, &payload, &records, &recordOwner); err != nil {
+					t.Fatalf("read STRAY's access events: %v", err)
+				}
+				if appended != 1 || records != 1 || actor != "system:DISPATCH_PROJECT_OWNER_FALLBACK" ||
+					payload != `{"change": "owner", "project": "STRAY"}` || recordOwner != "|operator@example.com" {
+					t.Errorf("STRAY's grant: %d event(s) by %s carrying %s, %d record(s) %s; want one event of change owner by "+
+						"system:DISPATCH_PROJECT_OWNER_FALLBACK and one record naming no previous owner and the operator",
+						appended, actor, payload, records, recordOwner)
+				}
 			})
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
