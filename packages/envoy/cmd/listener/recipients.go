@@ -55,23 +55,41 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // recipient of it, and a publish no session follows that way answers recipients 0, as any stored
 // topic no session follows does.
 //
+// That judgment holds a topic no stream subject captures yet as it holds any other (filterTakes),
+// so it cannot say whether the stream stores the message at all, and the count asks that first,
+// before any session is matched. A notification topic the deployed stream does not capture, as the
+// client last read its subjects, is published over core NATS (bus.Client.UsesCoreTransport, which
+// bus.Client.PublishTakesJetStream asks before it reads the subjects again), where no stream
+// stores it and no consumer delivers it: such a publish answers recipients 0, and connected 0
+// where the session copy can be served. The publish route refuses that topic once a read of the
+// subjects that started after the request asked agrees (bus.SubjectsAsk.Uncaptured), and
+// publishes it where no such read could be made; a session whose row or record follows the topic
+// would then be counted for a message no consumer receives.
+//
 // connected is how many of those sessions the session registry holds a live entry for, by the
 // rule every reader of a session's age reads (session.SessionRegistry.Lookup, session.StateOf): an
 // unresponsive session is not counted, since a sender reading "running now" acts on it. It is the
 // number a reader acts on: against 30 days of records a team topic almost never counts zero, so
 // recipients alone would never again tell a sender that nobody is there to read its message.
 //
-// Every read here is of memory but one: each check reads its watcher's state alone, both matchers
-// answer from their caches' subject indexes and the session registry from its cache, so counting
-// the publish of a topic that is no controller notice lane makes no JetStream API call and the
-// publish it precedes waits on no round trip of its own. A publish on a controller notice lane
-// reads that lane's role claim from the role bucket stream's leader, once, within
-// recipientLaneReadTimeout of ctx (store.Registry.ReadLaneHolders), the read a filter built from a
-// stored row makes for it; a read that did not answer or failed leaves both counts out, as a cache
-// that cannot be served does.
+// Every read here is of memory but one: each check reads its watcher's state alone, the stream's
+// capture is judged on the subjects the client holds, both matchers answer from their caches'
+// subject indexes and the session registry from its cache, so counting the publish of a topic that
+// is no controller notice lane makes no JetStream API call and the publish it precedes waits on no
+// round trip of its own. A publish on a controller notice lane reads that lane's role claim from
+// the role bucket stream's leader, once, within recipientLaneReadTimeout of ctx
+// (store.Registry.ReadLaneHolders), the read a filter built from a stored row makes for it; a read
+// that did not answer or failed leaves both counts out, as a cache that cannot be served does.
 func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string) (recipients, connected *int) {
 	if !d.known.Opened() || d.registry.Servable() != nil {
 		return nil, nil
+	}
+	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
+	if d.sessions.Servable() == nil {
+		connected = new(int)
+	}
+	if d.client.UsesCoreTransport(topic) {
+		return new(int), connected
 	}
 	judged := recipientJudgment{subject: topic}
 	// A lane is a literal, so the lane the message is published on is the one lane whose holder
@@ -86,10 +104,6 @@ func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string)
 		judged.holders = holders
 	}
 	judged.literal = !bus.OverlapsPrivateStreamSubject(topic) && filterTakes(topic)
-	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
-	if d.sessions.Servable() == nil {
-		connected = new(int)
-	}
 	counted := map[string]struct{}{}
 	count := func(sessionID string, topics []string) {
 		if sessionID == sender {

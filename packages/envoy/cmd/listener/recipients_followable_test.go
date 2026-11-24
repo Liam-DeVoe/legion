@@ -85,6 +85,46 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 	}
 }
 
+// A publish the stream does not store counts no recipient. The consumer filter built from a stored
+// row holds a topic no stream subject captures yet (filterTakes), so a session whose interest row
+// and known-session record follow such a topic has a consumer filtering on it, and a count that
+// judged the session's topics by that filter alone counted it: recipients 1 for a message that goes
+// over core NATS, which no stream stores and no consumer delivers. The publish route refuses such a
+// topic once a read of the deployed subjects that started after the request asked agrees
+// (bus.SubjectsAsk.Uncaptured), and counts it only where no such read could be made, so the row
+// asks the count itself (recipientCounts). The row first checks that the listener's client judges
+// the topic uncaptured and that the filter built from the row holds it, and fails as UNKNOWN
+// otherwise.
+func TestAPublishOnATopicNoStreamSubjectCapturesCountsNoRecipient(t *testing.T) {
+	const (
+		sessionID = "ses_uncaptured_follower"
+		topic     = "notifications.lxspec.probe.counted"
+	)
+	rig := newKnownSessionRig(t)
+	waitForRegistry(t, rig.harness.registry)
+	if rig.deps.client.DeployedStreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: the deployed stream captures %s; the row needs a topic no stream subject captures", topic)
+	}
+	storeRawRow(t, rig.harness.registry, rig.harness.client, sessionID, topic)
+	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
+		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
+	}
+	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+		record, ok := rig.known.Get(sessionID)
+		return ok && slices.Contains(record.Topics, topic)
+	})
+	filter, err := storedRowFilter(t.Context(), rig.harness.registry, sessionID, []string{topic})
+	if err != nil {
+		t.Fatalf("build the filter of %s from %s: %v", sessionID, topic, err)
+	}
+	if !slices.Contains(filter, topic) {
+		t.Fatalf("UNKNOWN: the filter built from %s is %v, which does not hold it; the row needs a consumer filter that follows a topic no stream captures", topic, filter)
+	}
+	if recipients := countRecipientsOf(t, rig.deps, topic); recipients == nil || *recipients != 0 {
+		t.Fatalf("a publish on %s, which no stream stores, counts %v recipients with %s's interest row and known-session record naming it, want 0: the filter built from that row is %v, and no consumer receives the message", topic, countOrNone(recipients), sessionID, filter)
+	}
+}
+
 // countOrNone is *p, or -1 for a count left out, for a failure message.
 func countOrNone(p *int) int {
 	if p == nil {
