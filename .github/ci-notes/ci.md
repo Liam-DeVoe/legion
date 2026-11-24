@@ -7,13 +7,16 @@ whose sections follow them. Each `# why:` line of either file names the section 
 derivation or the record its filter, its pattern, its step, its job or its key rests on, and
 within each of the two the sections stand in the order their comment blocks stood. In ci.yaml a
 comment block of at most two lines stays where it is, beside the pattern or the step it is
-about; so does a value's own arithmetic, and a comment inside a `run:` body, which is shell and
-stays with its command. `.github/ci-filters.yaml` holds patterns and names: beside its `# why:`
+about, until ci.yaml stands at .github/scripts/check-workflow-files.sh's byte limit: then a
+derivation of two lines moves here too, as that check's refusal says, and its place keeps a
+`# why:` line. A value's own arithmetic stays, and so does a comment inside a `run:` body,
+which is shell and stays with its command. `.github/ci-filters.yaml` holds patterns and names:
+beside its `# why:`
 lines, its only comments are the lines of the blocks .github/scripts/check-ci-filters.sh and
-.github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
-was deleted, since the filter beneath it is that record.
-In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
-where every one of these comments first stood, the filters' comments among them.
+.github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads was
+deleted, since the filter beneath it is that record. In the text moved here, "this file" and "this
+workflow" refer to `.github/workflows/ci.yaml`, where every one of these comments first stood, the
+filters' comments among them.
 
 ## How a filter of the filters file is written
 
