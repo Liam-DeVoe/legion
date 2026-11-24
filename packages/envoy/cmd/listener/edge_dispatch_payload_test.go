@@ -212,6 +212,13 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 		return []byte(payloadJSON(t, contracts.Envelope{EventID: "dispatch-44", Source: "dispatch", Topic: own, DedupeKey: "dispatch-44", Payload: payload}))
 	}
 	privMessage := sent(t, apiEvent("PRIV-1", "message.created", message("PRIV-1", "PRIV's message", target)), targeted, "m-1:steer", "")
+	privMessagePayload := func() string {
+		var item contracts.Envelope
+		if err := json.Unmarshal(privMessage, &item); err != nil {
+			t.Fatal(err)
+		}
+		return item.Payload
+	}()
 	privEvent := payloadJSON(t, issueEvent("PRIV", "comment.created", comment("PRIV-1", "PRIV's comment")))
 	pubEvent := payloadJSON(t, issueEvent("PUB", "comment.created", comment("PUB-1", "PUB's comment")))
 	rows = append(rows,
@@ -223,6 +230,9 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 		row{"a Dispatch payload whose issue key is no issue key", ownWith(strings.Replace(privEvent, `"issue_key":"PRIV-1"`, `"issue_key":"pub"`, 1)), unread},
 		row{"a targeted Dispatch payload with no event", ownWith(`{"delivery":{"attempt":1,"mode":"steer"}}`), unread},
 		row{"a Dispatch payload with a Project key beside project", ownWith(strings.Replace(privEvent, `"project":"PRIV"`, `"project":"PRIV","Project":"PUB"`, 1)), frameDrops(withheldAmbiguousKey)},
+		row{"a Dispatch payload with an Issue_Key key beside issue_key", ownWith(strings.Replace(privEvent, `"issue_key":"PRIV-1"`, `"issue_key":"PRIV-1","Issue_Key":"PUB-1"`, 1)), frameDrops(withheldAmbiguousKey)},
+		row{"a targeted Dispatch payload with an Event key beside event", withPayload(t, privMessage, strings.Replace(privMessagePayload, `{"event":`, `{"Event":{},"event":`, 1)), frameDrops(withheldAmbiguousKey)},
+		row{"a targeted Dispatch payload with a Delivery key beside delivery", withPayload(t, privMessage, strings.Replace(privMessagePayload, `"delivery":`, `"Delivery":{"attempt":1,"mode":"steer"},"delivery":`, 1)), frameDrops(withheldAmbiguousKey)},
 		row{"a Dispatch payload with a __proto__ key", ownWith(strings.Replace(privEvent, `"project":"PRIV"`, `"project":"PRIV","__proto__":{"project":"PUB"}`, 1)), frameDrops(withheldPrototypeKey)},
 		row{"a frame with a Source key beside source", []byte(`{"source":"agent","Source":"dispatch","topic":"` + own + `"}`), frameDrops(withheldAmbiguousKey)},
 		// What the edge reads must be what the plugin shows: a payload the plugin shows no event
@@ -233,13 +243,7 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 		row{"a targeted frame with a misspelt delivery line and the token's project beside it",
 			withPayload(t, privMessage, `{"delivery":{"attempt":1},"event":`+payloadJSON(t, apiEvent("PUB-1", "message.created", message("PUB-1", "PUB's message", target)))+`,"project":"PRIV"}`), unread},
 		row{"a targeted frame of the token's project with a third key beside event and delivery",
-			withPayload(t, privMessage, strings.Replace(func() string {
-				var item contracts.Envelope
-				if err := json.Unmarshal(privMessage, &item); err != nil {
-					t.Fatal(err)
-				}
-				return item.Payload
-			}(), `"delivery":`, `"project":"PUB","delivery":`, 1)), unread},
+			withPayload(t, privMessage, strings.Replace(privMessagePayload, `"delivery":`, `"project":"PUB","delivery":`, 1)), unread},
 		row{"an event of the token's project whose payload is no object, which the plugin reads as no event",
 			ownWith(strings.Replace(privEvent, `"payload":{`, `"payload":"PUB","x":{`, 1)), unread},
 		row{"a targeted message of the token's project carrying a comment's delivery line",
