@@ -655,15 +655,9 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 //     that volume: its pod and its Secrets go (runtime.IssueReleaser).
 //
 // The role the check reads through, which the mark names, is the role told when the check
-// declines (declineRelease): the worker of the issue's open phase where it is live
-// (workflow.OpenPhaseRole), since that is the role whose work the phase is, and otherwise the
-// first live role. Every role of the issue shares the one workspace, so any of them reads the
-// same answer.
+// declines (declineRelease): checkRole's.
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	told := decision.Roles[0]
-	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
-		told = open
-	}
+	told := checkRole(view, decision.Roles)
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: told}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
 	add := func(payload record.OutboxPayload, boundary bool) error {
@@ -692,6 +686,18 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 	return mark, nil
 }
 
+// checkRole is the role a workspace check of view's pod reads through, and the one its decline
+// tells: the worker of the issue's open phase where it is live (workflow.OpenRoleOf, which for step
+// is the role of the running step, view.StepRole), since that is the role whose work the phase is,
+// and otherwise the first of live. Every role of the issue shares the one workspace, so any of them
+// reads the same answer.
+func checkRole(view pods.IdleView, live []claim.Role) claim.Role {
+	if open := workflow.OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole}); slices.Contains(live, open) {
+		return open
+	}
+	return live[0]
+}
+
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
 // (workflow.LeftPodClose). A pod with no live claim gets the issue's Sandbox suspension alone
 // (leftPodStopRows). A pod with a live claim gets one row first, and no other: the workspace check
@@ -704,10 +710,7 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 	if len(decision.Roles) == 0 {
 		return leftPodStopRows(view, decision, now, time.Time{})
 	}
-	told := decision.Roles[0]
-	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
-		told = open
-	}
+	told := checkRole(view, decision.Roles)
 	row, err := record.NewOutboxRow(view.Issue, record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles, TurnStart: view.NewestTurnStart()}, now)
 	if err != nil {
