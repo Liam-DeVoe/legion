@@ -578,13 +578,23 @@ type LineFacts struct {
 	// and reads none; a replay under such a rule reads them from its own records and a table of its
 	// own database (admit's RuleTables). Nil under every other rule.
 	BeneathWaits map[string][]string
-	// FirstSlots is, under a rule that orders the line's returned part by first slots (SlotRule.Order,
-	// LineReturnedByFirstSlot), the moment of each issue's first slot in its current generation, by
-	// key, which Waiting places a returned issue by. The daemon keeps no such moment once a slot goes
-	// back, and runs no such rule; a replay under one keeps them in a table of its own database,
-	// which the pass reads in here (admit's RuleTables), and an issue it holds none of is placed by
-	// the moment its work came back. Nil under every other rule.
+	// FirstSlots is, under a rule that orders the line by first slots (SlotRule.Order,
+	// LineReturnedByFirstSlot and LineReworkFirst) or by arrival (LineArrival), the moment of each
+	// issue's first slot in its current generation, by key, which Waiting places a returned issue
+	// by, and, under LineReworkFirst, a tree already open by its root's. The daemon keeps no such
+	// moment once a slot goes back, and runs no such rule; a replay under one keeps them in a table
+	// of its own database, which the pass reads in here (admit's RuleTables), and an issue it holds
+	// none of is placed by the moment its work came back. Under a rule that places by arrival it is
+	// also the moment an issue with no arrival (Arrivals) is placed by. Nil under every other rule.
 	FirstSlots map[string]time.Time
+	// Arrivals is, under a rule that places issues by their arrival in the line (SlotRule.Order,
+	// LineReworkFirst and LineArrival), the moment each issue arrived in the line in its current
+	// generation, by key: the moment the record first held it in that generation. The daemon keeps
+	// no such moment (an issue's MovedAt moves with each move) and runs no such rule; a replay under
+	// one keeps them in a table of its own database, which the pass reads in here (admit's
+	// RuleTables), and an issue it holds none of is placed by its first slot (FirstSlots) and then by
+	// the moment its record last moved (Issue.MovedAt). Nil under every other rule.
+	Arrivals map[string]time.Time
 }
 
 // KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
@@ -1289,13 +1299,17 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // kept out by a tree that keeps filing children.
 //
 // Those two orders are the daemon's own rule's (LineReturnedOldestFirst). The facts carry the
-// rule the line is built under (LineFacts.Rule), and three other orders are a rule's to choose: a
+// rule the line is built under (LineFacts.Rule), and five other orders are a rule's to choose: a
 // rule may place the returned part by the board's rank as the starting part is placed
 // (LineReturnedByRank), or by the moment of each issue's first slot in its current generation
 // (LineReturnedByFirstSlot, LineFacts.FirstSlots), or put first in the starting part each issue
-// that an issue the daemon has started waits on (LineBlockersFirst). Which issues are in the line
-// is the same under each of them, save where the rule's phases decide whether an issue needs a
-// slot (LineFacts.NeedsSlot).
+// that an issue the daemon has started waits on (LineBlockersFirst); it may burn down work in
+// progress first in, first out — the returned part by first slots, then the issues of trees
+// already open by each tree's first slot and each issue's arrival, and only then the trees not yet
+// opened by the board (LineReworkFirst, LineFacts.Arrivals); or it may order the whole line by
+// each issue's arrival, with no part ahead of another and no rank (LineArrival). Which issues are
+// in the line is the same under each of them, save where the rule's phases decide whether an issue
+// needs a slot (LineFacts.NeedsSlot).
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
@@ -1377,7 +1391,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 
 	// timed is one entry of the returned part with the moment its work came back (at), the owed
 	// row's id that breaks a tie of moments, and, under a rule that places the part by first slots
-	// (LineReturnedByFirstSlot), the moment it is placed by (first).
+	// (LineReturnedByFirstSlot, LineReworkFirst), the moment it is placed by (first).
 	type timed struct {
 		entry LineEntry
 		at    time.Time
@@ -1548,11 +1562,25 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		return RankLess(left, right)
 	}
-	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot) places
-	// each entry by the moment of its issue's first slot in its current generation where the facts
-	// hold one (LineFacts.FirstSlots), and by the moment its work came back where they hold none;
-	// a tie of those moments falls to the daemon's own order below.
-	if order == LineReturnedByFirstSlot {
+	// arrivalOf is the moment issue arrived in the line in its current generation, which a rule
+	// that places by arrival reads (LineReworkFirst, LineArrival): the moment the facts hold
+	// (LineFacts.Arrivals), its first slot where they hold none (LineFacts.FirstSlots), and the
+	// moment its record last moved where they hold neither (Issue.MovedAt).
+	arrivalOf := func(issue Issue) time.Time {
+		if at, kept := facts.Arrivals[issue.Key]; kept {
+			return at
+		}
+		if at, kept := facts.FirstSlots[issue.Key]; kept {
+			return at
+		}
+		return issue.MovedAt
+	}
+	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot, and
+	// LineReworkFirst, which burns that work down first in, first out) places each entry by the
+	// moment of its issue's first slot in its current generation where the facts hold one
+	// (LineFacts.FirstSlots), and by the moment its work came back where they hold none; a tie of
+	// those moments falls to the daemon's own order below.
+	if order == LineReturnedByFirstSlot || order == LineReworkFirst {
 		for i := range returned {
 			first, kept := facts.FirstSlots[returned[i].entry.Issue.Key]
 			if !kept {
@@ -1595,12 +1623,42 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			}
 		}
 	}
+	// A rule that burns down work in progress first (LineReworkFirst) places the issues of trees
+	// already open that have not started themselves (LineFirstPhase) ahead of the trees not yet
+	// opened (LineQueuedRoot): each tree by the moment its root first took a slot in its current
+	// generation (LineFacts.FirstSlots, the root's arrival where the facts hold none), a tie falling
+	// to the tree's key, and each issue within a tree by its own arrival (arrivalOf), a tie falling
+	// to its key. The trees not yet opened stand by the board after them.
+	treeStarted := func(issue Issue) time.Time {
+		if at, kept := facts.FirstSlots[issue.Tree]; kept {
+			return at
+		}
+		return arrivalOf(byKey[issue.Tree])
+	}
 	sort.Slice(starting, func(i, j int) bool {
 		left, right := starting[i].Issue, starting[j].Issue
 		_, leftFirst := waitedOn[left.Key]
 		_, rightFirst := waitedOn[right.Key]
 		if leftFirst != rightFirst {
 			return leftFirst
+		}
+		if order == LineReworkFirst {
+			leftOpen, rightOpen := starting[i].Kind == LineFirstPhase, starting[j].Kind == LineFirstPhase
+			if leftOpen != rightOpen {
+				return leftOpen
+			}
+			if leftOpen {
+				if a, b := treeStarted(left), treeStarted(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				if left.Tree != right.Tree {
+					return left.Tree < right.Tree
+				}
+				if a, b := arrivalOf(left), arrivalOf(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				return left.Key < right.Key
+			}
 		}
 		return byRank(left, right)
 	})
@@ -1623,7 +1681,20 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
 			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
 	}
-	return append(line, starting...), heldRows
+	line = append(line, starting...)
+	// A rule with one queue in arrival order (LineArrival) keeps each entry's part and its place in
+	// it, which say what kind of work it is, and orders the whole line by each issue's arrival
+	// (arrivalOf), with no part ahead of another and no rank; a tie falls to the key, and the line
+	// carries each issue once, so the order is strict.
+	if order == LineArrival {
+		sort.Slice(line, func(i, j int) bool {
+			if a, b := arrivalOf(line[i].Issue), arrivalOf(line[j].Issue); !a.Equal(b) {
+				return a.Before(b)
+			}
+			return line[i].Issue.Key < line[j].Issue.Key
+		})
+	}
+	return line, heldRows
 }
 
 // FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,

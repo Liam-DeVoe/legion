@@ -93,6 +93,18 @@ const (
 	// moment its work came back: an issue the daemon started early that gave its slot back stands
 	// ahead, when its work comes back, of the returned issues it started before.
 	LineReturnedByFirstSlot LineOrder = "returned_by_first_slot"
+	// LineReworkFirst is first in, first out for work already started: the issues whose work came
+	// back go first, each by the moment of its first slot in its current generation
+	// (LineFacts.FirstSlots), as LineReturnedByFirstSlot places them; then the issues of trees
+	// already open that have not started themselves (LineFirstPhase), each tree by the moment its
+	// root first took a slot in its current generation and each issue within a tree by its own
+	// arrival in the line (LineFacts.Arrivals); and only then the trees not yet opened
+	// (LineQueuedRoot), by the board's rank.
+	LineReworkFirst LineOrder = "rework_first"
+	// LineArrival is one queue in arrival order, with no part ahead of another and no rank: every
+	// issue of the line, started or not, by the moment it arrived in the line in its current
+	// generation (LineFacts.Arrivals), first in, first out.
+	LineArrival LineOrder = "arrival"
 )
 
 // StartTake is what a start may take from the cap, a SlotRule's choice.
@@ -312,14 +324,17 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules three recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the seven candidates of the comparison
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the ten candidates of the comparison
 // (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule
-// at two graces, and returned-by-first-slot). `legion replay rules` prints them. Each answer is
-// built afresh, so a caller that changes a rule it was handed changes no other caller's.
+// at two graces, returned-by-first-slot, rework-first and rework-first-keep, one order with and
+// without the slot kept past the review, and arrival-order). `legion replay rules` prints them.
+// Each answer is built afresh, so a caller that changes a rule it was handed changes no other
+// caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
-		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule()}
+		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -483,6 +498,43 @@ const longWaitGrace = time.Hour
 func returnedByFirstSlotRule() SlotRule {
 	return mainRuleWith("returned-by-first-slot", func(rule *SlotRule) {
 		rule.Order = LineReturnedByFirstSlot
+	})
+}
+
+// reworkFirstRule is the daemon's own rule with the line ordered first in, first out for work
+// already started (LineReworkFirst): work that came back is admitted again before any new work,
+// by its first slot in its current generation; then the work of trees already open, each tree by
+// its root's first slot and each issue by its arrival in the line; and the board decides only
+// among the trees not yet opened. Its reason is an owner's: work already started should be burned
+// down first, and the board's rank is not trusted to be kept up to date. The daemon records no
+// first slot once a slot goes back and no arrival, so a replay keeps both in tables of its own
+// (LineFacts.FirstSlots, LineFacts.Arrivals; admit's RuleTables), and a deployment that adopts
+// this rule needs those records in the daemon's own store first.
+func reworkFirstRule() SlotRule {
+	return mainRuleWith("rework-first", func(rule *SlotRule) {
+		rule.Order = LineReworkFirst
+	})
+}
+
+// reworkFirstKeepRule is rework-first with the slot kept in accepting, retro and merging too, as
+// keep-past-review keeps it (LineReworkFirst, everyWorkflowPhase), so work sent back past the review
+// never waits for a slot at all, and the comparison reads the cost of returning work under the
+// owner's order with and without that candidate's slot.
+func reworkFirstKeepRule() SlotRule {
+	return mainRuleWith("rework-first-keep", func(rule *SlotRule) {
+		rule.Order = LineReworkFirst
+		rule.KeepsSlotIn = everyWorkflowPhase()
+	})
+}
+
+// arrivalOrderRule is the daemon's own rule with the line one queue in arrival order and no rank
+// at all (LineArrival): the plainest first in, first out, beside which every rule that reads the
+// board shows what the board's order changes. The daemon records no arrival, so a replay keeps the
+// arrivals in a table of its own (LineFacts.Arrivals, admit's RuleTables), and a deployment that
+// adopts this rule needs that record in the daemon's own store first.
+func arrivalOrderRule() SlotRule {
+	return mainRuleWith("arrival-order", func(rule *SlotRule) {
+		rule.Order = LineArrival
 	})
 }
 

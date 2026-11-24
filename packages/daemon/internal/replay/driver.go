@@ -817,9 +817,11 @@ func (d *driver) down(at time.Time) bool {
 // named among those the run rests on where it counted any — and the moment each children wait the
 // start state marked told began (childWait), as the line of its telling would have set it; hands the
 // records it wrote to the snapshot timeline, and reads back the claims it wrote for the stub. Under
-// a rule that places the line's returned part by first slots it keeps the first slot of each issue
-// in the run it stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment
-// once the slot went back.
+// a rule that places the line by first slots it keeps the first slot of each issue in the run it
+// stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment once the
+// slot went back; and under a rule that places it by arrival it keeps each issue's arrival, the
+// record's entry of the run it stands in (arrivalBefore, keepArrival), which no record of the start
+// state carries.
 func (d *driver) seed() error {
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		report, err := SeedAndReport(ctx, tx, d.records, d.st, d.engine, withRanks(d.trace, d.shadow.ranks), d.window.From)
@@ -859,6 +861,13 @@ func (d *driver) seed() error {
 					}
 				}
 			}
+			if readsArrivals(d.rule) {
+				if arrived := d.arrivalBefore(issue.Key); !arrived.IsZero() {
+					if err := keepArrival(ctx, tx, issue, arrived); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		claims, err := d.st.ClaimsTx(ctx, tx)
 		if err != nil {
@@ -883,6 +892,20 @@ func (d *driver) firstSlotBefore(key string) time.Time {
 		if span.Start.Before(d.window.From) && (entry == nil || !span.Start.Before(entry.At) || span.Before) {
 			return span.Start
 		}
+	}
+	return time.Time{}
+}
+
+// arrivalBefore is when key entered the workflow in the run it stands in at the window's start,
+// the record's entry of that run, which the rules that place by arrival read as its arrival in the
+// line; zero where the record shows no entry before then.
+func (d *driver) arrivalBefore(key string) time.Time {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return time.Time{}
+	}
+	if entry := iss.entryAt(d.window.From.Add(-time.Nanosecond)); entry != nil {
+		return entry.At
 	}
 	return time.Time{}
 }

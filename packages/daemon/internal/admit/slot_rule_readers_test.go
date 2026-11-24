@@ -545,6 +545,139 @@ func slotRuleReaders() []slotRuleReader {
 				"first slot under a rule that orders them so",
 		},
 		slotRuleReader{
+			reader:  "record.Waiting's order of the line: work in progress before the trees not yet opened",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with work in progress first", func(rule *record.SlotRule) { rule.Order = record.LineReworkFirst }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const root, child, queued = "ACME-190", "ACME-191", "ACME-192"
+				// A started tree whose root ranks behind a tree that never opened: its child that
+				// has not started is work in progress, and the queued root is new work.
+				acmeRoot(t, pool, root, phase.Accepting, "needs_review", "c", nil, nil)
+				approvedGate(t, pool, root)
+				acmeChild(t, pool, child, root, phase.Admitted, "todo", "b")
+				acmeQueuedRoot(t, pool, queued, "a")
+				line, _, _ := lineUnder(t, pool, rule)
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-192 ACME-191]",
+			changed: "the line is [ACME-191 ACME-192]",
+			why: "the issues that have not started stand by their tree root's rank, or, under a rule that burns down work in " +
+				"progress first, an issue of a tree already started stands ahead of every tree not yet opened",
+		},
+		slotRuleReader{
+			reader:  "record.Waiting's order of the line: work that came back by first slot, under work in progress first",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with work in progress first", func(rule *record.SlotRule) { rule.Order = record.LineReworkFirst }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const cameBackFirst, startedFirst = "ACME-193", "ACME-194"
+				// The root ranked first on the board is the first whose work came back; the other
+				// took its first slot two hours before it.
+				acmeRoot(t, pool, cameBackFirst, phase.Implementing, "in_progress", "a", nil, nil)
+				oweMemberStart(t, pool, cameBackFirst, cameBackFirst, phase.Implementing)
+				acmeRoot(t, pool, startedFirst, phase.Implementing, "in_progress", "b", nil, nil)
+				oweMemberStart(t, pool, startedFirst, startedFirst, phase.Implementing)
+				line, _, _ := lineUnderTables(t, pool, rule, orderTables{firstSlots: map[string]time.Time{
+					cameBackFirst: fixedNow.Add(-time.Hour), startedFirst: fixedNow.Add(-3 * time.Hour)}})
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-193 ACME-194]",
+			changed: "the line is [ACME-194 ACME-193]",
+			why: "the issues whose work came back stand oldest first, or, under a rule that burns down work in progress first, " +
+				"by the moment of their first slot",
+		},
+		slotRuleReader{
+			reader:  "record.Waiting's order of the line: work in progress in the order it arrived",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with work in progress first", func(rule *record.SlotRule) { rule.Order = record.LineReworkFirst }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const ranked, rankedChild, started, laterChild, earlierChild = "ACME-195", "ACME-196", "ACME-197", "ACME-198", "ACME-199"
+				// Two started trees, each with children that have not started. The tree ranked
+				// first on the board took its first slot after the other; in the other tree, the
+				// child ranked second arrived first.
+				acmeRoot(t, pool, ranked, phase.Accepting, "needs_review", "a", nil, nil)
+				approvedGate(t, pool, ranked)
+				acmeChild(t, pool, rankedChild, ranked, phase.Admitted, "todo", "a")
+				acmeRoot(t, pool, started, phase.Accepting, "needs_review", "b", nil, nil)
+				approvedGate(t, pool, started)
+				acmeChild(t, pool, laterChild, started, phase.Admitted, "todo", "b")
+				acmeChild(t, pool, earlierChild, started, phase.Admitted, "todo", "c")
+				line, _, _ := lineUnderTables(t, pool, rule, orderTables{
+					firstSlots: map[string]time.Time{ranked: fixedNow.Add(-time.Hour), started: fixedNow.Add(-3 * time.Hour)},
+					arrivals: map[string]time.Time{rankedChild: fixedNow.Add(-30 * time.Minute), laterChild: fixedNow.Add(-time.Hour),
+						earlierChild: fixedNow.Add(-2 * time.Hour)}})
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-196 ACME-198 ACME-199]",
+			changed: "the line is [ACME-199 ACME-198 ACME-196]",
+			why: "the issues that have not started stand by their tree root's rank and then their own, or, under a rule that " +
+				"burns down work in progress first, each started tree by the moment its root first took a slot and each issue " +
+				"by the moment it arrived",
+		},
+		slotRuleReader{
+			// The two choices of rework-first-keep together: a slot kept past the review puts an
+			// issue there that gave its slot back for a wait in the returned part, and work in
+			// progress first puts a started tree's child ahead of a tree not yet opened, so each
+			// choice alone gives an outcome of its own, which the reverted runs of
+			// TestTheChoicesOfARuleAreTheReadersRows tell apart.
+			reader:  "record.Waiting's order of the line: work in progress first, with the slot kept past the review",
+			changes: []string{"KeepsSlotIn", "Order"},
+			rule: ruleWith("main with work in progress first and a slot past the review", func(rule *record.SlotRule) {
+				rule.Order = record.LineReworkFirst
+				rule.KeepsSlotIn = append(rule.KeepsSlotIn, phase.Accepting, phase.Retro, phase.Merging)
+			}),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const waiter, root, child, queued = "ACME-204", "ACME-205", "ACME-206", "ACME-207"
+				// A root in accepting that gave its slot back for a wait, and a started tree whose
+				// child has not started, ranked behind a tree that never opened.
+				acmeRoot(t, pool, waiter, phase.Accepting, "needs_review", "c", nil, nil)
+				takeSlot(t, pool, waiter)
+				releaseForWait(t, pool, waiter)
+				acmeRoot(t, pool, root, phase.Accepting, "needs_review", "b", nil, nil)
+				approvedGate(t, pool, root)
+				acmeChild(t, pool, child, root, phase.Admitted, "todo", "b")
+				acmeQueuedRoot(t, pool, queued, "a")
+				line, _, _ := lineUnder(t, pool, rule)
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-207 ACME-206]",
+			changed: "the line is [ACME-204 ACME-206 ACME-207]",
+			why: "an issue past the review needs no slot and stands in no place of the line, and the issues that have not started " +
+				"stand by their tree root's rank; under a rule that keeps the slot past the review and burns down work in progress " +
+				"first, an issue there that gave its slot back for a wait stands in the returned part, and a started tree's child " +
+				"stands ahead of every tree not yet opened",
+		},
+		slotRuleReader{
+			reader:  "record.Waiting's order of the line: one queue in arrival order",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with one queue in arrival order", func(rule *record.SlotRule) { rule.Order = record.LineArrival }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const ranked, earliest, cameBack = "ACME-201", "ACME-202", "ACME-203"
+				// Two roots that never ran and one whose work came back. The root ranked second
+				// arrived first, and the root ranked first arrived last.
+				acmeQueuedRoot(t, pool, ranked, "a")
+				acmeQueuedRoot(t, pool, earliest, "b")
+				acmeRoot(t, pool, cameBack, phase.Implementing, "in_progress", "c", nil, nil)
+				oweMemberStart(t, pool, cameBack, cameBack, phase.Implementing)
+				line, _, _ := lineUnderTables(t, pool, rule, orderTables{arrivals: map[string]time.Time{
+					ranked: fixedNow.Add(-time.Hour), earliest: fixedNow.Add(-3 * time.Hour), cameBack: fixedNow.Add(-2 * time.Hour)}})
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-203 ACME-201 ACME-202]",
+			changed: "the line is [ACME-202 ACME-203 ACME-201]",
+			why: "the issues whose work came back stand before every issue that has not started, and those stand by rank, or, " +
+				"under one queue in arrival order, each issue stands by the moment it arrived, whatever its part and its rank",
+		},
+		slotRuleReader{
 			reader:  "admit's capLets in the promotion",
 			changes: []string{"Take"},
 			rule:    ruleWith("main with a cover", func(rule *record.SlotRule) { rule.Take = record.TakeCover }),
@@ -939,6 +1072,18 @@ func acmeQueuedRoot(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	seedMirrorIn(t, pool, acmeProject, key, "todo")
 }
 
+// acmeChild records key as a member of root's running tree, filed under root, standing in stands
+// with the Dispatch status status and the board's rank rank, with its mirror row. It writes no
+// slot, as acmeRoot writes none.
+func acmeChild(t *testing.T, pool *pgxpool.Pool, key, root string, stands phase.Phase, status, rank string) {
+	t.Helper()
+	parent := root
+	putIssue(t, pool, record.Issue{Key: key, Tree: root, Parent: &parent, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Project: acmeProject, Title: key, Phase: stands, Generation: 1, Status: status,
+		DispatchStatus: status, Rank: rank, LastDispatchSeq: 1})
+	seedMirrorIn(t, pool, acmeProject, key, status)
+}
+
 // acmeProjectToken is acmeProject as the claim-keyed tables spell it (claim.ProjectToken).
 func acmeProjectToken(t *testing.T) string {
 	t.Helper()
@@ -1021,6 +1166,14 @@ func mergerReady(t *testing.T, pool *pgxpool.Pool, key string) {
 // leaves behind, each with its word, and the facts with every judgement filled.
 func lineUnder(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule) ([]record.LineEntry, []record.HeldIssue, record.LineFacts) {
 	t.Helper()
+	return lineUnderTables(t, pool, rule, nil)
+}
+
+// lineUnderTables is lineUnder with what a rule the daemon does not run records read in beside the
+// record from tables (RuleTables.ReadRuleFacts), as a pass given those tables reads it; nil tables
+// read nothing, as the daemon's own pass reads nothing.
+func lineUnderTables(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule, tables RuleTables) ([]record.LineEntry, []record.HeldIssue, record.LineFacts) {
+	t.Helper()
 	var line []record.LineEntry
 	var held []record.HeldIssue
 	var facts record.LineFacts
@@ -1038,12 +1191,34 @@ func lineUnder(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule) ([]record
 			t.Fatalf("read the line facts: %v", err)
 		}
 		facts.Rule = rule
+		if tables != nil {
+			if err := tables.ReadRuleFacts(ctx, tx, issues, &facts); err != nil {
+				t.Fatalf("read what the rule records: %v", err)
+			}
+		}
 		if _, facts, line, held, err = blockers.JudgeLine(ctx, tx, records, acmeProject, issues, ownSlots(issues, slots), facts, nil, fixedNow); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})
 	return line, held, facts
 }
+
+// orderTables is a replay's rule tables as far as the line's moments go (RuleTables): the moment
+// of each issue's first slot in its generation and of its arrival in the line, by key, held as data
+// and added to the facts of every pass whatever its rule, since a rule that places by neither never
+// reads them (record.LineFacts.FirstSlots, record.LineFacts.Arrivals). The daemon keeps neither; a
+// replay keeps them in tables of its own database (the replay's ruleTables), whose keeping that
+// package's tests read.
+type orderTables struct {
+	firstSlots, arrivals map[string]time.Time
+}
+
+func (tables orderTables) ReadRuleFacts(_ context.Context, _ pgx.Tx, _ []record.Issue, facts *record.LineFacts) error {
+	facts.FirstSlots, facts.Arrivals = tables.firstSlots, tables.arrivals
+	return nil
+}
+
+func (orderTables) KeepCovers(context.Context, pgx.Tx, map[string]string) error { return nil }
 
 // phaseMoves is the trigger of each phase move the engine logged, in order, read from the JSON
 // lines it wrote ("workflow: phase changed").

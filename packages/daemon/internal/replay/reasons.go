@@ -10,4 +10,7 @@ var candidateReasons = map[string]string{
 	"wait-grace":             "A wait of one minute sent a started issue to the end of the returned part of the line, and an operator asked that a wait shorter than a slot's next free moment keep the slot. Five minutes is window one's median time from a slot's release to the next free moment (4 m 44 s); 114 waits gave a slot back in window one, 1 of them under five minutes.",
 	"wait-grace-1h":          "The grace is a choice, so the comparison shows how the result moves with it.",
 	"returned-by-first-slot": "Issues whose wait had cleared stood at the end of the returned part and could not reach a slot, and an operator asked that a cleared wait return an issue to the place it held. The daemon records no first slot, so a replay keeps one in a table of its own (`replay_first_slots`), and the daemon would need that record to run this rule.",
+	"rework-first":           "An owner doubted that the board's rank is kept up to date, and asked for first in, first out: work that comes back from rework is admitted before new work, work in progress is burned down in the order it arrived, and rank decides only after that.",
+	"rework-first-keep":      "The owner's rule with the slot kept past the review, so the cost of returning work is read with and without the spec's second candidate.",
+	"arrival-order":          "The plain first-in, first-out form of the same request: the line in the order its issues arrived, with no rank.",
 }

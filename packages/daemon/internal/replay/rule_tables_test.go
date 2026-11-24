@@ -253,6 +253,128 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 	}
 }
 
+// The start state is read as a pass reads it, in a transaction that may write nothing
+// (driver.startView, admit.Admission.View), so the tables of the replay's own that a pass under a
+// rule keeps through its read of the facts (ruleTables) are kept by the passes and the start state
+// alone, and a read that may write nothing reads what they kept. Each rule the repository keeps
+// whose replay keeps first slots (readsFirstSlots) replays the fixture window send-back-at-full-cap
+// through Run, its start state's view included, and the run ends with no error, where a keep in
+// that view would fail it with Postgres's refusal of a write in a read-only transaction (SQLSTATE
+// 25006). And in a replay's own database, where a pass under the rule read ACME-1 holding a slot
+// from 09:00 and ACME-2 has taken a slot at 09:30 since, a read of the facts in a read-only
+// transaction keeps no row in any table of the replay's own, and reads the first slot of ACME-1
+// alone, the one the pass kept, and, under a rule that places by arrival (readsArrivals), the
+// arrival of ACME-1 alone, the moment its record was written, which the pass kept.
+func TestTheStartViewKeepsNothingAndReadsWhatThePassesKept(t *testing.T) {
+	dsn := replayDSN(t)
+	ctx := context.Background()
+	window, _ := readFixture(t, "send-back-at-full-cap")
+	records := record.NewStore()
+	root := func(key, rank string) record.Issue {
+		return record.Issue{Key: key, Repo: builtRepository, DefaultBranch: "main", GitHubRepo: builtRepository, Tree: key, Project: builtProject,
+			Title: key, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: rank,
+			HandedOver: true, LastDispatchSeq: 1}
+	}
+	one, two := root("ACME-1", "a1"), root("ACME-2", "a2")
+	replayed := 0
+	for _, rule := range record.SlotRules() {
+		if !readsFirstSlots(rule) {
+			continue
+		}
+		replayed++
+		t.Run(rule.Name, func(t *testing.T) {
+			if _, err := Run(ctx, RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn,
+				Out: t.TempDir()}); err != nil {
+				t.Fatalf("the replay of send-back-at-full-cap under %s failed: %v", rule.Name, err)
+			}
+
+			_, st := replayStore(t, dsn)
+			in := func(options pgx.TxOptions, what string, fn func(tx pgx.Tx) error) {
+				t.Helper()
+				if err := pgx.BeginTxFunc(ctx, st.Pool(), options, fn); err != nil {
+					t.Fatalf("%s: %v", what, err)
+				}
+			}
+			read := func(tx pgx.Tx, issues ...record.Issue) (record.LineFacts, error) {
+				facts := record.LineFacts{Rule: rule}
+				err := (ruleTables{}).ReadRuleFacts(ctx, tx, issues, &facts)
+				return facts, err
+			}
+			var written time.Time
+			in(pgx.TxOptions{}, "record ACME-1 holding a slot from 09:00 and read the facts as a pass", func(tx pgx.Tx) error {
+				if err := records.PutIssue(ctx, tx, one); err != nil {
+					return err
+				}
+				recorded, err := records.Issue(ctx, tx, one.Key)
+				if err != nil {
+					return err
+				}
+				written = recorded.MovedAt
+				if err := records.PutSlot(ctx, tx, record.Slot{Issue: one.Key, Index: 0, AdmittedAt: clock(9, 0)}); err != nil {
+					return err
+				}
+				_, err = read(tx, one)
+				return err
+			})
+			in(pgx.TxOptions{}, "record ACME-2 taking a slot at 09:30", func(tx pgx.Tx) error {
+				if err := records.PutIssue(ctx, tx, two); err != nil {
+					return err
+				}
+				return records.PutSlot(ctx, tx, record.Slot{Issue: two.Key, Index: 1, AdmittedAt: clock(9, 30)})
+			})
+			kept := replayRows(t, st)
+			var facts record.LineFacts
+			in(pgx.TxOptions{AccessMode: pgx.ReadOnly}, "read the facts in a read-only transaction", func(tx pgx.Tx) error {
+				var err error
+				facts, err = read(tx, one, two)
+				return err
+			})
+			if after := replayRows(t, st); !maps.Equal(after, kept) {
+				t.Errorf("the read in a read-only transaction left the replay's tables holding %v rows, and they held %v before it", after, kept)
+			}
+			if got := firstSlotsWord(facts.FirstSlots); got != "ACME-1 09:00" {
+				t.Errorf("the read in a read-only transaction reads the first slots %s, want the one the pass kept, ACME-1 09:00", got)
+			}
+			arrived, hasArrival := facts.Arrivals[one.Key]
+			if readsArrivals(rule) != (len(facts.Arrivals) == 1 && hasArrival && arrived.Equal(written)) {
+				t.Errorf("under %s the read in a read-only transaction reads the arrivals %v, and the pass kept ACME-1's at %v under a rule "+
+					"that places by arrival and none under any other", rule.Name, facts.Arrivals, written)
+			}
+		})
+	}
+	if replayed == 0 {
+		t.Fatal("the repository keeps no rule whose replay keeps first slots, so nothing was replayed")
+	}
+}
+
+// replayRows is the number of rows each table of the replay's own (replayTables) holds in st's
+// database, by the table's name.
+func replayRows(t *testing.T, st *store.Store) map[string]int {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := st.Pool().Query(ctx, `select table_name from information_schema.tables
+		where table_schema = current_schema() and left(table_name, 7) = 'replay_'`)
+	if err != nil {
+		t.Fatalf("list the replay's tables: %v", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("list the replay's tables: %v", err)
+	}
+	if len(names) != len(replayTables) {
+		t.Fatalf("the replay's database holds the tables %v, and the replay makes %d", names, len(replayTables))
+	}
+	counts := make(map[string]int, len(names))
+	for _, name := range names {
+		var count int
+		if err := st.Pool().QueryRow(ctx, `select count(*) from `+pgx.Identifier{name}.Sanitize()).Scan(&count); err != nil {
+			t.Fatalf("count the rows of %s: %v", name, err)
+		}
+		counts[name] = count
+	}
+	return counts
+}
+
 // lineWordOf is the keys of a waiting line, in its order.
 func lineWordOf(line []record.LineEntry) string {
 	keys := make([]string, 0, len(line))

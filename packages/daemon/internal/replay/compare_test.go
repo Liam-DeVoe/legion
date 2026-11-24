@@ -828,6 +828,38 @@ func TestTheDocumentGivesEachAddedCandidatesReason(t *testing.T) {
 	}
 }
 
+// A validation with MainOnly runs the main branch at f 1 alone (MainBranchAt), with the seeds of a
+// branch with a draw (SeedsPerDraw), in place of every branch: the branch R5 judges a window by,
+// at a fraction of the runs. Without it a validation runs every branch the tool offers (Branches),
+// each with the same seeds; and a test's own plan replaces either.
+func TestAMainOnlyValidationRunsTheMainBranchAlone(t *testing.T) {
+	for _, run := range []struct {
+		name     string
+		cfg      ValidateConfig
+		branches []BranchAt
+		perDraw  int
+	}{
+		{"main only", ValidateConfig{MainOnly: true}, []BranchAt{MainBranchAt}, SeedsPerDraw},
+		{"every branch", ValidateConfig{}, Branches(), SeedsPerDraw},
+		{"a test's plan", ValidateConfig{MainOnly: true, plan: &runPlan{branches: Branches()[:2], perDraw: 1}}, Branches()[:2], 1},
+	} {
+		plan := validatePlan(run.cfg)
+		if !slices.Equal(plan.branches, run.branches) || plan.perDraw != run.perDraw {
+			t.Errorf("%s: the validation runs the branches %v with %d seeds for a draw, want %v with %d", run.name,
+				branchNames(plan.branches), plan.perDraw, branchNames(run.branches), run.perDraw)
+		}
+	}
+}
+
+// branchNames is each of branches as a run's directory names it, `<branch>@<f>`.
+func branchNames(branches []BranchAt) []string {
+	names := make([]string, len(branches))
+	for i, at := range branches {
+		names[i] = fmt.Sprintf("%s@%v", at.Branch.Name, at.Slowdown)
+	}
+	return names
+}
+
 // The issues file of a comparison gives, for each window and each rule, each issue that held a slot
 // in the record or on the main branch of the rule's replay, with its first slot and its done in the
 // record and in the replay, each replayed time the median over the main branch's seeds, and the

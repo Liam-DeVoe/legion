@@ -439,6 +439,7 @@ A branch that draws nothing runs the seed 1 alone.
 Up to `--parallel` runs run at once, each in a database of its own.
 Each run's files go under `--out` in `<window>/<rule>/<branch>@<f>/seed-<n>/`, and a run whose files are there already does not run again.
 `validate` deletes each run's log once it has read it, unless `--keep-logs`.
+With `--main-only` it runs the main branch at f = 1 alone, with its seeds, in place of every branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value, the gap, the allowance and the test.
 The replayed value is the mean of the seeds, with the values of the lowest and the highest seed.
@@ -687,6 +688,9 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `wait-grace` | `main` with a wait on another issue that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part. | `0d3786da` |
 | `wait-grace-1h` | `wait-grace` with a grace of one hour, so that the comparison shows beside it what a longer grace keeps and what it costs. | `0d3786da` |
 | `returned-by-first-slot` | `main` with a returned issue placed in the line by its first slot in its current generation, not by the time at which its work came back, for the reason that a deployment reported: a started issue sent back from merging for one forward merge stood last of 76 in the returned part, and the issue of the one-minute wait last of 79. | `0d3786da` |
+| `rework-first` | `main` with the line in first in, first out order for started work, for the reason that an owner doubted that the board's rank is kept up to date: the returned issues first, by their first slot in their current generation, then the issues of trees that have started, each tree by its root's first slot and each issue by its arrival in the line, and the trees that have not opened last, by rank. | `0d3786da` |
+| `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it, so that the comparison reads the cost of returning work under the owner's order with and without that slot. | `0d3786da` |
+| `arrival-order` | `main` with the line as one queue in the order in which its issues arrived, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -813,6 +817,39 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+
+rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: arrival
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
 ```
 
 Each line of a rule gives one choice:
@@ -833,6 +870,8 @@ Each line of a rule gives one choice:
   `returned_by_rank` places a returned issue by its board rank.
   `returned_by_first_slot` places a returned issue by the time of its first slot in its current generation.
   `blockers_first` places first, among the issues that have not started, each issue that a started issue waits on.
+  `rework_first` places the returned issues by their first slot, then the issues of trees that have started, and then the trees that have not opened, by rank.
+  `arrival` places every issue of the line by the time at which it arrived in the line, with no part ahead of another and no rank.
 
 - `a start takes`: `own_slot`, a slot of its own while the cap has one free.
   `cover` lets an issue that a waiter waits on start on that waiter's slot, whatever the cap says, one cover for each holder.
@@ -908,6 +947,32 @@ An issue that the daemon started early and that gave its slot back stands, when 
 The daemon records no first slot once a slot goes back, because the slot's row goes with it.
 A replay keeps the first slots in a table of its own database: each pass keeps the slot of each holder as the first of its generation where the table holds none, and the start state keeps the first slot that the record shows for each issue in its current run.
 A deployment that adopts this rule needs that record in the daemon's own store first.
+
+### `rework-first`, `rework-first-keep`, `arrival-order` and the arrival
+
+`rework-first` admits started work first, in the order in which it started.
+The returned part comes first, each issue by the time of its first slot in its current generation, as under `returned-by-first-slot`.
+Then come the issues of trees that have started and that have not started themselves.
+Among them, a tree whose root took its first slot earlier comes first, and within a tree, an issue that arrived in the line earlier comes first.
+The trees that have not opened come last, by the board's rank, so rank decides only after the started work.
+`rework-first-keep` orders the line as `rework-first` does, and keeps a started issue's slot in accepting, retro and merging as `keep-past-review` does, so that work sent back past the review never waits for a slot.
+
+`arrival-order` places every issue of the line by the time at which it arrived in the line in its current generation, the earliest first.
+No part stands ahead of another and no rank counts.
+Each issue keeps its part and its place in that part, which say what kind of work it is.
+
+An issue arrives in the line when the daemon first records it in its current generation.
+The daemon records no arrival, because the time at which an issue last moved changes with each move.
+The daemon also records no first slot once a slot goes back.
+So a replay under any of the three rules keeps both in tables of its own database, `replay_first_slots` and `replay_arrivals`.
+Each pass keeps the arrival of each issue that it reads as the time at which its record last moved, where the table holds no arrival for the issue's generation, and the first pass after the record is written keeps the time of that write.
+The start state keeps, for each issue in the workflow, the time at which the record shows it entered the run that it stands in.
+An issue with no arrival kept is placed by its first slot, and then by the time at which its record last moved.
+A deployment that adopts any of them needs the daemon to record each issue's arrival in a generation and each issue's first slot in a generation, kept after the slot goes back, in its own store first.
+
+Under each rule that keeps one of these tables, `returned-by-first-slot` among them, the replay reads the start state as a pass reads it, in a transaction that writes nothing.
+That read keeps no first slot and no arrival, and reads the ones that the start state kept.
+The passes keep the rest.
 
 ## The branches
 

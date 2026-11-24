@@ -434,7 +434,8 @@ func distinctNames(before, after string) error {
 
 // ValidateConfig is a validation of one window (RunValidate): the window, the rule its daemon ran,
 // the server the runs make their databases on, how many run at once, the directory of runs they
-// are written under, and the commit of the legion binary that makes them (RunConfig.BuildCommit).
+// are written under, whether the main branch runs alone, and the commit of the legion binary that
+// makes them (RunConfig.BuildCommit).
 type ValidateConfig struct {
 	Window      string
 	Rule        record.SlotRule
@@ -444,14 +445,33 @@ type ValidateConfig struct {
 	KeepLogs    bool
 	Progress    func(RunDone)
 	BuildCommit string
+	// MainOnly runs the main branch at f 1 alone (MainBranchAt), with its seeds, in place of every
+	// branch: the check that the replay of the recorded rule meets R5's gaps on the branch R5 judges
+	// a window by, at a fraction of the runs of every branch.
+	MainOnly bool
 
 	// plan, where set, replaces the validation's branches and seeds: a test's smaller one.
 	plan *runPlan
 }
 
-// RunValidate runs cfg.Window under cfg.Rule on every branch with its seeds into cfg.Out, up to
-// cfg.Parallel runs at once, and answers its validation (spec R5), read back from the runs. A rule
-// other than the one the window's parts say its daemon ran is refused.
+// validatePlan is the branches and seeds cfg's validation runs: a test's own plan where it set one
+// (ValidateConfig.plan); with MainOnly, the main branch at f 1 alone (MainBranchAt) with the seeds
+// of a branch with a draw; and every branch the tool offers, each with its seeds (fullPlan),
+// otherwise.
+func validatePlan(cfg ValidateConfig) runPlan {
+	if cfg.plan != nil {
+		return *cfg.plan
+	}
+	if cfg.MainOnly {
+		return runPlan{branches: []BranchAt{MainBranchAt}, perDraw: SeedsPerDraw}
+	}
+	return fullPlan()
+}
+
+// RunValidate runs cfg.Window under cfg.Rule on every branch with its seeds, or on the main branch
+// alone with its seeds under cfg.MainOnly (validatePlan), into cfg.Out, up to cfg.Parallel runs at
+// once, and answers its validation (spec R5), read back from the runs. A rule other than the one
+// the window's parts say its daemon ran is refused.
 func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	name, err := windowName(cfg.Window)
 	if err != nil {
@@ -465,10 +485,7 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	if ran := partsRule(head.Parts); ran != "" && ran != rule.Name {
 		return Validation{}, fmt.Errorf("replay: the window %s ran the rule %s, and a validation replays the rule the daemon ran, not %s", name, ran, rule.Name)
 	}
-	plan := fullPlan()
-	if cfg.plan != nil {
-		plan = *cfg.plan
-	}
+	plan := validatePlan(cfg)
 	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches}}}
 	if err := runWindows(ctx, []windowSpec{spec}, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
 		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
