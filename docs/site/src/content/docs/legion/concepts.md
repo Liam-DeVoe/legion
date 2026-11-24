@@ -206,7 +206,8 @@ sub-architect's, is an owner of each issue that stands in that tree now, and can
 some of `planner implementer tester reviewer acceptance:owner` and of the roles the deployment
 defines, in the order the owner names them, no two of the task's agents starting with one role,
 though one role can stand at two steps, one key's agent at both (`implementer:a reviewer implementer:a`)
-or a later step's agent that starts with another role (`implementer reviewer:a implementer:a`),
+or the agent of either step starting with another role (`implementer reviewer:a implementer:a`,
+`implementer:a reviewer:a tester reviewer`),
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
 and after each other step of the type implementation,

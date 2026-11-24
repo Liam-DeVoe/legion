@@ -5438,7 +5438,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 The live proof that one key of an owner's plan is one agent in one session across roles, and that a key on both steps of a role that stands at two steps of a task is one agent in one session, run before the change merges.
-A role's two steps are two agents where the later step's key names an agent that starts with another role, as in `implementer reviewer tester:c reviewer:c`; this proof runs no such plan.
+A role's two steps are two agents where one of them starts with another role, as in `implementer reviewer tester:c reviewer:c` or `implementer:a reviewer:a tester reviewer`; this proof runs no such plan.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
