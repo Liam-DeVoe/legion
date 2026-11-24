@@ -661,26 +661,35 @@ func (m *Machine) proxyNamesOf(ctx context.Context, grantID, decidedBy string, h
 }
 
 // ProxyGrantsOfEnrollment is every live grant of enrollment enrollmentID but exceptGrantID that
-// holds a placeholder, each answered as AirlockConnection answers a connection opened with one of
-// that grant's own placeholders, in grant id order. The proxy reads it for a connection whose own
-// grant, exceptGrantID, does not bind a host, or whose request carries none of that grant's
-// placeholders: a command holds the placeholders of every grant its session has - a role's own
-// grant beside the one an agent-secrets run inside it asked for, or one agent-secrets run nested
-// in another - and its proxy password names one of them, so a host any of them binds is read, and
-// a placeholder of any of them is swapped on one connection. The connection's own grant is the one
-// the proxy has already read, so the read leaves it out, and a session with no other grant costs
-// one query that answers no row.
+// holds a placeholder of one of names, each answered as AirlockConnection answers a connection
+// opened with one of that grant's own placeholders, in grant id order. names are the secrets whose
+// proxy entries bind the host the proxy decides for (its boundEntries); no names answers none. The
+// proxy reads it for a connection whose own grant, exceptGrantID, does not bind a host, or whose
+// request carries none of that grant's placeholders: a command holds the placeholders of every
+// grant its session has - a role's own grant beside the one an agent-secrets run inside it asked
+// for, or one agent-secrets run nested in another - and its proxy password names one of them, so a
+// host any of them binds is read, and a placeholder of any of them is swapped on one connection.
+// The connection's own grant is the one the proxy has already read, so the read leaves it out, and
+// a session with no other grant costs one query that answers no row.
 //
-// It makes the checks AirlockConnection makes for each grant, so a grant it answers is one a
-// connection of its own would be opened for: the grant and its enrollment live, the enrollment's
+// A grant that holds none of names is left out before any check of it, so a grant that could bind
+// nothing on this host never decides the call: its project check, which may ask Dispatch, is not
+// made, and a Dispatch that cannot answer fails only a call one of names' grants could take.
+//
+// It makes the checks AirlockConnection makes for each grant it reads, so a grant it answers is one
+// a connection of its own would be opened for: the grant and its enrollment live, the enrollment's
 // person no restricted member, the names the operator withheld dropped from a grant nobody
-// decided, and the project rule. A grant with no name left, or one the project rule ends, is left
-// out rather than refused, since no connection names it; a restricted member's person ends every
-// grant listed, as a connection of each would, and is refused with ErrGrantNotLive. An enrollment
-// that is not live has no live grant. Besides those two questions it is two indexed reads: the
-// enrollment's live grants by enrollment_id (grants_enrollment_live), joined to their enrollment,
-// their requests and their placeholders, and the enrollment's withheld names.
-func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]AirlockConnection, error) {
+// decided, and the project rule over every name of the grant. A grant with no name left, or one
+// the project rule ends, is left out rather than refused, since no connection names it; a
+// restricted member's person ends every grant listed, as a connection of each would, and is
+// refused with ErrGrantNotLive. An enrollment that is not live has no live grant. Besides those
+// two questions it is two indexed reads: the enrollment's live grants by enrollment_id
+// (grants_enrollment_live), joined to their enrollment, their requests and their placeholders,
+// and the enrollment's withheld names.
+func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]AirlockConnection, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		p.name, p.slot, p.placeholder,
 		e.runtime_id, coalesce(e.session_id, ''), e.kind, e.operator, e.subject, e.projects, c.service
@@ -690,7 +699,8 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 		join airlock_placeholders p on p.grant_id = g.id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where g.enrollment_id = $1 and g.id::text <> $2 and `+grantAndEnrollmentLive("g", "e")+`
-		order by g.id`, enrollmentID, exceptGrantID)
+		and exists (select 1 from airlock_placeholders b where b.grant_id = g.id and b.name = any($3))
+		order by g.id`, enrollmentID, exceptGrantID, names)
 	if err != nil {
 		return nil, err
 	}

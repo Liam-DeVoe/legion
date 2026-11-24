@@ -989,24 +989,21 @@ func (p pair) namedSlot() string {
 // below takes the first of them, and a map's order would make which value a request is handled
 // for depend on the run.
 //
-// The port is read here because the entry's hosts carry no port, so an entry binds a name on
-// 443 and nowhere else, and another port of that name is another service, which no name of
+// The port is read in entryBinds because the entry's hosts carry no port, so an entry binds a name
+// on 443 and nowhere else, and another port of that name is another service, which no name of
 // this grant is a candidate for. An empty answer is therefore also what says a CONNECT is a
-// tunnel rather than a connection the proxy reads (serveConnect): one function decides what is
-// bound, and nothing beside it repeats that walk.
+// tunnel rather than a connection the proxy reads (serveConnect): entryBinds decides what is
+// bound, here and in boundEntries, and nothing beside it repeats that rule.
 //
 // It is a pure function of the grant, the host, the port and the rules, and it runs once per
 // request on a bound connection, over the grant that request read for itself: the grant is what
 // changes between two requests of one connection - a name withheld, a name ended - and a list
 // built once at the CONNECT would answer for the grant as it was then.
 func (s *Server) candidates(grant requests.AirlockConnection, host string, port uint16) []pair {
-	if port != 443 {
-		return nil
-	}
 	var pairs []pair
 	for name, held := range grant.Names {
 		entry := s.rules.Lookup(name)
-		if entry == nil || !proxyrules.HostBound(entry.Hosts, host) {
+		if entry == nil || !entryBinds(entry, host, port) {
 			continue
 		}
 		for slot := range held.Slots {
@@ -1017,6 +1014,12 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 		return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.slot, b.slot))
 	})
 	return pairs
+}
+
+// entryBinds is whether entry binds host on port: whether one of its hosts names host, and the
+// port is 443, the one port an entry's hosts speak about.
+func entryBinds(entry *proxyrules.SecretRule, host string, port uint16) bool {
+	return port == 443 && proxyrules.HostBound(entry.Hosts, host)
 }
 
 // choosePair is the one (name, slot) pair a request is handled for: the first candidate a header

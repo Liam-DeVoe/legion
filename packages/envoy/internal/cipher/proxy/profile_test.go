@@ -96,8 +96,8 @@ func (g *rolledGrants) AirlockAccessPlaceholder(ctx context.Context, grantID, na
 	return g.machine.Load().AirlockAccessPlaceholder(ctx, grantID, name, slot)
 }
 
-func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error) {
-	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID, exceptGrantID)
+func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error) {
+	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID, exceptGrantID, names)
 }
 
 func (g *rolledGrants) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {

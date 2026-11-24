@@ -316,6 +316,73 @@ passed=false
 [[ "$status" -eq 0 && "$(awk '{print $2, $3}' "$az_dir/calls" 2>/dev/null)" == $'cloud register\ncloud set\ngroup list' ]] && passed=true
 check "$passed"
 
+# --- approve_record, read out of airlock-check.sh and run on its own against a stand-in of the
+# broker's approval page. The stand-in signs the approver in as the stack's issuer does (a
+# redirect, a sign-in cookie, a session cookie), prints a form with two profile_digest fields, as
+# the broker prints one for each profile a request names, and holds the POST to the broker's own
+# rule for them (approval.profilesMoved): every printed fingerprint must come back as printed, or
+# the answer is 403 "Profile changed" and nothing is decided, else 303. The control runs the same
+# helper with its profile_digest fields taken out, which the stand-in must answer 403.
+approve_dir="$work/approve"
+mkdir -p "$approve_dir"
+cat >"$approve_dir/stand.py" <<'PY'
+import http.server, sys, urllib.parse
+REC = "ab" * 32
+DIGESTS = [REC + " AIRLOCK_AZURE_LOGIN " + "1f" * 32, REC + " AIRLOCK_OTHER " + "2e" * 32]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def send(self, code, headers=(), body=b""):
+        self.send_response(code)
+        for k, v in headers: self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        base = "http://127.0.0.1:%d" % self.server.server_port
+        cookie = self.headers.get("Cookie", "")
+        if self.path == "/approve/" + REC and "__Host-broker-session=s" not in cookie:
+            return self.send(302, [("Location", base + "/authorize"), ("Set-Cookie", "__Host-broker-signin=i; Secure")])
+        if self.path == "/authorize":
+            return self.send(302, [("Location", base + "/callback")])
+        if self.path == "/callback" and "__Host-broker-signin=i" in cookie:
+            return self.send(302, [("Location", base + "/approve/" + REC), ("Set-Cookie", "__Host-broker-session=s; Secure")])
+        if self.path == "/approve/" + REC:
+            fields = '<input type="hidden" name="printed" value="%s">' % REC
+            fields += "".join('<input type="hidden" name="profile_digest" value="%s">' % d for d in DIGESTS)
+            fields += '<input type="hidden" name="token" value="tok"><input type="hidden" name="expires" value="9">'
+            fields += '<input type="hidden" name="record" value="%s">' % REC
+            return self.send(200, [("Content-Type", "text/html")], ("<form>" + fields + "</form>").encode())
+        self.send(404)
+    def do_POST(self):
+        form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode(), keep_blank_values=True)
+        ok = ("__Host-broker-session=s" in self.headers.get("Cookie", "") and self.headers.get("Origin")
+              and form.get("decision") == ["approve"] and form.get("record") == [REC] and form.get("token") == ["tok"]
+              and sorted(form.get("profile_digest", [])) == sorted(DIGESTS))
+        self.send(303 if ok else 403, body=b"" if ok else b"Profile changed")
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True)
+s.serve_forever()
+PY
+python3 "$approve_dir/stand.py" >"$approve_dir/port" &
+approve_stand=$!
+for _ in $(seq 1 50); do [[ -s "$approve_dir/port" ]] && break; sleep 0.1; done
+definition="$(sed -n '/^approve_record() {/,/^}/p' "$script_dir/airlock-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no approve_record()\n'; exit 1; }
+approve_once() { # <the helper's definition> <work dir>
+  eval "$1"
+  WORK_DIR="$2" AGENT_SECRETS_URL="http://127.0.0.1:$(cat "$approve_dir/port")" approve_record "$(printf 'ab%.0s' $(seq 1 32))"
+  cat "$2/approve/decisions"
+}
+status=0
+output="$(approve_once "$definition" "$approve_dir/with" 2>&1)" || status=$?
+label="approve_record posts back each profile_digest the page printed, and the approval is decided (303)"
+check test "$output" = 303
+# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$digest" unexpanded
+without="${definition//'digests+=(--data-urlencode "profile_digest=$digest")'/:}"
+[[ "$without" != "$definition" ]] || { printf 'FAIL: the control could not take profile_digest out of approve_record\n'; exit 1; }
+output="$(approve_once "$without" "$approve_dir/without" 2>&1)" || status=$?
+label="control: the same helper without its profile_digest fields is refused 403 Profile changed"
+check test "$output" = 403
+kill "$approve_stand" 2>/dev/null || true
+
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"
   exit 1

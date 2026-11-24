@@ -6,13 +6,13 @@
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -105,7 +105,8 @@
- 	if len(s.candidates(grant, host, port)) > 0 {
- 		return true, nil
- 	}
--	if port != 443 || !s.rulesBind(host) {
+@@ -123,7 +123,8 @@
+ // for, cannot fail for a read of other grants.
+ func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
+ 	names := s.boundEntries(host, port)
+-	if len(names) == 0 {
 +	// MUTANT: the enrollment's grants are read for every host, one no entry binds included.
-+	if port != 443 {
- 		return false, nil
++	if len(names) == 0 && false {
+ 		return nil, nil
  	}
- 	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID, grant.GrantID)
+ 	return s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID, names)

@@ -183,9 +183,12 @@ type fakeGrants struct {
 	access      map[string]string
 	accessCalls int
 	// enrollmentCalls counts the reads of every live grant of an enrollment, and enrollmentErr
-	// is what each of them answers when a row sets it: a read that did not happen.
+	// is what each of them answers when a row sets it: a read that did not happen. grantErrs is
+	// the answer of a read that reaches one grant, by its id: that grant's own check failing, as
+	// its project check does while Dispatch cannot answer, fails the whole read.
 	enrollmentCalls int
 	enrollmentErr   error
+	grantErrs       map[string]error
 }
 
 func newFakeGrants() *fakeGrants {
@@ -288,11 +291,11 @@ func (f *fakeGrants) connectionReads() int {
 	return f.connCalls
 }
 
-// ProxyGrantsOfEnrollment is the broker's read of every live grant of one enrollment: each grant
-// a placeholder the row wrote opens, of that enrollment, in grant id order, as the broker's read
-// answers them. A grant any of whose placeholders the row refused is ended, as the broker's own
-// row is for every placeholder of it, so it is left out.
-func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error) {
+// ProxyGrantsOfEnrollment is the broker's read of the live grants of one enrollment that hold a
+// placeholder of one of names: each grant a placeholder the row wrote opens, of that enrollment,
+// in grant id order, as the broker's read answers them. A grant any of whose placeholders the row
+// refused is ended, as the broker's own row is for every placeholder of it, so it is left out.
+func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enrollmentCalls++
@@ -311,6 +314,12 @@ func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, ex
 		conn := f.connections[placeholder]
 		if conn.EnrollmentID != enrollmentID || conn.GrantID == exceptGrantID || ended[conn.GrantID] || seen[conn.GrantID] {
 			continue
+		}
+		if !slices.ContainsFunc(names, func(name string) bool { _, held := conn.Names[name]; return held }) {
+			continue
+		}
+		if err := f.grantErrs[conn.GrantID]; err != nil {
+			return nil, err
 		}
 		seen[conn.GrantID] = true
 		live = append(live, conn)
@@ -348,6 +357,17 @@ func (f *fakeGrants) failEnrollmentReads(why error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enrollmentErr = why
+}
+
+// failGrantCheck is what a read of the enrollment's grants answers from here on whenever it reaches
+// grant grantID: that grant's own check failing.
+func (f *fakeGrants) failGrantCheck(grantID string, why error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.grantErrs == nil {
+		f.grantErrs = map[string]error{}
+	}
+	f.grantErrs[grantID] = why
 }
 
 // AirlockAccessPlaceholder is the broker's mint of one access token's placeholder: the same

@@ -45,9 +45,9 @@ func (s *Server) handlingFor(grant requests.AirlockConnection, host string, port
 //   - a request own binds the host for and whose headers hold no whole placeholder is handled for
 //     own's first candidate, and reads nothing more either: another grant is chosen only by a
 //     header that carries its placeholder (choosePair), so the read could change nothing;
-//   - otherwise every other live grant of own's enrollment is read (ProxyGrantsOfEnrollment),
-//     and the request is handled for the first of them, in grant id order, that binds the host
-//     and whose placeholder it carries;
+//   - otherwise the other live grants of own's enrollment that hold a name bound to the host are
+//     read (otherGrantsBinding), and the request is handled for the first of them, in grant id
+//     order, that binds the host and whose placeholder it carries;
 //   - a request that carries none is decided for own's first candidate, or, where own binds
 //     nothing here, for the first candidate of the first other grant that binds the host, and
 //     forwarded with nothing swapped, so the entry's rules bound it as they bound any request.
@@ -62,7 +62,7 @@ func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection,
 	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(request.Headers)) {
 		return fallback, true, nil
 	}
-	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID)
+	others, err := s.otherGrantsBinding(ctx, own, host, port)
 	if err != nil {
 		return handling{}, false, err
 	}
@@ -97,18 +97,13 @@ func headersHoldPlaceholder(headers [][2]string) bool {
 // (candidates). It is the one answer serveConnect reads to decrypt a CONNECT rather than tunnel
 // it, and servePlain to refuse plain HTTP: a host only another grant of the session binds is read,
 // and a request on it is handled for the grant whose placeholder it carries (handledFor). The
-// enrollment's other grants are read only where grant binds nothing and an entry of the rules
-// binds host at all, so a tunnel to a host no entry names - a package registry, a git host no
-// secret is bound to - reads nothing and cannot fail for a read of other grants; and candidates
-// answers nothing on a port but 443 for any of them.
+// enrollment's other grants are read only where grant binds nothing, and then only those that
+// hold a name an entry binds to host (otherGrantsBinding).
 func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnection, host string, port uint16) (bool, error) {
 	if len(s.candidates(grant, host, port)) > 0 {
 		return true, nil
 	}
-	if port != 443 || !s.rulesBind(host) {
-		return false, nil
-	}
-	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID, grant.GrantID)
+	others, err := s.otherGrantsBinding(ctx, grant, host, port)
 	if err != nil {
 		return false, err
 	}
@@ -120,14 +115,29 @@ func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnect
 	return false, nil
 }
 
-// rulesBind is whether any entry of the rules binds host. The rules are read once at New, and an
-// entry binds a host for a grant only through them (candidates' s.rules.Lookup), so a host no
-// entry binds is bound for no grant of any session.
-func (s *Server) rulesBind(host string) bool {
-	for _, entry := range s.rules.Secrets {
-		if proxyrules.HostBound(entry.Hosts, host) {
-			return true
+// otherGrantsBinding is the live grants of own's enrollment, but own, that hold a name an entry
+// binds to host on port (ProxyGrantsOfEnrollment with boundEntries' names). The broker checks
+// only those, so a grant that could bind nothing here - whose project check may need Dispatch,
+// which may not answer - never decides a call to this host, and a host no entry binds reads
+// nothing at all: a tunnel to a package registry, or to a git host the session holds no secret
+// for, cannot fail for a read of other grants.
+func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
+	names := s.boundEntries(host, port)
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID, names)
+}
+
+// boundEntries is the name of every entry of the rules that binds host on port (entryBinds), in
+// the rules' order. The rules are read once at New, and an entry binds a host for a grant only
+// through them (candidates), so a grant that holds none of these names binds host for no request.
+func (s *Server) boundEntries(host string, port uint16) []string {
+	var names []string
+	for i := range s.rules.Secrets {
+		if entryBinds(&s.rules.Secrets[i], host, port) {
+			names = append(names, s.rules.Secrets[i].Name)
 		}
 	}
-	return false
+	return names
 }

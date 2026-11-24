@@ -7,10 +7,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
-	"maps"
 	"net/http"
-	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -25,12 +22,12 @@ const placeholderLeft = "this request still carries a placeholder after the swap
 // false when it carries none: in a header, in the value itself or inside the Basic credential it
 // is - which reads at least what the swap reads, a Basic scheme in any case, a payload with or
 // without base64 padding and one that is no UTF-8 among them, the safe side for a refusal - and
-// then in the path, its raw form, the query, the query unescaped, and each key and value of the
-// query unescaped on its own, so an escape that is no escape in one pair hides nothing in
-// another. A placeholder is one as the broker mints it (placeholderIn). Headers are read in
-// headersOf's order only once one has been found to carry one, and a query's pairs in the order
-// of their keys, so which placeholder a line names does not depend on the run, and a request that
-// carries none - every request the swap served - costs no sort.
+// then in the path, its raw form, the query as written and the query unescaped (lenientUnescape),
+// so no escape that is no escape, and no pair url.ParseQuery would skip, hides a placeholder.
+// A placeholder is one as the broker mints it (placeholderIn). Headers are read in headersOf's
+// order only once one has been found to carry one, so which placeholder a line names does not
+// depend on the run, and a request that carries none - every request the swap served - costs no
+// sort.
 func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, values := range header {
 		for _, v := range values {
@@ -44,28 +41,53 @@ func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (st
 			}
 		}
 	}
-	query, err := url.QueryUnescape(rawQuery)
-	if err != nil {
-		query = ""
-	}
-	for _, text := range [...]string{path, rawPath, rawQuery, query} {
+	for _, text := range [...]string{path, rawPath, rawQuery, lenientUnescape(rawQuery)} {
 		if placeholder := placeholderIn(text); placeholder != "" {
 			return placeholder, true
 		}
 	}
-	if err == nil {
-		// The whole query unescaped, so each pair of it unescaped was read above.
-		return "", false
+	return "", false
+}
+
+// lenientUnescape is query with each '+' read as a space and each valid %XX escape decoded, as
+// url.QueryUnescape decodes them, but with an escape that is no escape kept as written rather
+// than failing the whole: so the unescape of one query reads every pair of it, a pair holding ';'
+// and the ten-thousandth among them, whatever else the query holds.
+func lenientUnescape(query string) string {
+	if !strings.ContainsAny(query, "%+") {
+		return query
 	}
-	pairs, _ := url.ParseQuery(rawQuery) // every pair that unescapes, the others left out
-	for _, key := range slices.Sorted(maps.Keys(pairs)) {
-		for _, text := range append([]string{key}, pairs[key]...) {
-			if placeholder := placeholderIn(text); placeholder != "" {
-				return placeholder, true
-			}
+	var b strings.Builder
+	b.Grow(len(query))
+	for i := 0; i < len(query); i++ {
+		switch c := query[i]; {
+		case c == '+':
+			b.WriteByte(' ')
+		case c == '%' && i+2 < len(query) && ishex(query[i+1]) && ishex(query[i+2]):
+			b.WriteByte(unhex(query[i+1])<<4 | unhex(query[i+2]))
+			i += 2
+		default:
+			b.WriteByte(c)
 		}
 	}
-	return "", false
+	return b.String()
+}
+
+// ishex is whether c is a hexadecimal digit.
+func ishex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+// unhex is the value of hexadecimal digit c.
+func unhex(c byte) byte {
+	switch {
+	case c <= '9':
+		return c - '0'
+	case c <= 'F':
+		return c - 'A' + 10
+	default:
+		return c - 'a' + 10
+	}
 }
 
 // headerPlaceholder is the first placeholder a header value carries, in the value itself or in

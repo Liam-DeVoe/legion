@@ -16,6 +16,6 @@
 +	if true {
 +		return fallback, found, nil
 +	}
- 	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID)
+ 	others, err := s.otherGrantsBinding(ctx, own, host, port)
  	if err != nil {
  		return handling{}, false, err

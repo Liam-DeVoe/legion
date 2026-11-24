@@ -358,6 +358,15 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 		{"the own grant's placeholder, one letter escaped, in a query with a bad escape", "/v1/things?bad=%zz&k=" +
 			workerPlaceholder[:len(workerPlaceholder)-1] + fmt.Sprintf("%%%02X", workerPlaceholder[len(workerPlaceholder)-1]),
 			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
+		// The same in a pair that also holds ';', which url.ParseQuery skips whole.
+		{"the own grant's placeholder, one letter escaped, in a pair holding ';' beside a bad escape", "/v1/things?bad=%zz&k=" +
+			workerPlaceholder[:len(workerPlaceholder)-1] + fmt.Sprintf("%%%02X", workerPlaceholder[len(workerPlaceholder)-1]) + ";x",
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
+		// A bad escape in the same value as the placeholder, which an unescape of that value
+		// alone refuses whole.
+		{"the own grant's placeholder, one letter escaped, after a bad escape in the same value", "/v1/things?k=%zz" +
+			workerPlaceholder[:len(workerPlaceholder)-1] + fmt.Sprintf("%%%02X", workerPlaceholder[len(workerPlaceholder)-1]),
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
 		// A Basic credential in base64 with no padding, which neither the swap nor a padded decode
 		// reads.
 		{"an ended grant's placeholder inside an unpadded Basic credential", "/v1/things",
@@ -457,5 +466,38 @@ func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testin
 	}
 	if reads := r.grants.enrollmentReads(); reads != 2 {
 		t.Fatalf("the enrollment's grants were read %d time(s); want two, one for each call that needed them", reads)
+	}
+}
+
+// TestAGrantThatCannotBindTheHostDoesNotDecideTheCall: the session holds a third grant whose one
+// name is bound to chatHost alone, and that grant's own check fails - its project check while
+// Dispatch cannot answer. A CONNECT to boundHost, which only the second grant of the session binds,
+// is still read and its request swapped, since the third grant holds no name bound to boundHost and
+// is never read for it. The control, in the same run: a CONNECT to chatHost from a password whose
+// grant binds nothing there reads the third grant, and is refused 503. The named revert:
+// proxy-other-grants-every-name, which reads every grant of the session for any bound host.
+func TestAGrantThatCannotBindTheHostDoesNotDecideTheCall(t *testing.T) {
+	const failingGrant = "grant-00000009"
+	failing := requests.PlaceholderPrefix + "failingfailingfailingfailingfail"
+	r := newRig(t, Options{Rules: enrollmentRules()})
+	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(failing, failingGrant, testEnrollID, chatName, "the-real-chat-token")
+	r.grants.failGrantCheck(failingGrant, databaseDown)
+	r.addresses[chatHost] = []netip.Addr{netip.MustParseAddr("93.184.216.39")}
+
+	answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("a request to %s carrying the second grant's placeholder answered %d %q while a grant bound only to %s fails its check; want 200", boundHost, answer.StatusCode, body, chatHost)
+	}
+	if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("X-Second") != "Token "+secondValue {
+		t.Fatalf("the service saw %v; want the second grant's value swapped in", seen)
+	}
+
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(chatHost, "443"), basic(workerPlaceholder))
+	if conn != nil {
+		conn.Close()
+	}
+	if answer.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("CONNECT to %s, which only the failing grant binds, answered %d; want 503", chatHost, answer.StatusCode)
 	}
 }
