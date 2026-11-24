@@ -432,9 +432,16 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // claims the rows kept as the other statements do. It still writes issue_head_nodes alone, so it
 // marks no document, writes no other comment and moves no revision fence; no other marking
 // statement changed with it.
+//
+// It moved a fourth time, from 876f8ff389464b286100702428b8fb5218b74f78f43e0345e549f82f1cf553cb,
+// when the head rows came to hold a comment's marks beside what its page reads (main's #3512: when
+// its author last edited it, and when and by whom it was deleted): the same head-rows statement
+// reads the comment's edited_at, deleted_at and deleted_by for the comment and for each of its
+// blocks, and writes them into three more columns of issue_head_nodes. It still writes
+// issue_head_nodes alone; no other marking statement changed with it.
 var markingStatementDigests = map[int]string{
 	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
-	2: "876f8ff389464b286100702428b8fb5218b74f78f43e0345e549f82f1cf553cb",
+	2: "349ad57c4983da437d4904a67c55aad25864f849b28ae1b86998c179d3fcd005",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

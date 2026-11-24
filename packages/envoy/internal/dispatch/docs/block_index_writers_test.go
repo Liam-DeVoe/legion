@@ -548,17 +548,31 @@ var indexPasses = map[string]string{
 	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
 	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan): the anchored_in its
 	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
-	// orphan flag. An accept or a reject that finds a suggestion's mark gone writes the anchor
-	// orphaned from the request and the comment's row it locked, and retracts the block that row
-	// names; the refresh writes the quote and orphan flag it read off the document's marks, and
+	// orphan flag. An accept, a reject or a delete that finds a suggestion's mark gone writes the
+	// anchor orphaned from the request and the comment's row it locked, and retracts the block that
+	// row names; the refresh writes the quote and orphan flag it read off the document's marks, and
 	// retracts or states the block the row it updated names; the anchor block backfill pins the
 	// block the live document holds the legacy anchor's quote in, and states that block where the
 	// row it pinned stands. None reads the store to decide what a row says, nor a row to mend the
 	// store: each states what its own write moved.
-	"api/comment_actions.go#orphanCommentAnchor":      "the accept or reject request, the comment's row it locked and the block that row's anchor names",
+	"api/comment_actions.go#orphanCommentAnchor":      "the accept, reject or delete request, the comment's row it locked and the block that row's anchor names",
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "the anchors the refresh orphaned or found again off the document's marks, the rows it updated and the events it appended",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "the live document's block that holds the legacy anchor's quote, and the row it pins it on",
 	"api/comment_delivery.go#replyComment":            "the reply a delivery recorded",
+	// An edit of an issue message's words and a delete of a message or a comment, each made for a
+	// run, restate the post's node from the row they locked, caused by their own event, so the
+	// run's change of the post is named (changed_by_run). None reads a row of either side to
+	// decide what the other says: the clear of the post's row is clearDeletedPostBody's, below.
+	"api/message_corrections.go#editMessage":   "the edit request's own body, the message's row it locked and the message's own event",
+	"api/message_corrections.go#deleteMessage": "the delete request, the message's row it locked and the message's own event",
+	"api/comment_delete.go#deleteComment":      "the delete request, the comment's row it locked and the comment's own event",
+	// The clear a delete of a comment or a message makes: one update of the post's own row, with
+	// an empty body, no suggestion and the delete's mark - the transaction's now() its caller
+	// read and the caller the delete is recorded under - and, where an insert suggestion's quote
+	// is the comment's own words, that quote key emptied in the anchor the row holds, its other
+	// keys kept. No column it sets is one the store projects (censustest.ProjectedColumns), and
+	// it reads no side of a projection to write the other.
+	"api/post_history.go#clearDeletedPostBody": "the delete request and the post it deletes, which its caller locked",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",

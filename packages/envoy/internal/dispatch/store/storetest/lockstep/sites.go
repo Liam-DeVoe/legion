@@ -136,6 +136,16 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_actions.go#orphanCommentAnchor":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "docs#TestTheAnchorBlockBackfillTakesTheRowThenTheTuple",
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "docs#TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple",
+	// An edit or a delete of an issue message and a delete of a comment made for a run
+	// (api/message_corrections.go, api/comment_delete.go), which names the message or the comment
+	// changed, in the same steps: the issue's owner lock, under which it reads the row, then, in
+	// its write phase, the row's update or its clear (clearDeletedPostBody), then, on a context
+	// that carries a run alone, its node as PlanChangedForRun plans it (QueueNodes), its own
+	// event, and what the node states with its changed_by_run under that event (QueueCaused). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
+	"api/comment_delete.go#deleteComment":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#editMessage":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#deleteMessage": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A run of the command bar (api/going.go), which takes no owner lock: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row

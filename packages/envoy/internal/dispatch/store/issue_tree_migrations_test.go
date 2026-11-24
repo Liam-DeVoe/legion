@@ -84,9 +84,9 @@ var columnAdds = map[string]columnAdd{
 	},
 }
 
-// The statement forms the test reads, each over a statement as pgmigrate.Statements gives it: its
-// words one space apart, and a DO block's body read as statements, so a form is found anywhere in
-// the statement, as TouchedTables finds its own.
+// The statement forms the test reads, each over a statement as pgmigrate.CensusStatements gives
+// it: its words one space apart, and a DO block's body read as statements, so a form is found
+// anywhere in the statement, as TouchedTables finds its own.
 var (
 	alterTableForm    = regexp.MustCompile(`(?i)\balter table (?:if exists )?(?:only )?([\w."]+)`)
 	dropTableForm     = regexp.MustCompile(`(?i)\bdrop table (?:if exists )?([\w."]+(?: ?, ?[\w."]+)*)`)
@@ -111,7 +111,7 @@ func formTables(form *regexp.Regexp, statement string) []string {
 
 // statementNames are the names a statement gives, each part of a qualified name on its own,
 // lowercased and unquoted. The statement holds no comment, no literal and no function body
-// (pgmigrate.Statements), so a name in one of those is none of these.
+// (pgmigrate.CensusStatements), so a name in one of those is none of these.
 func statementNames(statement string) map[string]bool {
 	names := map[string]bool{}
 	for _, word := range identifierForm.FindAllString(statement, -1) {
@@ -297,10 +297,10 @@ const typeRule = "a type migration's statements on graph_tuples are an insert al
 // table a statement acts on.
 var referencesForm = regexp.MustCompile(`(?i)\breferences (?:only )?[\w."]+`)
 
-// actsOn says whether statement, as pgmigrate.Statements gives it, acts on table: TouchedTables
-// names table in it other than as the table a foreign key references. A key that a new table or
-// an added column declares to graph_nodes is a statement on its own table, which writes no row of
-// graph_nodes.
+// actsOn says whether statement, as pgmigrate.CensusStatements gives it, acts on table:
+// TouchedTables names table in it other than as the table a foreign key references. A key that a
+// new table or an added column declares to graph_nodes is a statement on its own table, which
+// writes no row of graph_nodes.
 func actsOn(statement, table string) bool {
 	return slices.Contains(pgmigrate.TouchedTables(referencesForm.ReplaceAllString(statement, "")), table)
 }
@@ -433,12 +433,12 @@ func restrictsToTypeKind(expr json.RawMessage, own string) bool {
 // readTypeStatements reads migration's statements on typeTables with their literals, as Postgres's
 // parser reads each, and answers whether it has one, which makes it a type migration, with what
 // those statements break (typeRule). A migration the parser does not read is read as
-// pgmigrate.Statements reads it, and a statement of it on either table is a finding, since the
-// test cannot read what that statement is.
+// pgmigrate.CensusStatements reads it, and a statement of it on either table is a finding, since
+// the test cannot read what that statement is.
 func readTypeStatements(migration pgmigrate.Migration) (typeMigration bool, findings []string) {
 	statements, parsed := parsedStatements(migration.SQL)
 	if !parsed {
-		for _, statement := range pgmigrate.Statements(migration.SQL) {
+		for _, statement := range pgmigrate.CensusStatements(migration.SQL) {
 			for _, table := range typeTables {
 				if actsOn(statement, table) {
 					typeMigration = true
@@ -456,7 +456,7 @@ func readTypeStatements(migration pgmigrate.Migration) (typeMigration bool, find
 		if statement.node == "CreateTrigStmt" {
 			continue
 		}
-		read := pgmigrate.Statements(statement.text)
+		read := pgmigrate.CensusStatements(statement.text)
 		for _, table := range typeTables {
 			if !slices.ContainsFunc(read, func(s string) bool { return actsOn(s, table) }) {
 				continue
@@ -495,9 +495,9 @@ type issueTreeReading struct {
 }
 
 // readIssueTreeMigrations reads every statement of every migration of the set as
-// pgmigrate.TouchedTables reads it (pgmigrate.Statements): a function's body is no statement's,
-// so a function a migration restates whose body reads artifact_versions names that table in no
-// statement read here, and a DO block's body is read as statements.
+// pgmigrate.TouchedTables reads it (pgmigrate.CensusStatements): a function's body is no
+// statement's, so a function a migration restates whose body reads artifact_versions names that
+// table in no statement read here, and a DO block's body is read as statements.
 func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading {
 	reading := issueTreeReading{created: map[string]string{}, typeMigrations: map[string]bool{}}
 	finding := func(format string, args ...any) {
@@ -512,7 +512,7 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 			reading.typeMigrations[migration.Name] = true
 		}
 		reading.findings = append(reading.findings, typeFindings...)
-		for _, statement := range pgmigrate.Statements(migration.SQL) {
+		for _, statement := range pgmigrate.CensusStatements(migration.SQL) {
 			names := statementNames(statement)
 			touched := pgmigrate.TouchedTables(statement)
 			for _, name := range staysWhole {

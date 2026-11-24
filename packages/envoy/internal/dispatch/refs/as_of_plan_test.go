@@ -369,7 +369,7 @@ func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 			continue
 		}
 		read++
-		for _, statement := range pgmigrate.Statements(migration.SQL) {
+		for _, statement := range pgmigrate.CensusStatements(migration.SQL) {
 			if asOfCreateTrigger.MatchString(statement) || !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
 				continue
 			}

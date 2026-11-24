@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -172,6 +173,54 @@ const FrameHeldSQL = `exists (
 		where t.from_kind = '` + KindInteraction + `' and t.from_id = e.request_id::text
 		  and t.kind = '` + AttributeFrame + `' and t.to_kind = '` + KindValue + `' and t.asserted
 		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
+
+// terminalFrameNames are the two frame names that end a run's stream (going.Event.Terminal), the
+// pair the going_events_terminal index holds as literals: every read of a run's ending names them
+// as TerminalFrameNamesSQL writes them (RunEndingSQL).
+var terminalFrameNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
+
+// TerminalFrameNamesSQL is terminalFrameNames as the SQL list the going_events_terminal index's
+// predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
+// proves that partial index answers, where a bound array leaves a prepared statement's generic
+// plan nothing to prove it by. The stream (api/going.go) and the graph read of a run's own address
+// (refs' interactionFrames) read the run's ending by it.
+var TerminalFrameNamesSQL = store.QuoteLiterals(terminalFrameNames)
+
+// RunEndingSQL is the sequence of the one terminal frame the run whose uuid is the SQL expression
+// run has stored, null while it has stored none: one probe of going_events_terminal, which holds
+// that a run stores at most one (TerminalFrameNamesSQL). The stream reads it as the run's state
+// (api's goingRunStateOf), and the graph read of a withdrawn run answers the withdrawal at it, as
+// the stream writes it there (refs' interactionFrames, api's goingWithdrawal).
+func RunEndingSQL(run string) string {
+	return `(select e.sequence from going_events e where e.request_id = ` + run + ` and e.name in (` + TerminalFrameNamesSQL + `))`
+}
+
+// RunNextSequenceSQL is the sequence the next frame of the run whose uuid is the SQL expression run
+// takes: one past its newest, read backward on the (request_id, sequence) key, and 1 for a run
+// that has stored none. The frame path reads it once it holds the run's node (api's
+// goingNextFrame), so it is the sequence the run's ending takes where nothing is stored before it
+// (api's endGoingRun); the graph read of a run withdrawn with no ending stored answers the
+// withdrawal at it, and writes nothing (refs' interactionFrames).
+func RunNextSequenceSQL(run string) string {
+	return `coalesce((select max(e.sequence) from going_events e where e.request_id = ` + run + `), 0) + 1`
+}
+
+// RunWithdrawnSQL is true of the run whose uuid is the SQL expression run once a comment or an
+// issue message whose text it gave its model no longer stands: a going_request_posts row of the
+// run (api's recordGoingPosts) that no comments or messages row answers with deleted_at unset,
+// which is a deleted post and a post whose row is gone alike. It is the one test of a withdrawn
+// run (api's goingWithdrawal): the stream reads it on every poll (api's goingRunStateOf), and the
+// graph read of the run's own address reads it to answer what the stream answers (refs'
+// interactionFrames).
+func RunWithdrawnSQL(run string) string {
+	return `exists (
+	         select 1
+	         from going_request_posts p
+	         left join comments c on c.id = p.comment_id and c.deleted_at is null
+	         left join messages m on m.id = p.message_id and m.deleted_at is null
+	         where p.request_id = ` + run + ` and c.id is null and m.id is null
+	       )`
+}
 
 // RunWritten is what WriteRun did for one run: Held, whether the record holds the run, and Nodes
 // and Tuples, the nodes and tuples it stated of it, none where the store held its node already.

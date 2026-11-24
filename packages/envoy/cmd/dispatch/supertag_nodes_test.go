@@ -80,18 +80,21 @@ const backfillVersion = 20261121060636
 // census does not read as touching either table. Each version listed here that writes rows of
 // graph_nodes (writesGraphNodes) is a type migration such a store meets after its backfill, and
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges it as it judges the type migrations
-// numbered above backfillVersion. The list holds the versions of every branch this tree merges that
-// no release holds yet: the node store's, main's four backfill indexes the node store merged
-// (20261119020700 to 20261119021000), cybermonklabs/legion#4193's (20261116081010 to
-// 20261117042519 of its own) and the issue tree's (each named <timestamp>_issue_tree_<what>, with
-// 20261120131444, 20261120204136 and 20261121043859).
+// numbered above backfillVersion. A version a later release holds is listed here too, as
+// 20261110224508_post_corrections is, which legion-envoy-v34.22.0 first holds: a v34.11.x store
+// meets it after its backfill all the same. The list holds the versions of every branch this tree
+// merges that no release holds yet: the node store's, main's four backfill indexes the node store
+// merged (20261119020700 to 20261119021000), main's post_corrections (20261110224508),
+// cybermonklabs/legion#4193's (20261116081010 to 20261117042519 of its own) and the issue tree's
+// (each named <timestamp>_issue_tree_<what>, with 20261120131444, 20261120204136 and
+// 20261121043859).
 var unreleasedVersionsBelowTheBackfill = []int{
-	20261116015042, 20261116015056, 20261116081010, 20261116092210, 20261116094058, 20261116094059,
-	20261116094100, 20261116094101, 20261116172615, 20261116184707, 20261117002006, 20261117002045,
-	20261117020856, 20261117042519, 20261117045607, 20261117093337, 20261117140000, 20261118023219,
-	20261118161237, 20261118165901, 20261118230000, 20261119020700, 20261119020800, 20261119020900,
-	20261119021000, 20261119100000, 20261120130000, 20261120131444, 20261120204136, 20261120220000,
-	20261120220100, 20261121034242, 20261121043859, 20261121060000,
+	20261110224508, 20261116015042, 20261116015056, 20261116081010, 20261116092210, 20261116094058,
+	20261116094059, 20261116094100, 20261116094101, 20261116172615, 20261116184707, 20261117002006,
+	20261117002045, 20261117020856, 20261117042519, 20261117045607, 20261117093337, 20261117140000,
+	20261118023219, 20261118161237, 20261118165901, 20261118230000, 20261119020700, 20261119020800,
+	20261119020900, 20261119021000, 20261119100000, 20261120130000, 20261120131444, 20261120204136,
+	20261120220000, 20261120220100, 20261121034242, 20261121043859, 20261121060000,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them

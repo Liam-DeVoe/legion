@@ -33,14 +33,18 @@ var commentWritesNoHead = map[string]string{
 	"api/comment_actions.go#reopenComment":   "sets resolved, resolved_by and resolved_at",
 	"api/comment_actions.go#commentAction":   "sets resolved, resolved_by, resolved_at and a suggestion's acceptance",
 	"api/comment_create.go#createCommentFor": "reopens the thread's root: resolved, resolved_by and resolved_at",
+	"refs/item_blocks.go#TombstoneItem": "clears the excerpts and the recorded texts of a deleted post's blocks, every one of " +
+		"which the delete's index (queueBlocks, whose head write is queueBlockHeads) took out of the post earlier in the same " +
+		"batch: no current block is left whose head row holds either",
 }
 
 // commentWritesLeftTo are the writers of a conversation table that leave the head rows to a site
 // their caller runs after them in the same transaction, each beside those sites, of which each names
 // a head write.
 var commentWritesLeftTo = map[string][]string{
-	"api/comment_create.go#queueCommentRow": {"api/comment_create.go#queueCommentCreated"},
-	"refs/item_blocks.go#queueBlocks":       {"refs/item_blocks.go#queueBlockHeads"},
+	"api/comment_create.go#queueCommentRow":    {"api/comment_create.go#queueCommentCreated"},
+	"api/post_history.go#clearDeletedPostBody": {"api/comment_delete.go#deleteComment"},
+	"refs/item_blocks.go#queueBlocks":          {"refs/item_blocks.go#queueBlockHeads"},
 }
 
 // commentWriteStatement is the text of a statement expr spells, its literals unquoted and every

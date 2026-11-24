@@ -154,7 +154,8 @@ const HeadColumns = `parent_kind, parent_address, rank, text, supertag, state, v
 	authors, first_authors, first_at, document_id, block_type, text_sha256, changed_version,
 	value_kinds, value_texts, relation_kinds, relation_to_kinds, relation_to_ids,
 	item_issue_key, item_author, item_text, item_made_at, item_changed_at, item_reply_to, item_replies_to_block,
-	item_ask_id, item_artifact_id, item_document_id, item_version, item_block_id, item_excerpt, item_position`
+	item_ask_id, item_artifact_id, item_document_id, item_version, item_block_id, item_excerpt, item_position,
+	item_edited_at, item_deleted_at, item_deleted_by`
 
 // KindCommentBlock is the store kind of a block of a comment, addressed
 // `comment/<comment uuid>#<block id>` (refs.ItemComment.BlockKind), which the store holds no
@@ -257,7 +258,8 @@ const headFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + KindV
 // block and the ask it answers, its document and the document and version it is written on), and
 // for a current block of a comment, its comment_blocks row, its text at its newest revision and its
 // comment's issue, author and document, as the comment block loader and the block texts read read
-// them (refs' itemBlockNodes, BlockTexts). A node the store holds no row of, that states nothing
+// them (refs' itemBlockNodes, BlockTexts); and of both, the comment's marks, when its author last
+// edited it and when and by whom it was deleted, as both loaders read them. A node the store holds no row of, that states nothing
 // and that is no current block of a comment has no row.
 func HeadRowsSQL(nodes string) string {
 	return `
@@ -282,7 +284,10 @@ func HeadRowsSQL(nodes string) string {
 		       comment.reply_to as item_reply_to, comment.replies_to_block as item_replies_to_block, comment.ask_id as item_ask_id,
 		       coalesce(comment.artifact_id, item_block.artifact_id) as item_artifact_id, comment.document_id as item_document_id,
 		       coalesce(comment.version, item_block.changed_revision) as item_version,
-		       item_block.block_id as item_block_id, item_block.excerpt as item_excerpt, item_block.position as item_position
+		       item_block.block_id as item_block_id, item_block.excerpt as item_excerpt, item_block.position as item_position,
+		       coalesce(comment.edited_at, item_block.post_edited_at) as item_edited_at,
+		       coalesce(comment.deleted_at, item_block.deleted_at) as item_deleted_at,
+		       coalesce(comment.deleted_by, item_block.deleted_by) as item_deleted_by
 		from head_targets target
 		left join graph_nodes node on node.kind = target.kind and node.id = target.id
 		left join lateral (
@@ -346,7 +351,8 @@ func HeadRowsSQL(nodes string) string {
 			) as made
 		) known on true
 		left join lateral (
-			select c.issue_key, c.author, c.body, c.created_at, c.edited_at, c.reply_to::text as reply_to, c.replies_to_block,
+			select c.issue_key, c.author, c.body, c.created_at, c.edited_at, c.deleted_at, c.deleted_by,
+			       c.reply_to::text as reply_to, c.replies_to_block,
 			       c.ask_id::text as ask_id, c.artifact_id, coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) as document_id,
 			       case when c.anchor->>'artifact_id' is not null then ` + headAnchorVersionSQL + ` else c.written_version end as version
 			from comments c
@@ -354,7 +360,7 @@ func HeadRowsSQL(nodes string) string {
 		) comment on true
 		left join lateral (
 			select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.position,
-			       c.issue_key, c.author, c.artifact_id,
+			       c.issue_key, c.author, c.artifact_id, c.edited_at as post_edited_at, c.deleted_at, c.deleted_by,
 			       (select t.text from comment_block_texts t
 			        where t.comment_id = b.comment_id and t.block_id = b.block_id
 			        order by t.revision desc limit 1) as text

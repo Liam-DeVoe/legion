@@ -55,6 +55,9 @@
 --   item_block_id,
 --   item_excerpt,
 --   item_position
+--   item_edited_at,    for a comment and for a current block of one, the comment's marks as both
+--   item_deleted_at,   loaders read them: when its author last edited it, and when its author
+--   item_deleted_by    deleted it and who did. Null for every other node.
 --
 -- The primary key reads one issue's rows in one range, and the read with no view reads its
 -- skeleton in ranges of it: one for each kind of node but the blocks and the comments, one for
@@ -127,6 +130,9 @@ create table issue_head_nodes (
   item_block_id text,
   item_excerpt text,
   item_position integer,
+  item_edited_at timestamptz,
+  item_deleted_at timestamptz,
+  item_deleted_by jsonb,
   primary key (issue_key, node_kind, node_address)
 );
 
@@ -306,15 +312,17 @@ create constraint trigger comments_head_marks
   for each row execute function issue_head_items_drop();
 
 create constraint trigger comments_head_marks_update
-  after update of issue_key, author, body, created_at, edited_at, reply_to, replies_to_block, ask_id, artifact_id,
-    anchor, written_version on comments
+  after update of issue_key, author, body, created_at, edited_at, deleted_at, deleted_by, reply_to, replies_to_block,
+    ask_id, artifact_id, anchor, written_version on comments
   deferrable initially deferred
   for each row
-  when ((old.issue_key, old.author, old.body, old.created_at, old.edited_at, old.reply_to, old.replies_to_block,
-         old.ask_id, old.artifact_id, old.anchor->>'artifact_id', old.anchor->>'version', old.written_version)
+  when ((old.issue_key, old.author, old.body, old.created_at, old.edited_at, old.deleted_at, old.deleted_by, old.reply_to,
+         old.replies_to_block, old.ask_id, old.artifact_id, old.anchor->>'artifact_id', old.anchor->>'version',
+         old.written_version)
         is distinct from
-        (new.issue_key, new.author, new.body, new.created_at, new.edited_at, new.reply_to, new.replies_to_block,
-         new.ask_id, new.artifact_id, new.anchor->>'artifact_id', new.anchor->>'version', new.written_version))
+        (new.issue_key, new.author, new.body, new.created_at, new.edited_at, new.deleted_at, new.deleted_by, new.reply_to,
+         new.replies_to_block, new.ask_id, new.artifact_id, new.anchor->>'artifact_id', new.anchor->>'version',
+         new.written_version))
   execute function issue_head_items_drop();
 
 create constraint trigger comment_blocks_head_marks

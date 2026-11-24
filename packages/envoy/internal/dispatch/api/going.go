@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -46,16 +47,16 @@ import (
 // going_events_terminal index of migration 20261105152945) and never by whichever is first: every
 // terminal write is an insert that does nothing on a conflict, and the writer that loses reads the
 // stored terminal frame and reports that one (endGoingRun).
+//
+// What a run gave its model is part of the record too: each comment and issue message whose text
+// the run read for its model is a going_request_posts row (recordGoingPosts), so a reader on any
+// pod ends the stream at the delete of one of them (goingWithdrawal).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
 
 // goingEventColumns is the going_events select list scanGoingEvent reads, in scan order.
 const goingEventColumns = `sequence, name, data`
-
-// goingTerminalNames are the two frame names that end a stream (going.Event.Terminal), the pair
-// the going_events_terminal index holds as literals.
-var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
 
 // goingTerminalWrites bounds how many sequences one terminal write tries. Every frame this build
 // writes of a run queues at the run's interaction node (appendGoingEvent), so a terminal write
@@ -93,16 +94,18 @@ type goingEvent struct {
 }
 
 // goingRunState is what a reader needs to decide whether a stream is over: the sequence of the
-// run's one terminal frame, 0 while the run has stored none, and whether it is past its ends_at,
-// after which a run that stored none is ended by whoever reads it. The terminal frame is a
-// sequence and not a bool because a reader ends its stream on having been written that frame and
-// not on the run having stored one: a terminal frame committed between a reader's read of the
-// frames and its read of this state would otherwise close a stream that never carried it. The
-// going_events_terminal index holds that there is at most one such frame, so one sequence says
-// all of it.
+// run's one terminal frame, 0 while the run has stored none, whether it is past its ends_at,
+// after which a run that stored none is ended by whoever reads it, and whether it is withdrawn,
+// after which a reader is written goingWithdrawal's frame and nothing else. The terminal frame is
+// a sequence and not a bool because a reader ends its stream on having been written that frame
+// and not on the run having stored one: a terminal frame committed between a reader's read of
+// the frames and its read of this state would otherwise close a stream that never carried it.
+// The going_events_terminal index holds that there is at most one such frame, so one sequence
+// says all of it.
 type goingRunState struct {
 	Terminal     int
 	PastDeadline bool
+	Withdrawn    bool
 }
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
@@ -190,19 +193,14 @@ func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, 
 	return author, live, nil
 }
 
-// goingTerminalNamesSQL is goingTerminalNames as the SQL list the going_events_terminal index's
-// predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
-// proves that partial index answers, where a bound array leaves a prepared statement's generic
-// plan nothing to prove it by.
-var goingTerminalNamesSQL = store.QuoteLiterals(goingTerminalNames)
-
 // goingNextFrame reads what a frame of the run $1 takes, once the run's node is held: the next
-// sequence, the frame's value at that sequence (graphstore.FrameValueSQL over the frame's name $2
-// and its JSON $3), whether the run has stored a terminal frame, and the transaction's now(), which
-// the frame's going_events row takes as its created_at. The sequence and the ending are one index
-// probe each, never a read of every frame the run holds: its newest sequence, read backward on the
-// (request_id, sequence) key, and its one terminal frame on going_events_terminal, which the
-// literal names (goingTerminalNamesSQL) let the planner use (TestTheNextFrameReadsTwoIndexProbes).
+// sequence (graphstore.RunNextSequenceSQL), the frame's value at that sequence
+// (graphstore.FrameValueSQL over the frame's name $2 and its JSON $3), whether the run has stored a
+// terminal frame, and the transaction's now(), which the frame's going_events row takes as its
+// created_at. The sequence and the ending are one index probe each, never a read of every frame the
+// run holds: its newest sequence, read backward on the (request_id, sequence) key, and its one
+// terminal frame on going_events_terminal (graphstore.RunEndingSQL), whose literal names let the
+// planner use it (TestTheNextFrameReadsTwoIndexProbes).
 // It takes the run's going_requests row `for key share`, the lock the frame's own row's foreign
 // key would take, so a delete of the run's row an hour on by a process of the release before,
 // which takes no node lock, waits for the frame rather than failing its insert; the sweep's own
@@ -215,9 +213,8 @@ var goingNextFrame = `
 	       now()
 	from going_requests r
 	cross join lateral (
-		select coalesce((select max(e.sequence) from going_events e where e.request_id = r.id), 0) + 1 as sequence,
-		       exists (select 1 from going_events e
-		               where e.request_id = r.id and e.name in (` + goingTerminalNamesSQL + `)) as ended
+		select ` + graphstore.RunNextSequenceSQL("r.id") + ` as sequence,
+		       ` + graphstore.RunEndingSQL("r.id") + ` is not null as ended
 	) next
 	where r.id = $1::uuid
 	for key share of r`
@@ -419,8 +416,8 @@ func readGoingTerminalEvent(ctx context.Context, pool *store.Pool, requestID str
 	return scanGoingEvent(pool.QueryRow(ctx, `
 		select `+goingEventColumns+`
 		from going_events
-		where request_id = $1::uuid and name = any($2::text[])
-	`, requestID, goingTerminalNames))
+		where request_id = $1::uuid and name in (`+graphstore.TerminalFrameNamesSQL+`)
+	`, requestID))
 }
 
 // goingEventsAfter is every frame of one run past a sequence, in stream order: $1 the run, $2
@@ -432,15 +429,15 @@ const goingEventsAfter = `
 	where request_id = $1::uuid and sequence > $2
 	order by sequence`
 
-// goingRunStateOf reads one run's state, $1 the run and $2 the terminal frame names: the
-// sequence of its terminal frame, 0 while it has stored none, and whether now is past its
-// ends_at. Queued beside goingEventsAfter, for the reason it is named.
-const goingRunStateOf = `
-	select coalesce(
-	         (select e.sequence from going_events e where e.request_id = r.id and e.name = any($2::text[])),
-	         0
-	       ),
-	       now() >= r.ends_at
+// goingRunStateOf reads one run's state, $1 the run: the sequence of its terminal frame, 0 while it
+// has stored none (graphstore.RunEndingSQL), whether now is past its ends_at, and whether a post the
+// run gave its model no longer stands (goingWithdrawal), by the one test of that
+// (graphstore.RunWithdrawnSQL), which the graph read of the run's own address reads too. Queued
+// beside goingEventsAfter, for the reason it is named.
+var goingRunStateOf = `
+	select coalesce(` + graphstore.RunEndingSQL("r.id") + `, 0),
+	       now() >= r.ends_at,
+	       ` + graphstore.RunWithdrawnSQL("r.id") + `
 	from going_requests r
 	where r.id = $1::uuid`
 
@@ -451,11 +448,13 @@ const goingRunStateOf = `
 // the release before.
 //
 // The two statements take their own snapshots, each at its own moment, so a frame committed
-// between them is in one answer and not the other. Which order they run in therefore settles
-// nothing, and it is immaterial: a terminal frame in the frames ends the stream on being
-// written, and a terminal sequence in the state ends it only once the reader has reached that
-// sequence (streamGoingAnswer), so neither order can close a stream that never carried its
-// ending.
+// between them is in one answer and not the other. For the run's ending that order settles
+// nothing: a terminal frame in the frames ends the stream on being written, and a terminal
+// sequence in the state ends it only once the reader has reached that sequence
+// (streamGoingAnswer), so neither order can close a stream that never carried its ending. For
+// the withdrawal it does, which is why the state is queued second: the verdict is then never
+// older than the frames it is read beside, so a poll whose frames were read after a delete
+// committed is answered withdrawn, and the stream writes none of them (goingWithdrawal).
 func (s *server) readGoingStream(ctx context.Context, requestID string, after int) ([]goingEvent, goingRunState, error) {
 	var frames []goingEvent
 	var state goingRunState
@@ -467,13 +466,91 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 		frames = collected
 		return err
 	})
-	batch.Queue(goingRunStateOf, requestID, goingTerminalNames).QueryRow(func(row pgx.Row) error {
-		return row.Scan(&state.Terminal, &state.PastDeadline)
+	batch.Queue(goingRunStateOf, requestID).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&state.Terminal, &state.PastDeadline, &state.Withdrawn)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, goingRunState{}, err
 	}
 	return frames, state, nil
+}
+
+// goingWithdrawal is the one frame a reader of a withdrawn run is written, and all a reader of it
+// is written from then on. A run is withdrawn once a comment or an issue message whose text it
+// gave its model (recordGoingPosts) no longer stands - its author deleted it, or its row is gone
+// - since the run's answer may quote that post. Every read of the stream after the delete, from
+// the start or from a Last-Event-ID before the run's ending, therefore gives none of the run's
+// stored frames, no text and no item among them, and ends on an error frame carrying
+// contracts.GoingErrorAnswerWithdrawn; a read resumed at or past the ending's sequence is written
+// nothing (the last paragraph). The stored frames are left as they are, as an event Dispatch
+// already wrote keeps its stored text while every read of the log masks it (attachPostMarks), and
+// a frame a reader was written before the delete was a delivery already sent. A run given no post
+// that was deleted streams as it always has.
+//
+// The verdict is read at stream time, on every poll (goingRunStateOf), and not written by the
+// delete: the delete then knows nothing of answer runs, and the one read covers every frame
+// alike - those stored before the delete, those a run still running stores after it, and the
+// ending the run, a reader at the deadline or the sweep stored. A run still running is let past
+// it by nothing: the poll that finds the run withdrawn writes none of the frames it read beside
+// the verdict, and a run with no ending stored yet is ended here with the withdrawal
+// (endGoingRun), so the answer stores nothing after it (appendGoingEvent) and stops at the next
+// frame it tries to store.
+//
+// The frame takes the sequence of the run's one ending, the one stored or the one this call
+// stored, so a reader is written exactly one ending, in the ending's place: a reader that
+// already holds that sequence was written the run's ending, and streamGoingAnswer writes it
+// nothing more.
+//
+// The read of the run's own address, `dispatch://interaction/<uuid>`, is a second view of the same
+// frames, and answers what this does rather than deciding it again (refs' interactionFrames): for a
+// run the same test calls withdrawn (graphstore.RunWithdrawnSQL), the node's frames are this one
+// frame, at the sequence of the run's stored ending, or, where the run has stored none, at the
+// sequence this call would store it at (graphstore.RunNextSequenceSQL), and none of the frames the
+// run stored. That read writes nothing.
+func (s *server) goingWithdrawal(ctx context.Context, requestID string, state goingRunState) (goingEvent, error) {
+	withdrawal := going.Fault(contracts.GoingErrorAnswerWithdrawn)
+	ending := state.Terminal
+	if ending == 0 {
+		stored, err := endGoingRun(ctx, s.deps.Store.Pool, requestID, withdrawal)
+		if err != nil {
+			return goingEvent{}, err
+		}
+		ending = stored.Sequence
+	}
+	return goingEvent{Sequence: ending, Event: withdrawal}, nil
+}
+
+// recordGoingPosts records, as the run's, each comment and issue message among hits that texts
+// holds a body for: the posts whose text the run is about to give its model, which is what a
+// later delete of one withdraws the run's answer by (goingWithdrawal). It is called with the
+// bodies and before they are handed on (goingBodies), so a post's row is committed before any
+// frame its text can be in is stored, and a reader that reads such a frame reads the row too. A
+// body the answerer then leaves out for the run's rune budget is recorded all the same, since
+// only the answerer knows which it kept, and a post two searches of one run both found is two
+// rows, which the verdict reads as one.
+func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []going.Hit, texts map[string]string) error {
+	var comments, messages []string
+	for _, hit := range hits {
+		if _, given := texts[hit.Key()]; !given {
+			continue
+		}
+		switch refs.ItemKind(hit.Kind) {
+		case refs.ItemComment:
+			comments = append(comments, hit.ID)
+		case refs.ItemMessage:
+			messages = append(messages, hit.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	_, err := s.deps.Store.Pool.Exec(ctx, `
+		insert into going_request_posts (request_id, comment_id, message_id)
+		select $1::uuid, post, null::uuid from unnest($2::uuid[]) as post
+		union all
+		select $1::uuid, null::uuid, post from unnest($3::uuid[]) as post
+	`, requestID, comments, messages)
+	return err
 }
 
 // scanGoingRequest decodes one goingRequestColumns row.
@@ -503,15 +580,15 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 	return event, nil
 }
 
-// goingOverdueRuns is the sweep's read of the runs it ends, $1 the terminal frame names: every run
-// whose ends_at has passed with no terminal frame stored, oldest deadline first. Once the sweep
+// goingOverdueRuns is the sweep's read of the runs it ends: every run whose ends_at has passed
+// with no terminal frame stored (graphstore.RunEndingSQL), oldest deadline first. Once the sweep
 // runs, going_requests holds about an hour of runs, since the sweep removes a run's rows an hour
 // after it was asked (contracts.GoingRequestTTL, goRunsPastTheHour), so the read is of that hour.
-const goingOverdueRuns = `
+var goingOverdueRuns = `
 	select r.id::text
 	from going_requests r
 	where r.ends_at <= now()
-	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+	  and ` + graphstore.RunEndingSQL("r.id") + ` is null
 	order by r.ends_at, r.id`
 
 // sweepGoingRequests is the sweep of the runs of the command bar, once a maintenance pass
@@ -547,7 +624,7 @@ func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 // (errGoingRunGone) and is passed over.
 func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
 	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, []any{goingTerminalNames}, func(id string) error {
+	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, nil, func(id string) error {
 		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
 			return err
 		}
@@ -562,9 +639,9 @@ func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
 // read. A run's failure is kept and answered once the loop is done, joined with the others, so one
 // run neither fails the loop nor costs the runs read after it their turn. A loop whose context
 // ends - the process shutting down - stops at the next run and answers that once, joined with the
-// runs' failures before it, rather than failing every run left at its first statement. Whether
-// the context ended is the caller's to read (ctx.Err), as goRunsPastTheHour does before its second
-// read.
+// runs' failures before it, rather than failing every run left at its first statement. A loop
+// begun on a context that has already ended fails at its read, which answers that end named by
+// read, as goRunsPastTheHour's second read does after a shutdown during its first.
 func eachGoingRun(ctx context.Context, pool *store.Pool, read, statement string, args []any, take func(id string) error) error {
 	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
@@ -639,13 +716,11 @@ var goingRowlessRuns = `
 // going_requests row is more than an hour old (goingRunsPastTheHour), and then the interaction
 // nodes, not gone and more than an hour old, whose row a process of the release before deleted
 // (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
-// loop over runs (eachGoingRun). After the first read's loop it reads the pass's context, and once
-// that has ended - before the read, during it or during its runs - it leaves the second read
-// unmade and answers the context's end named by the second read, as that read's failure would
-// have, unless the loop's error already holds that end (errors.Is): it does where the end cost the
-// loop its read or stopped it before a run, and does not where the loop answered no error or only
-// runs' failures of their own. It logs one line where it did anything: how many runs of the first
-// read and nodes of the second it stated gone, and how many runs' rows it removed.
+// loop over runs (eachGoingRun). Both reads always run: a pass whose context ended fails the read
+// that comes after, under that read's name, so a shutdown during the first read's loop can name
+// the end twice, once from that loop and once from the second read. It logs one line where it did
+// anything: how many runs of the first read and nodes of the second it stated gone, and how many
+// runs' rows it removed.
 func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 	var runsStated, rowlessStated, removed int
 	var failed []error
@@ -657,7 +732,7 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 		{"read the runs past the hour", goingRunsPastTheHour, &runsStated},
 		{"read the runs past the hour whose rows are gone", goingRowlessRuns, &rowlessStated},
 	}
-	for index, read := range reads {
+	for _, read := range reads {
 		err := eachGoingRun(ctx, pool, read.name, read.statement, []any{contracts.GoingRequestTTL.Seconds(), goingGoneBatch}, func(id string) error {
 			done, err := goRunGone(ctx, pool, id)
 			if done.stated {
@@ -670,12 +745,6 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 		})
 		if err != nil {
 			failed = append(failed, err)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			if index+1 < len(reads) && !errors.Is(err, ctxErr) {
-				failed = append(failed, fmt.Errorf("%s: %w", reads[index+1].name, ctxErr))
-			}
-			break
 		}
 	}
 	if runsStated+rowlessStated+removed > 0 {

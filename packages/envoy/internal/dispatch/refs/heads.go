@@ -67,8 +67,10 @@ type HeadRow struct {
 // comment's body, or the block's text at its newest revision, nil where that revision holds none;
 // when the comment was written and last edited, or the block made and changed; the comment it
 // replies to, the block it replies to and its ask; the document its row names (artifact_id), and
-// the document and version it is written on; and of a block its changed revision (Version), its id,
-// its excerpt and its position.
+// the document and version it is written on; of a block its changed revision (Version), its id,
+// its excerpt and its position; and of both the comment's marks, when its author last edited it
+// (EditedAt) and when and by whom it was deleted (DeletedAt, DeletedBy), as model.DeletedPostMark
+// reads them.
 type HeadItem struct {
 	IssueKey                       *string
 	Author                         []byte
@@ -79,6 +81,8 @@ type HeadItem struct {
 	Version                        *int
 	BlockID, Excerpt               *string
 	Position                       *int
+	EditedAt, DeletedAt            *time.Time
+	DeletedBy                      []byte
 }
 
 // headRowsStatement is the rows of the issue $1 the head projection holds while a mark names the
@@ -130,14 +134,15 @@ func headRowsStatement(rows string) string {
 
 // headItemSQL is a head row's conversation columns (issue_head_nodes' item_ columns) as one record,
 // in the order headItemOf reads them, the author as its text, for the row of a comment and of a
-// comment's block, and null for every other: fourteen columns null on each of the 3,000 other rows
-// of an issue of the largest plan would be sent as 168 kB of null lengths. A record is sent in
+// comment's block, and null for every other: seventeen columns null on each of the 3,000 other rows
+// of an issue of the largest plan would be sent as 204 kB of null lengths. A record is sent in
 // binary with its fields as Postgres keeps them: a jsonb array of the same columns cost the 409
 // rows of an issue of the most comments 2 ms to build, a record a third of that.
 const headItemSQL = `case when heads.node_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindCommentBlock + `') then row(
 	       heads.item_issue_key, heads.item_author::text, heads.item_text, heads.item_made_at, heads.item_changed_at,
 	       heads.item_reply_to, heads.item_replies_to_block, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
-	       heads.item_version, heads.item_block_id, heads.item_excerpt, heads.item_position) end`
+	       heads.item_version, heads.item_block_id, heads.item_excerpt, heads.item_position,
+	       heads.item_edited_at, heads.item_deleted_at, heads.item_deleted_by::text) end`
 
 // headItemOf is the item a head row's headItemSQL column holds, raw as Postgres sent it in binary,
 // scanned by plan (a record's, typeMap.PlanScan of pgtype.CompositeFields); nil for a null one.
@@ -146,14 +151,18 @@ func headItemOf(plan pgtype.ScanPlan, raw []byte) (*HeadItem, error) {
 		return nil, nil
 	}
 	var item HeadItem
-	var author *string
+	var author, deletedBy *string
 	fields := pgtype.CompositeFields{&item.IssueKey, &author, &item.Text, &item.MadeAt, &item.ChangedAt, &item.ReplyTo,
-		&item.RepliesToBlock, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position}
+		&item.RepliesToBlock, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position,
+		&item.EditedAt, &item.DeletedAt, &deletedBy}
 	if err := plan.Scan(raw, fields); err != nil {
 		return nil, fmt.Errorf("decode the conversation columns of a head row: %w", err)
 	}
 	if author != nil {
 		item.Author = []byte(*author)
+	}
+	if deletedBy != nil {
+		item.DeletedBy = []byte(*deletedBy)
 	}
 	return &item, nil
 }

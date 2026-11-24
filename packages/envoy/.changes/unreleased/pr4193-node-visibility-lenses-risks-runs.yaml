@@ -71,7 +71,8 @@ body: |-
   removes its rows, and the node, its words and its frames stay in the store.
   A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
   that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
-  follow or an unfollow of an ask, and an edit of an ask's or a comment's words included. A write
+  follow or an unfollow of an ask, an edit of an ask's, a comment's or an issue message's words, and
+  the delete of a comment or an issue message included. A write
   sent again under the `Idempotency-Key` of a write already committed is answered that answer even
   after its run has ended, and the key's comparison includes the run header. A removed document's
   node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same

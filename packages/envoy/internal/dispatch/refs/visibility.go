@@ -612,7 +612,7 @@ func VisibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param s
 }
 
 // visibleEnd is VisibleEnd, with its read of `graph_nodes` behind the gate (authorOnlyGate),
-// tested on the end's own kind, where gated says so (andGatedEnd). The staleness test stays
+// tested on the end's own kind, where gated says so (gatedEnd). The staleness test stays
 // beside the gate.
 func visibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string, gated bool) string {
 	address := idExpr
@@ -640,17 +640,17 @@ func visibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param s
 	return VisibilityMarker + `every kind */(` + visible + stale + `)`
 }
 
-// andGatedEnd is ` and ` VisibleEnd's predicate over an end of kinds, for a read that binds it
-// through the gate (authorOnlyGate), and nothing where the gate keeps the predicate of no kind
+// gatedEnd is VisibleEnd's predicate over an end of kinds, for a read that binds it through the
+// gate (authorOnlyGate), and true, reading nothing, where the gate keeps the predicate of no kind
 // the end can be: VisibleEnd whole where it keeps every one's, and otherwise VisibleEnd with its
-// read of `graph_nodes` behind the gate in SQL (NodeKinds.gate), the graph read's end of any
-// kind (AnyKind) among them.
-func andGatedEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
+// read of `graph_nodes` behind the gate in SQL (NodeKinds.gate), the graph read's end of any kind
+// (AnyKind) among them.
+func gatedEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
 	bind, inSQL := kinds.gate()
 	if !bind {
-		return ""
+		return "true"
 	}
-	return ` and ` + visibleEnd(kinds, kindExpr, idExpr, byRefKey, param, inSQL)
+	return visibleEnd(kinds, kindExpr, idExpr, byRefKey, param, inSQL)
 }
 
 // VisibleNode is the predicate of a node whose kind is a column of the read's own query rather
@@ -784,7 +784,7 @@ var storeAdmitsAuthor = sync.OnceValues(func() ([]string, string) {
 // every such node there is, so the gate spares the read visible's probe of `graph_nodes` for each
 // of them and changes no answer. This is the one statement of that reason, and every read that
 // binds a predicate only where its node can be reserved for its author binds it through this gate:
-// in SQL, here, for a node whose kind is a column of the read (andGatedEnd), and in Go for one
+// in SQL, here, for a node whose kind is a column of the read (gatedEnd), and in Go for one
 // whose kind is a literal of the build or a column of kinds the read knows (gateKeeps,
 // NodeKinds.gate). The staleness test of a standing kind (staleOfKindSQL) is no visibility test,
 // and no part of the gate: every caller keeps it beside the gate.
@@ -815,12 +815,12 @@ func gateKeeps(kind string) bool {
 	return slices.ContainsFunc(admitted, func(other string) bool { return StoredKindOf(other) == stored })
 }
 
-// andGatedKind is ` and ` VisibleKind's predicate of kind, a literal of the build, at address,
-// where the gate keeps it (gateKeeps), and nothing where it does not: a node of a kind the store
-// reserves for nobody is one every reader may see (authorOnlyGate).
-func andGatedKind(kind, address, param string) string {
+// gatedKind is VisibleKind's predicate of kind, a literal of the build, at address, where the
+// gate keeps it (gateKeeps), and true, reading nothing, where it does not: a node of a kind the
+// store reserves for nobody is one every reader may see (authorOnlyGate).
+func gatedKind(kind, address, param string) string {
 	if !gateKeeps(kind) {
-		return ""
+		return "true"
 	}
-	return ` and ` + VisibleKind(kind, address, param)
+	return VisibleKind(kind, address, param)
 }

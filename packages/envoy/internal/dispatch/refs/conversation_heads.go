@@ -209,11 +209,15 @@ func headCommentNode(id string, head *HeadRow, owners map[[2]string]headItemOwne
 	item := head.Item
 	project, slug := headItemProject(owners, item.IssueKey, item.ArtifactID)
 	node := model.GraphNode{Kind: string(ItemComment), ID: id, IssueKey: item.IssueKey, Project: project,
-		Ref: itemRef(string(ItemComment), item.IssueKey, project, slug, id)}
+		Ref: itemRef(string(ItemComment), item.IssueKey, project, slug, id), EditedAt: item.EditedAt}
 	if err := setMadeAndChanged(&node, item.Author, *item.MadeAt, item.Author, item.ChangedAt, storedActor); err != nil {
 		return resolvedNode{}, err
 	}
 	setStored(&node, head.stored)
+	var err error
+	if node.DeletedAt, node.DeletedBy, err = model.DeletedPostMark(item.DeletedAt, item.DeletedBy); err != nil {
+		return resolvedNode{}, fmt.Errorf("comment node %s: %w", id, err)
+	}
 	var document documentParent
 	if item.DocumentID != nil {
 		if held, found := owners[[2]string{"artifact", *item.DocumentID}]; found {
@@ -271,6 +275,10 @@ func headCommentBlockNode(commentID string, head *HeadRow, owners map[[2]string]
 		ChangedAt:      &changedAt,
 		Parent:         itemParent(string(ItemComment), item.IssueKey, project, slug, commentID),
 		ParentVersion:  &changedRevision,
+		EditedAt:       item.EditedAt,
+	}
+	if node.DeletedAt, node.DeletedBy, err = model.DeletedPostMark(item.DeletedAt, item.DeletedBy); err != nil {
+		return resolvedNode{}, fmt.Errorf("block node %s: %w", head.Node.ID, err)
 	}
 	setStored(&node, head.stored)
 	return resolvedNode{GraphNode: node, text: *item.Excerpt}, nil
