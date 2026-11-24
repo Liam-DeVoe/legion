@@ -12,8 +12,8 @@ An issue that a project's experiment drew into a group whose issues run the proj
 Put each decision for an agent into the text of its task's block, in a later version of `plan.md`. Then give that version with `register_plan`. Every later start of the task holds that text, a new session's start included. The agent at work now reads no new start. So when the answer names the step the decision is for as running, also send that step's agent the decision by message. For the task `default`, which runs the project's default steps, act on what `plan.md` holds:
 
 - No task block, or no `plan.md` at all: add `:::plan_task{#default}`, with no `steps` and with the decision as its text.
-- The block `default` and no other task block: change the text of `default`.
-- A planner's task blocks, even where one of them has the id `default`: change no block. Legion would read each block as a task and refuse the version. Write the decision in a comment on the issue, and send it to the agent by message.
+- Only the task block `default` has no `parent`, with or without task blocks under it by `parent`: change the text of `default`. Change no block under it.
+- A planner's task block other than `default` has no `parent`, with or without `default` beside it: change no block. Legion would read each task block with no `parent` as a task and refuse the version. Write the decision in a comment on the issue, and send it to the agent by message.
 
 An issue that started its work before Legion took plans has no task text. On such an issue, record the decision in a comment on the issue, and send it to the agent by message. These rules hold also where a general skill offers another place for a decision. Write no decision for an agent there, and keep no record of the work there. The issue and its plan are the record of the work to be done.
 
