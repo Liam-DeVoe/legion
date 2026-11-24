@@ -5,7 +5,7 @@
  *  are in `table-controls.stub.e2e.ts`.
  */
 
-import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_COMMITTED, ISSUE_STATUSES } from "@legion/contracts";
 import type { APIResponse, Locator, Route } from "@playwright/test";
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { CONTROL } from "../web/src/components/control-names";
@@ -8988,6 +8988,120 @@ test("Change answer opens the answer form with its first choice whole in the win
         );
       if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
     }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): an issue page opened at each of two widths, and its Status list walked by the arrows
+// through its eight open statuses at each.
+// INFRA-3135, round 25 (the tester's, measured in builds Jobs infra-3135-p-hc-fhjbh, -p-hf-x8mfh
+// and -p-hw-m2tvp at 683f1fdf and -p-bc-cdxbx, -p-bf-45fn7 and -p-bw-ptvwn at 3fce6150, and
+// this row in infra-3135-p-red2-kvtkk at 683f1fdf): the reader opens the issue header's Status
+// from the keyboard, over the issue's Artifacts tab, and walks its statuses with ArrowDown. The
+// list holds the eight open statuses in a box 286 px tall whose text box stands stuck to its top,
+// so it shows five of them; at the sixth, Testing, the option the list marks active (its text
+// box's `aria-activedescendant`) stands below what the box shows, and so do Needs review and
+// Retro, in Chromium, Firefox and WebKit at 1440x900 and 390x664. Enter there picks an option the
+// reader cannot see (components/MultiSelect.tsx:436-442); a pointer reaches the three by
+// scrolling the box. At 3fce6150 the Status was a native select, whose popup the browser draws
+// and scrolls. The cause: the shared list's ArrowDown and ArrowUp move its active row and scroll
+// nothing (components/MultiSelect.tsx:424-435), in a panel capped at `max-h-72` (:548), and
+// 20f534c5 made the Status that list (features/issue/IssueHeader.tsx:538-563). The rule: a list
+// the reader walks with the arrows shows the option it marks active, as the select it replaced
+// did (the round's item 6: every option of an open list can be reached).
+test("the issue header's Status list keeps the option its arrows mark active wholly inside the list's box, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with an issue page opened and its eight statuses walked.
+  test.setTimeout(90_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Statuses in sight" });
+  // The statuses an open issue's Status offers, in the list's order: every one but done.
+  const statuses = ISSUE_STATUSES.filter((status) => status !== "done");
+  /** Where the option the open list marks active (the text box's `aria-activedescendant`) stands
+   *  in the list's scroll box, in that box's content: the option's top and bottom, and the part
+   *  of the content the box shows - below what it draws stuck to its top (the text box), above
+   *  what it draws stuck to its bottom, and cut to the window - with the box's scrollTop and
+   *  height. `inside` is whether the option stands wholly in that part. */
+  const activeOptionSight = () =>
+    page.evaluate(() => {
+      const id = document.activeElement?.getAttribute("aria-activedescendant") ?? "";
+      const option = id === "" ? null : document.getElementById(id);
+      const none = {
+        bottom: 0,
+        height: 0,
+        inside: false,
+        name: "no option",
+        scrollTop: 0,
+        shownBottom: 0,
+        shownTop: 0,
+        top: 0,
+      };
+      if (option === null) return none;
+      const name = `"${(option.textContent ?? "").replace("✓", "").replace(/\s+/g, " ").trim()}"`;
+      let found = option.parentElement;
+      while (found !== null && !/(auto|scroll)/.test(getComputedStyle(found).overflowY)) {
+        found = found.parentElement;
+      }
+      if (found === null) return { ...none, name };
+      const box = found;
+      const boxTop = box.getBoundingClientRect().top + box.clientTop;
+      let shownTop = Math.max(boxTop, 0);
+      let shownBottom = Math.min(boxTop + box.clientHeight, window.innerHeight);
+      for (const child of box.children) {
+        if (getComputedStyle(child).position !== "sticky") continue;
+        const stuck = child.getBoundingClientRect();
+        if (stuck.top <= boxTop + 1) shownTop = Math.max(shownTop, stuck.bottom);
+        else if (stuck.bottom >= boxTop + box.clientHeight - 1) {
+          shownBottom = Math.min(shownBottom, stuck.top);
+        }
+      }
+      const own = option.getBoundingClientRect();
+      const content = (y: number) => Math.round(y - boxTop + box.scrollTop);
+      return {
+        bottom: content(own.bottom),
+        height: box.clientHeight,
+        inside: own.top >= shownTop - 1 && own.bottom <= shownBottom + 1,
+        name,
+        scrollTop: Math.round(box.scrollTop),
+        shownBottom: content(shownBottom),
+        shownTop: content(shownTop),
+        top: content(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `the issue header's Status at ${size.width}x${size.height}`;
+    await page.goto(`/issues/${issue.key}/artifacts`);
+    const trigger = listTrigger(page.getByTestId("issue-header"), "Status");
+    await expect(trigger).toBeVisible();
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const panel = listOf(trigger);
+    await expect(panel.getByRole("combobox", { name: "Search statuses" })).toBeFocused();
+    await expect(panel.getByRole("option")).toHaveCount(statuses.length);
+    // The list opens on the status the issue holds, Triage, the first, so the arrows mark every
+    // status active once in as many steps as there are statuses.
+    for (let step = 0; step < statuses.length; step += 1) {
+      if (step > 0) {
+        await page.keyboard.press("ArrowDown");
+        await nextFrames(page);
+      }
+      // One read is the answer: the key's render has run, and nothing else scrolls the box.
+      const sight = await activeOptionSight();
+      if (!sight.inside) {
+        wrong.push(
+          `${where}: after ${step} ArrowDown the list marks ${sight.name} active at ${sight.top}-${sight.bottom} px of its content, and its box shows ${sight.shownTop}-${sight.shownBottom} px of it (scrollTop ${sight.scrollTop}, height ${sight.height}): the active option is out of sight`
+        );
+        break;
+      }
+    }
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
