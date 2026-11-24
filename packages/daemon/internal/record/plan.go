@@ -600,8 +600,9 @@ type StartBranch struct {
 // need merged (WorkMerged), since that branch holds it. So no reader reads the branch of a merged
 // need, which GitHub can have deleted at its merge. Whether a need merged is the fact its merge
 // wrote, which no later version changes, never Merging: a version that needs a merged task takes it
-// out of Merging. A task that needs none starts from no branch: its branch starts at the default
-// branch. A task p does not hold, and a need it does not hold, are an error naming it:
+// out of Merging. A task that needs none starts from no branch: its branch starts at its base
+// (BaseOf), the default branch for a task of the top level and its task's branch for a part
+// (standsOn). A task p does not hold, and a need it does not hold, are an error naming it:
 // plan.Validate refuses such a plan, so p holding one is a defect, which no branch would answer
 // truly.
 func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) {
@@ -630,26 +631,50 @@ func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) 
 
 // PlannedBase is the branch the plan gives as the base of the pull request of task of p, the plan
 // of issue, and whether it is the task's join branch, where the join of its needs is made (join
-// true). It is issue's default branch for a task that merges (Merging), for a task none of whose
-// steps is of the type implementation, whose pull request shows the joined work of its needs, which
-// its steps read, and for a task that starts from no branch (StartsFrom), one that needs none. A
-// task that starts from one branch is based on it: its one need's branch, or the default branch
-// where the work of each of its needs merged. A task that starts from several is based on its join
-// branch, its own branch and claim.JoinBranchSuffix, where they are joined and from which its branch
-// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
-// branch (AssignTaskBranch). A task or a need p does not hold is StartsFrom's error.
+// true). It is issue's default branch for a task that merges (Merging). It is the branch the task
+// stands on (standsOn), the default branch for a task of the top level and its task's branch for a
+// part, for a task none of whose steps is of the type implementation, whose pull request shows the
+// joined work of its needs, which its steps read, and for a task that starts from no branch
+// (StartsFrom), one that needs none. A task that starts from one branch is based on it: its one
+// need's branch, or the default branch where the work of each of its needs merged. A task that
+// starts from several is based on its join branch, its own branch and claim.JoinBranchSuffix, where
+// they are joined and from which its branch starts, so its pull request shows its own work alone.
+// It is read for a task its first start gave a branch (AssignTaskBranch). A task or a need p does
+// not hold is StartsFrom's error, and the task of a part p does not hold is standsOn's.
 func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join bool, err error) {
 	starts, err := p.StartsFrom(issue, task)
 	switch {
 	case err != nil:
 		return "", false, err
-	case len(starts) == 0 || slices.Contains(p.Merging(), task) || !p.Implements(task):
+	case slices.Contains(p.Merging(), task):
 		return issue.DefaultBranch, false, nil
+	case len(starts) == 0 || !p.Implements(task):
+		base, err := p.standsOn(issue, task)
+		return base, false, err
 	case len(starts) == 1:
 		return starts[0].Branch, false, nil
 	}
 	of, _ := p.TaskOf(task)
 	return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
+}
+
+// standsOn is the branch the work of task of p, the plan of issue, stands on apart from the work
+// of its own needs: the issue's default branch for a task of the top level, and for a part, the
+// branch of the task it is a part of (PartOf, BranchOf), which holds the joined work of that
+// task's needs, since the task's join ended before any part started, and which its parts join
+// into. So a part's pull request shows its own work alone against its task's branch. A part whose
+// task p does not hold is an error naming both: plan.Validate refuses such a plan. The caller has
+// checked that p holds task (StartsFrom).
+func (p StoredPlan) standsOn(issue Issue, task string) (string, error) {
+	of, _ := p.TaskOf(task)
+	if of.PartOf == "" {
+		return issue.DefaultBranch, nil
+	}
+	above, ok := p.TaskOf(of.PartOf)
+	if !ok {
+		return "", fmt.Errorf("the base of task %s of %s: it is a part of task %s, which its plan holds no task of", task, issue.Key, of.PartOf)
+	}
+	return above.BranchOf(issue.Key), nil
 }
 
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
