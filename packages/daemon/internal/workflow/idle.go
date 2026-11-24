@@ -242,6 +242,17 @@ type IdleDecision struct {
 	HoldKinds []string
 }
 
+// TurnsOnKeptVolume is whether a decision UnownedPodRelease made with pods.IdleView.KeptVolume
+// false is one the kept volume changes, so the daemon asks the runtime whether the issue's Sandbox
+// keeps one and decides again (internal/daemon's releaseUnownedPod): a release that reads the disk
+// it deletes (Read), and a pod held because the read of that disk failed
+// (IdleHoldUnownedWorkspaceUnread). A kept volume the issue's next pod mounts is not deleted, so
+// the release owes it no read and a failed read holds nothing (noRoleDiskHold). No other decision
+// turns on it.
+func (d IdleDecision) TurnsOnKeptVolume() bool {
+	return d.Read || d.Hold == IdleHoldUnownedWorkspaceUnread
+}
+
 // IdleRelease decides whether an issue's pod may be released now. It is the whole rule and it is
 // pure: the view the store read (pods.IdleView), the clock, the idle period, whether the pod
 // runs the image the configuration names, and the plugin contract this daemon serves
@@ -484,7 +495,7 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 		}
 		return decision
 	}
-	if hold := noRoleDiskHold(view, now, true); hold != IdleHoldNone {
+	if hold := noRoleDiskHold(view, now); hold != IdleHoldNone {
 		return IdleDecision{Hold: hold}
 	}
 	decision.Read = true
@@ -495,15 +506,18 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 // and IdleHoldNone where it puts none: the release of a pod no claim owns and the close of a left
 // pod with no live claim read it before they ask the pod's launcher for a read of their own. A
 // decline that says this pod's disk holds work keeps the pod (pods.IdleDecline.HoldsUnpushedWork,
-// IdleHoldUnownedUnpushedWork), whether or not the act deletes the disk. Where it does (deletes),
-// a decline whose read failed keeps it while that decline stands (pods.IdleDecline.Stands,
+// IdleHoldUnownedUnpushedWork), whether or not the act deletes the disk. Where it does, a decline
+// whose read failed keeps it while that decline stands (pods.IdleDecline.Stands,
 // IdleHoldUnownedWorkspaceUnread), so a launcher that cannot read is asked again only after a
-// start, another pod or pods.DeclineUnreadRetry, and not at every pass.
-func noRoleDiskHold(view pods.IdleView, now time.Time, deletes bool) IdleHold {
+// start, another pod or pods.DeclineUnreadRetry, and not at every pass. The act deletes the disk
+// unless the issue's Sandbox keeps a volume the issue's next pod mounts (pods.IdleView.KeptVolume),
+// which only the release of a pod no claim owns keeps and reads: a close deletes the Sandbox with
+// any volume it holds, and its view never carries it.
+func noRoleDiskHold(view pods.IdleView, now time.Time) IdleHold {
 	if view.Declined.HoldsUnpushedWork(view) {
 		return IdleHoldUnownedUnpushedWork
 	}
-	if deletes && view.Declined.Reason == pods.DeclineWorkspaceUnread && view.Declined.Stands(view, now) {
+	if !view.KeptVolume && view.Declined.Reason == pods.DeclineWorkspaceUnread && view.Declined.Stands(view, now) {
 		return IdleHoldUnownedWorkspaceUnread
 	}
 	return IdleHoldNone
@@ -735,7 +749,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldUnownedNotIdle}
 	}
-	if hold := noRoleDiskHold(view, now, !view.KeptVolume); hold != IdleHoldNone {
+	if hold := noRoleDiskHold(view, now); hold != IdleHoldNone {
 		return IdleDecision{Hold: hold}
 	}
 	if view.Paused {

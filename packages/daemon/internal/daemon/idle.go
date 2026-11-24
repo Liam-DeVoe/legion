@@ -281,16 +281,18 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
-			// rather than reading the runtime again under the transaction's lock. So is the pod a
+			// The Sandbox is there: the read above, before the transaction, is this conjunct's
+			// answer, and the rule takes it rather than asking the runtime again. So is the pod a
 			// decline on record is read against.
 			view.PodUID = podUID
 			decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
-			if decision.Read {
+			if decision.TurnsOnKeptVolume() {
 				// Whether the Sandbox keeps a volume the issue's next pod mounts, which the release
-				// keeps and so needs no read of (pods.IdleView.KeptVolume), is asked only of a pod
-				// the rule would otherwise release with a read, which is rare: the runtime's answer
-				// is a read of its informer's Sandbox that decodes the claim templates
+				// keeps and so needs no read of and holds for no failed one
+				// (pods.IdleView.KeptVolume), is the one read of the runtime under the
+				// transaction's lock, and is asked only of a pod the rule would otherwise release
+				// with a read or hold for a read that failed, which is rare: the runtime's answer is
+				// a read of its informer's Sandbox that decodes the claim templates
 				// (internal/runtime/sandbox's IssueKeepsVolume), which no pass's tick pays.
 				view.KeptVolume = w.idleRuntime.IssueKeepsVolume(issue, now)
 				decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)

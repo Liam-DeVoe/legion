@@ -296,7 +296,8 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		},
 		{
 			// A kept volume the next pod mounts is not deleted, so no read is owed and a failed
-			// one holds nothing.
+			// one holds nothing. The first decision, made with the volume unread, holds the pod for
+			// the failed read, and that hold is what has the daemon ask for the volume.
 			name: "a kept volume and a decline for a workspace the check could not read",
 			view: func() pods.IdleView {
 				v := unownedIssue()
@@ -330,9 +331,15 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The rule is decided as the daemon decides it (releaseUnownedPod): first with the
+			// kept volume unread, and again with the runtime's word of it only where that first
+			// decision turns on it.
 			view := tc.view
-			view.KeptVolume = tc.kept
 			got := UnownedPodRelease(view, idleNow, idlePeriod, tc.sandbox)
+			if got.TurnsOnKeptVolume() {
+				view.KeptVolume = tc.kept
+				got = UnownedPodRelease(view, idleNow, idlePeriod, tc.sandbox)
+			}
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
