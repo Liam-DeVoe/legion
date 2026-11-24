@@ -598,9 +598,11 @@ func commitOf(session string) string {
 }
 
 // The places of CAPTURE-1's default steps (planner implementer tester reviewer acceptance:owner)
-// on its task default: the implementer's step, the reviewer's and the owner's acceptance.
+// on its task default: the implementer's step, the tester's, the reviewer's and the owner's
+// acceptance.
 const (
 	implementerStep = 2
+	testerStep      = 3
 	reviewerStep    = 4
 	acceptanceStep  = 5
 )
@@ -636,6 +638,16 @@ func seedClaimSession(t *testing.T, pool *store.Pool, token claim.Token, role cl
 			return err
 		}
 		_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`, session, string(token))
+		return err
+	})
+}
+
+// dropClaimSessions leaves token's claim recording no session: claim_sessions holds no name for it,
+// as an operator's release of its sessions leaves it, while the claim itself stands.
+func dropClaimSessions(t *testing.T, pool *store.Pool, token claim.Token) {
+	t.Helper()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from claim_sessions where claim = $1`, string(token))
 		return err
 	})
 }
@@ -1800,18 +1812,40 @@ func TestLegionVerdictAReviewStepReadsNoCommitItsSessionMade(t *testing.T) {
 	rig.noReader(t, "code", wantNoReaderOpening, "code")
 }
 
-// C2: with the default steps, a commit that names the reviewer's session and another that names the
-// owner's: each has a reader, the reviewer's commit the owner and the owner's commit the reviewer,
-// so the head gets success. One independent review of the whole change, the rule before, has none
-// here.
+// C2, the default steps, two ways. Where the claims of the tester, the reviewer and the owner each
+// record a session, a commit that names the reviewer's session and another that names the owner's
+// each have a reader - the reviewer's commit the tester and the owner, the owner's the tester and
+// the reviewer - so the head gets success; one independent review of the whole change, the rule
+// before, has none here. Where the tester's and the owner's claims record no session, a commit that
+// names the reviewer's session has no reader (R4's third departure), so the head gets failure once
+// every step has passed there, and the run's summary names that commit.
 func TestLegionVerdictEachCommitHasAReaderOnTheDefaultSteps(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
-	rig.github.mu.Lock()
-	rig.github.history = []string{"code-0", "code"}
-	rig.github.messages["code-0"] = commitOf(captureReviewerSession)
-	rig.github.messages["code"] = commitOf(captureArchitectSession)
-	rig.github.mu.Unlock()
-	rig.acceptedAndWritten(t)
+	t.Run("each of the three claims records a session", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			acceptingAtCode(t, pool)
+			seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+			seedClaimSession(t, pool, captureTester, claim.RoleTester, captureTesterSession)
+		})
+		rig.github.mu.Lock()
+		rig.github.history = []string{"code-0", "code"}
+		rig.github.messages["code-0"] = commitOf(captureReviewerSession)
+		rig.github.messages["code"] = commitOf(captureArchitectSession)
+		rig.github.mu.Unlock()
+		rig.acceptedAndWritten(t)
+	})
+	t.Run("the tester's and the owner's claims record no session", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			acceptingAtCode(t, pool)
+			seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+			dropClaimSessions(t, pool, captureArchitect)
+		})
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.mu.Unlock()
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+	})
 }
 
 // C2: a commit with no Omp-Session line has no agent maker, as a person's commit has none, so each
