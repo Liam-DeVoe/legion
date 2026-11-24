@@ -352,12 +352,9 @@ func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
 		return false
 	}
 	for _, c := range v.Claims {
-		// A turn ends the decline here only where its claim is live.
-		turn := c.LastTurnStart
-		if !c.Live() {
-			turn = time.Time{}
-		}
-		if d.EndedBy(c.LastStartRow, turn) {
+		// A start ends the decline whatever the claim is now; a turn ends it only where its claim
+		// is live.
+		if d.StartedSince(c.LastStartRow) || c.Live() && d.TurnedSince(c.LastTurnStart) {
 			return false
 		}
 	}
@@ -383,21 +380,23 @@ func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
 		return false
 	}
 	for _, c := range v.Claims {
-		if d.EndedBy(c.LastStartRow, c.LastTurnStart) {
+		if d.StartedSince(c.LastStartRow) || d.TurnedSince(c.LastTurnStart) {
 			return false
 		}
 	}
 	return true
 }
 
-// EndedBy is whether a claim whose newest start row is startRow, and whose newest turn started at
-// turnStart, ends the decline: its process was started again after the last check (a start row
-// above StartedRow), or it started a turn after that check. It is the one test of a claim that
-// ends a decline: the idle rules read it (Stands, HoldsUnpushedWork), and so does the read that
-// may end an update round's keep of a pod (internal/daemon's keptPodReadDue).
-func (d IdleDecline) EndedBy(startRow int64, turnStart time.Time) bool {
-	return startRow > d.StartedRow || turnStart.After(d.checked())
-}
+// StartedSince is whether a claim whose newest start row is startRow had its process started again
+// after the decline's last check (a start row above StartedRow). It and TurnedSince are the two
+// tests of a claim that ends a decline: the idle rules read them (Stands, HoldsUnpushedWork), and
+// so does the read that may end an update round's keep of a pod (internal/daemon's
+// keptPodReadDue).
+func (d IdleDecline) StartedSince(startRow int64) bool { return startRow > d.StartedRow }
+
+// TurnedSince is whether a claim whose newest turn started at turnStart started that turn after the
+// decline's last check (StartedSince).
+func (d IdleDecline) TurnedSince(turnStart time.Time) bool { return turnStart.After(d.checked()) }
 
 // RetryDue is whether the decline is of a read that failed (DeclineWorkspaceUnread) and
 // DeclineUnreadRetry has passed at now since its last check (Stands, and internal/daemon's

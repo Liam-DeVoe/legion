@@ -40,9 +40,7 @@ func TestALaunchsOwnReplacementTellsTheArchitectWhatItTook(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 			holder := &launchRounds{}
 			holder.bind(rig.s.roundPodEndsAtLaunch, rig.s.recordLaunchTakes, rig.s.tellLaunchTook)
-			taken := runtime.TakenPod{Operation: "launch-op-" + tc.name, Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-				Why:   "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
-				Takes: runtime.TakesPod, Target: podUpdatePod, Work: tc.work, Err: tc.err}
+			taken := movedFacetTaken(rig, "launch-op-"+tc.name, tc.work, tc.err)
 			if err := holder.takes(rig.ctx, taken); err != nil {
 				t.Fatalf("the record of what the launch takes: %v", err)
 			}
@@ -73,4 +71,13 @@ func (r *podUpdateRig) replacementRecords() int {
 		r.t.Fatalf("count the records of pod replacements: %v", err)
 	}
 	return n
+}
+
+// movedFacetTaken is the implementer's launch's own replacement of the issue's pod, under
+// operation, because a facet of the pod fixed for its life moved, over what the read through a
+// launcher of the pod found (work) or why no read could be made (err).
+func movedFacetTaken(r *podUpdateRig, operation string, work runtime.WorkspaceWork, err error) runtime.TakenPod {
+	return runtime.TakenPod{Operation: operation, Claim: r.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+		Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
+		Act: runtime.PodAct(podUpdatePod), Work: work, Err: err}
 }

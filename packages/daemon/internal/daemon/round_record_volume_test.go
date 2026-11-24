@@ -23,14 +23,22 @@ import (
 // keptSandboxUID is the uid of the issue's Sandbox that owns the kept volume a launch deletes.
 const keptSandboxUID = "uid-sandbox-kept"
 
+// volumeResetTaken is the implementer's launch's replacement of the issue's Sandbox of uid
+// keptSandboxUID and the kept volume it owns, for the volume's reset, under operation: the Sandbox
+// runs no live pod, so no read could be made. pod is the last pod known to have used the volume,
+// "" where none is.
+func volumeResetTaken(r *podUpdateRig, operation, pod string) runtime.TakenPod {
+	return runtime.TakenPod{Operation: operation, Claim: r.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: pod,
+		Why: "the launch replaces the issue's Sandbox and the volume it keeps (the volume carries the reset mark)",
+		Act: runtime.VolumeAct(keptSandboxUID),
+		Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
+}
+
 func TestALaunchsVolumeRecordIsToldOnlyOnceItsSandboxIsGone(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.rt.ScriptSuspendedOver(podUpdatePod)
-	taken := runtime.TakenPod{Operation: "launch-reset-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue,
-		Why:   "the launch replaces the issue's Sandbox and the volume it keeps (the volume carries the reset mark)",
-		Takes: runtime.TakesVolume, Target: keptSandboxUID,
-		Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
+	taken := volumeResetTaken(rig, "launch-reset-1", "")
 	if err := rig.s.recordLaunchTakes(rig.ctx, taken); err != nil {
 		t.Fatalf("record the launch's replacement of the Sandbox and its volume: %v", err)
 	}

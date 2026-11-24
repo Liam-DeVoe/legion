@@ -11,13 +11,11 @@ package daemon
 // read found, once.
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 func TestALaunchsRecordOfTheSamePodLeavesARoundsRecordWhole(t *testing.T) {
@@ -31,11 +29,7 @@ func TestALaunchsRecordOfTheSamePodLeavesARoundsRecordWhole(t *testing.T) {
 		t.Fatalf("the store holds %d records once the round's notice was refused, want the round's one", records)
 	}
 
-	reset := runtime.TakenPod{Operation: "launch-reset-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-		Why:   "the launch replaces the issue's Sandbox and the volume it keeps (the volume carries the reset mark)",
-		Takes: runtime.TakesVolume, Target: "uid-sandbox-kept",
-		Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
-	if err := rig.s.recordLaunchTakes(rig.ctx, reset); err != nil {
+	if err := rig.s.recordLaunchTakes(rig.ctx, volumeResetTaken(rig, "launch-reset-1", podUpdatePod)); err != nil {
 		t.Fatalf("record the launch's replacement of the Sandbox and its volume: %v", err)
 	}
 	if records := rig.replacementRecords(); records != 2 {

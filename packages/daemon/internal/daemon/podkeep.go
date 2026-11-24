@@ -52,7 +52,7 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 	keep, err := s.supervisor.store.PodKeepOf(ctx, s.plan.project, issue)
 	if err == nil {
 		var told bool
-		if told, err = s.recordPodKept(ctx, issue, round, pod, reasons, read, group, keep.Phase); err == nil {
+		if told, err = s.recordPodKept(ctx, issue, round, pod, reasons, read, group, keep.Phase, false); err == nil {
 			s.log.Info("supervise: the read of this update round's pod found work that no branch or tag on origin holds, or could not be made; the round ends with no replacement, and the pod and its roles keep working on the old image and settings",
 				append([]any{"issue", issue, "round", round, "pod", pod, "reasons", reasons, "told", told}, read.attrs()...)...)
 			s.endPodUpdates(issue, group, round)
@@ -87,15 +87,16 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // failed. Each is told once: the store queues a role's message only where the decline names other
 // work than the row on record, and the architect's notice once for each pod (store's
 // recordDecline). So a read after a turn that finds the same work moves the row's moment and tells
-// nobody.
-func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase) (bool, error) {
+// nobody. again is a read that may end an earlier round's keep of the pod, made with no round
+// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
+func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase, again bool) (bool, error) {
 	after, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
 	}
 	at := keptMoment(read.at, append(slices.Clone(group), s.viewedGroup(after, issue)...))
 	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
-		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, read.again)}, at)
+		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
 		if err != nil {
 			return false, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
 		}
@@ -107,7 +108,7 @@ func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reas
 	if err != nil {
 		return false, err
 	}
-	decline, err := keptNoticeDecline(issue, pod, at, read.work, read.err, roundKeptMessage(issue, pod, reasons, claims, read.work, read.err, read.again))
+	decline, err := keptNoticeDecline(issue, pod, at, read.work, read.err, roundKeptMessage(issue, pod, reasons, claims, read.work, read.err, again))
 	if err != nil {
 		return false, err
 	}
@@ -161,7 +162,8 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 // miss a turn that started after the snapshot, and would hold every later issue of the walk for as
 // long as it runs.
 func (s *supervision) podKeptForWork(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string) (kept, due bool) {
-	_, declined, found, err := s.keptDeclineOf(ctx, issue, pod)
+	keep, found, err := s.keptDeclineOf(ctx, issue, pod)
+	declined := keep.Decline
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
@@ -183,16 +185,23 @@ func (s *supervision) podKeptForWork(ctx context.Context, issue string, group []
 	return true, true
 }
 
-// keptDeclineOf is the issue's keep record (store.Store.PodKeepOf) and its decline row, and found,
-// whether that row is an earlier round's keep of pod: a row naming another pod, or none, holds
-// nothing of pod, since the runtime holds another pod for the issue.
-func (s *supervision) keptDeclineOf(ctx context.Context, issue, pod string) (store.PodKeep, pods.IdleDecline, bool, error) {
+// keptDeclineOf is the issue's keep record (store.Store.PodKeepOf), with its decline row, and
+// found, whether that row is an earlier round's keep of pod: a row naming another pod, or none,
+// holds nothing of pod, since the runtime holds another pod for the issue.
+func (s *supervision) keptDeclineOf(ctx context.Context, issue, pod string) (store.PodKeep, bool, error) {
 	keep, err := s.supervisor.store.PodKeepOf(ctx, s.plan.project, issue)
 	if err != nil {
-		return store.PodKeep{}, pods.IdleDecline{}, false, err
+		return store.PodKeep{}, false, err
 	}
 	declined := keep.Decline
-	return keep, declined, !declined.At.IsZero() && declined.PodUID != "" && declined.PodUID == pod, nil
+	return keep, !declined.At.IsZero() && declined.PodUID != "" && declined.PodUID == pod, nil
+}
+
+// keptPodRead is a read that may end an earlier round's keep of issue's pod, which the walk found
+// due (podKeptForWork) and the sweep makes after its walk (podUpdateSweep.keptReads,
+// readKeptPod): reasons is the drift the sweep read of the pod, as a round would record it.
+type keptPodRead struct {
+	issue, pod, reasons string
 }
 
 // readKeptPod is the read that may end an earlier round's keep of the issue's pod, which the walk
@@ -208,7 +217,9 @@ func (s *supervision) keptDeclineOf(ctx context.Context, issue, pod string) (sto
 // decides again.
 func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 	issue, pod := step.issue, step.pod
-	round := supervise.PodRound(pod)
+	// inPod is the pod's round name, which names the pod to the readers of a round's pod
+	// (podProcess, readPodWorkspace, recordPodKept), though no claim records a round over it now.
+	inPod := supervise.PodRound(pod)
 	at := s.plan.clock.Now()
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
@@ -219,7 +230,7 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 		return
 	}
 	group := s.viewedGroup(claims, issue)
-	keep, declined, found, err := s.keptDeclineOf(ctx, issue, pod)
+	keep, found, err := s.keptDeclineOf(ctx, issue, pod)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: read the keep of this issue's pod again before its read; the pod stays kept, and the next sweep decides again",
@@ -230,18 +241,17 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 	if !found {
 		return
 	}
-	if !keptPodReadDue(declined, group, at) {
+	if !keptPodReadDue(keep.Decline, group, at) {
 		s.log.Info("supervise: the read of this issue's kept pod is not due over its claims as they stand now; a turn of the issue runs, and the read comes once it has ended",
 			"issue", issue, "pod", pod, "working", workingClaims(group))
 		return
 	}
-	process, running := podProcess(group, round)
+	process, running := podProcess(group, inPod)
 	by := viaIssue
 	if running {
 		by = viaProcess
 	}
-	read := s.readPodWorkspace(ctx, issue, round, process, by, at)
-	read.again = true
+	read := s.readPodWorkspace(ctx, issue, inPod, process, by, at)
 	if read.clean() {
 		if err := s.supervisor.store.ForgetIdleDecline(ctx, s.plan.project, issue); err != nil {
 			if ctx.Err() == nil {
@@ -254,7 +264,7 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 			append([]any{"issue", issue, "pod", pod}, read.attrs()...)...)
 		return
 	}
-	told, err := s.recordPodKept(ctx, issue, round, pod, step.reasons, read, group, keep.Phase)
+	told, err := s.recordPodKept(ctx, issue, inPod, pod, step.reasons, read, group, keep.Phase, true)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: record the read of a kept pod; no round opens over the pod, and the next sweep reads the workspace again",
@@ -268,9 +278,9 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 
 // keptPodReadDue is whether the read that may end a round's keep of a pod (podKeptForWork) is due
 // at now, over declined, the keep's row, and group, the issue's claims: no claim of the issue is
-// in a turn, and a claim of the issue ends the row as it ends a release's decline
-// (pods.IdleDecline.EndedBy: it started a turn since the row's last read, and that turn has ended,
-// or its process was started again), or, for a read that could not be made,
+// in a turn, and a claim of the issue ends the row as it ends a release's decline: it started a
+// turn since the row's last read, and that turn has ended (pods.IdleDecline.TurnedSince), or its
+// process was started again (StartedSince); or, for a read that could not be made,
 // pods.DeclineUnreadRetry has passed (pods.IdleDecline.RetryDue). A role changes the workspace
 // only in a turn, so the read is made once for each such turn, once that turn has ended.
 func keptPodReadDue(declined pods.IdleDecline, group []supervise.Claim, now time.Time) bool {
@@ -278,7 +288,7 @@ func keptPodReadDue(declined pods.IdleDecline, group []supervise.Claim, now time
 		return false
 	}
 	return declined.RetryDue(now) || slices.ContainsFunc(group, func(c supervise.Claim) bool {
-		return declined.EndedBy(c.LastStartRow, c.LastTurnStart)
+		return declined.StartedSince(c.LastStartRow) || declined.TurnedSince(c.LastTurnStart)
 	})
 }
 
@@ -402,8 +412,8 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 		why = "the launch could not start the role in that pod"
 	}
 	gone := "The pod and its disk are gone. A role that ran in the pod lost what it had not pushed."
-	if taken.Takes == runtime.TakesVolume {
-		gone = fmt.Sprintf("The issue's Sandbox (uid %s) and its kept volume, which was the disk of the issue's pods, are gone. A role that ran on that volume lost what it had not pushed.", taken.Target)
+	if taken.Act.Takes == runtime.TakesVolume {
+		gone = fmt.Sprintf("The issue's Sandbox (uid %s) and its kept volume, which was the disk of the issue's pods, are gone. A role that ran on that volume lost what it had not pushed.", taken.Act.Target)
 	}
 	return strings.Join([]string{
 		fmt.Sprintf("A launch of the %s replaced the pod of %s (%s) on its own account, because %s.", role, taken.Issue, takenPodName(taken.PodUID), why),

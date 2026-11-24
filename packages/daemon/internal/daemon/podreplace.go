@@ -74,7 +74,7 @@ func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
-	return store.PodReplacement{Operation: uuid.NewString(), Issue: issue, PodUID: pod, Takes: string(runtime.TakesPod), Target: pod, Record: encoded}, nil
+	return store.PodReplacement{Operation: uuid.NewString(), Issue: issue, PodUID: pod, Act: runtime.PodAct(pod), Record: encoded}, nil
 }
 
 // launchRecordOf is the record of a launch's own replacement, as the runtime hands it, under the
@@ -85,8 +85,7 @@ func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
-	return store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID,
-		Takes: string(taken.Takes), Target: taken.Target, Record: encoded}, nil
+	return store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID, Act: taken.Act, Record: encoded}, nil
 }
 
 // work is the read the record holds, of pod.
@@ -115,7 +114,7 @@ func (r replacementRecord) read(pod string) workspaceRead {
 // taken is a launch's record, recorded, as the runtime handed it (runtime.TakenPod).
 func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod {
 	taken := runtime.TakenPod{Operation: recorded.Operation, Claim: r.Claim, Issue: recorded.Issue, PodUID: recorded.PodUID, Why: r.Why,
-		Takes: runtime.Takes(recorded.Takes), Target: recorded.Target}
+		Act: recorded.Act}
 	taken.Work, taken.Err = r.work(recorded.PodUID)
 	return taken
 }
@@ -169,15 +168,14 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 	}
 }
 
-// finishReplacement finishes the record recorded of a replacement of an issue's pod, now the act
-// is made: it deletes the record and, in the same transaction, queues reason, where it is not "",
-// as the issue's architect's workspace-taken notice (store.Store.FinishPodReplacement). It answers
-// false where the store refused, and the record then stands for a later sweep
+// finishReplacement finishes the record of operation, a replacement of issue's pod pod, now the
+// act is made: it deletes the record and, in the same transaction, queues reason, where it is not
+// "", as the issue's architect's workspace-taken notice (store.Store.FinishPodReplacement). It
+// answers false where the store refused, and the record then stands for a later sweep
 // (finishReplacements); a record another finish of the same act took is finished already, and
 // nothing is queued for it here. attrs name the replacement on its lines.
-func (s *supervision) finishReplacement(ctx context.Context, recorded store.PodReplacement, reason string, attrs ...any) bool {
-	issue := recorded.Issue
-	attrs = append([]any{"issue", issue, "pod", recorded.PodUID, "operation", recorded.Operation}, attrs...)
+func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod, reason string, attrs ...any) bool {
+	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
 	var notice *store.IdleReleaseRow
 	if reason != "" {
 		row, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: reason}, s.plan.clock.Now())
@@ -188,7 +186,7 @@ func (s *supervision) finishReplacement(ctx context.Context, recorded store.PodR
 		}
 		notice = &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}
 	}
-	finished, told, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, recorded.Operation, notice)
+	finished, told, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, notice)
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
@@ -243,7 +241,7 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 			append([]any{"issue", taken.Issue, "pod", taken.PodUID}, attrs...)...)
 		return
 	}
-	s.finishReplacement(ctx, store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID}, launchTakenMessage(taken), attrs...)
+	s.finishReplacement(ctx, taken.Operation, taken.Issue, taken.PodUID, launchTakenMessage(taken), attrs...)
 }
 
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
@@ -315,7 +313,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten", attrs...)
 		case !ofRound:
 			taken := rec.taken(r)
-			s.finishReplacement(ctx, r, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
+			s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it, although its call did not answer so; the round ends as that replacement, from the read made before it",
@@ -338,7 +336,7 @@ func (s *supervision) readAct(ctx context.Context, r store.PodReplacement) (runt
 		return runtime.ActUncertain, nil
 	}
 	state := runtime.ActUncertain
-	err := reader.ReadAct(ctx, r.Issue, runtime.RecordedAct{Takes: runtime.Takes(r.Takes), Target: r.Target}, func(ctx context.Context, read runtime.ActState) error {
+	err := reader.ReadAct(ctx, r.Issue, r.Act, func(ctx context.Context, read runtime.ActState) error {
 		state = read
 		if read != runtime.ActNotMade {
 			return nil

@@ -1234,7 +1234,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if !read.clean() {
 		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
 	}
-	if !s.finishReplacement(ctx, recorded, reason, "round", round) {
+	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, reason, "round", round) {
 		s.log.Info("supervise: the round stays open until its replacement's record is finished; a later sweep finishes it",
 			"issue", issue, "round", round, "pod", pod)
 		return false
@@ -1255,9 +1255,6 @@ type workspaceRead struct {
 	at    time.Time
 	work  runtime.WorkspaceWork
 	err   error
-	// again is a read that may end an earlier round's keep of the pod, made with no round
-	// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
-	again bool
 }
 
 // clean is whether the read was made and found nothing that origin does not hold: the one read a

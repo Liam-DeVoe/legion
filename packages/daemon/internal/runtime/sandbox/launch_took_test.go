@@ -17,6 +17,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -59,33 +60,33 @@ func (l *tookLaunches) all() []runtime.TakenPod {
 	return slices.Clone(l.taken)
 }
 
-// wantRead holds the runtime to having handed the daemon one replacement of pod, why the launch
-// made it, and the read through the pod's launcher that found tookCommit.
-func (l *tookLaunches) wantRead(t *testing.T, pod string) {
+// want holds the runtime to having handed the daemon exactly one replacement, want, under an
+// operation of its own and with why it was made: every other field as want names it, the act's
+// Takes and Target among them, why's words in its Why, and, where no read could be made, because's
+// words in its Err ("" for a read that was made).
+func (l *tookLaunches) want(t *testing.T, want runtime.TakenPod, why, because string) {
 	t.Helper()
 	taken := l.all()
 	if len(taken) != 1 {
 		t.Fatalf("the daemon was handed %d replacements %+v, want the one this launch made", len(taken), taken)
 	}
 	got := taken[0]
-	if got.PodUID != pod || got.Issue != testTree || got.Claim == "" || got.Why == "" || got.Err != nil ||
-		got.Work.Count != 1 || !slices.Contains(got.Work.Commits, tookCommit) {
-		t.Fatalf("the daemon was handed %+v, want the replacement of pod %s with why it was made and the read that found the commit %s", got, pod, tookCommit)
+	if got.Operation == "" || got.Why == "" || !strings.Contains(got.Why, why) ||
+		(got.Err == nil) != (because == "") || (got.Err != nil && !strings.Contains(got.Err.Error(), because)) {
+		t.Fatalf("the daemon was handed %+v, want an operation of its own, why it was made (naming %q), and why no read could be made naming %q (\"\" for a read made)",
+			got, why, because)
+	}
+	got.Operation, got.Why, got.Err = "", "", nil
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the daemon was handed %+v, want %+v", got, want)
 	}
 }
 
-// wantUnread holds the runtime to having handed the daemon one replacement of pod, why the launch
-// made it, and why no read could be made, which names because, with no work.
-func (l *tookLaunches) wantUnread(t *testing.T, pod, because string) {
-	t.Helper()
-	taken := l.all()
-	if len(taken) != 1 {
-		t.Fatalf("the daemon was handed %d replacements %+v, want the one this launch made", len(taken), taken)
-	}
-	got := taken[0]
-	if got.PodUID != pod || got.Issue != testTree || got.Why == "" || got.Err == nil || !strings.Contains(got.Err.Error(), because) || got.Work.HoldsWork() {
-		t.Fatalf("the daemon was handed %+v, want the replacement of pod %s with why no read could be made (%q)", got, pod, because)
-	}
+// readTaken is the replacement of pod that claim's launch made, which takes act, over the read
+// through the pod's launcher that found tookCommit (oneCommitRead).
+func readTaken(claim claim.Token, pod string, act runtime.RecordedAct) runtime.TakenPod {
+	return runtime.TakenPod{Claim: claim, Issue: testTree, PodUID: pod, Act: act,
+		Work: runtime.WorkspaceWork{Head: oneCommitRead.Head, Commits: []string{tookCommit}, Count: 1, PodUID: pod}}
 }
 
 // noReadSent holds every launcher of tokens to having been sent no workspace read.
@@ -117,7 +118,7 @@ func TestALaunchThatReplacesAPodWhoseStreamMovedSaysWhatItTook(t *testing.T) {
 	if fresh.Sandbox.PodUID == loc.Sandbox.PodUID {
 		t.Fatalf("Resume kept the pod %s, whose launchers dial a stream this daemon does not serve", loc.Sandbox.PodUID)
 	}
-	took.wantRead(t, loc.Sandbox.PodUID)
+	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID)), "", "")
 }
 
 // The launch replaces an issue Sandbox of the disk shape before the pod-owned disk, Sandbox and pod
@@ -131,7 +132,7 @@ func TestALaunchThatReplacesASandboxOfTheSupersededDiskShapeSaysWhatItTook(t *te
 	if loc.Sandbox.PodUID == "uid-pod-old" {
 		t.Fatalf("the launch kept the pod uid-pod-old of the superseded disk shape, want a pod of the Sandbox it created")
 	}
-	took.wantRead(t, "uid-pod-old")
+	took.want(t, readTaken(workerToken, "uid-pod-old", runtime.VolumeAct("uid-sandbox-superseded")), "disk shape", "")
 }
 
 // The launch replaces a drifted pod whose stored template says nothing this daemon can read of what
@@ -154,7 +155,7 @@ func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
 	if fresh.Sandbox.PodUID == loc.Sandbox.PodUID {
 		t.Fatalf("Resume kept the pod %s, whose stored template says nothing of what it was built with", loc.Sandbox.PodUID)
 	}
-	took.wantRead(t, loc.Sandbox.PodUID)
+	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID)), "stored template", "")
 }
 
 // The reviewer's start replaces the pod the tester runs in, because the reviewer's launcher Secret
@@ -173,10 +174,7 @@ func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *test
 	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
 		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
 	}
-	took.wantRead(t, testerLoc.Sandbox.PodUID)
-	if why := took.all()[0].Why; !strings.Contains(why, "not bound") {
-		t.Fatalf("the daemon was handed why %q, want the launchers that are not bound named as why the launch replaced the pod", why)
-	}
+	took.want(t, readTaken(otherToken, testerLoc.Sandbox.PodUID, runtime.PodAct(testerLoc.Sandbox.PodUID)), "not bound", "")
 }
 
 // The control: the same replacement where no launcher of the pod says it reads a workspace. No
@@ -193,7 +191,9 @@ func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *
 	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
 		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
 	}
-	took.wantUnread(t, testerLoc.Sandbox.PodUID, "no launcher")
+	pod := testerLoc.Sandbox.PodUID
+	took.want(t, runtime.TakenPod{Claim: otherToken, Issue: testTree, PodUID: pod, Act: runtime.PodAct(pod), Work: runtime.WorkspaceWork{PodUID: pod}},
+		"not bound", "no launcher")
 	noReadSent(t, g, workerToken, otherToken)
 }
 
@@ -230,21 +230,11 @@ func relaunchKept(g *rig, r *Runtime, loc runtime.Locator) (runtime.Locator, err
 	return r.Resume(g.ctx, &loc, spec)
 }
 
-// wantVolumeTaken holds the runtime to having handed the daemon one replacement that deletes the
-// issue's Sandbox of uid sandbox and the kept volume it owns (runtime.TakesVolume, its target the
-// Sandbox's uid), naming no pod, since the Sandbox ran none of its own (the Legion reviewer's
-// minor point 4), with why the launch made it and why no read could be made, which names because.
-func (l *tookLaunches) wantVolumeTaken(t *testing.T, sandbox types.UID, because string) {
-	t.Helper()
-	taken := l.all()
-	if len(taken) != 1 {
-		t.Fatalf("the daemon was handed %d replacements %+v, want the one this launch made", len(taken), taken)
-	}
-	got := taken[0]
-	if got.Operation == "" || got.Takes != runtime.TakesVolume || got.Target != string(sandbox) || got.PodUID != "" || got.Issue != testTree || got.Why == "" ||
-		got.Err == nil || !strings.Contains(got.Err.Error(), because) || got.Work.HoldsWork() {
-		t.Fatalf("the daemon was handed %+v, want the delete of Sandbox %s and its volume, under an operation of its own, naming no pod, with why no read could be made (%q)", got, sandbox, because)
-	}
+// volumeTaken is the launch's replacement that deletes the issue's Sandbox of uid sandbox and the
+// kept volume it owns (runtime.VolumeAct), naming no pod, since the Sandbox ran none of its own
+// (the Legion reviewer's minor point 4), with no read made.
+func volumeTaken(sandbox types.UID) runtime.TakenPod {
+	return runtime.TakenPod{Claim: workerToken, Issue: testTree, Act: runtime.VolumeAct(string(sandbox))}
 }
 
 // A launch that deletes a kept volume its issue's Sandbox holds with no pod of its own (GPT-6.1
@@ -275,7 +265,7 @@ func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
 		r2 := secondRuntime(t, g, func(o *Options) { o.LaunchTook = took.record })()
 		_, err := relaunchKept(g, r2, loc)
 		newSandbox(t, g, loc, old, err)
-		took.wantVolumeTaken(t, old, "no live pod")
+		took.want(t, volumeTaken(old), "the volume it keeps", "no live pod")
 		noReadSent(t, g, workerToken)
 	})
 	t.Run("the volume carries the reset mark", func(t *testing.T) {
@@ -287,7 +277,7 @@ func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
 		old := g.sandbox(loc.Sandbox.Name).UID
 		_, err := relaunchKept(g, g.r, loc)
 		newSandbox(t, g, loc, old, err)
-		took.wantVolumeTaken(t, old, "no live pod")
+		took.want(t, volumeTaken(old), "the volume it keeps", "no live pod")
 		noReadSent(t, g, workerToken)
 	})
 	t.Run("control: the launch keeps the volume", func(t *testing.T) {
@@ -346,9 +336,9 @@ func TestARecordedVolumeDeleteIsMadeOnlyOnceItsSandboxIsGone(t *testing.T) {
 			if stopped := tc.stopAtRecord || tc.refuseDelete; stopped != (err != nil) {
 				t.Fatalf("Resume = %v, want it to fail=%t", err, stopped)
 			}
-			takes.wantVolumeTaken(t, old, "no live pod")
+			takes.want(t, volumeTaken(old), "the volume it keeps", "no live pod")
 			state, decided := runtime.ActUncertain, false
-			if err := g.r.ReadAct(g.ctx, testTree, runtime.RecordedAct{Takes: takes.all()[0].Takes, Target: takes.all()[0].Target},
+			if err := g.r.ReadAct(g.ctx, testTree, takes.all()[0].Act,
 				func(_ context.Context, read runtime.ActState) error { state, decided = read, true; return nil }); err != nil || !decided {
 				t.Fatalf("ReadAct = %v, decided=%t; want the act read", err, decided)
 			}
@@ -390,6 +380,6 @@ func TestALaunchOverAPodThatIsNotLiveSaysNoReadCouldBeMade(t *testing.T) {
 	if loc.Sandbox.PodUID == "uid-pod-dead" {
 		t.Fatalf("the Resume kept the failed pod uid-pod-dead")
 	}
-	took.wantUnread(t, "uid-pod-dead", "not live")
+	took.want(t, runtime.TakenPod{Claim: workerToken, Issue: testTree, PodUID: "uid-pod-dead", Act: runtime.PodAct("uid-pod-dead")}, "not live", "not live")
 	noReadSent(t, g, workerToken)
 }

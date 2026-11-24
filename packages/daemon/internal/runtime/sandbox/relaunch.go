@@ -314,31 +314,32 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// moved is read of a live pod alone, as the expression below read it before: a pod that is not
 	// live may be no pod at all, and is replaced for that.
 	moved := live && slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 })
-	// took is why this launch replaces the pod whether a round covers it or not: the pod is not
+	// forced is why this launch replaces the pod whether a round covers it or not: the pod is not
 	// live, the Sandbox has a disk shape this launch does not render and the pod's shape record
-	// does not drift, or a facet fixed for the pod's life moved. Where a round covers the pod,
-	// these are the reasons this launch replaces it before it reads the pod's bindings and stored
-	// template (below), and took is why it replaces the pod on its own account, rather than as a
-	// round's own replacement (R7 of #5285). The daemon is told what such a
-	// replacement took (Options.LaunchTook, launchTaken), which reads no workspace of a pod that is
-	// not live. A pod no round covers is this launch's to replace for every drift above as well, and
-	// the daemon is told nothing of it (took "").
-	var took string
+	// does not drift, or a facet fixed for the pod's life moved. A pod no round covers is this
+	// launch's to replace for every drift below as well.
+	var forced string
 	switch {
 	case !live:
-		took = "the pod was not live"
+		forced = "the pod was not live"
 	case replacement != "" && !drifted:
-		took = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
+		forced = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
 	case moved:
-		took = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
+		forced = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
 	}
-	replace := took != "" ||
+	replace := forced != "" ||
 		(!covered && (accountDrifted ||
 			(!installing && (drifted ||
 				len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
 			(installing && podImageDrift(s, r.podShapes[l.shapeKey()]))))
-	if !covered {
-		took = ""
+	// took is why this launch replaces a pod a round covers on its own account, rather than as the
+	// round's own replacement (R7 of #5285): forced, read before the pod's bindings and stored
+	// template (below), or what those find. The daemon is told what such a replacement took
+	// (Options.LaunchTook, launchTaken), which reads no workspace of a pod that is not live. The
+	// daemon is told nothing of the replacement of a pod no round covers (took "").
+	var took string
+	if covered {
+		took = forced
 	}
 	// A pod whose launchers are not bound to it is replaced by this launch on its own account
 	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
@@ -603,8 +604,8 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 			return nil
 		}
 		taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue,
-			Why:   "the launch replaces the issue's Sandbox and the volume it keeps (" + string(replacement) + ")",
-			Takes: runtime.TakesVolume, Target: string(s.UID),
+			Why: "the launch replaces the issue's Sandbox and the volume it keeps (" + string(replacement) + ")",
+			Act: runtime.VolumeAct(string(s.UID)),
 			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
 		if ownedBy(pod, s.UID) {
 			taken.PodUID = string(pod.UID)
@@ -615,9 +616,9 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 		return nil
 	}
 	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took,
-		Takes: runtime.TakesPod, Target: string(pod.UID)}
+		Act: runtime.PodAct(string(pod.UID))}
 	if replacement != "" && ownsVolume {
-		taken.Takes, taken.Target = runtime.TakesVolume, string(s.UID)
+		taken.Act = runtime.VolumeAct(string(s.UID))
 	}
 	if !live {
 		taken.Err = errors.New("the pod is not live, so no process in it can read the workspace")
@@ -1606,18 +1607,6 @@ func (r *Runtime) takeTurn(ctx context.Context, turns map[string]chan struct{}, 
 		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	}
-}
-
-// tryTurn takes key's turn in turns where no one holds it now, without waiting: free is false,
-// and nothing is taken, where another holds it (ReadAct). The returned func gives the turn back.
-func (r *Runtime) tryTurn(turns map[string]chan struct{}, key string) (release func(), free bool) {
-	turn := r.turnOf(turns, key)
-	select {
-	case turn <- struct{}{}:
-		return func() { <-turn }, true
-	default:
-		return nil, false
 	}
 }
 

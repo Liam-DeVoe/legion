@@ -90,12 +90,6 @@ type podUpdateSweep struct {
 	keptReads []keptPodRead
 }
 
-// keptPodRead is a read that may end an earlier round's keep of issue's pod, which the walk found
-// due (podKeptForWork): reasons is the drift the sweep read of the pod, as a round would record it.
-type keptPodRead struct {
-	issue, pod, reasons string
-}
-
 // holds is whether a limit of the project holds this issue's opening back, and records the issue
 // as waiting under the limit that did. Where both hold it back the limit on open rounds is the
 // one recorded: it is the one that will still hold the issue back at the next sweep, and the

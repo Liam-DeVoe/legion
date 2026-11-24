@@ -554,7 +554,7 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 
 // ReadAct satisfies runtime.ActReader: whether a recorded act on issue's pod was made, read from
 // the API server under the pod's launch turn (GPT-6.1 Sol's point 2 on #5285 at fa9deb04,
-// the Legion reviewer's point A). The turn is taken without waiting (tryTurn): a launch, a
+// the Legion reviewer's point A). The turn is taken without waiting (tryLockPod): a launch, a
 // replacement or a release that holds it may be making the act now, so ReadAct answers
 // runtime.ErrTurnBusy and reads nothing. Under the turn no act of this daemon on the pod runs, and
 // the Sandbox and its pod are read from the API server, never from the stores: a store whose feed
@@ -562,10 +562,10 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 // decide runs under the turn. A Sandbox name no issue key builds, and a read that fails, are
 // errors, and decide is not called.
 //
-// An act that takes the pod (runtime.TakesPod, the pod's uid its target) is made where the issue
-// has no Sandbox, where its Sandbox is Suspended — the suspension landed, whether or not the pod is
-// still there to see — and where the Sandbox's own pod is another or none; it is not made where the
-// Sandbox runs the target as its own pod. ReplacePod writes its suspension before it waits for the
+// An act that takes the pod (runtime.TakesPod, the pod's uid its target) is made where the pod is
+// taken (podTaken): the issue has no Sandbox, its Sandbox is Suspended — the suspension landed,
+// whether or not the pod is still there to see — or the Sandbox's own pod is another or none; it is
+// not made where the Sandbox runs the target as its own pod. ReplacePod writes its suspension before it waits for the
 // pod to go (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
 //
 // An act that takes the kept volume (runtime.TakesVolume, the uid of the Sandbox that owns it its
@@ -580,7 +580,7 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 	if err != nil {
 		return fmt.Errorf("sandbox runtime: read an act on the pod of %s: %w", issue, err)
 	}
-	release, free := r.tryTurn(r.podTurns, name)
+	release, free := r.tryLockPod(name)
 	if !free {
 		return runtime.ErrTurnBusy
 	}
@@ -594,30 +594,25 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 
 // actState is what the API server holds now of act on the Sandbox named name (ReadAct).
 func (r *Runtime) actState(ctx context.Context, name string, act runtime.RecordedAct) (runtime.ActState, error) {
-	object, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return runtime.ActMade, nil
-	}
+	s, err := r.readSandbox(ctx, name)
 	if err != nil {
 		return runtime.ActUncertain, fmt.Errorf("read sandbox %s: %w", name, err)
 	}
-	s, err := decodeSandbox(object)
-	if err != nil {
-		return runtime.ActUncertain, err
+	if s == nil {
+		return runtime.ActMade, nil
 	}
 	switch act.Takes {
 	case runtime.TakesPod:
-		if s.mode() == modeSuspended {
+		var pod *corev1.Pod
+		if s.mode() != modeSuspended {
+			if pod, err = r.apiPod(ctx, name); err != nil {
+				return runtime.ActUncertain, err
+			}
+		}
+		if podTaken(s, pod, act.Target) {
 			return runtime.ActMade, nil
 		}
-		pod, err := r.apiPod(ctx, name)
-		if err != nil {
-			return runtime.ActUncertain, err
-		}
-		if ownedBy(pod, s.UID) && string(pod.UID) == act.Target {
-			return runtime.ActNotMade, nil
-		}
-		return runtime.ActMade, nil
+		return runtime.ActNotMade, nil
 	case runtime.TakesVolume:
 		if string(s.UID) != act.Target {
 			return runtime.ActMade, nil
@@ -635,6 +630,16 @@ func (r *Runtime) actState(ctx context.Context, name string, act runtime.Recorde
 		return runtime.ActUncertain, nil
 	}
 	return runtime.ActUncertain, fmt.Errorf("no act takes %q", act.Takes)
+}
+
+// podTaken is whether the pod of uid is taken from the issue's Sandbox s, read from the stores or
+// from the API server: there is no Sandbox, the Sandbox is Suspended — a suspension that landed
+// takes the pod, whether or not the pod is still there to see — or the pod the Sandbox owns is
+// another or none (pod, a same-named pod the Sandbox does not own being none). It is the one test of
+// a taken pod: a round's replacement makes nothing of a pod that is taken (replaceRoundPod), and a
+// recorded act that takes the pod is made once the pod is taken (actState).
+func podTaken(s *sandbox, pod *corev1.Pod, uid string) bool {
+	return s == nil || s.mode() == modeSuspended || !ownedBy(pod, s.UID) || string(pod.UID) != uid
 }
 
 // apiPod is the pod named name as the API server holds it now, nil where it holds none.
@@ -666,13 +671,10 @@ func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due 
 	if err != nil {
 		return fmt.Errorf("replace %s's pod: %w", of, err)
 	}
-	if s == nil || s.mode() == modeSuspended {
-		return nil
-	}
 	// The pod the Sandbox owns, as every other reader of the two together takes it (viewOf): a
 	// same-named pod it does not own is some earlier Sandbox's, and no pod of this round.
 	v := r.viewOf(name, s)
-	if v.pod == nil || string(v.pod.UID) != podUID {
+	if podTaken(s, v.pod, podUID) {
 		return nil
 	}
 	if err := due(ctx); err != nil {

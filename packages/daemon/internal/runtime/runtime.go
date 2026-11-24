@@ -241,18 +241,16 @@ func RoundReasons(reasons []string) string {
 //
 // Operation is the replacement's own identity, which the runtime makes for each replacement and
 // hands in both calls: the daemon's record of it is keyed by it, never by the pod, so no later
-// replacement of the same pod writes over it (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). Takes
-// is what the act takes, and Target the uid of what it takes (RecordedAct): the pod's uid for an
-// act that takes the pod, the Sandbox's uid for one that deletes the Sandbox and the kept volume it
-// owns (GPT-6.1 Sol's point 4).
+// replacement of the same pod writes over it (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). Act is
+// what the act takes and the uid of its target (RecordedAct; GPT-6.1 Sol's point 4): the pod
+// (PodAct), or the Sandbox and the kept volume it owns (VolumeAct).
 type TakenPod struct {
 	Operation string
 	Claim     claim.Token
 	Issue     string
 	PodUID    string
 	Why       string
-	Takes     Takes
-	Target    string
+	Act       RecordedAct
 	Work      WorkspaceWork
 	Err       error
 }
@@ -296,6 +294,13 @@ type RecordedAct struct {
 	Takes  Takes
 	Target string
 }
+
+// PodAct is the act that takes the pod of uid pod: the suspension of the issue's Sandbox over it.
+func PodAct(pod string) RecordedAct { return RecordedAct{Takes: TakesPod, Target: pod} }
+
+// VolumeAct is the act that takes the kept volume the issue's Sandbox of uid sandbox owns: the
+// delete of that Sandbox.
+func VolumeAct(sandbox string) RecordedAct { return RecordedAct{Takes: TakesVolume, Target: sandbox} }
 
 // ActState is what the runtime reads of a recorded act (ActReader).
 type ActState int

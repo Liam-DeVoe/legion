@@ -140,10 +140,5 @@ func TestAReplacementRefusedBeforeItsSuspensionReadsTheWorkspaceAgain(t *testing
 	if reads := rig.workspaceReads(); reads != 2 {
 		t.Fatalf("the workspace was read %d times, want twice: once before each replacement asked for", reads)
 	}
-	for range roundSweeps {
-		rig.tick()
-	}
-	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 1 || !strings.Contains(told[0].Reason, passedOverCommit) {
-		t.Fatalf("the architect was told %+v, want one workspace-taken notice naming the commit %s", told, passedOverCommit)
-	}
+	rig.wantToldOnce("once the runtime took the replacement")
 }

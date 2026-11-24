@@ -11,7 +11,6 @@ package daemon
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -138,15 +136,9 @@ func TestAPodTheRuntimeFindsGoneAtTheReplacementIsTold(t *testing.T) {
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		rig.awaitSwept(role, "its round to end as the replacement it made", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	}
-	for range roundSweeps {
-		rig.tick()
-	}
+	rig.wantToldOnce("once the runtime found no pod to replace")
 	if asked := rig.rt.CallsOf("ReplacePodNoPod"); len(asked) != 1 {
 		t.Fatalf("the runtime was asked %d times for a replacement it found no pod for, want once", len(asked))
-	}
-	told := rig.architectNotices(record.WorkspaceTakenNotice)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, passedOverCommit) {
-		t.Fatalf("the architect was told %+v, want one workspace-taken notice naming the commit %s the read before the replacement found", told, passedOverCommit)
 	}
 	if records := rig.replacementRecords(); records != 0 {
 		t.Fatalf("the store holds %d records of the replacement once its notice is queued, want none", records)

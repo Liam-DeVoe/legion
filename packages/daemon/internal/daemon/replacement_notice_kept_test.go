@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -93,9 +92,7 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 		t.Parallel()
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 		lift := rig.refuseWorkspaceTaken()
-		taken := runtime.TakenPod{Operation: "launch-op-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-			Why:   "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
-			Takes: runtime.TakesPod, Target: podUpdatePod, Work: roundUnpushed}
+		taken := movedFacetTaken(rig, "launch-op-1", roundUnpushed, nil)
 		if err := rig.s.recordLaunchTakes(rig.ctx, taken); err != nil {
 			t.Fatalf("record what the launch takes: %v", err)
 		}

@@ -12,13 +12,11 @@ package daemon
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -77,13 +75,7 @@ func TestASweepInsideALaunchsReplacementLeavesItsRecordStanding(t *testing.T) {
 	}
 	rig.registerInto(claim.RoleImplementer, pod)
 	rig.awaitSwept(claim.RoleImplementer, "its round to end as the launch's replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
-	for range roundSweeps {
-		rig.tick()
-	}
-	told := rig.architectNotices(record.WorkspaceTakenNotice)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, passedOverCommit) {
-		t.Fatalf("the architect was told %+v, want one workspace-taken notice naming the commit %s the launcher's read found", told, passedOverCommit)
-	}
+	rig.wantToldOnce("once the launch replaced the pod")
 	if records := rig.replacementRecords(); records != 0 {
 		t.Fatalf("the store holds %d records of the launch's replacement once its notice is queued, want none", records)
 	}

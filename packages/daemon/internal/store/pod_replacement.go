@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // PodReplacement is the record of a replacement of an issue's pod that may take a disk (R7 of
@@ -17,16 +18,15 @@ import (
 // (FinishPodReplacement). Operation is the act's own identity, which keys the row
 // (pod_replacements): two acts on the same pod are two rows, and no write goes over a row that
 // stands (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). PodUID is the pod the act takes, "" where
-// the issue's Sandbox ran no pod of its own. Takes is what the act takes, "pod" or "volume", and
-// Target the uid of what it takes, the pod's or the Sandbox's (GPT-6.1 Sol's point 4), which the
-// daemon has the runtime read to say whether the act was made. Record is the daemon's own encoding
-// of the replacement, which the store keeps whole.
+// the issue's Sandbox ran no pod of its own. Act is what the act takes and the uid of its target
+// (runtime.RecordedAct; GPT-6.1 Sol's point 4), which the daemon has the runtime read to say
+// whether the act was made. Record is the daemon's own encoding of the replacement, which the
+// store keeps whole.
 type PodReplacement struct {
 	Operation string
 	Issue     string
 	PodUID    string
-	Takes     string
-	Target    string
+	Act       runtime.RecordedAct
 	Record    []byte
 }
 
@@ -34,14 +34,14 @@ type PodReplacement struct {
 // the moment of this write. A row of r's operation that stands already is kept as it is: a record is
 // never written over.
 func (s *Store) RecordPodReplacement(ctx context.Context, project string, r PodReplacement) error {
-	if project == "" || r.Operation == "" || r.Issue == "" || r.Takes == "" || r.Target == "" || len(r.Record) == 0 {
+	if project == "" || r.Operation == "" || r.Issue == "" || r.Act.Takes == "" || r.Act.Target == "" || len(r.Record) == 0 {
 		return errors.New("the record of a pod's replacement needs its project, its operation, its issue, what it takes, its target and the record")
 	}
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `insert into pod_replacements (project, operation, issue, pod_uid, takes, target_uid, record, written_at)
 			values ($1, $2, $3, $4, $5, $6, $7::jsonb, now())
 			on conflict (project, operation) do nothing`,
-			project, r.Operation, r.Issue, r.PodUID, r.Takes, r.Target, string(r.Record))
+			project, r.Operation, r.Issue, r.PodUID, string(r.Act.Takes), r.Act.Target, string(r.Record))
 		return err
 	}); err != nil {
 		return fmt.Errorf("record the replacement %s of %s's pod %s: %w", r.Operation, r.Issue, r.PodUID, err)
@@ -62,13 +62,13 @@ func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodRepla
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				r      PodReplacement
-				record string
+				r             PodReplacement
+				takes, record string
 			)
-			if err := rows.Scan(&r.Operation, &r.Issue, &r.PodUID, &r.Takes, &r.Target, &record); err != nil {
+			if err := rows.Scan(&r.Operation, &r.Issue, &r.PodUID, &takes, &r.Act.Target, &record); err != nil {
 				return err
 			}
-			r.Record = []byte(record)
+			r.Act.Takes, r.Record = runtime.Takes(takes), []byte(record)
 			standing = append(standing, r)
 		}
 		return rows.Err()

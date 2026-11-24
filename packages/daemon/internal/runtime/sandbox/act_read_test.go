@@ -26,7 +26,7 @@ import (
 func readAct(g *rig, pod string) (runtime.ActState, bool, error) {
 	g.t.Helper()
 	state, decided := runtime.ActUncertain, false
-	err := g.r.ReadAct(g.ctx, testTree, runtime.RecordedAct{Takes: runtime.TakesPod, Target: pod}, func(_ context.Context, read runtime.ActState) error {
+	err := g.r.ReadAct(g.ctx, testTree, runtime.PodAct(pod), func(_ context.Context, read runtime.ActState) error {
 		state, decided = read, true
 		return nil
 	})
