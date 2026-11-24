@@ -256,13 +256,13 @@ func newClaudeBackendLive(t *testing.T) *claudeBackendLive {
 	return r
 }
 
-// setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
-// creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
+// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository,
+// and creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
 func (r *claudeBackendLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Claude Code backend live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	var created struct {
 		Key string `json:"key"`
 	}

@@ -164,7 +164,7 @@ type kindTreeRig struct {
 }
 
 // newKindTreeRig brings the rig up and readies everything the daemon boots against: the cluster,
-// PostgreSQL, NATS, the listener, Dispatch with the run's project and its repository mapping, the
+// PostgreSQL, NATS, the listener, Dispatch with the run's project and its default repository, the
 // fake GitHub's repository, Apps, leak check and webhook, the stand-in, the operator route's
 // ConfigMap and the providers Secret, the `legion` this checkout builds, and the store, migrated.
 // The daemon is booted by boot, after the test seeds what it boots on.
@@ -209,7 +209,7 @@ func newKindTreeRig(t *testing.T, opts kindTreeOptions) *kindTreeRig {
 		t.Fatal(err)
 	}
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "kind tree " + r.cfg.Project}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+r.repo.Slug(), map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": r.repo.Slug()}, http.StatusOK, nil)
 
 	r.model = newKindStandin(t, kind.Gateway, "kind-marker-"+randomSuffix(t)[:8])
 	r.operatorRoute()
