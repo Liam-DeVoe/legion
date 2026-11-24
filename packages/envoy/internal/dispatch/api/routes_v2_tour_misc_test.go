@@ -85,6 +85,14 @@ func miscTourSteps() []tourStep {
 			},
 		},
 		{
+			// One person's nodes: alice's comment on a toured issue is one of them.
+			Method: http.MethodGet, Pattern: "/nodes", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				tour.comment(t, tour.issue(t))
+				return tourRequest{Query: url.Values{"person": {"alice"}}, As: alice}
+			},
+		},
+		{
 			Method: http.MethodGet, Pattern: "/search-coverage", Status: http.StatusOK,
 			Setup: asAlice(nil),
 		},

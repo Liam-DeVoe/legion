@@ -48,13 +48,27 @@ var traversalWords = []string{
 	"node", "nodes", "relation", "relations", "traverse", "via",
 }
 
-// contractsModule and contractsGenerated are the two files the dashboard's wire shapes are
-// declared in, relative to the repository root: the module every consumer imports, and the
-// module generated from the route table that it re-exports whole.
+// contractsModule and contractsGenerated are the two files the dashboard's /api/v1 wire shapes
+// are declared in, relative to the repository root: the module every consumer imports, and the
+// module generated from the /api/v1 document that it re-exports whole. contractsModuleV2 and
+// contractsGeneratedV2 are the same two files of /api/v2, generated from the /api/v2 document.
 const (
-	contractsModule    = "packages/contracts/src/dispatch-api.ts"
-	contractsGenerated = "packages/contracts/src/dispatch-api.generated.ts"
+	contractsModule      = "packages/contracts/src/dispatch-api.ts"
+	contractsGenerated   = "packages/contracts/src/dispatch-api.generated.ts"
+	contractsModuleV2    = "packages/contracts/src/dispatch-api-v2.ts"
+	contractsGeneratedV2 = "packages/contracts/src/dispatch-api-v2.generated.ts"
 )
+
+// versionContracts is the module of one version's wire shapes and the generated module it
+// re-exports whole.
+type versionContracts struct{ module, generated string }
+
+// contractsOf is each version's two contracts files: a route is held to those of the version it
+// is mounted under, as it is held to that version's document (openAPIDocumentPathOf).
+var contractsOf = map[apiVersion]versionContracts{
+	apiV1: {module: contractsModule, generated: contractsGenerated},
+	apiV2: {module: contractsModuleV2, generated: contractsGeneratedV2},
+}
 
 // TestTheStoreAddsNoReachAndNoReadChangesShape is this child's negative control. The node and
 // tuple store is a second way to hold what Dispatch already held, so the risk it carries is
@@ -339,57 +353,66 @@ func routesBeforeThisChild(t *testing.T, testHooks bool) []apiRoute {
 }
 
 // declaredShapesUnchanged walks every route the table held before this child and reads the shape
-// it answers out of what the contracts package declares.
+// it answers out of what the contracts package declares for the version it is mounted under: an
+// /api/v1 route out of `schemas/dispatch-openapi.json` and `dispatch-api.generated.ts`, an /api/v2
+// route out of `schemas/dispatch-openapi-v2.json` and `dispatch-api-v2.generated.ts`.
 //
-// The chain is three links, and the test holds each: the emitter renders the table into
-// `schemas/dispatch-openapi.json`, so a committed document that differs from a fresh render is a
-// table whose shapes nobody published; `dispatch-api.generated.ts` is generated from that
-// document, so every route and every schema of the document must be declared there, field for
-// field; and `dispatch-api.ts` re-exports that module whole, so what a consumer imports is what
-// the table answers. A field dropped from a Go type, or a module left stale beside a table that
-// moved, breaks one of the three.
+// The chain is three links for each version, and the test holds each: the emitter renders the
+// version's rows of the table into its document, so a committed document that differs from a
+// fresh render is a table whose shapes nobody published; the version's generated module is
+// generated from that document, so every route and every schema of the document must be declared
+// there, field for field; and the version's module (`dispatch-api.ts`, `dispatch-api-v2.ts`)
+// re-exports that generated module whole, so what a consumer imports is what the table answers.
+// A field dropped from a Go type, or a module left stale beside a table that moved, breaks one of
+// the three.
 func declaredShapesUnchanged(t *testing.T) {
 	root := repositoryRoot(t)
-	document := committedDocument(t, root)
-	module := readRepositoryFile(t, root, contractsModule)
-	if !strings.Contains(module, `export * from "./dispatch-api.generated";`) {
-		t.Fatalf("%s no longer re-exports the generated module, so what it declares is not what the table answers",
-			contractsModule)
-	}
-	generated := readRepositoryFile(t, root, contractsGenerated)
-	declared := schemasOfGeneratedModule(t, generated)
-	owned := splitOwnedSchemas(generated)
+	routes := routesBeforeThisChild(t, true)
+	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
+		files := contractsOf[version]
+		documentPath := openAPIDocumentPathOf(version)
+		document := committedDocument(t, root, version)
+		module := readRepositoryFile(t, root, files.module)
+		reexport := `export * from "./` + strings.TrimSuffix(filepath.Base(files.generated), ".ts") + `";`
+		if !strings.Contains(module, reexport) {
+			t.Fatalf("%s no longer re-exports the generated module, so what it declares is not what the table answers",
+				files.module)
+		}
+		generated := readRepositoryFile(t, root, files.generated)
+		declared := schemasOfGeneratedModule(t, files.generated, generated)
+		owned := splitOwnedSchemas(generated)
 
-	for _, route := range routesBeforeThisChild(t, true) {
-		operations, held := document.Paths[route.Pattern]
-		if !held {
-			t.Errorf("%s %s is in the table and in no path of the document", route.Method, route.Pattern)
-			continue
+		for _, route := range servedAt(version, routes) {
+			operations, held := document.Paths[route.Pattern]
+			if !held {
+				t.Errorf("%s %s is in the table and in no path of %s", route.Method, route.Pattern, documentPath)
+				continue
+			}
+			if _, served := operations[strings.ToLower(route.Method)]; !served {
+				t.Errorf("%s %s is in the table and %s declares no %s for it",
+					route.Method, route.Pattern, documentPath, strings.ToLower(route.Method))
+			}
+			if !strings.Contains(generated, `  "`+route.Pattern+`": {`) {
+				t.Errorf("%s %s is in the table and %s declares no path for it",
+					route.Method, route.Pattern, files.generated)
+			}
 		}
-		if _, served := operations[strings.ToLower(route.Method)]; !served {
-			t.Errorf("%s %s is in the table and the document declares no %s for it",
-				route.Method, route.Pattern, strings.ToLower(route.Method))
+		for name, schema := range document.Components.Schemas {
+			fields, held := declared[name]
+			if !held {
+				t.Errorf("%s declares the schema %s, which %s does not", documentPath, name, files.generated)
+				continue
+			}
+			want := slices.Sorted(maps.Keys(schema.Properties))
+			if !slices.Equal(fields, want) {
+				t.Errorf("%s declares %s as %v, and the route table answers %v", files.generated, name, fields, want)
+			}
+			if !owned[name] && !generatedAlias(name).MatchString(generated) {
+				t.Errorf("%s declares %s, exports no alias for it and does not name it as the split's, so no consumer imports it",
+					files.generated, name)
+			}
 		}
-		if !strings.Contains(generated, `  "`+route.Pattern+`": {`) {
-			t.Errorf("%s %s is in the table and %s declares no path for it",
-				route.Method, route.Pattern, contractsGenerated)
-		}
-	}
-	for name, schema := range document.Components.Schemas {
-		fields, held := declared[name]
-		if !held {
-			t.Errorf("the document declares the schema %s, which %s does not", name, contractsGenerated)
-			continue
-		}
-		want := slices.Sorted(maps.Keys(schema.Properties))
-		if !slices.Equal(fields, want) {
-			t.Errorf("%s declares %s as %v, and the route table answers %v", contractsGenerated, name, fields, want)
-		}
-		if !owned[name] && !generatedAlias(name).MatchString(generated) {
-			t.Errorf("%s declares %s, exports no alias for it and does not name it as the split's, so no consumer imports it",
-				contractsGenerated, name)
-		}
-	}
+	})
 }
 
 // committedOpenAPIShapes is the committed document as this test reads it: what each path serves,
@@ -415,25 +438,24 @@ type openAPISchema struct {
 	OneOf      []openAPISchema          `json:"oneOf"`
 }
 
-// committedDocument is the OpenAPI document the contracts package is generated from, held to a
-// fresh render of the route table first: a committed document that differs from the render is a
-// table whose shapes nobody published, and every comparison below would be against the wrong
-// thing.
-func committedDocument(t *testing.T, root string) committedOpenAPIShapes {
+// committedDocument is the committed OpenAPI document of version, which that version's contracts
+// module is generated from, held to a fresh render of the route table first: a committed document
+// that differs from the render is a table whose shapes nobody published, and every comparison
+// below would be against the wrong thing.
+func committedDocument(t *testing.T, root string, version apiVersion) committedOpenAPIShapes {
 	t.Helper()
-	rendered := renderOpenAPI(t, apiV1)
-	committedPath := filepath.Join(root, filepath.FromSlash(OpenAPIDocumentPath))
-	committed, err := os.ReadFile(committedPath)
+	documentPath := openAPIDocumentPathOf(version)
+	rendered := renderOpenAPI(t, version)
+	committed, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(documentPath)))
 	if err != nil {
-		t.Fatalf("read the committed OpenAPI document: %v", err)
+		t.Fatalf("read the committed /api/v%d OpenAPI document: %v", version, err)
 	}
 	if !bytes.Equal(committed, rendered) {
-		t.Fatalf("%s is not what the table renders: run `envoy-dispatch openapi --out %s`",
-			OpenAPIDocumentPath, OpenAPIDocumentPath)
+		t.Fatalf("%s is not what the table renders: run `envoy-dispatch openapi --version %d`", documentPath, version)
 	}
 	var document committedOpenAPIShapes
 	if err := json.Unmarshal(committed, &document); err != nil {
-		t.Fatalf("decode the committed OpenAPI document: %v", err)
+		t.Fatalf("decode the committed /api/v%d OpenAPI document: %v", version, err)
 	}
 	return document
 }
@@ -449,16 +471,17 @@ func generatedAlias(name string) *regexp.Regexp {
 var splitOwnedSchema = regexp.MustCompile(`"([A-Za-z_][A-Za-z0-9_]*)"`)
 
 // splitOwnedSchemas is the schema names the generated module says the hand-written split owns.
-// The generator exports no alias for those: dispatch-api.ts re-exports the generated module and
-// the split together, and one name cannot come from both, so the split's own export is what a
-// consumer imports (packages/contracts/scripts/gen-api.ts). The generator renders the list into
-// the module as that union, and dispatch-api-owned.ts holds the split's reading of each name to
-// the document's reading at compile time, so a Go change that moves one of these shapes reds the
-// typecheck by the name it moved.
+// The generator exports no alias for those: dispatch-api.ts re-exports the /api/v1 generated
+// module and the split together, and one name cannot come from both, so the split's own export is
+// what a consumer imports (packages/contracts/scripts/gen-api.ts). The generator renders the list
+// into the module as that union, and dispatch-api-owned.ts holds the split's reading of each name
+// to the document's reading at compile time, so a Go change that moves one of these shapes reds
+// the typecheck by the name it moved.
 //
 // The list is read out of the module rather than written here, so a name the generator hands
 // back goes straight back to needing an alias of its own, and a module that renders no union at
-// all leaves every name needing one.
+// all leaves every name needing one: the /api/v2 module, which dispatch-api-v2.ts re-exports
+// alone, beside no split.
 func splitOwnedSchemas(generated string) map[string]bool {
 	owned := map[string]bool{}
 	start := strings.Index(generated, "export type SplitOwnedSchemaName =")
@@ -482,16 +505,16 @@ var (
 	generatedSchemaField = regexp.MustCompile(`^      "?([A-Za-z_][A-Za-z0-9_$-]*)"?\??:(\s|$)`)
 )
 
-// schemasOfGeneratedModule reads the generated module's own declarations: every schema it holds
-// and the field names of each. The module is Biome-formatted, so a schema's name sits at four
-// spaces and its fields at six, and a field whose value is an object nests deeper and is no
-// field of the schema itself.
-func schemasOfGeneratedModule(t *testing.T, source string) map[string][]string {
+// schemasOfGeneratedModule reads the declarations of one version's generated module, the file at
+// path whose text is source: every schema it holds and the field names of each. The module is
+// Biome-formatted, so a schema's name sits at four spaces and its fields at six, and a field whose
+// value is an object nests deeper and is no field of the schema itself.
+func schemasOfGeneratedModule(t *testing.T, path, source string) map[string][]string {
 	t.Helper()
 	lines := strings.Split(source, "\n")
 	start := slices.Index(lines, "  schemas: {")
 	if start < 0 {
-		t.Fatalf("%s declares no components.schemas block", contractsGenerated)
+		t.Fatalf("%s declares no components.schemas block", path)
 	}
 	schemas := map[string][]string{}
 	current := ""
@@ -509,7 +532,7 @@ func schemasOfGeneratedModule(t *testing.T, source string) map[string][]string {
 		}
 	}
 	if len(schemas) < 100 {
-		t.Fatalf("%s reads as %d schemas, which is too few to be the module", contractsGenerated, len(schemas))
+		t.Fatalf("%s reads as %d schemas, which is too few to be the module", path, len(schemas))
 	}
 	for name := range schemas {
 		sort.Strings(schemas[name])
@@ -535,7 +558,9 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //   - An undeclared traversal parameter: every word a caller would walk the graph with that the
 //     route does not declare, handed to it at once, at objects the route has a row of. A route
 //     that honoured one would answer something else, so the answer must be the answer it gives
-//     without them, status and rows alike, as the base build answered it.
+//     without them, status and rows alike, as the base build answered it; and a route the /api/v2
+//     decoder reads (decoded), which refuses every query key its row does not declare (R4),
+//     must answer that refusal, 400 QUERY_KEY_UNKNOWN naming one of the words.
 func threeBadRequests(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
@@ -633,14 +658,18 @@ func threeBadRequests(t *testing.T) {
 	// and proves nothing; so every route reads a row here, but the few listed in
 	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
 	//
-	// Each route is sent the traversal words it does not declare. No route refuses an
-	// undeclared query parameter, and the base build answered each of them as it answers the
-	// plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. A word a route does declare - `kind` on
-	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
-	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
-	// two reads (growingReads) is walked under a parameter it declares that holds it to the
-	// rows its plain read answered, so the two answers differ only where the walk did.
+	// Each route is sent the traversal words it does not declare (declaredQueryOf). A route the
+	// /api/v2 decoder reads refuses an undeclared query key before its handler runs (R4), so its
+	// walked read must answer that refusal, naming one of the words it was sent and every key
+	// the route declares, whatever its plain read answered. No other route - one of the /api/v1
+	// table, a row of the INFRA-979 tree - refuses an undeclared query parameter, and the base
+	// build answered each of them as it answers the plain read, so the walked read must answer
+	// exactly that: a refusal is an answer production never gave, and fails as any other. A word
+	// a route does declare - `kind` on GET /api/v1/me/replies and GET /api/v2/me/threads - is
+	// that route's own parameter, which it answers by its own rule, and is no traversal the
+	// caller handed it. A read whose rows can grow between the two reads (growingReads) is
+	// walked under a parameter it declares that holds it to the rows its plain read answered, so
+	// the two answers differ only where the walk did.
 	//
 	// The event log answers only the events at or below the server's safe horizon, which a
 	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
@@ -663,7 +692,7 @@ func threeBadRequests(t *testing.T) {
 			target += "?" + query
 		}
 		plain := dispatchRequest(t, handler, route.Method, target, nil, "alice")
-		walk := undeclaredTraversal(name)
+		walk := undeclaredTraversal(route)
 		if bound, grows := growingReads[name]; grows && plain.Code < 400 {
 			held, readRows := bound(plain.Body.Bytes())
 			if !readRows {
@@ -689,6 +718,18 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
+		if route.decoded() {
+			code, _, _ := codePair(route.Version, apicode.QueryKeyUnknown)
+			sent, _ := url.ParseQuery(walk)
+			var refusal queryKeyUnknownBody
+			_ = json.Unmarshal(walked.Body.Bytes(), &refusal)
+			if declared := declaredQueryOf(route); walked.Code != http.StatusBadRequest || refusal.Code != code ||
+				!sent.Has(refusal.Key) || !slices.Equal(refusal.Declared, declared) {
+				t.Errorf("%s answers %d at %s with a traversal parameter, want 400 %s naming one of the words it was sent and %v: %s",
+					name, walked.Code, target, code, declared, firstLine(walked.Body.String()))
+			}
+			continue
+		}
 		if plain.Code != walked.Code {
 			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
 				name, plain.Code, target, walked.Code, firstLine(walked.Body.String()))
@@ -702,12 +743,13 @@ func threeBadRequests(t *testing.T) {
 	if answered < 60 {
 		t.Fatalf("only %d read answered a row for the traversal probe, which is too few to prove anything", answered)
 	}
-	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
+	t.Logf("%d reads answered a row for the traversal probe", answered)
 }
 
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
-// with what it would need. Their traversal probe still runs, and still has to answer as the
-// plain read answers, but reads nothing.
+// with what it would need, of each version. Their traversal probe still runs, and still has to
+// answer as the plain read answers - or, on a route the /api/v2 decoder reads, the refusal of an
+// undeclared key - but reads nothing.
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
@@ -727,11 +769,28 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+
+	"GET /api/v2/repositories/{owner}/{repo}/app-installation": "a GitHub App private key",
+	"GET /api/v2/delivery/timeline":                            "delivery settings",
+	"GET /api/v2/delivery/measures":                            "delivery settings",
+	"GET /api/v2/delivery/pipeline":                            "delivery settings",
+	"GET /api/v2/deploy-runs/{id}":                             "a run of the deploy repository",
+	"GET /api/v2/issues/{key}/subscribers":                     "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/artifacts/{id}/subscribers":                   "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/agents":                                       "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/handoffs/{id}":                                "a handoff",
+	"GET /api/v2/going-requests/{id}/stream":                   "a going request's answer run",
+	"GET /api/v2/broadcasts/{id}":                              "a broadcast",
+	"GET /api/v2/credential-grants":                            "the agent-secrets broker",
+	"GET /api/v2/credential-requests":                          "the agent-secrets broker",
+	"GET /api/v2/machine-logins":                               "the agent-secrets broker",
+	"GET /api/v2/me/signins":                                   "the agent-secrets broker",
+	"GET /api/v2/artifacts/{id}/changes":                       "two stored versions of one document",
 }
 
-// routeProbeQueries are the queries the reads that require one are sent, each naming the
-// objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
-// that names nothing.
+// routeProbeQueries are the queries the reads of each version that require one are sent, each
+// naming the objects seedTwoProjects wrote, so the read answers a row rather than refusing the
+// request that names nothing.
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"
 	return map[string]string{
@@ -745,6 +804,12 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+
+		"GET /api/v2/search-results":    url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v2/references":        url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v2/reference-targets": url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v2/block-links":       url.Values{"from": {spec}, "to": {spec}}.Encode(),
+		"GET /api/v2/nodes":             url.Values{"person": {"alice"}}.Encode(),
 	}
 }
 
@@ -758,7 +823,8 @@ func routeProbeQueries(owned crossProject) map[string]string {
 // either lists rows that only a write request adds - the inbox's open asks, an issue's comments,
 // messages and asks, the broadcasts - and the probe sends only reads, or answers an object,
 // whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
-// search, the replies, the answers, a person's nodes, the related checks.
+// search, the replies, the answers, a person's nodes, the related checks. The /api/v2 reads of
+// the event log need no bound: the decoder refuses their walked read before it reads a row.
 var growingReads = map[string]func(answered []byte) (string, bool){
 	"GET /api/v1/events/log":            eventLogBound,
 	"GET /api/v1/issues/{key}/events":   eventFeedBound,
@@ -800,10 +866,11 @@ func eventLogBound(answered []byte) (string, bool) {
 }
 
 // seededProbePath is the route's path at the objects seedTwoProjects wrote under their own
-// project: each wildcard takes the seeded object its place names, and a wildcard no seeded
-// object fills takes routeProbePath's placeholder. A route under /artifacts/{id} reads the
-// project's own document, which every such route answers for; one of an issue's documents is
-// read through the issue's routes, which is where those send a reader.
+// project, in either version: each wildcard takes the seeded object its place names, and a
+// wildcard no seeded object fills takes routeProbePath's placeholder. A route under
+// /artifacts/{id} reads the project's own document, which every such route answers for; one of an
+// issue's documents is read through the issue's routes, which is where those send a reader. The
+// /api/v2 read of one mark reads the caller's mark of the project's own issue.
 func seededProbePath(pattern string, owned crossProject) string {
 	path := pattern
 	for _, replacement := range []struct{ from, to string }{
@@ -819,6 +886,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 		{"/priorities/{id}", "/priorities/" + owned.priority},
 		{"/near-copy-checks/{id}", "/near-copy-checks/" + owned.nearCopyCheck},
 		{"{block_id}", owned.documentBlock},
+		{"/me/marks/{kind}/{id}", "/me/marks/issue/" + owned.issue},
 	} {
 		path = strings.ReplaceAll(path, replacement.from, replacement.to)
 	}
@@ -826,9 +894,10 @@ func seededProbePath(pattern string, owned crossProject) string {
 }
 
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
-// not declare as a query parameter of its own, each with a value a traversal would take.
-func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+// not declare as a query parameter of its own (declaredQueryOf), each with a value a traversal
+// would take.
+func undeclaredTraversal(route apiRoute) string {
+	declared := declaredQueryOf(route)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {
@@ -836,6 +905,17 @@ func undeclaredTraversal(route string) string {
 		}
 	}
 	return query.Encode()
+}
+
+// declaredQueryOf is every query key route declares: for a route the /api/v2 decoder reads
+// (decoded), the keys its refusal of an undeclared one names, session among them
+// (declaredQueryKeys); for every other - a route of the /api/v1 table, a row of the INFRA-979
+// tree - the query tags of its shape (routeShapes for the /api/v1 table), as it reads them.
+func declaredQueryOf(route apiRoute) []string {
+	if route.decoded() {
+		return declaredQueryKeys(route.Query)
+	}
+	return queryTagsOf(route.shape().Params)
 }
 
 // probeWithoutCredential sends a mutating route its probe body and no credential.
@@ -1006,8 +1086,8 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 // crossProjectPath is the route's path under another project's key, each other place of it
 // filled with this project's object of the kind that place names, or false for a route that
 // addresses no object of a project under a key at all. A route under /issues/{key} takes the
-// other project's issue as its key, and every other route the other project's key. What each
-// place takes:
+// other project's issue as its key, and every other route the other project's key. A route of
+// either version is read by its version-free pattern (unversionedRoute). What each place takes:
 //
 //   - {slug} of /issues/{key}/artifacts/{slug}: the issue's design.md, a document of the issue,
 //     where the issue's spec would be every issue's own slug and cross nothing;
@@ -1046,9 +1126,10 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		return "", false
 	}
 	// The source write's {owner}/{repo} is the repository it adds as a source of the key's own
-	// project (putArchitectureSource, an upsert on the key and the repository), so under another
-	// project's key it writes a source of that project and addresses no object of this one.
-	if route.Method+" "+route.Pattern == "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}" {
+	// project (putArchitectureSource, an upsert on the key and the repository, at /api/v1 and
+	// /api/v2 alike), so under another project's key it writes a source of that project and
+	// addresses no object of this one.
+	if unversionedRoute(route) == "PUT /projects/{key}/architecture-sources/{owner}/{repo}" {
 		return "", false
 	}
 	for _, place := range []struct{ named, wildcard, object string }{
@@ -1088,31 +1169,40 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 // crossProjectRequest sends one route its cross-project path (crossProjectPath) as a caller the
 // route's own checks admit, with a body that passes what the route checks before it reads the
 // object, so what refuses it is the object and not the caller or the body. Every route is sent
-// as alice, a person, with its probe body (routeProbeBody), but these:
+// as alice, a person, with its probe body (routeProbeBody), but these, read by their version-free
+// pattern (unversionedRoute):
 //
 //   - the step write, its rating and the plan write each record only for the session of the
 //     Legion daemon of the key's project and refuse any other writer 403 STEP_WRITER before they
-//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon), so each is
-//     sent over the deployment's shared agent credential, which proves no session, naming the
-//     session of the other project's daemon, with a body each accepts: the rating carries one,
-//     and the plan write the default plan of a run (defaultPlanBody);
+//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon, and their
+//     /api/v2 handlers alike), so each is sent over the deployment's shared agent credential,
+//     which proves no session, naming the session of the other project's daemon, with a body
+//     each accepts: the rating carries one, and the plan write the default plan of a run
+//     (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
 //     it reads the slug (createNamedVersion), so its body carries one.
 func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
 	t.Helper()
-	switch route.Method + " " + route.Pattern {
-	case "PUT /api/v1/issues/{key}/steps/{id}":
+	switch unversionedRoute(route) {
+	case "PUT /issues/{key}/steps/{id}":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{"actor": daemonSessionOf(owned.otherKey)})
-	case "PUT /api/v1/issues/{key}/steps/{id}/rating":
+	case "PUT /issues/{key}/steps/{id}/rating":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{
 			"actor": daemonSessionOf(owned.otherKey), "rating": 3, "rating_reason": "A rating under another project's key.",
 		})
-	case "PUT /api/v1/issues/{key}/plans/{id}":
+	case "PUT /issues/{key}/plans/{id}":
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
-	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
+	case "POST /issues/{key}/artifacts/{slug}/versions", "POST /projects/{key}/artifacts/{slug}/versions":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
 	}
 	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
+}
+
+// unversionedRoute is the route's method and its pattern without the prefix of the version it is
+// mounted under, "PUT /issues/{key}/steps/{id}": the name one route reads by at /api/v1 and at
+// /api/v2 alike.
+func unversionedRoute(route apiRoute) string {
+	return route.Method + " " + strings.TrimPrefix(route.Pattern, versionPrefix(route.Version))
 }
 
 // answerShape renders an answer as what it answered rather than what it said: an object as its
@@ -1339,8 +1429,8 @@ func readsUnchanged(t *testing.T) {
 	settledCommentDeliveries(t, database, comment.ID)
 
 	root := repositoryRoot(t)
-	declared := schemasOfGeneratedModule(t, readRepositoryFile(t, root, contractsGenerated))
-	document := committedDocument(t, root)
+	declared := schemasOfGeneratedModule(t, contractsGenerated, readRepositoryFile(t, root, contractsGenerated))
+	document := committedDocument(t, root, apiV1)
 	for _, read := range []struct{ name, target string }{
 		{"GET /api/v1/comments/{id}", "/api/v1/comments/" + comment.ID},
 		{"GET /api/v1/artifacts/{id}/blocks", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/blocks"},

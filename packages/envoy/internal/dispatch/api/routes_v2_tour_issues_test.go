@@ -96,9 +96,14 @@ func issuesTourSteps() []tourStep {
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				project, repo := tour.repository(t)
 				body := map[string]any{"project": project, "external": repo + "#7", "title": "An issue the tour imports"}
-				if imported := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", body, "alice"); imported.Code != http.StatusCreated {
+				imported := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", body, "alice")
+				if imported.Code != http.StatusCreated {
 					t.Fatalf("import %s#7: %d %s", repo, imported.Code, imported.Body.String())
 				}
+				// The import's spec owes a settlement that writes after the import answers, as
+				// tour.issue's does: one that lands between the two fingerprints of unknown-keys
+				// would read as the refused request's.
+				awaitSettled(t, tour.database, decodeBody[tourIssue](t, imported).Document)
 				return tourRequest{Body: body, As: alice}
 			},
 		},
