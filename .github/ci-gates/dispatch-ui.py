@@ -9,6 +9,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
     # why: .github/ci-notes/ci.md#dispatch_ui-the-script-whose-references-arm-lists-the-references-lanes-spec-files
     (".github/scripts/dispatch-browser-shard-suite.sh", f"packages/dispatch/e2e/__tests__/reading-walk.test.ts:279-301, the new URL at :282, reads the spec files of the references lane out of its `references)` arm, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
+    (".github/ci-gates/dispatch-references.py", f"packages/dispatch/web/src/features/refs/surface-lists.test.ts's referenceFilter reads the dispatch_references filter's hand-kept patterns out of its excluded(...) call, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
     (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:380-381"),
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),

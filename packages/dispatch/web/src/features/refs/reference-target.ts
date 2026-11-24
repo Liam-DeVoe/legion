@@ -468,10 +468,12 @@ export interface ReferenceData {
    *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
    *  component, Dispatch's record of sessions without the session (one the registry lists, and
    *  one that ended, are both known), the registry without a session that holds the role and the
-   *  record's issue's collaborators without it. False while loading and for any other failure, so
-   *  a reference that names a real target never loses its link to a slow or dropped read. The
-   *  document editor reads the same answer (`document-references.tsx`, through
-   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
+   *  record's issue's collaborators without it. A block gone with a post its author deleted is no
+   *  such answer: it names a deleted post, which stays a link whose card says the post is deleted
+   *  (`blockDeletion`). False while loading and for any other failure, so a reference that names
+   *  a real target never loses its link to a slow or dropped read. The document editor reads the
+   *  same answer (`document-references.tsx`, through `useReferenceTarget`), so a comment and the
+   *  editor cannot disagree. */
   readonly missing: boolean;
   /** The deletion of the comment or message a block reference's block belongs to: its graph
    *  node's mark, or - where the read answers that the block is gone, which leaves no node -
@@ -814,6 +816,24 @@ export function useReferenceData(
   const personKnown =
     personRoute !== undefined &&
     (people?.data ?? []).some((person) => person.login === personRoute.login);
+  // The post a gone block was in, once its read answers, and its deletion. A block gone with a
+  // post its author deleted names that deleted post, which stays a reference: linked, its card
+  // saying the post is deleted (INFRA-1523). So the block's 404 says the target does not exist
+  // only where no post is read for it - a document's block, an ask's part - or where the post's
+  // read answered and the post stands; a post Dispatch answers does not exist says so by its own
+  // read's 404, and a post read still out leaves the reference linked, as every other read does.
+  const gonePost =
+    goneBlockPost === undefined
+      ? undefined
+      : goneBlockPost.kind === "comment"
+        ? comment?.data?.comment
+        : messageQueryResult?.data?.message;
+  const blockDeletion =
+    goneBlockPost === undefined ? postDeletion(blockData?.node) : postDeletion(gonePost);
+  const missingBlock =
+    goneBlockPost === undefined || (gonePost !== undefined && blockDeletion === null)
+      ? block
+      : undefined;
   const textRead = text?.data;
   return {
     issue: issue?.data,
@@ -837,7 +857,7 @@ export function useReferenceData(
         messageQueryResult,
         projectDocument,
         sessionArtifact,
-        block,
+        missingBlock,
         ask,
         comment,
         architecture,
@@ -847,14 +867,7 @@ export function useReferenceData(
         component === undefined) ||
       (route?.kind === "artifact" && issue?.data !== undefined && artifact === undefined),
     block: blockData,
-    blockDeletion:
-      goneBlockPost === undefined
-        ? postDeletion(blockData?.node)
-        : postDeletion(
-            goneBlockPost.kind === "comment"
-              ? comment?.data?.comment
-              : messageQueryResult?.data?.message
-          ),
+    blockDeletion,
   };
 }
 

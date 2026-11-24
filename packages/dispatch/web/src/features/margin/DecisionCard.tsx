@@ -48,18 +48,23 @@ function entryHeadingTree(decision: DecisionEntry): DisplayTree | undefined {
   return named === undefined ? undefined : { ...tree, content: [named] };
 }
 
-/** What a card previews of a decision: its words, and after them the doubt its node holds
+/** What a card previews of a decision after its words: the doubt its node holds
  *  (`unsureWords`) where those words hold no `Unsure:` paragraph, as the paragraph it was moved
- *  from ran on in the preview. */
-function previewOf(decision: DecisionEntry): { markdown: string; tree: DisplayTree | undefined } {
+ *  from ran on in the preview, and the reading of the words with that paragraph after them. The
+ *  mount writes the words and the doubt into the preview's `markdown` itself, so the stored text
+ *  is handed to the renderer where the reading list's walk sees it (`surface-lists.test.ts`). */
+function previewOf(decision: DecisionEntry): {
+  doubt: string | undefined;
+  tree: DisplayTree | undefined;
+} {
   const { text, text_tree: tree } = decision;
   const doubt = unsureWords(decision);
   if (doubt === undefined || holdsUnsureParagraph(tree, text)) {
-    return { markdown: text, tree };
+    return { doubt: undefined, tree };
   }
   const content = tree?.content;
   return {
-    markdown: `${text}\n\n${doubt}`,
+    doubt,
     tree:
       tree === undefined || !Array.isArray(content)
         ? tree
@@ -157,7 +162,9 @@ export function DecisionCard({
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
-        markdown={preview.markdown}
+        markdown={
+          preview.doubt === undefined ? decision.text : `${decision.text}\n\n${preview.doubt}`
+        }
         source={source}
         surface="margin-decision-passage"
         tree={preview.tree}
