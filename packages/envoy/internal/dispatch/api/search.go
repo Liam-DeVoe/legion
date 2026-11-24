@@ -874,6 +874,14 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // binds over every arm: a candidate CTE cuts to its own limit by distance before anything
 // downstream filters it, so a node the acting person may not see would otherwise take a place
 // in that cut and hide a node they may.
+//
+// The document arm probes document_search by its key once for each candidate artifact, as main's
+// arm probed artifact_versions. A plain join let the planner read all of document_search and
+// probe artifacts once for each embedding row. On the database cmd/dispatch-seed writes at scale
+// 1, in the one-project statement whose project keys are not filled, that arm read 374,682
+// shared buffers against main's 327,575 (Job infra-4864-search-split-xc52s at f28566f1). The
+// probe's `limit 1` changes no answer, since artifact_id is document_search's key. Without it
+// Postgres pulls the subquery up into the same join.
 func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
@@ -901,7 +909,7 @@ meaning_document_candidates as (
     join artifacts a on a.id = ` + windowOwnerUUID + `
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
-    join document_search ds on ds.artifact_id = a.id, q
+    join lateral (select ds.created_at from document_search ds where ds.artifact_id = a.id limit 1) ds on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
 		searchRowFilters("i.status", "a.created_by", "ds.created_at") + `
