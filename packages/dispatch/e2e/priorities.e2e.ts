@@ -225,8 +225,9 @@ async function columnTexts(table: Locator, header: string): Promise<string[]> {
     );
 }
 
-/** The badge beside the rail's Priorities entry, which is its last span; an entry with no count
- *  draws two spans and no third. */
+/** The rail's Priorities entry: its name, the line under it, and, while any work is off the
+ *  list, the count beside them, which is the last span it draws. Neither the name nor the line
+ *  holds a digit, so an entry with no count is one whose text holds none. */
 const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Priorities/ });
 
 // SLOW(>=2s): three projects, three priorities and ten issues, then the whole page read cell by
@@ -370,7 +371,8 @@ test("with no priority the page reads the server's sentence, and writes the firs
     // The rail's entry carries no number: nothing is off a list that does not exist.
     await expect(page.getByText(NONE_LIVE, { exact: true })).toBeVisible();
     await expect(page.getByRole("table", { exact: true, name: "Priorities table" })).toHaveCount(0);
-    await expect(railEntry(page).locator("span")).toHaveCount(2);
+    await expect(railEntry(page)).toBeVisible();
+    await expect(railEntry(page)).not.toHaveText(/\d/);
 
     // The page with no priority is where the first is written, with the control the table's
     // toolbar carries once there is one.
@@ -548,7 +550,7 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     for (const id of seed.ids) await endPriority(id);
     await page.reload();
     await expect(railEntry(page)).toBeVisible();
-    await expect(railEntry(page).locator("span")).toHaveCount(2);
+    await expect(railEntry(page)).not.toHaveText(/\d/);
   } finally {
     await context.close();
   }
