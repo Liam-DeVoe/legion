@@ -381,10 +381,7 @@ func (r *Runtime) markSlotLaunch(ctx context.Context, key slotKey) (func(), erro
 func (r *Runtime) slotLaunchEnd(key slotKey) <-chan struct{} {
 	r.launchedMu.Lock()
 	defer r.launchedMu.Unlock()
-	if ended, ok := r.launchEnded[key]; ok {
-		return ended
-	}
-	return nil
+	return r.launchEnded[key]
 }
 
 // refreshUpdate makes update, the refresher's write of key's slot, unless a launch into the slot
