@@ -3145,4 +3145,32 @@ package api
 // requests, made between 2026-11-22T04:42:58Z and 04:46:33Z, found 220 the highest number
 // declared and none at 222. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 222
+//
+// 245: each start of an issue's `startWaitsForPod`, in `GET /legion/v1/state` and in
+// `GET /legion/v1/issues/{key}/record`, is an object of its role and the token of the claim it
+// starts, `{role, token}` (api.StartWaitView), where the list held the role of each start, each
+// role once. Two claims of one issue can hold one role (record.WorkerClaim), so a role named the
+// start of a second agent of the role, such as `implementer-2`, whose slot the pod lacks, as a
+// start of the role's own agent, and the two starts as one. A start row that names no claim is
+// named by the claim the record gives its role's step, the claim the outbox's next try of it acts
+// on. A caller whose contract is below 245 is served the list as before, the role of each start,
+// each role once (one band of shaping.go at `startWaitTokenContract`, `withoutStartWaitTokens`):
+// a plugin below it reads the list as strings and would refuse the whole state over an object. A
+// caller below 221 is served no list, as before; the band of 221 now leaves the key off by a flag
+// on the issue (Issue.startWaitsHidden) rather than clearing the list, so both bands find it and
+// each writes its line. The sentence of an issue's `why` at `claim_stopped` names its stranded
+// worker as `legion state` names a claim (api.ClaimNameInIssue): `its implementer is stranded at
+// failed` for the role's own claim, and the token beside the role, `its implementer (claim
+// <token>) is stranded at failed`, for any other claim of the role. No plugin parses that
+// sentence, and its key is unchanged, so every contract is served it. From this entry the last
+// number of answers.go's SupportedContracts is `api.startWaitTokenContract`, and
+// `strandedTokenContract` stays 222.
+// (This entry takes 245, above the base's 222 (the entry above), above every number another open
+// pull request declares and above the two numbers two more of them are to take: a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made
+// between 2026-11-24T07:08:28Z and 07:09:16Z, read all 514 and found 242 the highest number
+// declared, by #4596 and #4948, then 241 by #4771 and #5307 and 240 by #3831 and #5271; #5164 is
+// to take 243 and #5156 a number above it, neither declared at its head at that reading. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 245

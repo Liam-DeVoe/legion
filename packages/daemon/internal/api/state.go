@@ -702,13 +702,16 @@ type Issue struct {
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`
-	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
-	// the slot of the start's claim or the role of its step, the pod having been built before the
-	// deployment defined or the issue's plan named that name, such as the slot `implementer-2` of
-	// a second agent of one role, whose start is named here by its role, `implementer`
-	// (record.Store.StartsWaitingForPod): a start that creates its claim has none to show yet, and
-	// only the pod's update round or its release lets it start. Absent where none waits.
-	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
+	// StartWaitsForPod are the starts that wait because the issue's live pod lacks the slot of the
+	// start's claim or the role of its step, the pod having been built before the deployment
+	// defined or the issue's plan named that name, such as the slot `implementer-2` of a second
+	// agent of one role: each named by its role and the token of the claim it starts
+	// (StartWaitView), in the order the starts were queued (record.Store.StartsWaitingForPod). A
+	// start that creates its claim has none to show yet, and only the pod's update round or its
+	// release lets it start. Absent where none waits. A caller below shaping.go's
+	// startWaitTokenContract is served the role of each start, each role once
+	// (withoutStartWaitTokens).
+	StartWaitsForPod []StartWaitView `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
 	// record.Issue.DispatchStatus, which this state does not carry. The two differ while a status
@@ -900,6 +903,12 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// startWaitsHidden is set on the copy the state route serves a caller below shaping.go's
+	// deploymentRolesContract (withoutDeploymentRoles), whose reader knows no `startWaitsForPod`:
+	// MarshalJSON leaves the key off. The list itself stays, so the band of
+	// startWaitTokenContract, which writes it in the shape of the contracts between, finds the
+	// same list whichever of the two runs first.
+	startWaitsHidden bool
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
@@ -938,12 +947,17 @@ type WaitingOnView struct {
 	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
 }
 
-// MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
+// MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet, and
+// leaves `startWaitsForPod` off the copy served a caller below deploymentRolesContract
+// (startWaitsHidden).
 func (i Issue) MarshalJSON() ([]byte, error) {
 	type wire Issue
 	out := wire(i)
 	if out.Workers == nil {
 		out.Workers = map[claim.Role]PhaseView{}
+	}
+	if i.startWaitsHidden {
+		out.StartWaitsForPod = nil
 	}
 	return json.Marshal(out)
 }
@@ -1252,6 +1266,31 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 type OtherClaimView struct {
 	Role  claim.Role `json:"role"`
 	Claim ClaimView  `json:"claim"`
+}
+
+// StartWaitView is one start that waits for its issue's pod (Issue.StartWaitsForPod): the role of
+// the start's step and the token of the claim the start brings up, which the outbox acts on when
+// the pod is replaced. Two claims of one issue can hold one role (record.WorkerClaim), so the role
+// alone names a second agent of the role, such as `implementer-2`, as the role's own agent, and
+// the token is what names them apart, as it does on a claim view and a stranded claim.
+//
+// asRole is set on each entry of the copy the state route serves a caller below shaping.go's
+// startWaitTokenContract (withoutStartWaitTokens): that caller reads the list as the roles of the
+// starts, a list of strings, and MarshalJSON writes such an entry as its role alone.
+type StartWaitView struct {
+	Role   claim.Role  `json:"role"`
+	Token  claim.Token `json:"token"`
+	asRole bool
+}
+
+// MarshalJSON writes the entry as an object of its role and its token, and as its role alone on
+// the copy served a caller below startWaitTokenContract (asRole).
+func (v StartWaitView) MarshalJSON() ([]byte, error) {
+	if v.asRole {
+		return json.Marshal(v.Role)
+	}
+	type wire StartWaitView
+	return json.Marshal(wire(v))
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its

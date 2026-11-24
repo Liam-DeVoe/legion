@@ -127,9 +127,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The roles of the starts that wait because their issue's pod lacks the slot of the start's
-	// claim or the role of its step, by issue: a start waiting on its backoff, which may have no
-	// claim to show yet.
+	// The starts that wait because their issue's pod lacks the slot of the start's claim or the
+	// role of its step, by issue, each with its role and the claim its row names: a start waiting
+	// on its backoff, which may have no claim to show yet. Each issue's view names them below,
+	// once its phases rows are read.
 	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -219,9 +220,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
-		for _, role := range waitingForPod[issue.Key] {
-			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
-		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -258,6 +256,28 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		phases, err := in.Store.Phases(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
+		}
+		// Each start that waits for the issue's pod, by its role and the claim it starts: the
+		// claim its row names, or, for a row that names none, the claim the record gives the
+		// role's step (record.WorkerClaim), which is the claim the outbox's next try of that row
+		// acts on (the outbox's start). Two claims of one issue can hold one role, so a role
+		// alone would name a second agent of the role as the role's own agent. The derivation
+		// fails only for a role or an issue no token spells, and the outbox derived this same
+		// claim from the same row's role and issue on the try that wrote its wait, so a failure
+		// is a fault of the record and fails the state rather than serving a start unnamed.
+		for _, start := range waitingForPod[issue.Key] {
+			token := start.Claim
+			if token == "" {
+				token, err = record.WorkerClaim(projectToken, issue.Key, start.Role, phases)
+				if err != nil {
+					return api.State{}, fmt.Errorf("name %s's start of %s that waits for its pod: %w",
+						issue.Key, start.Role, err)
+				}
+			}
+			named := api.StartWaitView{Role: start.Role, Token: token}
+			if !slices.Contains(view.StartWaitsForPod, named) {
+				view.StartWaitsForPod = append(view.StartWaitsForPod, named)
+			}
 		}
 		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of

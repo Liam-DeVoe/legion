@@ -166,6 +166,16 @@ type HeldRow struct {
 	WaitsOn int64
 }
 
+// PodWaitStart is one start row that waits because its issue's pod lacks the slot of the start's
+// claim or the role of its step (Store.StartsWaitingForPod): the role of the start's step, and the
+// claim the row names (SuperviseRequest.Claim), "" for a row that names none, which the outbox
+// acts on through WorkerClaim. Two claims of one issue can hold one role (WorkerClaim), so the
+// role alone does not say which agent a start brings up.
+type PodWaitStart struct {
+	Role  claim.Role
+	Claim claim.Token
+}
+
 // pauseHold is one shape of outbox row a project's pause holds: every row of kind, or, where op
 // is set, the rows of kind whose supervise op is op.
 type pauseHold struct {
