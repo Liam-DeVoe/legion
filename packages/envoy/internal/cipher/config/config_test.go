@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -1744,8 +1745,8 @@ func TestLoadRequiresTheNamespaceAndItsKey(t *testing.T) {
 // naming both.
 func TestLoadReadsTheSecretStore(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
-	if err != nil || cfg.SecretsStore != secrets.StoreAWS || cfg.SecretsKMSKey != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
-		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg, err, secrets.StoreAWS)
+	if err != nil || cfg.SecretsStore != aws.Name || cfg.SecretsKMSKey != validEnv()["BROKER_SECRETS_KMS_KEY_ARN"] {
+		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg, err, aws.Name)
 	}
 
 	gcp := func() map[string]string {

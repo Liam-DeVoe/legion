@@ -60,17 +60,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+
+	// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
+	// "dispatch": the identity that reaches the routes Dispatch's server calls.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
 const (
-	// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
-	// "dispatch": the identity that reaches the routes Dispatch's server calls.
 	dispatchAccount = "system:serviceaccount:example-ns:example-dispatch"
 	// dispatchAudience is the audience its projected token carries, the one the broker's verifier
 	// checks.
@@ -99,7 +102,7 @@ const (
 type e2eServer struct {
 	URL     string
 	Store   *store.Store
-	Secrets *secrets.Local
+	Secrets *awstest.Local
 	Log     fmt.Stringer
 	// Groups is the broker's one group reader, which the policy, the request machine, its chain
 	// check and the approval page all ask who is a member of a group.
@@ -117,7 +120,7 @@ type e2eServer struct {
 // Anthropic's token exchange; the bindings of BROKER_SERVICE_ACCOUNT_SECRETS; and the clock the
 // group reader dates its reads by, time.Now when nil.
 type e2eOptions struct {
-	secrets                                []secrets.LocalSecret
+	secrets                                []awstest.LocalSecret
 	directoryURL, directoryAccount, iamURL string
 	anthropicURL                           string
 	serviceAccounts                        map[string]string
@@ -149,7 +152,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 
-	local := secrets.NewLocal(o.secrets...)
+	local := awstest.NewLocal(o.secrets...)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	// The group reader as main.go's newGroupReader builds it, started on the serving context.
@@ -207,7 +210,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the page at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
 	})
@@ -228,7 +231,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 // the policy, so two steps sharing one secret name would make a later "fresh pending request"
 // silently resolve to an earlier step's already-decided grant instead of creating the new record
 // the step means to test.
-var e2eSecrets = []secrets.LocalSecret{
+var e2eSecrets = []awstest.LocalSecret{
 	policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"),
 	policytest.Secret("SLACK_MCP_XOXP_TOKEN", testApprover, policy.TierHuman, "slack-v1"),
 	policytest.Secret("GITHUB_TOKEN", testApprover, policy.TierHuman, "github-v1"),

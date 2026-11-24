@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAProfileChangedRefusalNamesTheSourcesJudgeTag: a profile with a proxy block carries its
@@ -22,7 +22,7 @@ func TestAProfileChangedRefusalNamesTheSourcesJudgeTag(t *testing.T) {
 	judgedSource := policytest.Judged(policytest.Secret("RELEASE_PAT", fixtureOperator, policy.TierHuman, "v"), 600, "")
 	plainSource := policytest.Secret("PLAIN_PAT", fixtureOperator, policy.TierHuman, "v")
 	stored := policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierHuman, "v")
-	set := policytest.ProfiledCurrent(t, secrets.NewLocal(judgedSource, plainSource, stored), policytest.ProfilesFile(
+	set := policytest.ProfiledCurrent(t, awstest.NewLocal(judgedSource, plainSource, stored), policytest.ProfilesFile(
 		`{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"]}}`,
 		`{"name": "PLAIN_READ", "source": "PLAIN_PAT", "proxy": {"hosts": ["api.github.com"]}}`,
 	)).Get()

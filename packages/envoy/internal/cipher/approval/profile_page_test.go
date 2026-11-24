@@ -14,18 +14,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/logtest"
+
+	// TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
+	// name it asks for, the profile's source, its permissions, its accounts, its repositories, the
+	// target the record's signed request narrows it to and the hosts its proxy block sends the
+	// credential to, each read from the live profiles file and the record itself. Each is its own
+	// row, so a page that leaves one of them out fails that row alone.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
-// name it asks for, the profile's source, its permissions, its accounts, its repositories, the
-// target the record's signed request narrows it to and the hosts its proxy block sends the
-// credential to, each read from the live profiles file and the record itself. Each is its own
-// row, so a page that leaves one of them out fails that row alone.
 func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 	r := newRig(t)
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(
 		`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/lean", "ada/proofs"], "permissions": {"pull_requests": "write", "contents": "write", "metadata": "read"}}, "proxy": {"hosts": ["api.github.com"]}}`,
@@ -71,7 +73,7 @@ func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 // The source's rules make its owner its one requester, so ben owns it and decides it here.
 func TestTheApprovalPagePrintsAGoogleProfilesScopes(t *testing.T) {
 	r := newRig(t)
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	source := policytest.TypeSecret("GCP_FLEET", ben, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	source.Tags[policy.TagScopes] = "bigquery cloud-platform devstorage.read_only"
 	local.Put(source)
@@ -117,7 +119,7 @@ func TestTheApprovalPagePrintsAGoogleProfilesScopes(t *testing.T) {
 // as it is now, with its fingerprint, and that page's approval grants.
 func TestAnApprovalIsBoundToTheProfileItsPagePrinted(t *testing.T) {
 	r := newRig(t)
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	read := policytest.ProfilesFile(`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}}`)
 	write := policytest.ProfilesFile(`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "write", "metadata": "read"}}}`)
@@ -160,7 +162,7 @@ func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	r := newRig(t)
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	const block = `"permissions": {"contents": "read", "metadata": "read"}`
 	before := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
@@ -234,7 +236,7 @@ func TestARestrictedMembersApprovalOfAProfileIsRefusedBeforeAnyProfileCheck(t *t
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	access.Serve(dispatch)
 	r := newRig(t, func(s *rigSetup) { s.projects = access })
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	read := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}}`)
 	write := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "write", "metadata": "read"}}}`)

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -18,7 +18,7 @@ import (
 func newAirlockFixture(t *testing.T, file string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(fixtureSecrets()...)
+	local := awstest.NewLocal(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 	m = &Machine{
 		Store:             st,

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -34,7 +35,7 @@ import (
 // the stand-in minted, in order.
 type giveBackFixture struct {
 	*requests.Machine
-	local        *secrets.Local
+	local        *awstest.Local
 	enrollmentID string
 	grantID      string
 	service      *proxyrulestest.Service
@@ -52,7 +53,7 @@ func newGiveBackFixture(t *testing.T, rules proxyrules.Rules) *giveBackFixture {
 func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *giveBackFixture {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(
+	local := awstest.NewLocal(
 		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, standInAppValue(t)),
 		policytest.Secret("ZED_KEY", checkOperator, policy.TierAgent, "zed-v1"),
 	)

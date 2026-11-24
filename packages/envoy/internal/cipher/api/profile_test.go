@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // gitHubAppFieldRemoved is the message C-5 gives the refusal of a body carrying github_app.
@@ -44,8 +45,8 @@ func newProfileServer(t *testing.T, mint func(secrets.MintRequest) (secrets.Mint
 
 // appSources are the two github-app secrets of a profileServer: APP_KEY, agent tier, and
 // HUMAN_APP_KEY, human tier, both testApprover's.
-func appSources() []secrets.LocalSecret {
-	return []secrets.LocalSecret{
+func appSources() []awstest.LocalSecret {
+	return []awstest.LocalSecret{
 		policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.TypeSecret("HUMAN_APP_KEY", testApprover, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 	}
@@ -54,7 +55,7 @@ func appSources() []secrets.LocalSecret {
 // newProfileServerOf is newProfileServer whose deployment's profiles file is file and whose
 // store holds sources, which the broker serves once each name of reread is reread, as a
 // session's reread makes the broker serve a secret stored after its last load.
-func newProfileServerOf(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, reread ...string) *profileServer {
+func newProfileServerOf(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []awstest.LocalSecret, reread ...string) *profileServer {
 	t.Helper()
 	s := &profileServer{mint: mint}
 	s.testServer = newProfiledTestServer(t, file, func(d *api.Deps) {

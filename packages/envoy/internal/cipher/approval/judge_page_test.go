@@ -13,12 +13,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+
+	// judgeModel is the model deciding in this file; the name the page prints for it is
+	// record.JudgeActor of it, which is also what requests.decided_by keeps and what
+	// `agent-secrets status` prints under decided_by.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// judgeModel is the model deciding in this file; the name the page prints for it is
-// record.JudgeActor of it, which is also what requests.decided_by keeps and what
-// `agent-secrets status` prints under decided_by.
 const judgeModel = "claude-opus-4-6"
 
 // judgeable tags TEST_SECRET, ada's own human-tier secret, with a judge of 900 seconds and its
@@ -28,7 +30,7 @@ const judgeModel = "claude-opus-4-6"
 // that tag.
 func judgeable(t *testing.T, r *rig) {
 	t.Helper()
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	policytest.JudgeTags(t, local, r.machine.Policy, "TEST_SECRET", 900, "grant for the billing job")
 	r.machine.Judge = func(requests.PendingRequest) {}
 }

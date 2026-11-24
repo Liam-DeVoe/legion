@@ -5,7 +5,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAJudgedProfileKeepsItsDigestWhenItsJudgeMovesToTheSourcesTag: the merge base 7c880c1556f6
@@ -42,7 +42,7 @@ func TestAJudgedProfileKeepsItsDigestWhenItsJudgeMovesToTheSourcesTag(t *testing
 				source.Tags[policy.TagJudge] = row.judge
 				source.Tags[policy.TagGuidance] = "grant a reason that holds k14-grant"
 			}
-			set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
+			set := policytest.ProfiledCurrent(t, awstest.NewLocal(source), policytest.ProfilesFile(
 				`{"name": "AIRLOCK_JUDGE_PROBE", "proxy": {"hosts": ["api.github.com"]}}`,
 			)).Get()
 			served, ok := set.Secrets["AIRLOCK_JUDGE_PROBE"]

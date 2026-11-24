@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -102,7 +103,7 @@ func (g *rolledGrants) AirlockAccessPlaceholder(ctx context.Context, grantID, na
 type profileRig struct {
 	*rig
 	st           *store.Store
-	local        *secrets.Local
+	local        *awstest.Local
 	stand        *proxyrulestest.GitHubStand
 	minting      *proxyrulestest.Service
 	grants       *rolledGrants
@@ -116,7 +117,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	t.Helper()
 	pr := &profileRig{
 		st: storetest.Open(t),
-		local: secrets.NewLocal(policytest.TypeSecret(profileSource, profileOperator, policy.TierAgent, policy.TypeGitHubApp,
+		local: awstest.NewLocal(policytest.TypeSecret(profileSource, profileOperator, policy.TierAgent, policy.TypeGitHubApp,
 			policytest.TypeValue(policy.TypeGitHubApp))),
 		stand:  proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: profileInstallations, DistinctTokens: true}),
 		grants: &rolledGrants{},

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -87,7 +88,7 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 	file := policytest.ProfilesFile(`{"name": "` + profileName + `", "source": "` + mintedSource + `", "github": {"accounts": ["acme", "ada"], "permissions": ` + readOnly + `, "value": "token"}, ` +
 		`"proxy": {"hosts": ["` + boundHost + `"], "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}}`)
 	st := storetest.Open(t)
-	local := secrets.NewLocal(policytest.TypeSecret(mintedSource, profileOperator, policy.TierAgent, policy.TypeGitHubInstallations, value))
+	local := awstest.NewLocal(policytest.TypeSecret(mintedSource, profileOperator, policy.TierAgent, policy.TypeGitHubInstallations, value))
 	m := &requests.Machine{
 		Store: st, Policy: policytest.ProfiledCurrent(t, local, file), Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,

@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules: an anthropic-federation secret
@@ -20,7 +20,7 @@ import (
 // (requesters-not-owner); and so are a github and a google block, neither of which fits the type.
 func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T) {
 	source := policytest.TypeSecret("FED_ADMIN", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
-	stored := []secrets.LocalSecret{appSource(), source}
+	stored := []awstest.LocalSecret{appSource(), source}
 
 	cur, _ := profiled(t, stored, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
 	set := cur.Get()

@@ -35,7 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -465,7 +465,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	rules := policytest.Profiles(t, file).ProxyRules()
 	token := policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue)
 	token.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
-	local := secrets.NewLocal(token)
+	local := awstest.NewLocal(token)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = true
 	loader.Profiles = policytest.Profiles(t, file)

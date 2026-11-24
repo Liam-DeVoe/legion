@@ -26,13 +26,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+
+	// askOfAnotherBroker is a pending request for names that enrollment enr's session made of
+	// anotherBroker: its request object and its record are signed for that broker's address. m answers
+	// for testAudience again before it returns, whatever the Create answered.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// askOfAnotherBroker is a pending request for names that enrollment enr's session made of
-// anotherBroker: its request object and its record are signed for that broker's address. m answers
-// for testAudience again before it returns, whatever the Create answered.
 func askOfAnotherBroker(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, names ...string) Request {
 	t.Helper()
 	m.Audience = anotherBroker
@@ -135,7 +137,7 @@ func requireJudgedAlone(t *testing.T, watched *judged, id string) {
 // while m ran no judge, is a person's.
 func watchJudgeOf(t *testing.T, m *Machine, names ...string) *judged {
 	t.Helper()
-	local := m.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := m.Secrets.(aws.Store).Client.(*awstest.Local)
 	for _, name := range names {
 		m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: name, Hosts: []string{"api.example"}})
 		policytest.JudgeTags(t, local, m.Policy, name, 900, "")

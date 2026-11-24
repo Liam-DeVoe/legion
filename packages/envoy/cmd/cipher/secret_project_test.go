@@ -12,14 +12,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+
+	// TestCreateWritesTheProjectTag: create --project writes the secret's dispatch-project tag, the
+	// key as named, beside its owner and tier, on each store; a create naming no project writes no
+	// such tag, so the secret belongs to no project as before. The broker's answer to the reread
+	// that follows reaches the person at once: a broker that cannot check projects refuses the
+	// secret project-unchecked, which the create prints and exits 1 for.
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
-// TestCreateWritesTheProjectTag: create --project writes the secret's dispatch-project tag, the
-// key as named, beside its owner and tier, on each store; a create naming no project writes no
-// such tag, so the secret belongs to no project as before. The broker's answer to the reread
-// that follows reaches the person at once: a broker that cannot check projects refuses the
-// secret project-unchecked, which the create prints and exits 1 for.
 func TestCreateWritesTheProjectTag(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "stored-value")
@@ -39,7 +41,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 		}
 	})
 	t.Run("the broker's refusal", func(t *testing.T) {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonProjectUnchecked} })
 		useAWS(t, local, testAccount, adaSignIn)
 		useStdin(t, "stored-value")
@@ -47,7 +49,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 		if code != 1 || !strings.Contains(stdout, "reason="+policy.ReasonProjectUnchecked) || !strings.Contains(stderr, policy.ReasonProjectUnchecked) {
 			t.Fatalf("create under a broker that cannot check projects: exit %d stdout %q stderr %q; want exit 1 naming %s", code, stdout, stderr, policy.ReasonProjectUnchecked)
 		}
-		if got := secrets.TagMap(describe(t, local, "PRIV_KEY").Tags)[policy.TagProject]; got != "PRIV" {
+		if got := awsstore.TagMap(describe(t, local, "PRIV_KEY").Tags)[policy.TagProject]; got != "PRIV" {
 			t.Fatalf("PRIV_KEY's project tag = %q, want PRIV: the write stands and the broker's answer says why it is not served", got)
 		}
 	})
@@ -94,7 +96,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 	tagged := policytest.Secret("PRIV_KEY", "ada@example.com", policy.TierAgent, "v1")
 	tagged.Tags[policy.TagProject] = "PRIV"
 	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-	local := secrets.NewLocal(tagged, plain)
+	local := awstest.NewLocal(tagged, plain)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 
@@ -183,7 +185,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 // would refuse the secret for, refused before the sign-in is read or the store is called at all.
 // The refusal does not print the value it refused (valueNotPrinted), as no tag flag's refusal does.
 func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, writes, testAccount, adaSignIn)

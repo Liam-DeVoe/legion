@@ -24,14 +24,17 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+
+	// TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
+	// the value and decodes it as that type, so the value that type decodes is stored first, as a
+	// writer other than this client stores it (a retag between two types cannot be preceded by a
+	// set, which decodes the value under the type the secret holds).
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
-// the value and decodes it as that type, so the value that type decodes is stored first, as a
-// writer other than this client stores it (a retag between two types cannot be preceded by a
-// set, which decodes the value under the type the secret holds).
 func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
@@ -40,7 +43,7 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create: exit %d, stderr %q", code, stderr)
 	}
-	tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+	tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 	if tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagGitHubOwners] != "acme-org" {
 		t.Fatalf("create tags = %v, want type, github-owners as the broker reads them, and max-grant", tags)
 	}
@@ -82,7 +85,7 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
 		}
-		tags = secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+		tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 		if tags[policy.TagType] != secretType || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || tags[policy.TagRollbackGuard] != policy.RollbackGuardValue {
 			t.Fatalf("retag %s tags = %v, want new type, the rollback guard and retained tags", secretType, tags)
 		}
@@ -91,7 +94,7 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
 	}
-	tags = secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+	tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 	if _, ok := tags[policy.TagType]; ok || tags[policy.TagMaxGrant] != "1h" {
 		t.Fatalf("retag none tags = %v, want removed type and retained max-grant", tags)
 	}
@@ -184,7 +187,7 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 }
 
 func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+	local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, "stored-value")
@@ -261,7 +264,7 @@ func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 // refused as that flag. Every one of them is refused before the sign-in is read, so a create
 // that names one writes nothing at all.
 func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
-	local := secrets.NewLocal()
+	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	base := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--max-grant", "1h", "--requesters", "ada@example.com"}
@@ -292,7 +295,7 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 // so a list that names it beside a login, in any case, is refused before anything is read or
 // written, on create and on retag, rather than written as a login named none.
 func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
-	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
+	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -322,7 +325,7 @@ func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *testing.T) {
 	commas := typeTaggedSecret(t, "APP_KEY")
 	commas.Tags[policy.TagGitHubOwners] = "acme-org,ada"
-	local := secrets.NewLocal(commas)
+	local := awstest.NewLocal(commas)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -336,7 +339,7 @@ func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *tes
 	if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "acme-org ada"); code != 0 {
 		t.Fatalf("retag naming the owners: exit %d stderr %q", code, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
+	if tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
 		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
 	}
 }
@@ -353,7 +356,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 	}
 	t.Run("aws", func(t *testing.T) {
 		// PLAIN_KEY holds an App's value, which the retag to github-app below decodes.
-		local := secrets.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
+		local := awstest.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -369,7 +372,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 		if _, stderr, code := runSecret("retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "ada"); code != 0 {
 			t.Fatalf("retag to github-app with owners: exit %d stderr %q", code, stderr)
 		}
-		if tags := secrets.TagMap(describe(t, local, "PLAIN_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "ada" {
+		if tags := awsstore.TagMap(describe(t, local, "PLAIN_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "ada" {
 			t.Fatalf("tags = %v, want github-app with owner ada", tags)
 		}
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--type", "none", "--github-owners", "none"); code != 0 {
@@ -431,7 +434,7 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	listed.Tags[policy.TagRequesters] = "ada@example.com"
 	listed.Tags[policy.TagMaxGrant] = "1h"
-	local := secrets.NewLocal(listed)
+	local := awstest.NewLocal(listed)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -456,7 +459,7 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "ada@example.com"); code != 0 {
 		t.Fatalf("retag to a service-account secret its owner may ask for: exit %d stderr %q", code, stderr)
 	}
-	tags := secrets.TagMap(describe(t, local, "LISTED_KEY").Tags)
+	tags := awsstore.TagMap(describe(t, local, "LISTED_KEY").Tags)
 	if tags[policy.TagType] != policy.TypeGoogleServiceAccount || tags[policy.TagRequesters] != "ada@example.com" || tags[policy.TagMaxGrant] != "1h" {
 		t.Fatalf("tags = %v, want the service-account type beside its owner's list and the hour", tags)
 	}
@@ -469,7 +472,7 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--requesters", "none"); code != 0 {
 		t.Fatalf("retag --requesters none: exit %d stderr %q", code, stderr)
 	}
-	tags = secrets.TagMap(describe(t, local, "LISTED_KEY").Tags)
+	tags = awsstore.TagMap(describe(t, local, "LISTED_KEY").Tags)
 	if _, listed := tags[policy.TagRequesters]; listed {
 		t.Fatalf("tags = %v, want no requesters", tags)
 	}
@@ -513,7 +516,7 @@ func TestSecretCreateWritesTheGroupForm(t *testing.T) {
 // beside the registered services the list already names. Control: that write lands.
 func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *testing.T) {
 	held := policytest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
-	local := secrets.NewLocal(held)
+	local := awstest.NewLocal(held)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -534,7 +537,7 @@ func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *test
 	if _, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", groupOwner+" builder"); code != 0 {
 		t.Fatalf("retag to the write the refusal names: exit %d stderr %q", code, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "GROUP_KEY").Tags); tags[policy.TagRequesters] != "builder "+groupOwner || tags[policy.TagOwner] != groupOwner {
+	if tags := awsstore.TagMap(describe(t, local, "GROUP_KEY").Tags); tags[policy.TagRequesters] != "builder "+groupOwner || tags[policy.TagOwner] != groupOwner {
 		t.Fatalf("tags = %v, want the group beside builder and the group owner kept", tags)
 	}
 }
@@ -545,7 +548,7 @@ func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *test
 // usage error naming the lowercase form and no part of the value, before anything is read or
 // written.
 func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+	local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -578,7 +581,7 @@ func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
 // sorted and single-spaced; a comma anywhere is refused before create or retag writes anything,
 // naming the space-separated form.
 func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T) {
-	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
+	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -601,14 +604,14 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 	if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "Widgets-Org  ada acme-org"); code != 0 {
 		t.Fatalf("retag to three owners: exit %d stderr %q", code, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
+	if tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
 		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada widgets-org")
 	}
 	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
 	if _, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "ada acme-org"); code != 0 {
 		t.Fatalf("create with two owners: exit %d stderr %q", code, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "NEW_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
+	if tags := awsstore.TagMap(describe(t, local, "NEW_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
 		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
 	}
 }
@@ -620,7 +623,7 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 	owners := []string{"none", "None", "NONE"}
 	t.Run("aws", func(t *testing.T) {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		for _, owner := range owners {
@@ -656,10 +659,10 @@ func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 	})
 }
 
-// countingTagWrites is a secrets.Local that counts DescribeSecret, TagResource and UntagResource
+// countingTagWrites is a awstest.Local that counts DescribeSecret, TagResource and UntagResource
 // calls and can refuse UntagResource as IAM refuses it.
 type countingTagWrites struct {
-	*secrets.Local
+	*awstest.Local
 	describes, tags, untags int
 	refuseUntag             bool
 }
@@ -683,7 +686,7 @@ func (c *countingTagWrites) UntagResource(ctx context.Context, in *secretsmanage
 }
 
 // typeTaggedSecret is a github-app secret name holding an App's value, with a max grant of an hour.
-func typeTaggedSecret(t *testing.T, name string) secrets.LocalSecret {
+func typeTaggedSecret(t *testing.T, name string) awstest.LocalSecret {
 	t.Helper()
 	secret := policytest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	secret.Tags[policy.TagMaxGrant] = "1h"
@@ -696,7 +699,7 @@ func typeTaggedSecret(t *testing.T, name string) secrets.LocalSecret {
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
 // write that lands reads them once more, to find a concurrent writer's (awsBackend.raceCheck).
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
-	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
+	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -723,7 +726,7 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 	if writes.tags != 0 || writes.untags != 1 {
 		t.Fatalf("refused removal made %d TagResource and %d UntagResource calls, want 0 and 1", writes.tags, writes.untags)
 	}
-	tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+	tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 	if tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagMaxGrant] != "1h" {
 		t.Fatalf("tags after a refused removal = %v, want every tag unchanged", tags)
 	}
@@ -736,7 +739,7 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 	if writes.tags != 0 || writes.untags != 2 || writes.describes != 3 {
 		t.Fatalf("removals made %d TagResource, %d UntagResource and %d DescribeSecret calls in all, want 0, 2 and 3: one read of the tags and one write each, and one read back after the write that landed", writes.tags, writes.untags, writes.describes)
 	}
-	tags = secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+	tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 	if _, ok := tags[policy.TagType]; ok {
 		t.Fatalf("tags after removal = %v, want no type", tags)
 	}
@@ -753,7 +756,7 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.T) {
 	shared := typeTaggedSecret(t, "SHARED_APP_KEY")
 	shared.Tags[policy.TagOwner] = policy.OwnerShared
-	local := secrets.NewLocal(shared)
+	local := awstest.NewLocal(shared)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, &countingTagWrites{Local: local, refuseUntag: true}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "SHARED_APP_KEY", "--type", "none")
@@ -766,20 +769,20 @@ func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.
 // type, and --max-grant none removes it and keeps type.
 func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
-		local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
+		local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "2h"); code != 0 {
 			t.Fatalf("retag --max-grant 2h: exit %d, stderr %q", code, stderr)
 		}
-		tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+		tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 		if tags[policy.TagMaxGrant] != "2h" || tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagOwner] != "ada@example.com" {
 			t.Fatalf("tags = %v, want max-grant 2h beside the kept type and owner", tags)
 		}
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "none"); code != 0 {
 			t.Fatalf("retag --max-grant none: exit %d, stderr %q", code, stderr)
 		}
-		tags = secrets.TagMap(describe(t, local, "APP_KEY").Tags)
+		tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
 		if _, ok := tags[policy.TagMaxGrant]; ok || tags[policy.TagType] != policy.TypeGitHubApp {
 			t.Fatalf("tags = %v, want no max-grant and the type kept", tags)
 		}
@@ -993,7 +996,7 @@ func typeArgs(secretType string) []string {
 }
 
 // typeStore is a store the secret forms write, as these tests set it up and read it back: Secrets
-// Manager (a secrets.Local behind useAWS) or Secret Manager (a fakeSecretManager).
+// Manager (a awstest.Local behind useAWS) or Secret Manager (a fakeSecretManager).
 type typeStore interface {
 	// put holds the secret name with tags and value, as a writer other than this client stores it.
 	put(t *testing.T, name string, tags map[string]string, value string)
@@ -1022,7 +1025,7 @@ type typeStore interface {
 // the fake broker answering each reread from what that store holds.
 func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *secretBroker)) {
 	t.Run("aws", func(t *testing.T) {
-		reads := &valueReads{Local: secrets.NewLocal()}
+		reads := &valueReads{Local: awstest.NewLocal()}
 		broker := startSecretBroker(t, servedBy(reads.Local))
 		useAWS(t, reads, testAccount, adaSignIn)
 		test(t, awsTypeStore{reads}, broker)
@@ -1037,12 +1040,12 @@ func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *
 	})
 }
 
-// valueReads is a secrets.Local that counts every call made of it and, of them, the
+// valueReads is a awstest.Local that counts every call made of it and, of them, the
 // GetSecretValue calls, and answers each of those with refuse when it is set, as IAM refuses the
 // call or KMS the decryption, and answers DescribeSecret with refuseDescribe when that is set, as
 // IAM refuses the tag read.
 type valueReads struct {
-	*secrets.Local
+	*awstest.Local
 	reads          int
 	refuse         error
 	refuseDescribe error
@@ -1101,11 +1104,11 @@ func (v *valueReads) RestoreSecret(ctx context.Context, in *secretsmanager.Resto
 	return v.Local.RestoreSecret(ctx, in, o...)
 }
 
-// awsTypeStore is Secrets Manager as typeStore: a secrets.Local behind valueReads.
+// awsTypeStore is Secrets Manager as typeStore: a awstest.Local behind valueReads.
 type awsTypeStore struct{ sm *valueReads }
 
 func (s awsTypeStore) put(_ *testing.T, name string, tags map[string]string, value string) {
-	s.sm.Put(secrets.LocalSecret{Name: policytest.ID(name), KmsKeyID: policytest.KeyARN, Tags: maps.Clone(tags), Value: value})
+	s.sm.Put(awstest.LocalSecret{Name: policytest.ID(name), KmsKeyID: policytest.KeyARN, Tags: maps.Clone(tags), Value: value})
 }
 
 func (s awsTypeStore) has(_ *testing.T, name string) bool {
@@ -1116,7 +1119,7 @@ func (s awsTypeStore) has(_ *testing.T, name string) bool {
 func (s awsTypeStore) value(t *testing.T, name string) string { return valueOf(t, s.sm.Local, name) }
 
 func (s awsTypeStore) tags(t *testing.T, name string) map[string]string {
-	return secrets.TagMap(describe(t, s.sm.Local, name).Tags)
+	return awsstore.TagMap(describe(t, s.sm.Local, name).Tags)
 }
 
 func (s awsTypeStore) refuseValueReads(denied bool) {
@@ -1379,7 +1382,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 // names no type it mints (type-unknown) and serves no value of it, so set refuses to store one,
 // exiting 2 and naming that reason, before it reads the value.
 func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
-	local := secrets.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
+	local := awstest.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	refuseValueReads(t)

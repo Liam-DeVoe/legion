@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -56,7 +56,7 @@ func testPolicy(t *testing.T) *policy.Current {
 // judgedPolicy is testPolicy with guidance as testSecret's guidance tag.
 func judgedPolicy(t *testing.T, guidance string) *policy.Current {
 	t.Helper()
-	return policytest.Current(t, secrets.NewLocal(
+	return policytest.Current(t, awstest.NewLocal(
 		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, guidance),
 		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, shortGuidance),
 		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),

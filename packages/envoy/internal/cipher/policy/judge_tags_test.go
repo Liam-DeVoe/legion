@@ -10,7 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAKeysJudgeAndGuidanceAreItsOwnTags: who decides a key's requests is written on the key. A
@@ -25,7 +25,7 @@ func TestAKeysJudgeAndGuidanceAreItsOwnTags(t *testing.T) {
 	shortest.Tags[policy.TagJudge] = "1"
 	plain := policytest.Secret("PLAIN_KEY", owner, policy.TierHuman, "v")
 
-	set, err := policytest.Loader(secrets.NewLocal(judged, shortest, plain)).Load(context.Background())
+	set, err := policytest.Loader(awstest.NewLocal(judged, shortest, plain)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestAKeysJudgeAndGuidanceAreItsOwnTags(t *testing.T) {
 // ReasonJudgeOutOfRange, and the first load's line names that key. A judge of 900 seconds is the
 // bound itself and refuses nothing.
 func TestAJudgeTagOutsideOneToNineHundredIsRefusedNamingTheKey(t *testing.T) {
-	store := secrets.NewLocal()
+	store := awstest.NewLocal()
 	want := map[string]policy.Refusal{}
 	for name, value := range map[string]string{
 		"JUDGE_1800":     "1800",
@@ -118,7 +118,7 @@ func TestAGuidanceTagLongerThanTheJudgeReadsIsRefused(t *testing.T) {
 	over.Tags[policy.TagJudge] = "300"
 	over.Tags[policy.TagGuidance] = strings.Repeat("a", policy.MaxGuidanceRunes+1)
 
-	set, err := policytest.Loader(secrets.NewLocal(atBound, over)).Load(context.Background())
+	set, err := policytest.Loader(awstest.NewLocal(atBound, over)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestAProfileTakesItsSourcesJudgeAndGuidance(t *testing.T) {
 	source := policytest.Secret("RELEASE_PAT", owner, policy.TierHuman, "v")
 	source.Tags[policy.TagJudge] = "600"
 	source.Tags[policy.TagGuidance] = "grant for the release job"
-	set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
+	set := policytest.ProfiledCurrent(t, awstest.NewLocal(source), policytest.ProfilesFile(
 		`{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"]}}`,
 	)).Get()
 	profile, served := set.Secrets["RELEASE_READ"]
@@ -225,7 +225,7 @@ func TestAJudgedProfileOfAnotherNameKeepsTheDigestItHadAtTheBase(t *testing.T) {
 		if row.judge != "" {
 			source = policytest.Judged(source, 300, "grant for the release job")
 		}
-		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
+		set := policytest.ProfiledCurrent(t, awstest.NewLocal(source), policytest.ProfilesFile(
 			`{"name": "`+row.profile+`", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}}`,
 		)).Get()
 		served, ok := set.Secrets[row.profile]
