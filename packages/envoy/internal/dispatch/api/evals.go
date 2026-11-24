@@ -771,7 +771,7 @@ func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, e
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
 	tx, err := s.registry().BeginSnapshot(ctx)
 	if err != nil {
-		return evalListResponse{}, fmt.Errorf("begin the read of the evals of %v: %w", request.projects, err)
+		return evalListResponse{}, fmt.Errorf("begin the read of the eval list: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	if request.projectsIn != nil {

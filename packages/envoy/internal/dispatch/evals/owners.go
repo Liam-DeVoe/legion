@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
-// owners.go is where what a repository attributes is kept (dispatch://INFRA-2916, R15, plan D1 and
-// the architect's rulings of 14:07Z, 14:08Z and 18:38Z): what counts for each project whose default
+// owners.go is where what a repository attributes is kept (dispatch://INFRA-2916, R15 and plan
+// D1): what counts for each project whose default
 // repository is its repository, and what counts for a project only as long as that project's
 // default repository is its repository, are selections made at read time. A pull request whose
 // attribution list (delivery_days.go's attributionList) is not constant, a CI run of such a pull

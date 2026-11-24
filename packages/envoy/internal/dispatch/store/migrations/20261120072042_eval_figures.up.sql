@@ -14,9 +14,10 @@
 --   deploy_repo the deploy repository of the rows folded, as eval_days.deploy_repo keeps them: ''
 --               for an eval no deploy repository moves, and for an eval that reads it, the
 --               repository its rows are computed as if it were the deploy repository, one fold of
---               each repository's rows. A read folds the rows of the repository the delivery
---               settings name, as a read of the day rows does. It is the key's last column: a
---               read's every other column is one value, and its deploy repository one of a few.
+--               each repository's rows. A read folds the rows of the repository recorded with the
+--               stored rows (eval_days_settings.deploy_repo, evals.DeployRepoIn), as a read of the
+--               day rows does. It is the key's last column: a read's every other column is one
+--               value, and its deploy repository one of a few.
 --   days, end_day
 --               the range: its length in days and its end day, exclusive, so it holds the days
 --               end_day - days to end_day - 1. Every length the Evals tab offers is stored, and
@@ -43,10 +44,13 @@
 --               array a read answers), encoded as eval_range_figures' are.
 --   fold_key, built_by
 --               as eval_range_figures'.
---   rows_stamp  a fingerprint of the listed rows the figures folded: each one's series and
---               updated_at, which every write that moves a row's value moves. A day whose rows
---               no longer match it has moved, and its figures and every range that holds it are
---               folded again.
+--   rows_stamp  a fingerprint of the listed rows the figures folded, the project's own and those of
+--               the owner keys it reads: each one's series, its updated_at and its via_repository
+--               as the project reads it (evals.rowsStamp). Every write that moves a row's value
+--               moves its updated_at, and a publishing of the default repositories that moves what
+--               the project reads of an owner key moves the rows or their via_repository. A day
+--               whose rows no longer match it has moved, and its figures and every range that holds
+--               it are folded again.
 -- eval_day_figures_eval_day, (project_key, eval_id, day), is the stored figures' read of an eval's
 -- stored day rows over a span of days: the moved-day test every write of day rows makes
 -- (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
@@ -67,12 +71,12 @@
 -- process's statement it was: the flip's pass folds those end days again before the flip. They
 -- write nothing while no rebuild is building.
 --
--- Three new tables, all empty, and the triggers: nothing existing is read or rewritten, and the
--- release before this one neither reads nor writes any, so the two builds roll together
--- (cmd/dispatch/README.md, "Database migrations"). The foreign keys to projects take SHARE ROW
--- EXCLUSIVE on projects for the length of this transaction, which holds a project write and no
--- project read, as 20261117100006's do. The census answers 0, and rolling back past it is an
--- image rollback alone.
+-- Three new tables, all empty, and the triggers with their two functions: nothing existing is read
+-- or rewritten, and the release before this one neither reads nor writes any, so the two builds
+-- roll together (cmd/dispatch/README.md, "Database migrations"). The foreign keys to projects take
+-- SHARE ROW EXCLUSIVE on projects for the length of this transaction, which holds a project write
+-- and no project read, as 20261117100006's do. The census answers 0, and rolling back past it is
+-- an image rollback alone.
 create table eval_range_figures (
     project_key text not null references projects (key) on delete cascade,
     days integer not null check (days > 0),

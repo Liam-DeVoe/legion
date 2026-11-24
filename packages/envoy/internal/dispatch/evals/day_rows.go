@@ -19,8 +19,8 @@ import (
 
 // The computed day rows' write (dispatch://INFRA-2916, R12), shared by every family of computed
 // evals: one project's rows of one UTC day and the items they counted (ProjectDay), written in one
-// transaction (writeProjectDay) for the delivery and CI evals (writeDeliveryDay, delivery_days.go)
-// and for the Legion evals (writeLegionDay, legion_days.go), or the days a page names, of every
+// transaction (writeProjectDay), as a walk writes a day of the delivery and CI evals
+// (delivery_days.go) or of the Legion evals (legion_days.go), or the days a page names, of every
 // project, in one transaction (writeProjectDays), and the statements that write the rows
 // themselves (upsertDays, deleteStaleDays), which the unowned-p0 write (WriteUnownedP0Day) writes
 // its row through too.
@@ -39,8 +39,8 @@ type Member struct {
 	ShippedBy  string
 }
 
-// ProjectDay is one project's computed rows of one UTC day, as writeDeliveryDay and
-// writeLegionDay write them: the day rows (their built_by is the write's, and their
+// ProjectDay is one project's computed rows of one UTC day, as writeProjectDay and
+// writeProjectDays write them: the day rows (their built_by is the write's, and their
 // updated_at its moment where a value moved) and the items they counted.
 type ProjectDay struct {
 	Project string
@@ -69,19 +69,20 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of family's
 // evals, of every deploy repository the day holds rows of, and its members of family's families,
-// written as writeDeliveryDay says, in a transaction of its own (writeProjectDays of one day).
+// written as writeDayRowsIn and writeDayMembersIn write them, in a transaction of its own
+// (writeProjectDays of one day).
 func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day ProjectDay, builtBy string, figures bool) error {
 	return s.writeProjectDays(ctx, family, []ProjectDay{day}, builtBy, figures)
 }
 
 // writeProjectDays is the write of days, each one project's computed rows of one day, in one
 // transaction: each day's rows of family's evals, of every deploy repository the day holds rows
-// of, and its members of family's families, written as writeDeliveryDay says, the statements of
-// every day at once, each cut at statementBytes (writeDayRowsIn, writeDayMembersIn). The stale
-// rows it deletes are those of family's evals alone and the stale members it deletes those of its
-// families alone, so the delivery and the Legion writes of one day leave each other's rows and
-// members as they are. A row of an eval keyed by the deploy repository names the repository it is
-// computed as if it were it, and every other row none (deploy_repos.go). family.what names the
+// of, and its members of family's families, written by writeDayRowsIn and writeDayMembersIn, the
+// statements of every day at once, each cut at statementBytes. The stale rows it deletes are those
+// of family's evals alone and the stale members it deletes those of its families alone, so the
+// delivery and the Legion writes of one day leave each other's rows and members as they are. A row
+// of an eval keyed by the deploy repository names the repository it is computed as if it were it,
+// and every other row none (deploy_repos.go). family.what names the
 // rows in a refusal. Its change rows wait in the change log's outbox (migration 20261117100014), so
 // the transaction takes no change log lock, and they are moved into the log once it has committed,
 // in one drain (drainChanges): every statement of a transaction widens the one change it logs of an
@@ -89,8 +90,8 @@ func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day Proje
 // sent one delta of them. Where figures is set, the same transaction folds again, once for each
 // project, the stored figures of the span of its days whose rows it moved (foldFiguresInTx); a
 // walk's day leaves them to the end of its batch (refresh.foldWalked). It writes the rows, then the
-// members, then the figures, the order every writer of the three takes (checkProjectDay,
-// writeDayRowsIn, writeDayMembersIn), which a page whose days move other days takes in its one
+// members, then the figures, the order every writer of the three takes (writeDayRowsIn,
+// writeDayMembersIn, foldFiguresInTx), which a page whose days move other days takes in its one
 // commit too (rebuild). Where a rebuild is building, the triggers of eval_days and
 // eval_day_members queue the days for it to build again (migration 20261117100021).
 func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool) error {
@@ -604,7 +605,7 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 func deleteStaleDays(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []string) error {
 	projects, dates := writtenDays(days)
 	var evalIDs []string
-	base := paramBytes(12, writerComputation) + writtenBytes(projects)
+	base := paramBytes(11, writerComputation) + writtenBytes(projects)
 	for _, project := range slices.Compact(slices.Sorted(slices.Values(projects))) {
 		for _, slug := range slugs {
 			evalID := EvalID(project, slug)

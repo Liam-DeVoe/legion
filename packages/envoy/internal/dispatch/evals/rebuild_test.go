@@ -19,9 +19,9 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// rebuild_test.go holds the checks of the restarts (dispatch://INFRA-2916, the architect's rulings
-// of 07:59Z and 08:28Z): a release, a lost change cursor, the delivery settings the rows stand built
-// under gone, and a project first seen rebuild aside and flip once (rebuild.go).
+// rebuild_test.go holds the checks of the restarts (dispatch://INFRA-2916): a release, a lost
+// change cursor, and the delivery settings the rows stand built under gone, each rebuilt aside and
+// flipped once (rebuild.go).
 
 // release makes the rig's next passes a new build's, run by a process of its own: a release, which
 // a process whose first pass finds the rows served by another build rebuilds.
@@ -112,7 +112,7 @@ func allRepositorySeries(rows map[string]DayRow, project string, days ...time.Ti
 	return held
 }
 
-// TestAChangeDuringARestartKeepsTheDaysZeroRows (the architect's 08:28Z ruling, (1)): a page that
+// TestAChangeDuringARestartKeepsTheDaysZeroRows: a page that
 // writes a day while a restart runs judges the day's zero rows by what the stored rows are whole
 // through (eval_days_serving), not by the running build's walk. Over the settled Legion history of
 // EVAL, a restart begins (a release; a lost change cursor) and its first pass ends, walking one day
@@ -551,17 +551,47 @@ func (r *refresherRig) moveMerge(t *testing.T, pr string) {
 		where repo = $1 and number = $2`, repo, number)
 }
 
+// buildingRebuild is the id of the rebuild that is building, 0 for none, and the next day of each of
+// its walks by `<family> <project>`, "" for a walk that is to begin.
+func (r *refresherRig) buildingRebuild(t *testing.T) (int64, map[string]string) {
+	t.Helper()
+	var id int64
+	if err := r.database.Pool.QueryRow(t.Context(), `select coalesce((select id from eval_rebuilds where state = 'building'), 0)`).Scan(&id); err != nil {
+		t.Fatalf("read the rebuild that is building: %v", err)
+	}
+	rows, err := r.database.Pool.Query(t.Context(), `
+		select family || ' ' || project_key, coalesce(to_char(next_day, 'YYYY-MM-DD'), '') from eval_rebuild_walks where rebuild_id = $1`, id)
+	if err != nil {
+		t.Fatalf("read the walks of rebuild %d: %v", id, err)
+	}
+	walks := map[string]string{}
+	var walk, next string
+	if _, err := pgx.ForEachRow(rows, []any{&walk, &next}, func() error {
+		walks[walk] = next
+		return nil
+	}); err != nil {
+		t.Fatalf("read the walks of rebuild %d: %v", id, err)
+	}
+	return id, walks
+}
+
 // TestARebuildResumesAfterACrash: each batch of a rebuild stages its rows and its progress in one
 // transaction, so a pass that fails mid-rebuild leaves the batch before it as it stood, and the
 // passes after it go on from there. Over the settled, moved delivery history (corruptDays), a new
-// build's rebuild stages a batch, the next batch's staging fails once, and the passes then run to
-// the flip: one rebuild flipped, no staged row left, and the rows, members and figures a whole walk
-// holds.
+// build's rebuild stages a batch, the next batch's staging fails once, and that pass leaves the
+// same rebuild building with each of its walks where the batch before it left it; the passes then
+// run to the flip: that one rebuild, the only one the table holds, flipped, no staged row left, and
+// the rows, members and figures a whole walk holds. Red where the failed pass, or one after it,
+// abandons the rebuild and begins another.
 func TestARebuildResumesAfterACrash(t *testing.T) {
 	r, deliveries := newSettingsRig(t, 2)
 	r.corruptDays(t, deliveries.Project)
 	r.release("release-build")
 	r.pass(t)
+	rebuild, walks := r.buildingRebuild(t)
+	if rebuild == 0 || !slices.ContainsFunc(slices.Collect(maps.Values(walks)), func(next string) bool { return next != "" }) {
+		t.Fatalf("the release's first pass left rebuild %d building with walks %v, want one that staged a batch", rebuild, walks)
+	}
 	r.exec(t, "count the failures", `create sequence evals_test_failures`)
 	r.exec(t, "fail one staging", `create function evals_test_fail_once() returns trigger language plpgsql as $$
 		begin
@@ -575,9 +605,16 @@ func TestARebuildResumesAfterACrash(t *testing.T) {
 	r.exec(t, "fail one staging", `create trigger evals_test_fail_progress before update on eval_rebuild_walks
 		for each row execute function evals_test_fail_once()`)
 	r.failingPass(t)
+	if after, afterWalks := r.buildingRebuild(t); after != rebuild || !maps.Equal(afterWalks, walks) {
+		t.Errorf("the failed pass left rebuild %d building with walks %v, want rebuild %d with %v as the batch before it left them",
+			after, afterWalks, rebuild, walks)
+	}
 	r.settle(t)
-	if flipped := r.count(t, `select count(*) from eval_rebuilds where state = 'flipped' and built_by = $1`, r.build); flipped != 1 {
-		t.Errorf("%d rebuilds of %s flipped, want one", flipped, r.build)
+	if rebuilds := r.count(t, `select count(*) from eval_rebuilds`); rebuilds != 1 {
+		t.Errorf("eval_rebuilds holds %d rebuilds, want the one that resumed", rebuilds)
+	}
+	if flipped := r.count(t, `select count(*) from eval_rebuilds where id = $1 and state = 'flipped' and built_by = $2`, rebuild, r.build); flipped != 1 {
+		t.Errorf("rebuild %d of %s did not flip", rebuild, r.build)
 	}
 	if staged := r.staged(t); staged != 0 {
 		t.Errorf("%d staged rows are left after the flip", staged)

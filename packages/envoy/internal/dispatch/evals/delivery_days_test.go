@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // attributionDay is the day the hand-written delivery history of seedAttribution happens on.
@@ -834,6 +835,12 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 // index-only scan reads eval_days in the project's order: with asynchronous commits, which the
 // pod's test server runs, a vacuum just after a commit can mark no page all-visible (as
 // embedqueue's TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap found).
+// Even after a synchronous commit, a vacuum marks a page all-visible only once the commit status
+// of its rows' transaction is hinted, which waits until the WAL is flushed past the newest commit
+// of any transaction whose id shares its commit-log group of 32: an asynchronous commit of a
+// neighbouring id, in another database of the same server (a test running beside this one), keeps
+// the pages unmarked until the WAL writer flushes it, at most a few hundred milliseconds later. So
+// the test vacuums again until every page is all-visible, for at most allVisibleBound.
 // The write rewrites those 200 days and holds every row but one, which it deletes, in a
 // transaction planned as rewriteSettings plans its own; its one statement (EVAL's, whose rows fit
 // in one) names EVAL's six evals. With merge joins on, the planner estimates the scan of eval_days
@@ -887,10 +894,19 @@ func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *tes
 		t.Fatalf("vacuum and analyze eval_days: %v", err)
 	}
 	var pages, visible int
-	if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
-		t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
+	allVisible := func() bool {
+		if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
+			t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
+		}
+		if pages > 0 && visible == pages {
+			return true
+		}
+		if _, err := r.database.Pool.Exec(ctx, `vacuum eval_days`); err != nil {
+			t.Fatalf("vacuum eval_days again: %v", err)
+		}
+		return false
 	}
-	if pages == 0 || visible != pages {
+	if !testwait.Holds(allVisibleBound, 100*time.Millisecond, allVisible) {
 		t.Fatalf("the vacuum marked %d of eval_days' %d pages all-visible; the test needs every page", visible, pages)
 	}
 
@@ -933,6 +949,11 @@ func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *tes
 			held, zero, len(stored)-1)
 	}
 }
+
+// allVisibleBound is how long TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay
+// vacuums eval_days again for every page to be all-visible: well past the WAL writer's flush of
+// an asynchronous commit, which wal_writer_delay (200 ms by default) bounds to three times it.
+const allVisibleBound = 5 * time.Second
 
 // explainingTx is a transaction that explains its statement explained, with the arguments it is
 // run with and under whatever its caller set in the transaction, before it runs it, and keeps the

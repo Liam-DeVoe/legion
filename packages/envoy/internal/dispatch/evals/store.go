@@ -320,7 +320,8 @@ func scanDay(row pgx.Row) (DayRow, error) {
 }
 
 // scanWindowRow reads one row of a DayWindow read: whether it answers for the window or the
-// compare range, then its eval, series and day, its parts and its updated_at.
+// compare range, then its eval, series and day, its parts, its updated_at and the owner it is
+// stored under (owners.go).
 func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow

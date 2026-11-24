@@ -447,9 +447,10 @@ const (
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in
 // plain words, the field of a register write the refusal is about where it is one field, and for
-// a readings write its refused rows: the first MaxRefusedRows of them by index (Rows), and how
-// many it leaves out (RowsOmitted, 0 where it lists every one). A readings write's code is the
-// code of its first refused row. Every text an Error holds is bounded (errorTextBytes,
+// a readings write the errors of its refused rows, a row's each beside its others: the first
+// MaxRefusedRows of them by row index (Rows), and how many it leaves out (RowsOmitted, 0 where it
+// lists every one). A readings write's code is the code of its first refused row. Every text an
+// Error holds is bounded (errorTextBytes,
 // fieldTextBytes), so its answer, which the idempotency store keeps in one statement, takes at
 // most statementBytes whatever the body that was refused (MaxRefusedRows).
 type Error struct {
@@ -475,7 +476,7 @@ type RowError struct {
 
 // errorTextBytes is the most bytes a refusal's text (an Error's or a RowError's) takes in the
 // JSON answer between its quotes, fieldTextBytes the most a field's name takes, and codeBytes the
-// most a code takes, the longest of the registry's codes (READING_DAY_SAMPLES_LIMIT, 25 bytes)
+// most a code takes, the longest of the registry's codes (EVALS_DOCUMENT_NOT_A_DOCUMENT, 29 bytes)
 // with room: a text the body sends, a key or a value the refusal names, is cut to its bound
 // (boundText).
 const (

@@ -491,8 +491,9 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 // write's own transaction, after which the pass writes nothing), a register write that gives the
 // logged eval another fold, a settings change (every day of the eval it moves, in one
 // transaction), and the daily tick (the new day's rows and the ranges of the new last end day). A
-// new build whose folds agree then walks every figure and writes none, the stored figures built
-// throughout; and one that meets figures another build folded otherwise rewrites exactly those.
+// release whose folds agree then rebuilds every figure aside and its flip writes none, the stored
+// figures read as built throughout; and the rebuild of one that meets figures another build folded
+// otherwise rewrites exactly those, in its flip.
 func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -688,8 +689,9 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 // (nil for none) of repos (api's readEvalValues): from the stored figures where FiguresOffered
 // offers the read and they answer the eval (StoredFigures.SeriesValues), else from the day rows of
 // repos (DayWindow, SeriesValuesOf); and beside it the fold of those day rows alone, which the
-// read must answer. Each eval's values are encoded as the list route sends them, by eval id. It
-// answers how many evals the stored figures answered too.
+// read must answer. FiguresOffered offers no read that names a repository, so for such a read the
+// two are one fold and only cutValues checks it. Each eval's values are encoded as the list route
+// sends them, by eval id. It answers how many evals the stored figures answered too.
 func (r *refresherRig) listValues(t *testing.T, project string, repos []string, window Range, compare *Range) (stated, folded map[string]string, fromFigures int) {
 	t.Helper()
 	ctx := t.Context()
@@ -743,6 +745,133 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 	return stated, folded, fromFigures
 }
 
+// cutRead is what cutValues selects the rows of a read's cut from, read once for the reads of one
+// state: project's evals, the deploy repository their rows stand recorded under, the default
+// repository the project publishes ("" for none), the first day of each series (FirstDays, which
+// the fold reads as the list read's does), each key whose rows the project reads with whether it
+// reads them through the repository (eval_project_owners: its own key, false, and its owner keys),
+// and every stored day row.
+type cutRead struct {
+	project, deployRepo, published string
+	entries                        []Entry
+	firsts                         map[string]map[string]time.Time
+	via                            map[string]bool
+	rows                           map[string]DayRow
+}
+
+// readCut reads project's cutRead.
+func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	read := cutRead{project: project, via: map[string]bool{}, rows: r.dayRows(t)}
+	page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
+	if err != nil {
+		t.Fatalf("read %s's evals: %v", project, err)
+	}
+	read.entries = page.Items
+	if read.deployRepo, err = DeployRepoIn(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if read.published, err = PublishedDefaultIn(ctx, pool, project); err != nil {
+		t.Fatal(err)
+	}
+	if read.firsts, err = r.registry.FirstDays(ctx, read.entries, read.deployRepo); err != nil {
+		t.Fatalf("read the first days of %s's evals: %v", project, err)
+	}
+	owners, err := pool.Query(ctx, `select owner, via from eval_project_owners where project_key = $1`, project)
+	if err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	var owner string
+	var via bool
+	if _, err := pgx.ForEachRow(owners, []any{&owner, &via}, func() error {
+		read.via[owner] = via
+		return nil
+	}); err != nil {
+		t.Fatalf("read the keys %s reads: %v", project, err)
+	}
+	return read
+}
+
+// cutValues is, by eval id and encoded as listValues encodes them, the values the eval list's read
+// of c's project over window and compare (nil for none) of repos must answer: the fold
+// (SeriesValuesOf) of the rows of its cut, selected here from every stored day row and not by the
+// read (DayWindowIn). The cut is the listed rows of the days of the ranges, of the project's own key
+// and of each owner key it reads, whose repository is one repos names, or the empty string (the
+// project's whole)
+// where repos names none; and the project's own rows stored under legionfactsDefault, where repos
+// names the repository the project publishes as its default (owners.go). An owner key's row is read
+// under the project's eval id of its slug (asReader), its via_repository counted only where the
+// project reads the key through the repository (viaAsRead). Of each eval it keeps the rows of the
+// deploy repository its read reads (DeployRepoOf), and of each row what the read sends of it: the
+// samples of a series whose fold reads them (readsSamples), the write of a last value only in a
+// read of more than one repository, and no counts where it holds none. The stored rows hold no
+// writer, and none is needed: no eval of these histories changes its source, so every row of an
+// eval is its own writer's.
+func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *Range) map[string]string {
+	t.Helper()
+	cut := repos
+	if len(cut) == 0 {
+		cut = []string{""}
+	}
+	defaultCut := c.published != "" && slices.Contains(repos, c.published)
+	lastPairs := len(repos) > 1
+	entries := map[string]Entry{}
+	for _, entry := range c.entries {
+		entries[entry.Definition.EvalID] = entry
+	}
+	in := func(day time.Time, of Range) bool {
+		return !day.Before(measures.Midnight(of.From)) && day.Before(measures.Midnight(of.To))
+	}
+	byEval := map[string][]WindowRow{}
+	for _, key := range slices.Sorted(maps.Keys(c.rows)) {
+		row := c.rows[key]
+		owner := row.ProjectKey
+		throughRepository, reads := c.via[owner]
+		if !reads || !row.Listed {
+			continue
+		}
+		if !slices.Contains(cut, row.Repo) && (row.Repo != legionfactsDefault || owner != c.project || !defaultCut) {
+			continue
+		}
+		evalID := asReader(owner, c.project, row.EvalID)
+		entry, listed := entries[evalID]
+		if !listed || row.DeployRepo != DeployRepoOf(entry.Definition, c.deployRepo) {
+			continue
+		}
+		part := row.DayPart
+		if !throughRepository {
+			part.ViaRepository = 0
+		}
+		at := slices.IndexFunc(entry.Series, func(series Series) bool { return series.Series == part.Series })
+		if at < 0 || !readsSamples(entry.Definition, entry.Series[at]) {
+			part.Samples = nil
+		}
+		if at < 0 || !lastPairs || entry.Series[at].Agg != AggLast {
+			part.LastRecordedAt, part.LastReading = nil, ""
+		}
+		if len(part.Counts) == 0 {
+			part.Counts = nil
+		}
+		if in(row.Day, window) {
+			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeWindow, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner})
+		}
+		if compare != nil && in(row.Day, *compare) {
+			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeCompare, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner})
+		}
+	}
+	values := map[string]string{}
+	for _, entry := range c.entries {
+		id := entry.Definition.EvalID
+		encoded, err := json.Marshal(SeriesValuesOf(entry, byEval[id], c.firsts[id], window, compare))
+		if err != nil {
+			t.Fatalf("encode the values of %s: %v", id, err)
+		}
+		values[id] = string(encoded)
+	}
+	return values
+}
+
 // TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut: LEGION publishes acme/legion as its
 // default repository, two of its trees own acme/legion and the rest own none, so their Legion rows
 // stand under ':default' (legionfacts.DefaultRepo), which the project's cut of acme/legion reads
@@ -750,13 +879,15 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 // move, and then the project's default moves to acme/other, which holds no row of its own: after
 // each, the eval list's read of every offered range (each preset as a GET and as the live view
 // reads it, with its compare range) filtered to the default repository, and after the move to the
-// default before it, answers what the fold of the day rows of that repository answers (DayWindow,
-// SeriesValuesOf), and the read of the project's own rows, which the stored figures answer,
-// answers what its own rows fold. Red where the stored figures keep a fold of each repository's
-// rows and answer a read that names one: a move of the default folds again the figures of the
-// delivery evals alone (publishDefaults), so the Legion evals' cut of the old default still folds
-// the ':default' rows, and the new default, which holds no row of its own, has no stored cut, so
-// its read answers no row at all.
+// default before it, answers the fold of the rows of its cut as this test selects them from every
+// stored day row (cutValues); and the read of the project's own rows, which the stored figures
+// answer, answers both that and what its own rows fold (DayWindow, SeriesValuesOf). Red where the
+// read's cut of the published default leaves out the ':default' rows, or reads them under a
+// repository the project no longer publishes; and red where the stored figures keep a fold of each
+// repository's rows and answer a read that names one: a move of the default folds again the
+// figures of the delivery evals alone (publishDefaults), so the Legion evals' cut of the old
+// default still folds the ':default' rows, and the new default, which holds no row of its own, has
+// no stored cut, so its read answers no row at all.
 func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
@@ -802,9 +933,11 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 		for _, repo := range repos {
 			filters = append(filters, []string{repo})
 		}
+		read := r.readCut(t, project)
 		for _, one := range shapes {
 			for _, filter := range filters {
 				stated, folded, fromFigures := r.listValues(t, project, filter, one.window, &one.compare)
+				cut := read.cutValues(t, filter, one.window, &one.compare)
 				if filter == nil && fromFigures == 0 {
 					t.Errorf("%s: the stored figures answered none of %s's evals over %s of its own rows", what, project, one.name)
 				}
@@ -812,6 +945,11 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 					if stated[id] != folded[id] {
 						t.Errorf("%s: the read of %s of %v states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
 							what, one.name, filter, id, len(stated[id]), len(folded[id]), firstDiffering(stated[id], folded[id]))
+					}
+					if stated[id] != cut[id] {
+						at := firstDiffering(stated[id], cut[id])
+						t.Errorf("%s: the read of %s of %v states %s's values in %d bytes that differ from the fold of the rows of its cut's %d at byte %d: %q, want %q",
+							what, one.name, filter, id, len(stated[id]), len(cut[id]), at, stated[id][at:min(at+80, len(stated[id]))], cut[id][at:min(at+80, len(cut[id]))])
 					}
 				}
 			}

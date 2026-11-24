@@ -544,13 +544,13 @@ func (b *rebuild) fold(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// MarkRebuild marks tx as the refresher's rebuild of a span, before its first write of a day row:
-// it sets the transaction-local setting dispatch.eval_days_cause to
-// delivery.EvalDaysWrittenByRebuild, which eval_days_change_log records as the run_kind of each
-// eval_days change the transaction logs (migration 20261117100014), as MarkSettingsRewrite sets
-// the settings rewrite's. The Delivery page's live hub recomputes an evals view at once for those
-// changes: the rebuild's day rows arrive together, in one transaction, with no burst left for the
-// quiet to gather.
+// MarkRebuild marks tx as a rebuild's write of day rows, before its first write of a day row: the
+// refresher's rebuild of a span (writeRebuilds) and a verified rebuild's flip (flipRebuild). It
+// sets the transaction-local setting dispatch.eval_days_cause to delivery.EvalDaysWrittenByRebuild,
+// which eval_days_change_log records as the run_kind of each eval_days change the transaction logs
+// (migration 20261117100014), as MarkSettingsRewrite sets the settings rewrite's. The Delivery
+// page's live hub recomputes an evals view at once for those changes: the rebuild's day rows arrive
+// together, in one transaction, with no burst left for the quiet to gather.
 func MarkRebuild(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select set_config('dispatch.eval_days_cause', $1, true)`, delivery.EvalDaysWrittenByRebuild); err != nil {
 		return fmt.Errorf("mark the rebuild of a span: %w", err)

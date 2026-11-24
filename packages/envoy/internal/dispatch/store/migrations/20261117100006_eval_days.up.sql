@@ -52,10 +52,10 @@
 --                   pr-ci and the deploy cards) the repository the row is computed as if it were
 --                   the deploy repository: one set of those evals' rows for every repository that
 --                   holds a delivery run, each from that repository's own runs. The eval list reads
---                   the rows of the repository the delivery settings name (evals.DeployRepoOf), so
---                   a move of the deploy repository is a selection at read time, which rewrites no
---                   row and whose move back finds the old repository's rows as they stand; a
---                   repository that holds no run has no such row, and reads "no data".
+--                   the rows of the repository recorded with the stored rows (evals.DeployRepoIn,
+--                   DeployRepoOf), so a move of the deploy repository is a selection at read time,
+--                   which rewrites no row and whose move back finds the old repository's rows as
+--                   they stand; a repository that holds no run has no such row, and reads "no data".
 --   repo            '' for the row of all the project's repositories, and a repository's name for
 --                   that repository's own row, so a read cut by repository folds those rows and
 --                   a read of the whole project folds the '' rows alone.
@@ -146,15 +146,15 @@
 -- day's write writes the day's rows and items of every deploy repository, so the day owed names
 -- none.
 --
--- Three new tables, all empty, two more below, two views and a function: nothing existing is read
--- or rewritten, and the release before this one neither reads nor writes any, so the two builds
--- roll together (cmd/dispatch/README.md, "Database migrations"). The three tables hold an owner
--- key that names no project as well as project keys, so none of them references projects: a
--- project's deletion deletes its own rows of them by the trigger eval_days_project_deleted below,
--- and leaves a repository's, which belong to no project. eval_days_defaults references projects;
--- that foreign key and the trigger take SHARE ROW EXCLUSIVE on projects for the length of this
--- transaction, which holds a project write and no project read. The census answers 0, and
--- rolling back past it is an image rollback alone.
+-- Three new tables, all empty, two more below, two views, two functions and a trigger: nothing
+-- existing is read or rewritten, and the release before this one neither reads nor writes any, so
+-- the two builds roll together (cmd/dispatch/README.md, "Database migrations"). The three tables
+-- hold an owner key that names no project as well as project keys, so none of them references
+-- projects: a project's deletion deletes its own rows of them by the trigger
+-- eval_days_project_deleted below, and leaves a repository's, which belong to no project.
+-- eval_days_defaults references projects; that foreign key and the trigger take SHARE ROW
+-- EXCLUSIVE on projects for the length of this transaction, which holds a project write and no
+-- project read. The census answers 0, and rolling back past it is an image rollback alone.
 create table eval_days (
     project_key text not null,
     eval_id text not null,
@@ -236,9 +236,9 @@ create index eval_day_owners_repo on eval_day_owners (lower(repo));
 
 -- eval_days_defaults holds the default repository each project's reads stand under, published:
 -- the projects.default_repo the evals refresher's page last made visible, in the one commit that
--- also makes visible the stored figures folded under it (evals.syncDefaults, the architect's
--- rulings of 08:28Z (b) and 14:07Z). A person's write of projects.default_repo moves no read until
--- that commit, and a read in one snapshot answers the old defaults whole or the new ones whole.
+-- also makes visible the stored figures folded under it (evals.syncDefaults, publishDefaults). A
+-- person's write of projects.default_repo moves no read until that commit, and a read in one
+-- snapshot answers the old defaults whole or the new ones whole.
 -- A project with no row publishes no default repository, and reads its own rows and the owner
 -- keys whose lists name it as a terminal alone.
 create table eval_days_defaults (

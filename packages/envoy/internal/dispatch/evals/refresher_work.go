@@ -569,8 +569,9 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
 // read of the same move names too.
 const owedRounds = 3
 
-// writeOwed writes every day of the pass's projects a write left owing a rewrite (owedDays) once
-// the page has committed: a day an item moved off, or the day of the deploy run a pull request
+// writeOwed writes every day of the pass's projects and owner keys (owners.go) a write left owing a
+// rewrite (owedDays) once the page has committed: a day an item moved off, or the day of the
+// deploy run a pull request
 // moved off, which this page's own writes left so. A page names the days its items leave before it
 // writes (nameLeft), so there is none unless the store moved since. Each is written whole, as a
 // change naming it is, though the page wrote it already: the mark may be younger than that write.
@@ -1635,8 +1636,8 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 }
 
 // walkDaily makes the once-a-day write of the walk key: write runs on the first walking pass of
-// each UTC day, and on the first walking pass of a walk begun again (no record of the running
-// build's), and the walk then stands at tomorrow; a pass whose walks stopped for an owed wake
+// each UTC day, and on the first walking pass of a walk begun again (no record of it), and the
+// walk then stands at tomorrow; a pass whose walks stopped for an owed wake
 // (yields) leaves it to the next. The logged evals' zero fill is one (fillLogged through today),
 // and the unowned-p0 row of today another (writeUnowned): its count reads issues alone, so it is
 // written whether or not delivery settings exist, a project made since the last pass included.

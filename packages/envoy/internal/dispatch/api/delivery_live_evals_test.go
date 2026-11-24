@@ -663,12 +663,15 @@ const (
 const evalsRewrite = "the settings rewrite's eval_days change"
 
 // evalsRebuild is a step's kind for an eval_days change a rebuild of a span wrote, which carries
-// the rebuild's mark (delivery.EvalDaysWrittenByRebuild), and evalsApplied for the refresher's
-// word that the day rows stand at the delivery settings (delivery.SettingsApplied), an eval_days
-// change of no eval that carries the settings rewrite's mark.
+// the rebuild's mark (delivery.EvalDaysWrittenByRebuild); evalsApplied for the refresher's word
+// that the day rows stand at the delivery settings (delivery.SettingsApplied), an eval_days change
+// of no eval that carries the settings rewrite's mark; and evalsDefaults for the eval_days change
+// of no eval the refresher's page logs for INFRA where its commit moves the default repository
+// INFRA publishes (delivery.EvalDaysWrittenByDefaults).
 const (
-	evalsRebuild = "the rebuild's eval_days change"
-	evalsApplied = "the settings applied"
+	evalsRebuild  = "the rebuild's eval_days change"
+	evalsApplied  = "the settings applied"
+	evalsDefaults = "the defaults published"
 )
 
 // markEvalsView is an evals view of INFRA after steps, from start: each change marked as the
@@ -711,6 +714,8 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 				change.RunKind = delivery.EvalDaysWrittenByRebuild
 			case evalsApplied:
 				change = delivery.Change{Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}
+			case evalsDefaults:
+				change = delivery.Change{Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenByDefaults, Repo: "INFRA"}
 			default:
 				panic("markEvalsView: a step of unknown kind " + strconv.Quote(step.kind))
 			}
@@ -725,12 +730,12 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 
 // TestASettingsRewriteIsRecomputedAtOnce: an eval_days change the settings rewrite wrote, which
 // carries the rewrite's mark, is due at its own mark rather than viewQuiet after it (dueAt), with
-// its own cause: after the settings change's own recompute, which reads the figures before the
-// rewrite; while that recompute still waits for its quiet, whose mark the rewrite's then is, so
-// the one recompute is due at once; 45 s after the settings change, long after its own recompute;
-// and with no settings change heard before it, as by a page that subscribed between the settings
-// write and the rewrite's commit. A failed read's retry still holds the rewrite back, and a view
-// being computed is due nowhere until that recompute ends, and the rewrite then at once.
+// its own cause, whatever came before it. A settings change marks no evals view (touchedBy), so the
+// rewrite is due at once 100 ms after it as 45 s after it, after a recompute of the view since the
+// settings change as with none, where the change moved no day row (the settings applied), and with
+// no settings change heard before it, as by a page that subscribed between the settings write and
+// the rewrite's commit. A failed read's retry still holds the rewrite back, and a view being
+// computed is due nowhere until that recompute ends, and the rewrite then at once.
 func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	settings, rewrite := delivery.ChangeKindSettings, evalsRewrite
@@ -745,7 +750,7 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 		due       time.Duration
 		computing bool
 	}{
-		{"the rewrite of two evals after the settings change's own recompute", []evalsMarkStep{
+		{"the rewrite of two evals after a recompute since the settings change", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""},
 			{pass, rewrite, ""}, {pass, rewrite, evals.SlugMergeToProduction},
 		}, pass, false},
@@ -755,14 +760,14 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 		{"the settings applied where the change moved no day row, 1.5 s after the settings change", []evalsMarkStep{
 			{0, settings, ""}, {pass, evalsApplied, ""},
 		}, pass, false},
-		{"the rewrite 45 s after the settings change, long after its own recompute", []evalsMarkStep{
+		{"the rewrite 45 s after the settings change, long after a recompute since it", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {slow, rewrite, ""},
 		}, slow, false},
 		{"the rewrite with no settings change heard before it", []evalsMarkStep{{0, rewrite, ""}}, 0, false},
 		{"the rewrite behind a failed read's retry", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {time.Second, evalsRetryHeld, ""}, {pass, rewrite, ""},
 		}, time.Second + deliveryLiveRetry, false},
-		{"the rewrite while the settings change's own recompute is computing", []evalsMarkStep{
+		{"the rewrite while a recompute since the settings change is computing", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsReadHeld, ""}, {pass, rewrite, ""},
 		}, 0, true},
 		{"the rewrite once that recompute has ended", []evalsMarkStep{
@@ -804,7 +809,6 @@ func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 		{"two readings", []evalsMarkStep{{0, readings, ""}, {gap, readings, "pr-size"}}, gap},
 		{"two versions", []evalsMarkStep{{0, versions, ""}, {gap, versions, "review-time"}}, gap},
 		{"two day writes", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, gap},
-		{"a reading in the quiet of another", []evalsMarkStep{{0, settings, ""}, {0, readings, ""}, {gap, readings, "pr-size"}}, gap},
 		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, readings, ""}}, pass},
 		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, versions, ""}}, pass},
 		{"a day write 1.5 s after a settings change that moved no day row", []evalsMarkStep{
@@ -890,9 +894,10 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 }
 
 // saveSettings saves the delivery settings with one more production job named, which logs one
-// change of the settings row, and moves the clock past its quiet: its own recompute reads the
-// figures before the refresher's rewrite and sends nothing. No run holds the name, so the change
-// moves no eval and the refresher's rewrite of it commits no day row (evals'
+// change of the settings row, catches the hub up and moves its clock viewMaxWait on, past every
+// quiet, and requires that no recompute of the evals view began and nothing was sent: a settings
+// change marks no evals view (touchedBy). No run holds the name, so the change moves no eval and
+// the refresher's rewrite of it commits no day row (evals'
 // TestASettingsChangeThatMovesNoEvalWritesNothing); a test writes the day rows that follow it as
 // the rewrite's or as another writer's (writeDays).
 func (p *settingsRewritePage) saveSettings(t *testing.T) {
@@ -1023,21 +1028,21 @@ func (p *settingsRewritePage) dayRowsDelta(t *testing.T, what string) DeliveryLi
 	return delta
 }
 
-// TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce: a settings change marks an
-// evals page, whose own recompute, viewQuiet after it, reads the figures before the rewrite and
-// sends nothing. The refresher's rewrite of what the change moved, one transaction holding two
-// evals' rows and marked the rewrite's, arrives on the hub's clock 1.25 s later, as a pass at ten
-// times INFRA's size commits 1.2-1.7 s after the settings write, or 45.25 s later, as a pass on a
-// larger history or a loaded database can, and the clock then stands still: the rewrite is
-// recomputed at its own mark, and the page gets one delta holding both evals' new numbers, which
-// lands on the route's body. Nothing follows it, however far the clock moves past every quiet.
+// TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce: a settings change marks no evals
+// page, and no recompute of it begins (saveSettings). The refresher's rewrite of what the change
+// moved, one transaction holding two evals' rows and marked the rewrite's, arrives on the hub's
+// clock 2 s after the settings change (saveSettings moves the clock viewMaxWait, the write a second
+// more), or 46 s after it, as a pass on a larger history or a loaded database can, and the clock
+// then stands still: the rewrite is recomputed at its own mark, and the page gets one delta holding
+// both evals' new numbers, which lands on the route's body. Nothing follows it, however far the
+// clock moves past every quiet.
 func TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		after time.Duration
 	}{
-		{"the rewrite 1.25 s after the settings change", time.Second},
-		{"the rewrite 45.25 s after the settings change", 45 * time.Second},
+		{"the rewrite 2 s after the settings change", time.Second},
+		{"the rewrite 46 s after the settings change", 45 * time.Second},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			page := newSettingsRewritePage(t, nil)
@@ -1057,13 +1062,13 @@ func TestASettingsChangeAndItsRewriteSendTheEvalsPageOneDeltaAtOnce(t *testing.T
 	}
 }
 
-// TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet: a settings change marks an evals
-// page, whose own recompute reads the figures and sends nothing, and the change moves no eval, so
-// the refresher's rewrite of it commits no day row. A write of two evals' day rows that is not the
-// rewrite's then lands 1.25 s after the settings change, on a clock that then stands still: no
-// recompute begins and nothing is sent until the clock passes the write's quiet, and then the page
-// gets one delta holding both evals' new numbers, from a recompute of cause change, which lands on
-// the route's body.
+// TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet: a settings change marks no evals
+// page (saveSettings), and the change moves no eval, so the refresher's rewrite of it commits no day
+// row. A write of two evals' day rows that is not the rewrite's then lands 2 s after the settings
+// change (saveSettings moves the clock viewMaxWait, the write a second more), on a clock that then
+// stands still: no recompute begins and nothing is sent until the clock passes the write's quiet,
+// and then the page gets one delta holding both evals' new numbers, from a recompute of cause
+// change, which lands on the route's body.
 func TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet(t *testing.T) {
 	page := newSettingsRewritePage(t, nil)
 	page.saveSettings(t)
@@ -1081,7 +1086,7 @@ func TestADayWriteAfterASettingsChangeThatMovedNoDayRowWaitsItsQuiet(t *testing.
 		t.Fatalf("the day write began %d %s recomputes and %d %s recomputes, want one %s alone",
 			changes, deliveryCauseChange, rewrites, deliveryCauseSettingsRewrite, deliveryCauseChange)
 	}
-	t.Logf("the day write, 1.25 s after a settings change that moved no day row, sent nothing until its quiet passed, and then one delta upserting %v from one %s recompute",
+	t.Logf("the day write, 2 s after a settings change that moved no day row, sent nothing until its quiet passed, and then one delta upserting %v from one %s recompute",
 		dayRowEvals, deliveryCauseChange)
 }
 
@@ -1182,6 +1187,31 @@ func TestARebuildIsRecomputedAtOnce(t *testing.T) {
 	}
 	if at, cause, ok := markEvalsView(start, []evalsMarkStep{{0, delivery.ChangeKindSettings, ""}, {time.Second, delivery.ChangeKindSettings, ""}}).dueAt(); ok {
 		t.Errorf("two changes of the settings row leave an evals view due %s after the first (%s), want not due: the refresher's rewrite marks it", at.Sub(start), cause)
+	}
+}
+
+// TestADefaultsPublishIsRecomputedAtOnce: the eval_days change the refresher's page logs for a
+// project whose published default repository its commit moves, which carries the publishing's
+// mark, is due at its own mark rather than viewQuiet after it (dueAt), with its own cause, as a
+// rebuild's is: alone; inside the quiet of a day write that is not its own, whose mark it then is,
+// so the one recompute is due at that first mark; and never before a failed read's retry.
+func TestADefaultsPublishIsRecomputedAtOnce(t *testing.T) {
+	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name  string
+		steps []evalsMarkStep
+		due   time.Duration
+	}{
+		{"a publishing of the defaults", []evalsMarkStep{{time.Second, evalsDefaults, ""}}, time.Second},
+		{"a publishing inside the quiet of a day write", []evalsMarkStep{{0, delivery.ChangeKindEvalDays, ""}, {100 * time.Millisecond, evalsDefaults, ""}}, 0},
+		{"a publishing behind a failed read's retry", []evalsMarkStep{{0, evalsRetryHeld, ""}, {time.Second, evalsDefaults, ""}}, deliveryLiveRetry},
+	} {
+		at, cause, ok := markEvalsView(start, c.steps).dueAt()
+		if !ok || !at.Equal(start.Add(c.due)) || cause != deliveryCauseDefaults {
+			t.Errorf("%s: due %t, %s after the start (%s), want %s after it (%s)", c.name, ok, at.Sub(start), cause, c.due, deliveryCauseDefaults)
+			continue
+		}
+		t.Logf("%s: due %s after the start, cause %s", c.name, at.Sub(start), cause)
 	}
 }
 
@@ -1495,13 +1525,15 @@ func TestAMarkBetweenASettingsSaveAndItsRewriteSendsTheOldStateWhole(t *testing.
 }
 
 // figureScopeReads is a tracer that calls before ahead of each read of how far a project's stored
-// figures are folded (readFigureScope's statement), the first statement of every fold of them.
+// figures are folded (readFigureScope's statement), the first statement of every fold of them, and
+// of no other statement: the read of how far they are built (figuresThrough) reads the same table
+// by a list of projects.
 type figureScopeReads struct {
 	before func()
 }
 
 func (f *figureScopeReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if f.before != nil && strings.Contains(data.SQL, "from eval_figures_built") {
+	if f.before != nil && strings.Contains(data.SQL, "from eval_figures_built where project_key = $2") {
 		f.before()
 	}
 	return ctx
@@ -1561,6 +1593,9 @@ func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T
 	}
 	page.refresh(t)
 	reads.before = nil
+	if folds == 0 {
+		t.Fatal("the walk traced no fold of the stored figures, so no recompute ran ahead of one, and the check needs the tracer to meet each fold")
+	}
 	page.rig.hub.catchUpNow()
 	page.rig.clock.Advance(viewMaxWait)
 	page.idle(t)

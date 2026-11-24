@@ -155,7 +155,7 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 
 // A pull request whose issue is held only through its project's default repository counts by a
 // read-time selection, which a move of that default makes within the page that publishes it and
-// with no day row written (dispatch://INFRA-2916, R15 and R14, the architect's ruling of 14:07Z):
+// with no day row written (dispatch://INFRA-2916, R15 and R14):
 // acme/quay is QUAY's default repository and the deploy repository, and acme/quay#1, merged
 // yesterday, names PIER-1 alone, an issue of PIER that owns no repository and has no parent, while
 // PIER's default is acme/pier. So no issue is held for the pull request, and QUAY counts it, the
@@ -354,8 +354,9 @@ func TestClearingTheLastDefaultRepositoryIsPublishedOnce(t *testing.T) {
 // project each list picks (its first condition whose default is the key's repository, else its
 // terminal), through its issue, and, where a list picks none, by each project whose default is the
 // repository, through the repository, less its sharers; a project reached both ways reads through
-// its issue. Once GAMMA's default moves to the repository, the keys whose lists name it as a
-// condition are read by GAMMA alone, and the plain key by GAMMA too.
+// its issue. Once GAMMA's default moves to the repository, each list that names it as a condition
+// picks GAMMA, so a key whose every list does is read by GAMMA alone, one with another list by
+// that list's pick as well, and the plain keys by GAMMA too, through the repository.
 func TestTheReadersOfAnOwnerKeyAreTheProjectsThePublishedDefaultsPick(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool

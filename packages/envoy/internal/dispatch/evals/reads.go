@@ -296,8 +296,11 @@ func (s *Store) EvalDays(ctx context.Context, definition Definition, deployRepo,
 // repository its read reads where the rows are recorded under deployRepo ("" where none is set;
 // DeployRepoIn, DeployRepoOf): the rows of all its project's repositories, or those of repos
 // where repos names any, and of one series where series is not ""; newest day first, then by
-// series and repository.
-// It is the items route's read of an eval's day rows, one range of eval_days' primary key.
+// series and repository. A project's rows are its own and those of the owner keys it reads under
+// the published defaults (eval_project_owners, owners.go), each read under the project's key and
+// its eval id of the row's slug, and the rows several owners hold of one series, repository and
+// day added into one (addOwnedRows). It is the items route's read of an eval's day rows: one range
+// of eval_days' primary key for each owner.
 func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
@@ -404,7 +407,8 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 // default rows (13,417 heap rows for 9,070 kept, on the pod at a tenth of INFRA's size).
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
-// read costs is the bytes it sends: no project, repository, listing or build, and a sample list
+// read costs is the bytes it sends: no project, repository, listing or build, but the owner it is
+// stored under, which a rebuild's overlay of staged rows reads, and a sample list
 // only for a series whose fold reads one (readsSamples), so a logged series folded by anything but
 // a quantile, whose rows keep every value of their day, sends none. The write that stored a row's
 // last value (last_recorded_at, last_reading), which the `last` fold breaks a tie of two rows'

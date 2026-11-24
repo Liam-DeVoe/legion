@@ -83,8 +83,9 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		}
 	}
 	actor := `{"kind":"system","id":"legion-day-test"}`
-	// The project has no default repository, so an issue that names none resolves to none. Each
-	// issue's repository is its own, which the day resolves when it is built.
+	// An issue whose chain names no repository resolves to legionfacts.DefaultRepo, which stands
+	// for the project's default repository. Each other issue's repository is its own, which the day
+	// resolves when it is built.
 	for _, issue := range []struct {
 		number int
 		repo   any

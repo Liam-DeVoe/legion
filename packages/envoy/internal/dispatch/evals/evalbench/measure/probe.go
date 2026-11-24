@@ -40,11 +40,9 @@ import (
 //   - narrow: the same rows without the figures column, which holds each row's encoded figures, so
 //     the time and the bytes it saves are what reading and serialising the figures cost.
 //
-// The day-row read's other variants are dropped with that read. Its window and compare branches:
-// the range-figures read's `union all` is of two lookups of the same shape, so a branch alone would
-// measure half of one lookup. Its headline filter: the day-figures read already reads the evals
-// with a headline series alone. Its narrow list over eval_days is rewritten as the narrow variant
-// above.
+// It measures no variant of a branch or of the headline filter: the range-figures read's
+// `union all` is of two lookups of the same shape, so a branch alone would measure half of one
+// lookup, and the day-figures read already reads the evals with a headline series alone.
 //
 // It then prints eval_days' size on disk and its average row width, split by whether a row holds a
 // sample, over the whole table and over the paint's project's listed rows; and the size on disk of

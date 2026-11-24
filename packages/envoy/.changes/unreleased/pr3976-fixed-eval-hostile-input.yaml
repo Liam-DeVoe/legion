@@ -23,7 +23,7 @@ body: |-
   `eval_readings` change of its eval however many it takes; a reading whose fields alone would
   pass that is `400 READING_TOO_LARGE`, naming its largest field. The list read sends its day rows'
   read in statements of at most 256 KiB too. A refused readings batch answers
-  `{code, error, rows, rows_omitted?}`: `rows` lists the first 206 refused rows by index and the
-  new `rows_omitted` counts the rest, and every refusal of the eval writes bounds its texts (an
-  error 1,024 bytes, a field 128), so the answer an `Idempotency-Key` keeps stays under 256 KiB
-  whatever the body.
+  `{code, error, rows, rows_omitted?}`: `rows` lists the first 206 errors of the refused rows by
+  row index and the new `rows_omitted` counts the rest, and every refusal of the eval writes
+  bounds its texts (an error 1,024 bytes, a field 128), so the answer an `Idempotency-Key` keeps
+  stays under 256 KiB whatever the body.

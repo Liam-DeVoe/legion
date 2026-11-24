@@ -20,9 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The cost of a page's delivery days at ten times the stated run rate (dispatch://INFRA-2916, R14,
-// the 18:21Z ruling's day write): a page reads the deploy runs of its days a handful of times
-// whatever their number, writes them in one transaction, and logs one change of each eval.
+// The cost of a page's delivery days at ten times the stated run rate (dispatch://INFRA-2916,
+// R14): a page reads the deploy runs of its days a handful of times whatever their number, writes
+// them in one transaction, and logs one change of each eval.
 
 // pageNamingRounds is how many rounds of naming a page of delivery changes makes at most, each of
 // which reads its days at once (refresh.readDeliveries): the three of applyDelivery's items, their

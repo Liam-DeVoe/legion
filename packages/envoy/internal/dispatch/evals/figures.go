@@ -68,14 +68,14 @@ import (
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
 // (rewriteSettings), and the readings write (WriteReadings); the walks fold the days they wrote at
-// the end of their batch (refresh.walk), and the refresher's pass folds the ranges of each new end
-// day and a new build's whole set (refresh.walkFigures), and again the days of the changes a write
-// left unfolded (refresh.figureChanges). Every build that holds this code writes them, as every
-// build writes the day rows, and each row records the build that folded it (built_by): a read
-// serves a stored row whichever build folded it, as it serves a day row whichever build built it,
-// and a build whose folds differ rewrites the rows an older build folded once its whole walk
-// reaches them, writing those whose figures move and no other (figures_refresher.go says what a
-// read sees meanwhile).
+// the end of their batch (refresh.foldWalked), the refresher's pass folds the ranges of each new
+// end day (refresh.walkFigures) and again the days of the changes a write left unfolded
+// (refresh.figureChanges), and a rebuild folds every figure of its projects aside and flips the
+// ones that moved (rebuild.go). Every build that holds this code writes them, as every build
+// writes the day rows, and each row records the build that folded it (built_by): a read serves a
+// stored row whichever build folded it, as it serves a day row whichever build built it, and a
+// release whose folds differ rewrites, in its rebuild's flip, the rows an older build folded whose
+// figures its folds move, and no other (figures_refresher.go says what a read sees meanwhile).
 
 // FigureLengths is every range length the figures are stored for, ascending: each preset of the
 // Evals tab (7, 14, 28 and 84 days) and each one day longer. A read from midnight to midnight

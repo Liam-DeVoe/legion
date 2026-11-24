@@ -1092,8 +1092,8 @@ func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *t
 		t.Helper()
 		var at string
 		if err := live.database.Pool.QueryRow(t.Context(), `
-			select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = 'EVAL' and built_by = $2
-		`, walkLegion, live.build).Scan(&at); err != nil {
+			select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = 'EVAL'
+		`, walkLegion).Scan(&at); err != nil {
 			t.Fatalf("read the Legion walk's record: %v", err)
 		}
 		return at

@@ -25,9 +25,10 @@ import (
 // it), and ReadCIRows, which the routes read with; each row of it is attributed to the projects it
 // counts for; each project's rows are built into day parts by the measures package's day builders,
 // the builders the delivery routes build their window's parts with (DeliveryDay.Rows); and the
-// refresher writes the parts as that project's rows of the day (refresh.writeDelivery, through
-// writeDeliveryDay, and a page's days through writeProjectDays), which the eval routes and the
-// delivery routes fold through the same folds.
+// refresher writes the parts as that project's rows of the day (a walk's day through
+// refresh.writeDelivery and walkWrite, writeProjectDay, or staged by a rebuild; a page's days
+// through writeNamed, writeProjectDays), which the eval routes and the delivery routes fold
+// through the same folds.
 //
 // A day holds the population pull requests merged that day (merge-to-production,
 // first-commit-to-production, open-to-production, pr-open-to-merge and rework-share), the deploy
@@ -135,8 +136,8 @@ const (
 // SeriesUnownedP0 is unowned-p0's one series: the open P0 issues with no owner, folded by `last`.
 const SeriesUnownedP0 = "issues"
 
-// deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval writeDeliveryDay
-// writes the rows of that a day no longer holds as zero rows: neither change-fail-rate nor
+// deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval whose rows a day
+// no longer holds the write of the day deletes (deleteStaleDays): neither change-fail-rate nor
 // failed-deploy-recovery, which get no rows, nor unowned-p0, which WriteUnownedP0Day writes.
 var deliveryDaySlugs = []string{
 	SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction,
@@ -1046,12 +1047,12 @@ func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy st
 // by, read through the issues_open_p0 index) as the row's one value and its last_value, last_at
 // the moment the count last moved, so the day's row is the count at its last refresh and the
 // `last` fold of a window reads its newest day's. A write that counts what the row holds keeps
-// the row's time, so it rewrites nothing (built_by aside) and logs no change: the refresher writes
-// the row on every change that can move the count, most of which move nothing. builtBy is the
-// running build. Its change row waits in the change log's outbox, so the transaction takes no
-// change log lock, and is moved into the log once it has committed (drainChanges), as every
-// writer of the day rows does; and its transaction folds again the stored figures of the day where
-// its row moved and builtBy writes them (figures.go).
+// the row's time, so it rewrites nothing and logs no change: the refresher writes the row on every
+// change that can move the count, most of which move nothing. builtBy is the running build. Its
+// change row waits in the change log's outbox, so the transaction takes no change log lock, and is
+// moved into the log once it has committed (drainChanges), as every writer of the day rows does;
+// and its transaction folds again the stored figures of the day where its row moved and builtBy
+// writes them (figures.go).
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
 	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {

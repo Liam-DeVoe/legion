@@ -148,14 +148,14 @@ func (r *refresherRig) xmins(t *testing.T, query string) map[string]string {
 	return written
 }
 
-// walkXmin is the transaction that last wrote the rig's build's record of the delivery walk, which
-// a walk begun again rewrites.
+// walkXmin is the transaction that last wrote the record of the delivery walk, which a walk begun
+// again rewrites.
 func (r *refresherRig) walkXmin(t *testing.T) string {
 	t.Helper()
 	var xmin string
 	if err := r.database.Pool.QueryRow(t.Context(), `
-		select xmin::text from eval_days_walks where family = $1 and project_key = '' and built_by = $2
-	`, walkDelivery, r.build).Scan(&xmin); err != nil {
+		select xmin::text from eval_days_walks where family = $1 and project_key = ''
+	`, walkDelivery).Scan(&xmin); err != nil {
 		t.Fatalf("read the delivery walk's record: %v", err)
 	}
 	return xmin
@@ -1262,9 +1262,8 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 // its members of every pull request it counts. The change that brings the runs names their days
 // and those of the pull requests they ship alone; the repositories that hold runs move (syncKept),
 // and the page builds every day of the new repository from its start on in its own commit
-// (refresh.writeNamed), which moves no walk.
-// At 04de13fa the days after its last deploy held neither those lead times' rows nor those members
-// (dispatch://INFRA-2916's failure 6).
+// (refresh.writeNamed), which moves no walk. Red where the page leaves the days after the new
+// repository's last deploy without those lead times' rows or those members.
 func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArrive(t *testing.T) {
 	live, deliveries := newSettingsRig(t, walkBatch)
 	api := deliveries.Repos[1]
@@ -1297,7 +1296,7 @@ func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArr
 // walk: the members of every project's pull requests under that repository from its start on,
 // which the walk keeps for every repository that holds a run. The repositories that hold runs move
 // (syncKept), and the page builds the new repository's members of every day from its start on in
-// its own commit (refresh.writeNamed). At 04de13fa those members were missing.
+// its own commit (refresh.writeNamed). Red where the page leaves those members out.
 func TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps(t *testing.T) {
 	const unmapped = "acme/unmapped"
 	live, deliveries := newSettingsRig(t, walkBatch)
@@ -1518,14 +1517,14 @@ func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange 
 	}
 }
 
-// walkRecord is the rig's build's record of the delivery walk: the transaction that last wrote it
-// and the day it stands at.
+// walkRecord is the record of the delivery walk: the transaction that last wrote it and the day it
+// stands at.
 func (r *refresherRig) walkRecord(t *testing.T) string {
 	t.Helper()
 	var record string
 	if err := r.database.Pool.QueryRow(t.Context(), `
-		select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = '' and built_by = $2
-	`, walkDelivery, r.build).Scan(&record); err != nil {
+		select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = ''
+	`, walkDelivery).Scan(&record); err != nil {
 		t.Fatalf("read the delivery walk's record: %v", err)
 	}
 	return record

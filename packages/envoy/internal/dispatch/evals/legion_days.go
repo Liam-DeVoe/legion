@@ -19,9 +19,10 @@ import (
 // (legionfacts.ReadClosedIn, through issue_facts_closed), every one an issue with Legion phase
 // work since only such an issue has a row, and the filings its Legion sessions made that day
 // (legionfacts.ReadFilingsIn, through issue_filings_day). The legion/metrics day builders turn
-// them into parts (LegionDay.Rows), and the refresher's write of the day (refresh.writeLegion,
-// through writeLegionDay) writes the parts as the project's rows of the day, which the eval
-// routes fold through the six legion/metrics folds the evals' source names.
+// them into parts (LegionDay.Rows), and the refresher writes the parts as the project's rows of
+// the day (a walk's day through refresh.writeLegion and walkWrite, writeProjectDay, or staged by a
+// rebuild; a page's days through writeNamed, writeProjectDays), which the eval routes fold through
+// the six legion/metrics folds the evals' source names.
 //
 // A project's Legion rows of a day are, for each eval with input that day, every series its
 // builder builds in each of its cuts (metrics.CutSeries; every series of the catalogue but the
@@ -63,8 +64,8 @@ const (
 	SlugLegionSplitting = "legion-splitting"
 )
 
-// legionDaySlugs is every eval a Legion day's rows are of, and so every eval writeLegionDay
-// writes the rows of that a day no longer holds as zero rows.
+// legionDaySlugs is every eval a Legion day's rows are of, and so every eval whose rows a day no
+// longer holds the write of the day deletes (deleteStaleDays).
 var legionDaySlugs = []string{
 	SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionSlotWait, SlugLegionRework,
 	SlugLegionSplitting,

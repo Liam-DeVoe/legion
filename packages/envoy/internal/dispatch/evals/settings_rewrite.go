@@ -37,8 +37,8 @@ import (
 // following the same names with the same step (the order of the production names, a staging job
 // renamed between two names the production rule follows), moves no eval by settingsMoves, and the
 // pass reads nothing. A production job name no run holds moves the rule's names but its verdict
-// on no run and no card's part, so the rewrite reads the history and, once the running build's
-// delivery walk has written today, builds no day: it builds only the days whose rows the change
+// on no run and no card's part, so the rewrite reads the history and, once the delivery walk has
+// written today, builds no day: it builds only the days whose rows the change
 // can move (movedDeliveryDays). Until then it builds every day (rewriteSettings says why). Each
 // of its writes sends a row, a member or a figure only where its value moved.
 
@@ -399,8 +399,8 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     deploy run on main of each repository rewritten with its jobs of the names either rule
 //     judges by and each card the change moves follows under either settings
 //     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
-//     repository), each project's first days (firstDays) and the running build's record of its
-//     walks (readWalks);
+//     repository), each project's first days (firstDays) and the record of the walks
+//     (readWalks);
 //   - the attribution lists of the pull requests (readAttribution), and beside that read
 //     containment over each repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
@@ -447,7 +447,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     changes are one per eval, as every transaction's are (migration 20261117100014), so an evals
 //     view hears of the whole change once, and each carries the rewrite's mark
 //     (MarkSettingsRewrite), so the view is recomputed for them at once. With no day to build it
-//     writes the settings alone.
+//     writes no row, member or figure: its word that the rows stand at the settings
+//     (markSettingsApplied), the settings recorded and a building rebuild begun again
+//     (replaceRebuild) alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
@@ -781,8 +783,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	defer tx.Rollback(ctx)
 	// Each statement planned for the arrays it is sent: a connection's cached statement can turn
-	// generic after its fifth run, and the zero rows' statement took 10 ms in its first runs and
-	// 450 ms in later ones of one process (k8's phase D, at 2 % of the stated rate).
+	// generic after its fifth run.
 	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
 		return fmt.Errorf("plan the rewrite of a settings change: %w", err)
 	}
@@ -848,9 +849,11 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 // first write of a day row: it sets the transaction-local setting dispatch.eval_days_cause to
 // delivery.EvalDaysWrittenBySettingsRewrite, which eval_days_change_log records as the run_kind of
 // each eval_days change the transaction logs (migration 20261117100014). The Delivery page's live
-// hub recomputes an evals view at once for those changes alone: the rewrite's day rows arrive
-// together, in one transaction, with no burst left for the quiet to gather, while the page has
-// waited for the pass since the settings change. No other writer of day rows sets it.
+// hub recomputes an evals view at once for those changes, as for a rebuild's and a publishing of
+// the defaults' (delivery.EvalDaysImmediate): the rewrite's day rows arrive together, in one
+// transaction, with no burst left for the quiet to gather, while the page has waited for the pass
+// since the settings change. MarkRebuild sets the same setting to a rebuild's cause; no other
+// writer of day rows sets it.
 func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select set_config('dispatch.eval_days_cause', $1, true)`, delivery.EvalDaysWrittenBySettingsRewrite); err != nil {
 		return fmt.Errorf("mark the rewrite of a settings change: %w", err)
@@ -1165,7 +1168,7 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 			writtenProjects[i] = project
 		}
 		evalIDs := make([]string, len(slugs))
-		base := paramBytes(10, writerComputation) + len(dates)*(4+len(project)+4+8)
+		base := paramBytes(12, writerComputation) + len(dates)*(4+len(project)+4+8)
 		for i, slug := range slugs {
 			evalIDs[i] = EvalID(project, slug)
 			base += 4 + len(evalIDs[i])

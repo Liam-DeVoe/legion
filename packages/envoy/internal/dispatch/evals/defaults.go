@@ -17,8 +17,8 @@ import (
 // rows (owners.go): a person's write of a project's default repository
 // (PUT /api/v1/projects/{key}/default-repository, projects.default_repo) moves no read and no view
 // until the refresher's page that reads it publishes it, and that page's commit makes visible, with
-// the new defaults, the stored figures of the projects it moves folded under them (the architect's
-// rulings of 08:28Z (b) and 14:07Z). So a read in one snapshot answers the old defaults whole, their
+// the new defaults, the stored figures of the projects it moves folded under them. So a read in one
+// snapshot answers the old defaults whole, their
 // figures among them, or the new ones whole, and no read folds day rows because a figure is not
 // folded yet. A default moves more than its own project's reads: a pull request whose issue is held
 // through a project's default repository (a condition of its attribution list, delivery_days.go)

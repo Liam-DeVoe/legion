@@ -123,7 +123,7 @@ const refresherPage = 1000
 // many batches, one begun each RefresherGap, so no pass holds the lease for the whole of it and the
 // rebuild's load on the database is spread over it, and the changes that arrive meanwhile are
 // answered between two of its days (RefresherGap). Every day is a transaction of its own per
-// project (writeDeliveryDay, writeLegionDay).
+// project (walkWrite, writeProjectDay), or, in a rebuild, a batch is (stageWalk).
 const walkBatch = 28
 
 // The cursors, one row of eval_days_cursor each, named for the feed they are read by (feedCursors).
@@ -330,9 +330,9 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 // what a check of which days a change touches reads, and each project whose seed it ran, in the
 // order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
 // zero fill under walkLogged and the day it filled through. walksLeft is whether a walk of the day
-// rows or a figures walk has days left after the pass's batch, yielded whether its walks stopped
-// for an owed wake with days of their batch left (refresh.yields), and heldBack whether its safe
-// horizon held an event back (refresh).
+// rows or a figures walk has days left after the pass's batch, or the rebuild or its cleanup has
+// work left (finishRebuild), yielded whether its walks stopped for an owed wake with days of their
+// batch left (refresh.yields), and heldBack whether its safe horizon held an event back (refresh).
 type refreshed struct {
 	days      map[builtDay]bool
 	seeded    []string
@@ -363,11 +363,12 @@ func (r refreshed) sorted() []string {
 // seed (refresh.load, with seeds, the loop's own), and reads page after page of the two feeds until
 // one comes back short and writes the days each names: the changes' work, which every pass does.
 // Given batch, the walks' batch of the gap (gapBatch), it then does the background work: it builds
-// what the batch has left of each walk (walk), makes the stored figures' part (figuresPass), prunes
-// the change log, and answers when the loop should run again with no wake (nextPass). Given none,
-// it reads the stored figures' part of the change log alone (figureChanges) and answers no due
-// time: its loop asks for the pass that begins the next batch (runRefresher). It answers what it
-// wrote, whether a walk has days left, and whether its walks stopped for an owed wake.
+// what the batch has left of each walk (walk), makes the stored figures' part (figuresPass), does
+// the rebuild's rest (finishRebuild), prunes the change log, and answers when the loop should run
+// again with no wake (nextPass). Given none, it reads the stored figures' part of the change log
+// alone (figureChanges) and answers no due time: its loop asks for the pass that begins the next
+// batch (runRefresher). It answers what it wrote, whether a walk, the rebuild or its cleanup has
+// work left, and whether its walks stopped for an owed wake.
 //
 // A pass that leaves an event id standing above the safe horizon it read has read less than the
 // log holds (events.Horizon.HeldBack): an event that committed while a lower id was still open,

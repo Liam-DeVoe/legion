@@ -17,14 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
-// rebuild.go is the verified rebuild (dispatch://INFRA-2916, the architect's rulings of 07:59Z and
-// 08:28Z): how stored rows that serve readers are rebuilt where no input changed and every day may
-// have moved. A release (a process whose first pass finds the rows served by another build), a
-// lost change cursor, and delivery settings the rows stand built under that are not recorded each
-// rebuild the served families (eval_days_serving) aside and make what moved visible in one short
-// commit. A family no rows are served of yet, a database's or a project's first seen, has nothing
-// to keep serving: its walk builds it in the open, a day a commit, each day readable once written
-// and "no data" before, and its serving record follows the walk (recordWalkIn).
+// rebuild.go is the verified rebuild (dispatch://INFRA-2916): how stored rows that serve readers
+// are rebuilt where no input changed and every day may have moved. A release (a process whose
+// first pass finds the rows served by another build), a lost change cursor, and delivery settings
+// the rows stand built under that are not recorded each rebuild the served families
+// (eval_days_serving) aside and make what moved visible in one short commit. A family no rows are
+// served of yet, a database's or a project's first seen, has nothing to keep serving: its walk
+// builds it in the open, a day a commit, each day readable once written and "no data" before, and
+// its serving record follows the walk (recordWalkIn).
 //
 //   - The stored rows keep serving through the rebuild. A rebuild walks each family's days as a
 //     walk does (walkDays, with the walk's own builders and first input days), a batch a pass, and
@@ -494,7 +494,7 @@ func (s *Store) rebuildFirsts(ctx context.Context, rb int64, family, project str
 	return firsts, nil
 }
 
-// stagedRows is a staged day row and its op.
+// stagedRow is a staged day row and its op.
 type stagedRow struct {
 	op  string
 	row DayRow
@@ -759,9 +759,9 @@ func stageRows(ctx context.Context, tx pgx.Tx, rb *rebuildState, rows []stagedRo
 // member outranks a `d` one of its key, which a later `d` leaves as it stands.
 func stageMembers(ctx context.Context, tx pgx.Tx, rb int64, members []stagedMember) error {
 	size := func(one *stagedMember) int {
-		return 8*4 + len(one.op) + len(one.key.project) + len(one.key.family) + len(one.key.deployRepo) + len(one.key.rowKey) + 2*8 + memberAtBytes(one.at)
+		return 9*4 + len(one.op) + len(one.key.project) + len(one.key.family) + len(one.key.deployRepo) + len(one.key.rowKey) + 2*8 + memberAtBytes(one.at)
 	}
-	for chunk := range statementChunks(members, paramBytes(8)+12, size) {
+	for chunk := range statementChunks(members, paramBytes(9)+12, size) {
 		count := len(chunk)
 		ops, projects, families, deployRepos, rowKeys := make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 		days, from := make([]*time.Time, count), make([]*time.Time, count)
@@ -980,14 +980,15 @@ func (s *Store) overlayFiguresStart(ctx context.Context, rb int64, project strin
 	return new(measures.Midnight(*first).AddDate(0, 0, 1)), nil
 }
 
-// stagedFigure is a staged figure row of either table: its op, the row the rebuild folded (nil
-// for op `d`), and the stored row it was staged against (nil where none stood).
+// stagedRange is a staged range figure row: its op, the row the rebuild folded (nil for op `d`),
+// and the stored row it was staged against (nil where none stood).
 type stagedRange struct {
 	op       string
 	key      rangeFigureKey
 	row, was *rangeFigureRow
 }
 
+// stagedDay is a staged day figure row, as stagedRange is a range's.
 type stagedDay struct {
 	op       string
 	key      dayFigureKey
@@ -1662,8 +1663,9 @@ var flipStatements = []struct{ what, sql string }{
 // flipRebuild makes what rb staged visible in one transaction of flipStatements, marked a
 // rebuild's (MarkRebuild), so the live hub recomputes an evals view of its eval_days changes at
 // once, one change per eval: the flip of a rebuild that staged nothing writes no row, member or
-// figure and logs no change, and moves the serving record alone. The transaction first locks rb's
-// row and reads it again: a rebuild replaced since the pass read it (replaceRebuild abandoned it)
+// figure and logs no change, and moves the rebuild's state, the serving records, the walks and the
+// figures' marker alone. The transaction first locks rb's row and reads it again: a rebuild
+// replaced since the pass read it (replaceRebuild abandoned it)
 // flips nothing, and flipRebuild answers false. It then moves the change log's outbox into the
 // log, and logs how many rows each statement wrote and how long the transaction was open.
 func (r *refresh) flipRebuild(ctx context.Context, rb *rebuildState) (bool, error) {

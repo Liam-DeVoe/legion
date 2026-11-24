@@ -57,7 +57,7 @@ type storedDay struct {
 }
 
 // StoredFigures is what a read of the stored figures read for one window and compare range
-// (ReadStoredFigures): how far each project's figures are built, each eval's stored row of the
+// (ReadStoredFiguresIn): how far each project's figures are built, each eval's stored row of the
 // window and of the compare range, and each eval's stored day rows of the window.
 type StoredFigures struct {
 	built           map[string]time.Time
@@ -66,7 +66,8 @@ type StoredFigures struct {
 }
 
 // ReadStoredFigures is ReadStoredFiguresIn on the pool, each of its statements reading the rows
-// that stand when it runs.
+// that stand when it runs. Only the tests read it: the eval list reads ReadStoredFiguresIn in its
+// one snapshot.
 func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo string, window Range, compare *Range) (StoredFigures, error) {
 	return ReadStoredFiguresIn(ctx, s.database.Pool, projects, entries, deployRepo, window, compare)
 }

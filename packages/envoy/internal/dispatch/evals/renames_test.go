@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// renamedRowsStatements read every stored row of this branch's tables that names a repository,
+// renamedRowsStatements read every stored row of the eval registry's tables that names a repository,
 // each as one line of its key and its values, with the columns that say when or by which build it
 // was written left out: the delivery, CI and Legion day rows, their members, the stored figures
 // (their fold key and stamp, which name the rows' write times, left out too) and the repository of

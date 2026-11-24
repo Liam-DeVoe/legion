@@ -373,18 +373,25 @@ func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
 // An eval_days change that the refresher's rewrite of a delivery settings change wrote carries the
 // rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite in its RunKind, which the rewrite's
 // transaction sets: evals.MarkSettingsRewrite), and marks with cause settings-rewrite; one its
-// rebuild of a span wrote carries the rebuild's (delivery.EvalDaysWrittenByRebuild,
-// evals.MarkRebuild), and marks with cause rebuild. Neither waits for a quiet (markDirtyLocked).
-// Every other change waits the quiet. The mark is the change's own. The rewrite and the rebuild
-// each write every eval's rows in one transaction, so its changes reach the log together, and the
-// one recompute they make due answers them all.
+// rebuild of a span or a rebuild's flip wrote carries the rebuild's
+// (delivery.EvalDaysWrittenByRebuild, evals.MarkRebuild), and marks with cause rebuild; and one its
+// page logs in the commit that publishes the projects' default repositories carries the
+// publishing's (delivery.EvalDaysWrittenByDefaults), and marks with cause defaults. None of them
+// waits for a quiet (delivery.EvalDaysImmediate, markDirtyLocked). Every other change waits the
+// quiet. The mark is the change's own. The rewrite, the rebuild and the publishing each write what
+// they move in one transaction, so their changes reach the log together, and the one recompute
+// they make due answers them all.
 func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
 	for _, change := range changes {
 		cause := deliveryCauseChange
 		if delivery.EvalDaysImmediate(change) {
-			cause = deliveryCauseSettingsRewrite
-			if change.RunKind == delivery.EvalDaysWrittenByRebuild {
+			switch change.RunKind {
+			case delivery.EvalDaysWrittenByRebuild:
 				cause = deliveryCauseRebuild
+			case delivery.EvalDaysWrittenByDefaults:
+				cause = deliveryCauseDefaults
+			default:
+				cause = deliveryCauseSettingsRewrite
 			}
 		}
 		for _, view := range g.views {
@@ -397,20 +404,20 @@ func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Cha
 
 // markDirtyLocked marks view for a recompute and wakes g's worker. Marks coalesce on the view
 // whatever their cause, so one recompute answers every mark made before its read takes them over
-// (deliveryHub.read). Three marks wait for no quiet (immediate): a subscribe's, whose sub waits
-// for its first answer, a settings rewrite's and a rebuild's (markChangesLocked). The quiet
-// gathers a burst of changes into one recompute, and a rewrite or a rebuild has no burst left to
-// gather, since the refresher writes every eval's rows of it in one transaction, whose changes
-// arrive in one drain. Its page has meanwhile waited for the pass itself: at ten times INFRA's
-// size on c3d nodes the pass commits 1.2-1.7 s after the settings write, and a quiet of 250 ms
-// after it, with a recompute of about 40 ms, brought a change of production_job_names to the page
-// in 1.49-1.93 s, against the 2 s R14 bounds it to.
+// (deliveryHub.read). Four marks wait for no quiet (immediate): a subscribe's, whose sub waits
+// for its first answer, a settings rewrite's, a rebuild's and a publishing of the defaults'
+// (markChangesLocked). The quiet gathers a burst of changes into one recompute, and a rewrite, a
+// rebuild or a publishing has no burst left to gather, since the refresher writes what it moves in
+// one transaction, whose changes arrive in one drain. Its page has meanwhile waited for the pass
+// itself: at ten times INFRA's size on c3d nodes the pass commits 1.2-1.7 s after the settings
+// write, and a quiet of 250 ms after it, with a recompute of about 40 ms, brought a change of
+// production_job_names to the page in 1.49-1.93 s, against the 2 s R14 bounds it to.
 func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, cause string) {
 	if !view.dirty {
 		view.dirty, view.firstDirty, view.cause = true, now, cause
 	}
 	view.lastDirty = now
-	if cause == deliveryCauseSubscribe || cause == deliveryCauseSettingsRewrite || cause == deliveryCauseRebuild {
+	if cause == deliveryCauseSubscribe || cause == deliveryCauseSettingsRewrite || cause == deliveryCauseRebuild || cause == deliveryCauseDefaults {
 		view.immediate, view.cause = true, cause
 	}
 	signal(g.wakeWork)

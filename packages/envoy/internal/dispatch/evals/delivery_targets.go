@@ -170,7 +170,7 @@ var deliveryJudges = func() map[string][]string {
 // no row names their project; the one a repository names is the project whose published default
 // repository it is (eval_project_repos, the record the refresher's page commit moves in the
 // commit that makes the figures folded under it visible; owners.go), compared without case, so
-// the delivery routes and the Evals tab judge by one state (the architect's ruling of 14:07Z) and
+// the delivery routes and the Evals tab judge by one state and
 // a person's write of a default repository moves neither until that commit. Where no project
 // publishes deployRepo, or more than one does, no project is named, and where the project holds no
 // version of a slug yet, the slug's catalogue entry stands in: the definition and series the seed

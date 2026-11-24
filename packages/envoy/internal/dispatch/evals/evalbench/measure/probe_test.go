@@ -41,12 +41,12 @@ func listRead(statements map[int64]string, params map[int64][]string) measuredCa
 }
 
 // TestTheProbeMeasuresTheListsStoredFiguresReads: at this head the list answers an offered range
-// from the stored figures (evals.Store.ReadStoredFigures), so the probe finds the range-figures
-// and day-figures reads among the read's statements, and runs each with the literals the statement
+// from the stored figures (evals.ReadStoredFiguresIn), so the probe finds the range-figures and
+// day-figures reads among the read's statements, and runs each with the literals the statement
 // log holds written in, and again without its figures column. A read that ran neither of them, as
 // one that reads the day rows' union does, fails the probe with a message naming both, so a bench
-// whose list stopped reading the stored figures exits 1. At 04de13fa the probe looked for the day
-// rows' union alone, and failed every run of the head.
+// whose list stopped reading the stored figures exits 1, and a probe that looked for the day rows'
+// union alone would fail every run of the head.
 func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
 	read := listRead(map[int64]string{11: rangeFiguresRead, 12: figuresBuiltRead, 13: dayFiguresRead}, map[int64][]string{

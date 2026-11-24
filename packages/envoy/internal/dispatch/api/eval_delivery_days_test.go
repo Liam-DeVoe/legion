@@ -672,7 +672,8 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 			both++
 		}
 		if !first && !second {
-			// It ships no pull request of a project, so it counts for none.
+			// It ships no pull request of a project, so it counts, through its repository, for the
+			// project whose default repository that is: the first.
 			none++
 		}
 	}
