@@ -93,12 +93,6 @@ const (
 	mergerMergeHead    = "head-merged"
 )
 
-// mergerComposition is the merger's composition: the parts of the composer's snapshot that
-// prompts.Composer.Compose gives a merger, in its order, as paths below the state directory's
-// prompts/ (at boot prompts.New writes shared/ from the role prompts the daemon embeds, and go/
-// from the daemon's own parts). Step 6 holds the merger's launch to it.
-var mergerComposition = []string{"shared/mechanics/headless.md", "shared/merger.md", "go/merger.md", "go/worker-common.md"}
-
 // conflictMergerLive is one run of the proof: the booted daemon, its log and the baseline of each
 // role topic (conflictLive), the three roles the driver acts as over the worker stream, and the
 // watch of the issue's phase over the whole run.
@@ -498,29 +492,26 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 }
 
 // Step 6. The merger's prompt as its launch carries it: the role prompt the daemon composed at
-// boot. The merger's launch names the parts of the composer's snapshot that the composer gives a
-// merger, in its order (mergerComposition), and not the driver's own prompt file, which a launch
-// names alone once the seed writes one for the claim (specs.rolePromptPaths); and each part holds
-// bytes. For a reader to hold the prompt against the messages steps 2, 3 and 4 printed, it prints
-// the Markdown headings of each part: each line outside a fenced block that starts with `#`, a
-// rule that needs no word of the prompt.
+// boot. The merger's launch names exactly the parts of the composer's snapshot that the composer
+// gives a merger, in its order (composedParts, in live_proof_test.go), each below the snapshot's
+// shared/ or go/; and each part holds bytes. So it does not name the driver's own prompt file,
+// prompts/<token>.md (rolePromptPath), which a launch names alone once the seed writes one for the
+// claim (specs.rolePromptPaths), and the failure names that file. For a reader to hold the prompt
+// against the messages steps 2, 3 and 4 printed, it prints the Markdown headings of each part:
+// each line outside a fenced block that starts with `#`, a rule that needs no word of the prompt.
 func (r *conflictMergerLive) mergerPromptAsLaunched() {
 	t := r.t
 	token := r.token(claim.RoleMerger)
 	launch := lastLaunch(t, r.rt, token)
 	override := rolePromptPath(r.cfg.StateDir, token)
-	for _, path := range launch.Prompt.RolePromptPaths {
-		if path == override {
-			t.Fatalf("the merger's launch names the driver's own prompt %s, want the role prompt the daemon composed", path)
-		}
-	}
+	parts := composedParts[composedRole{claim.RoleMerger, false}]
 	snapshot := filepath.Join(r.cfg.StateDir, "prompts")
-	want := make([]string, 0, len(mergerComposition))
-	for _, part := range mergerComposition {
+	want := make([]string, 0, len(parts))
+	for _, part := range parts {
 		want = append(want, filepath.Join(snapshot, part))
 	}
 	if !slices.Equal(launch.Prompt.RolePromptPaths, want) {
-		t.Fatalf("the merger's launch names the role prompt parts %v, want the parts the composer gives a merger %v", launch.Prompt.RolePromptPaths, want)
+		t.Fatalf("the merger's launch names the role prompt parts %v, want the parts the composer gives a merger %v and not the driver's own prompt %s", launch.Prompt.RolePromptPaths, want, override)
 	}
 	size := 0
 	for i, path := range launch.Prompt.RolePromptPaths {
@@ -533,7 +524,7 @@ func (r *conflictMergerLive) mergerPromptAsLaunched() {
 		}
 		size += len(body)
 		r.note("read back: part %d of %d of the merger's role prompt is the composer's %s, %d bytes, with the headings:",
-			i+1, len(mergerComposition), mergerComposition[i], len(body))
+			i+1, len(parts), parts[i], len(body))
 		fenced := false
 		for _, line := range strings.Split(string(body), "\n") {
 			if strings.HasPrefix(line, "```") {
@@ -544,7 +535,7 @@ func (r *conflictMergerLive) mergerPromptAsLaunched() {
 		}
 	}
 	r.note("read back: the merger's launch names the %d role prompt parts the daemon composed for a merger at boot, %d bytes in all, and not the driver's own prompt %s",
-		len(mergerComposition), size, override)
+		len(parts), size, override)
 }
 
 // noMergeForwardTo holds that no merge-forward message of the issue was addressed to role: the

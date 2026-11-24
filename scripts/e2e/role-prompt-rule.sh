@@ -12,26 +12,26 @@
 # command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
 # of the prompt file, and reads that file. The pid the claim's locator carries is the
 # `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
-# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. Each role's prompt must begin with
-# the bytes of every part the composer gives that role, read from the composer's snapshot below
-# the state directory, in the composer's order, followed by a blank line and the addressing the
-# launch carried; no role's prompt may hold a part the composer gives another of the three roles
-# and not it, so the root's architect and the child's are composed apart; and the child's
-# architect's addressing must name the root's architect as the architect above it. The driver
-# holds no word of any prompt, so a changed sentence or heading of a part passes, and a part left
-# out of a role's composition fails it, naming the role, the pid, the part and where its bytes
-# stand. The driver is packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this
-# script builds with `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go,
-# the runtime that starts a pane with no tmux. Each check prints `== <name>`, what it observed and
-# `ok <name>`; the first that fails ends the run non-zero, naming it.
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. Each role's prompt must be the bytes
+# of every part the composer gives that role, read from the composer's snapshot below the state
+# directory, in the composer's order, followed by a blank line and the addressing the launch
+# carried, and nothing after it; and the child's architect's addressing must name the root's
+# architect as the architect above it. The driver holds no word of any prompt, so a changed
+# sentence or heading of a part passes, and a part left out of a role's composition fails it,
+# naming the role, the pid, the part and where its bytes stand. The driver is
+# packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
+# `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
+# starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
+# first that fails ends the run non-zero, naming it.
 #
-# Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion
-# worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s
-# and 16 s into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the
-# pinned nats-server installed by the run itself. Each of these figures is from a Legion worker
-# pod, which runs under gVisor. The proof waits on no clock of its own. Its one wait is the panes
-# starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is
-# on each process from the moment that process began.
+# Two runs of this proof, with its three panes, took 76 s and 70 s in a Legion worker pod
+# (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s and 16 s
+# into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the pinned
+# nats-server installed by the run itself. All three runs were made when the proof had a fifth
+# step, since removed, which read files and waited on nothing. Each of these figures is from a
+# Legion worker pod, which runs under gVisor. The proof waits on no clock of its own. Its one wait
+# is the panes starting Oh My Pi, loading the two plugins and reporting ready, and the command line
+# it reads is on each process from the moment that process began.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), awk, bash, tar, bun and python3, as

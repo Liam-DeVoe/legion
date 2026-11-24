@@ -3,10 +3,9 @@
 // The live proof that a role process is launched with the role prompt the daemon composed for its
 // role. Three roles of one tree each run a real pane: the tree's root architect, the planner of the
 // same issue, and the architect of a child of the root, a sub-architect. The prompt each pane's own
-// Oh My Pi was started with begins with the bytes of every part the composer gives that role, in
-// the composer's order, followed by a blank line and the addressing the launch carried
-// (runtime.ComposePrompt). No role's prompt holds a part the composer gives another of the three
-// and not that role, so the root's architect and the child's are composed apart. The
+// Oh My Pi was started with is the bytes of every part the composer gives that role, in the
+// composer's order, followed by a blank line and the addressing the launch carried, and nothing
+// after it (runtime.ComposePrompt, given no deployment or variant instructions by this rig). The
 // sub-architect's addressing names the root's architect as the architect above it
 // (addressingFragment, in specs.go). scripts/e2e/role-prompt-rule.sh builds this driver with
 // `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
@@ -27,15 +26,16 @@
 // What it holds that prompt against, and why. It holds no word of any prompt, so a sentence or a
 // heading of a part may change and the proof still passes. It holds each role's composition: the
 // parts of the composer's snapshot that prompts.Composer.Compose gives that role, in that order,
-// named by their paths below the state directory's prompts/ (at boot prompts.New writes shared/
-// from the role prompts the daemon embeds, and go/ from the daemon's own parts). It reads the
-// bytes of those parts from the snapshot once the panes run. A part left out of a role's
-// composition, or one added to it, fails the proof for that role. A marker planted in the snapshot
-// would need a write between the boot's New and the launch's read of the parts, and this rig has
-// no such moment: New rewrites every snapshot file that does not hold its embedded bytes, and the
-// boot relaunches the three seeded claims at once. The unit tests of internal/prompts compose
-// each role's parts, but none of them starts a process, so none says a role process was ever
-// launched with them, and that is what this proof is for.
+// named by their paths below the state directory's prompts/ (composedParts, in
+// live_proof_test.go; at boot prompts.New writes shared/ from the role prompts the daemon embeds,
+// and go/ from the daemon's own parts). It reads the bytes of those parts from the snapshot once
+// the panes run. A part left out of a role's composition, or one added to it, fails the proof for
+// that role. A marker planted in the snapshot would need a write between the boot's New and the
+// launch's read of the parts, and this rig has no such moment: New rewrites every snapshot file
+// that does not hold its embedded bytes, and the boot relaunches the three seeded claims at once.
+// The unit tests of internal/prompts compose each role's parts, but none of them starts a
+// process, so none says a role process was ever launched with them, and that is what this proof
+// is for.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
@@ -71,7 +71,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -145,7 +144,7 @@ type ruleRole struct {
 	role     claim.Role
 	provider string
 	name     string
-	// parts is the role's composition: each part of the composer's snapshot that
+	// parts is the role's composition (composedParts): each part of the composer's snapshot that
 	// prompts.Composer.Compose gives the role, in its order, as a path below the state
 	// directory's prompts/ (snapshotDir).
 	parts []string
@@ -163,10 +162,9 @@ type launchedPrompt struct {
 // panes, reads the prompt each of those three processes was launched with, and holds that it is
 // the prompt the daemon composed for that role, so that every rule the role's prompt carries
 // reached the process. The planner's, the root architect's and the child's architect's prompts
-// each begin with the bytes of their own composition's parts, in order, followed by the
-// addressing their launch carried. The child's architect's addressing names the root's architect
-// as the architect above it. No role's prompt holds a part the composer gives another of the
-// three and not it.
+// are each the bytes of their own composition's parts, in order, followed by the addressing their
+// launch carried and nothing after it. The child's architect's addressing names the root's
+// architect as the architect above it.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
@@ -174,7 +172,6 @@ func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
 	r.step("step2-the-planner-was-launched-with-the-prompt-composed-for-the-planner", r.plannerCarriesItsComposition)
 	r.step("step3-the-root-architect-was-launched-with-the-prompt-composed-for-a-root-architect", r.rootArchitectCarriesItsComposition)
 	r.step("step4-the-childs-architect-was-launched-with-the-prompt-composed-for-a-sub-architect-under-the-root-architect", r.subArchitectCarriesItsComposition)
-	r.step("step5-no-role-was-launched-with-a-part-composed-for-another-role-alone", r.noRoleCarriesAnothersPart)
 }
 
 // newRolePromptRuleLive readies everything a pane needs before the daemon boots: the `legion`
@@ -224,23 +221,17 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 }
 
 // seededRoles is the three claims of the one tree that run a real pane, each with its
-// composition: the parts of the composer's snapshot that prompts.Composer.Compose gives the role,
-// in its order. The issue is its own tree's root, so its architect claim is the root architect's,
-// composed of the root architect's part of each half of the snapshot and every architect's common
-// part. The issue stands in planning, so the phase worker of that phase is the planner, composed of
-// the phase workers' common core, the planner's core, the headless mechanics, the planner's part
-// of each half and every phase worker's common part. The child's issue is not its tree's root, so
-// its architect claim is a sub-architect's, composed of the sub-architect's part of each half and
-// the same common part as the root architect's.
+// composition (composedParts). The issue is its own tree's root, so its architect claim is the
+// root architect's. The issue stands in planning, so the phase worker of that phase is the
+// planner. The child's issue is not its tree's root, so its architect claim is a sub-architect's.
 func (r *rolePromptRuleLive) seededRoles() []ruleRole {
 	return []ruleRole{
 		{issue: r.issue, role: claim.RoleArchitect, provider: ruleArchitectProvider, name: "root architect",
-			parts: []string{"shared/architect-root.md", "go/architect-root.md", "go/architect-common.md"}},
+			parts: composedParts[composedRole{claim.RoleArchitect, true}]},
 		{issue: r.issue, role: claim.RolePlanner, provider: rulePlannerProvider, name: "planner",
-			parts: []string{"shared/core/common.md", "shared/core/planner.md", "shared/mechanics/headless.md",
-				"shared/planner.md", "go/planner.md", "go/worker-common.md"}},
+			parts: composedParts[composedRole{claim.RolePlanner, false}]},
 		{issue: r.child, role: claim.RoleArchitect, provider: ruleSubArchitectProvider, name: "sub-architect",
-			parts: []string{"shared/architect.md", "go/architect.md", "go/architect-common.md"}},
+			parts: composedParts[composedRole{claim.RoleArchitect, false}]},
 	}
 }
 
@@ -397,43 +388,17 @@ func (r *rolePromptRuleLive) subArchitectCarriesItsComposition() {
 	r.note("the %s's addressing names the root's architect as the architect above it at byte %d: %q", seeded.name, at+found, above)
 }
 
-// noRoleCarriesAnothersPart holds that the prompt each role's own Oh My Pi was launched with holds
-// no part the composer gives another of the three roles and not that role: the root architect's
-// no part of the sub-architect's own nor any of the planner's, the sub-architect's no part of the
-// root architect's own nor any of the planner's, and the planner's no architect's part. So the
-// root's architect and the child's were composed apart, each of its own kind. A part is looked for
-// with its trailing newlines dropped, as it stands when it ends a composition.
-func (r *rolePromptRuleLive) noRoleCarriesAnothersPart() {
-	t := r.t
-	t.Helper()
-	roles := r.seededRoles()
-	for _, seeded := range roles {
-		token := r.token(seeded.issue, seeded.role)
-		read := r.launched[token]
-		var foreign []string
-		for _, other := range roles {
-			for _, part := range other.parts {
-				if slices.Contains(seeded.parts, part) || slices.Contains(foreign, part) {
-					continue
-				}
-				if at := strings.Index(read.prompt, strings.TrimRight(r.snapshotPart(part), "\n")); at >= 0 {
-					t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt that holds %s, a part the composer gives the %s and not the %s, at byte %d",
-						seeded.name, token, read.pid, part, other.name, seeded.name, at)
-				}
-				foreign = append(foreign, part)
-			}
-		}
-		r.note("the %s's own Oh My Pi prompt holds none of %v, the parts the composer gives another of the three roles and not it",
-			seeded.name, foreign)
-	}
-}
-
 // carriesItsComposition holds that the prompt the role's own Oh My Pi was launched with is the
 // role prompt the daemon composed for that role (runtime.ComposePrompt): from byte 0, the bytes
 // of each part of the role's composition as the composer's snapshot holds them, one after the
 // other in that order, the last with its trailing newlines dropped; then a blank line and the
-// addressing the role's launch carried. It prints where each part stands, and answers the byte
-// at which the addressing begins.
+// addressing the role's launch carried, and nothing after it. It prints where each part stands,
+// and answers the byte at which the addressing begins.
+//
+// ComposePrompt puts only two things after the addressing: the launch's deployment instructions
+// and the instructions of each experiment arm it runs in. This rig gives a launch neither, so the
+// prompt's end is held exactly, and a launch that names either ends the proof naming the role and
+// the files it named.
 //
 // A part that is not where the composition puts it ends the proof naming the role, its pid, the
 // part, the byte it was looked for at, where its bytes stand instead, and the parts the launch
@@ -447,6 +412,10 @@ func (r *rolePromptRuleLive) carriesItsComposition(seeded ruleRole) int {
 		t.Fatalf("step 1 read no command line for the %s (%s)", seeded.name, token)
 	}
 	launch := r.launchOf(token)
+	if launch.Prompt.DeploymentInstructionsPath != "" || len(launch.Prompt.VariantInstructionsPaths) > 0 {
+		t.Fatalf("the %s %s was launched with deployment instructions %q and variant instructions %v, which this rig gives no launch, so the end of its prompt is not the addressing this proof holds it to",
+			seeded.name, token, launch.Prompt.DeploymentInstructionsPath, launch.Prompt.VariantInstructionsPaths)
+	}
 	at := 0
 	for i, part := range seeded.parts {
 		body := r.snapshotPart(part)
@@ -466,11 +435,16 @@ func (r *rolePromptRuleLive) carriesItsComposition(seeded ruleRole) int {
 			i+1, len(seeded.parts), seeded.name, part, at, at+len(body), token, read.pid)
 		at += len(body)
 	}
-	if !strings.HasPrefix(read.prompt[at:], "\n\n"+launch.Prompt.Addressing) {
+	end := "\n\n" + launch.Prompt.Addressing
+	if tail := read.prompt[at:]; tail != end {
+		if strings.HasPrefix(tail, end) {
+			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt whose addressing, the one its launch carried, ends at byte %d and is followed by %d bytes its launch named no file for: %s",
+				seeded.name, token, read.pid, at+len(end), len(tail)-len(end), promptShown(tail[len(end):]))
+		}
 		t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt whose composition ends at byte %d and is not followed by a blank line and the addressing its launch carried; there it holds %s",
-			seeded.name, token, read.pid, at, promptShown(read.prompt[at:]))
+			seeded.name, token, read.pid, at, promptShown(tail))
 	}
-	r.note("the %s's composition, %d parts and %d bytes, is followed by a blank line and the %d bytes of addressing its launch carried",
+	r.note("the %s's composition, %d parts and %d bytes, is followed by a blank line and the %d bytes of addressing its launch carried, which end the prompt",
 		seeded.name, len(seeded.parts), at, len(launch.Prompt.Addressing))
 	return at + len("\n\n")
 }
