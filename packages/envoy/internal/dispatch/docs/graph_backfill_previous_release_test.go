@@ -389,7 +389,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // A change of words that keeps every statement's rows keeps the rule, and records its digest in
 // place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
 // once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main, from
-// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on INFRA-1150, whose
+// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on #4173's branch, whose
 // statements also read the project columns above, and from the digest above on this change, whose
 // statements also hold the supertag read: the backfill's block selection
 // (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`, a planner
@@ -399,7 +399,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // The documents a pass of rule 1 marks are the same, so a build of either text beside the other
 // reads rule 1's cursors, horizons and marks as its own rightly. The digest below holds the word
 // and the supertag read together: the statements are the ones of the digest above with the word
-// added, which are INFRA-1150's with the word,
+// added, which are #4173's branch's with the word,
 // c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3, with the supertag read added,
 // and nothing else.
 var markingStatementDigests = map[int]string{
