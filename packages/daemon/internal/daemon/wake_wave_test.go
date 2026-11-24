@@ -141,6 +141,9 @@ type waveRuntime struct {
 	// held, while it is open, is what every launch waits for before it reaches the runtime
 	// (holdLaunches); nil lets every launch straight through.
 	held chan struct{}
+	// sweeps, while it is set, holds every orphan sweep at its reconciliation until the test lets
+	// it through (gateSweeps); nil lets every sweep through.
+	sweeps *sweepGate
 }
 
 // waveLaunch is one launch the runtime was asked for: whose claim, when on the test clock, and
@@ -179,13 +182,79 @@ func (r *waveRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec ru
 // above zero: reconcileOrphans passes orphanGrace, and reconcileBootOrphans passes 0. The sweep
 // goes from ReconcileOrphans to refreshStalePlugins, which calls the same refreshGate.Correct
 // and Admit as the boot pass. Without this hold, a sweep that runs while launches are held
-// changes the shared gate, and the boot pass's count is wrong.
+// changes the shared gate, and the boot pass's count is wrong. The sweep's reconciliation waits at
+// the sweep gate too while a test has one set (gateSweeps).
 func (r *waveRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Known, grace time.Duration) error {
 	if grace > 0 {
 		r.await(ctx)
+		r.mu.Lock()
+		gate := r.sweeps
+		r.mu.Unlock()
+		gate.hold(ctx)
 	}
 	return r.Runtime.ReconcileOrphans(ctx, known, grace)
 }
+
+// sweepGate holds the orphan sweep at its reconciliation, which the sweep makes after it has read
+// the claims and before its refresh pass (reconcileOrphans): a test that lets one sweep through
+// at a time runs exactly one pass for each it lets through, on the wall clock's sweep but no
+// longer at its pace. That is what a test needs that counts passes: the sweep's own ticker runs
+// whatever the test does, so a count of sweeps between two readings of the state counts the
+// machine's load as much as the passes.
+type sweepGate struct {
+	// waiting is a sweep that has reached the gate and waits there, one send for each.
+	waiting chan struct{}
+	// through lets the sweep waiting go on, one receive for each.
+	through chan struct{}
+	// opened, closed, lets every sweep through from then on.
+	opened chan struct{}
+	once   sync.Once
+}
+
+// gateSweeps sets the sweep gate: from now on every sweep waits at its reconciliation until the
+// test lets it through (letOne) or opens the gate (open). A sweep already past its reconciliation
+// runs on; the next one waits.
+func (r *waveRuntime) gateSweeps() *sweepGate {
+	gate := &sweepGate{waiting: make(chan struct{}), through: make(chan struct{}), opened: make(chan struct{})}
+	r.mu.Lock()
+	r.sweeps = gate
+	r.mu.Unlock()
+	return gate
+}
+
+// hold is the sweep's wait at the gate: it says it waits, then waits to be let through. A nil gate,
+// an open one and an ended context hold nothing.
+func (g *sweepGate) hold(ctx context.Context) {
+	if g == nil {
+		return
+	}
+	select {
+	case g.waiting <- struct{}{}:
+	case <-g.opened:
+		return
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-g.through:
+	case <-g.opened:
+	case <-ctx.Done():
+	}
+}
+
+// awaitSweep waits for the next sweep to reach the gate, which it reaches having read the claims
+// its refresh pass will walk.
+func (g *sweepGate) awaitSweep(t *testing.T, what string) {
+	t.Helper()
+	testwait.Receive(t, what, g.waiting)
+}
+
+// letOne lets through the sweep that awaitSweep saw waiting: it runs its reconciliation, its
+// refresh pass and the rest of its tick, and the sweep after it waits at the gate.
+func (g *sweepGate) letOne() { g.through <- struct{}{} }
+
+// open lets every sweep through from now on, the one waiting included.
+func (g *sweepGate) open() { g.once.Do(func() { close(g.opened) }) }
 
 // holdLaunches makes every launch the runtime is asked for from now on wait until release is
 // called, or until the launch's own context ends. A launch the burst lets out runs inside the
