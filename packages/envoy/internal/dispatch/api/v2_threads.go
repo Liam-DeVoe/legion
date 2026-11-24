@@ -60,11 +60,25 @@ var (
 // a caller who is not that author: one code on every /api/v2 route that refuses one (R1.8, R7).
 var notAuthorRefusal = apicode.Refusal{Condition: apicode.NotTheAuthor, Code: apicode.NotAuthor}
 
-// commentInvalidRefusal and bodyDecisionBlockRefusal are the refusals of a post's body that the
-// comment writes share: a comment's input the write refuses, and a body holding a decision block.
+// The refusals of a post's body and its writes that the thread routes share: a comment's input the
+// write refuses, a body holding a decision block, a message's input, its target or delivery, a
+// mention's input, a send moved under a delete, a message whose target moved, and a reply from a
+// caller the attempt is not for.
 var (
-	commentInvalidRefusal    = apicode.Refusal{Condition: apicode.CommentInvalid, Code: apicode.InvalidComment}
-	bodyDecisionBlockRefusal = apicode.Refusal{Condition: apicode.BodyHoldsDecisionBlock, Code: apicode.DecisionBlockInBody}
+	commentInvalidRefusal        = apicode.Refusal{Condition: apicode.CommentInvalid, Code: apicode.InvalidComment}
+	bodyDecisionBlockRefusal     = apicode.Refusal{Condition: apicode.BodyHoldsDecisionBlock, Code: apicode.DecisionBlockInBody}
+	messageInvalidRefusal        = apicode.Refusal{Condition: apicode.MessageInvalid, Code: apicode.InvalidMessage}
+	messageInputRefusal          = apicode.Refusal{Condition: apicode.MessageInputRefused, Code: apicode.MessageInput}
+	mentionInvalidRefusal        = apicode.Refusal{Condition: apicode.MentionInvalid, Code: apicode.MentionInput}
+	deleteRacedSendRefusal       = apicode.Refusal{Condition: apicode.DeleteRacedSend, Code: apicode.DeleteContended}
+	messageTargetMovedRefusal    = apicode.Refusal{Condition: apicode.MessageTargetMoved, Code: apicode.MessageTargetChanged}
+	replyNotRecipientRefusal     = apicode.Refusal{Condition: apicode.ReplyNotTheRecipient, Code: apicode.ReplyForbidden}
+	correctionOfDirectRefusal    = apicode.Refusal{Condition: apicode.CorrectionOfDirectMessage, Code: apicode.NotAnIssueMessage}
+	directThreadNoSessionRefusal = apicode.Refusal{
+		Condition: apicode.DirectThreadWithoutSession, Code: apicode.SessionRequired,
+	}
+	directThreadOutsideRefusal = apicode.Refusal{Condition: apicode.DirectThreadOfAnotherSession, Code: apicode.ThreadForbidden}
+	handoffInputRefusal        = apicode.Refusal{Condition: apicode.HandoffInputInvalid, Code: apicode.HandoffInput}
 )
 
 // commentWriteRefusals are the refusals of the comment a document's or an issue's comment list
@@ -74,10 +88,21 @@ func commentWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append([]apicode.Refusal{
 		undeclaredKeyRefusal, commentInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal,
 		anchorInvalidRefusal, artifactNotDocumentRefusal, postDeletedRefusal,
-		{Condition: apicode.MentionInvalid, Code: apicode.MentionInput},
+		mentionInvalidRefusal,
 		{Condition: apicode.AskIDShort, Code: apicode.AskIDInput},
 		{Condition: apicode.RouteMoved, Code: apicode.RouteChanged},
 		{Condition: apicode.TurnWithoutAsk, Code: apicode.TurnRequiresAsk},
+	}, more...)
+}
+
+// messageWriteRefusals are the refusals of the message an issue's or a session's message list
+// takes (createStoredMessage), with more, the route's own, after them: its body, its target,
+// delivery and in_reply_to, a reply to a deleted message, and a target that moved under its first
+// attempt.
+func messageWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal, messageInvalidRefusal, messageInputRefusal, valuePastBoundRefusal,
+		bodyDecisionBlockRefusal, postDeletedRefusal, messageTargetMovedRefusal,
 	}, more...)
 }
 
@@ -149,9 +174,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: editCommentInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: shapedComment{}},
 			Scope: scopeProject, ProjectOf: projectPathComment,
-			IDs:      commentIDs(),
-			Reread:   (*server).rereadComment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal},
+			IDs:    commentIDs(),
+			Reread: (*server).rereadComment,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal, commentInvalidRefusal, valuePastBoundRefusal,
+				bodyDecisionBlockRefusal, postDeletedRefusal,
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/comments/{id}", Auth: authAny, Versions: onlyV2,
@@ -175,9 +203,11 @@ func (s *server) v2ThreadRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusOK, Response: model.Comment{}},
 			Scope: scopeProject, ProjectOf: projectPathComment,
-			IDs:      commentIDs(),
-			Reread:   (*server).rereadDeletedComment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal},
+			IDs:    commentIDs(),
+			Reread: (*server).rereadDeletedComment,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal, postDeletedRefusal, deleteRacedSendRefusal,
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/comments/{id}/corrections", Auth: authAny, Versions: onlyV2,
@@ -208,7 +238,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: model.CommentDelivery{}},
 			Scope: scopeProject, ProjectOf: projectPathComment,
 			IDs:      commentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal, mentionInvalidRefusal, postDeletedRefusal},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/replies", Auth: authBearer, Versions: onlyV2,
@@ -235,9 +265,12 @@ func (s *server) v2ThreadRows() []routeRow {
 				},
 			},
 			Scope: scopeProject, ProjectOf: projectPathComment,
-			IDs:      commentIDs(),
-			Reread:   (*server).rereadCommentReply,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
+			IDs:    commentIDs(),
+			Reread: (*server).rereadCommentReply,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, commentMissingRefusal, replyNotRecipientRefusal, envoyUnreachableRefusal,
+				mentionInvalidRefusal, commentInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal, postDeletedRefusal,
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/comments/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -272,9 +305,13 @@ func (s *server) v2ThreadRows() []routeRow {
 			},
 			Authorities: []authorityRule{commentOpenAuthority, commentAcceptedAuthority, commentRejectedAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathComment,
-			IDs:      commentIDs(),
-			Reread:   (*server).rereadComment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
+			IDs:    commentIDs(),
+			Reread: (*server).rereadComment,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, commentMissingRefusal, commentInvalidRefusal, issueClosedRefusal, postDeletedRefusal,
+				{Condition: apicode.SuggestionActionInvalid, Code: apicode.InvalidSuggestion},
+				{Condition: apicode.SuggestionDecided, Code: apicode.AlreadyActioned},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/comments", Auth: authAny, Versions: onlyV2,
@@ -333,10 +370,12 @@ func (s *server) v2ThreadRows() []routeRow {
 				"or more do). 404 MESSAGE_NOT_FOUND for an id no message has.",
 			Handler:  s.getMessageV2,
 			Resource: "messages", Kind: kindItem, Key: "{id}",
-			Query:    messageReadV2Query{},
-			Shape:    routeShape{Status: http.StatusOK, Response: messageReadV2{}},
-			IDs:      messageIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal},
+			Query: messageReadV2Query{},
+			Shape: routeShape{Status: http.StatusOK, Response: messageReadV2{}},
+			IDs:   messageIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageMissingRefusal, directThreadNoSessionRefusal, directThreadOutsideRefusal,
+			},
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,
@@ -353,9 +392,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: editMessageInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.Message{}},
 			Scope: scopeProject, ProjectOf: projectPathMessage,
-			IDs:      messageIDs(),
-			Reread:   (*server).rereadMessage,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal},
+			IDs:    messageIDs(),
+			Reread: (*server).rereadMessage,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal, correctionOfDirectRefusal, messageInvalidRefusal,
+				valuePastBoundRefusal, bodyDecisionBlockRefusal, postDeletedRefusal,
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,
@@ -375,9 +417,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusOK, Response: model.Message{}},
 			Scope: scopeProject, ProjectOf: projectPathMessage,
-			IDs:      messageIDs(),
-			Reread:   (*server).rereadMessage,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal},
+			IDs:    messageIDs(),
+			Reread: (*server).rereadMessage,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal, correctionOfDirectRefusal, postDeletedRefusal,
+				deleteRacedSendRefusal,
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/messages/{id}/corrections", Auth: authAny, Versions: onlyV2,
@@ -395,7 +440,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			List:     listBounds{Default: contracts.PostHistoryPageLimit, Max: contracts.PostHistoryPageLimit},
 			Shape:    routeShape{Status: http.StatusOK, Response: postCorrectionsV2{}},
 			IDs:      messageIDs(),
-			Refusals: listRefusals(positionRefusal, messageMissingRefusal),
+			Refusals: listRefusals(positionRefusal, messageMissingRefusal, directThreadNoSessionRefusal, directThreadOutsideRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/messages/{id}/deliveries", Auth: authAny, Versions: onlyV2,
@@ -408,8 +453,10 @@ func (s *server) v2ThreadRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: createDeliveryInput{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: model.MessageDelivery{}},
 			Scope: scopeProject, ProjectOf: projectPathMessage,
-			IDs:      messageIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal},
+			IDs: messageIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageMissingRefusal, messageInputRefusal, postDeletedRefusal, messageTargetMovedRefusal,
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/messages/{id}/deliveries/{attempt}/state", Auth: authBearer, Versions: onlyV2,
@@ -438,6 +485,17 @@ func (s *server) v2ThreadRows() []routeRow {
 			IDs:   messageIDs(),
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, messageMissingRefusal, deliveryMissingRefusal,
+				{Condition: apicode.AcceptNotTheRecipient, Code: apicode.AcceptForbidden},
+				{Condition: apicode.AcceptOfIndirectMessage, Code: apicode.AcceptNotDirect},
+				{Condition: apicode.AcceptOfMessageNoPersonWrote, Code: apicode.AcceptNotWrittenByPerson},
+				{Condition: apicode.AcceptOfAgentWrittenMessage, Code: apicode.AcceptWrittenByAgent},
+				{Condition: apicode.AcceptOfOtherMode, Code: apicode.AcceptNotAsideOrSteer},
+				{Condition: apicode.AcceptOfOlderAttempt, Code: apicode.AcceptSuperseded},
+				{Condition: apicode.AcceptAfterAccept, Code: apicode.AcceptAlreadyAccepted},
+				{Condition: apicode.AcceptOfAttemptNoPersonAsked, Code: apicode.AcceptNotRequestedByPerson},
+				{Condition: apicode.AcceptOfAttemptAnotherAsked, Code: apicode.AcceptNotRequestedByAuthor},
+				{Condition: apicode.AcceptOfFailedAttempt, Code: apicode.AcceptFailed},
+				{Condition: apicode.AcceptOfStaleAttempt, Code: apicode.AcceptStale},
 			},
 		},
 		{
@@ -466,10 +524,13 @@ func (s *server) v2ThreadRows() []routeRow {
 					{Status: http.StatusOK, Body: model.MessageDelivery{}},
 				},
 			},
-			Scope:    scopeSession,
-			IDs:      messageIDs(),
-			Reread:   (*server).rereadMessageReply,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal},
+			Scope:  scopeSession,
+			IDs:    messageIDs(),
+			Reread: (*server).rereadMessageReply,
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageMissingRefusal, replyNotRecipientRefusal, envoyUnreachableRefusal,
+				messageInputRefusal, messageInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal, postDeletedRefusal,
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/messages", Auth: authAny, Versions: onlyV2,
@@ -499,7 +560,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: shapedMessage{}, Advice: writeAdvice{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			Replay:   replayRecovered(s, s.replayIssueMessage),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: messageWriteRefusals(issueMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/agents/{session_id}/messages", Auth: authAny, Versions: onlyV2,
@@ -513,7 +574,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Query:       agentMessagesV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[agentMessageV2]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(apicode.Refusal{Condition: apicode.SessionIDBlank, Code: apicode.MessageInput}),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/messages", Auth: authAny, Versions: onlyV2,
@@ -534,7 +595,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			OAuthScopes: person,
 			Scope:       scopeSession, SessionPath: "session_id",
 			Replay:   replayRecovered(s, s.replayAgentMessage),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: messageWriteRefusals(),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/broadcasts", Auth: authAny, Versions: onlyV2,
@@ -565,7 +626,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			OAuthScopes: person,
 			Scope:       scopeDeployment,
 			Replay:      replayRecovered(s, s.replayBroadcast),
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, messageInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal,
+				envoyUnreachableRefusal,
+				{Condition: apicode.BroadcastInputInvalid, Code: apicode.BroadcastInput},
+				{Condition: apicode.BroadcastReachesNobody, Code: apicode.BroadcastEmpty},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/broadcasts/{id}", Auth: authAny, Versions: onlyV2,
@@ -604,14 +670,14 @@ func (s *server) v2ThreadRows() []routeRow {
 			Query:    issueHandoffsV2Query{},
 			List:     handoffList,
 			Shape:    routeShape{Status: http.StatusOK, Response: page[handoffV2]{}},
-			Refusals: listRefusals(issueMissingRefusal),
+			Refusals: listRefusals(issueMissingRefusal, handoffInputRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/handoffs", Auth: authBearer, Versions: onlyV2,
 			Description: fmt.Sprintf("Record a session's handoff for one phase of an issue {actor, phase, body}, under a "+
 				"bearer credential (a cookie caller is 403 HANDOFF_FORBIDDEN): the session names itself in actor (400 "+
 				"ACTOR_KIND otherwise), phase is a lowercase slug (%s), and body is one JSON object as a string of at most "+
-				"%d bytes (413 CAP_EXCEEDED), stored exactly as sent; a phase that is not such a slug, or a body that is "+
+				"%d bytes (413 REQUEST_TOO_LARGE), stored exactly as sent; a phase that is not such a slug, or a body that is "+
 				"not one JSON object as a string, is 400 HANDOFF_INPUT. The record is the phase's next version, from 1; a "+
 				"closed issue is 409 ISSUE_CLOSED. Answers 201 {id, "+
 				"issue_key, phase, version, author, created_at} and appends handoff.recorded {handoff_id, phase, version}, "+
@@ -622,7 +688,10 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: model.HandoffSummary{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			BodyLimit: handoffBodyLimit,
-			Refusals:  []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, issueClosedRefusal, handoffInputRefusal,
+				{Condition: apicode.HandoffFromCookie, Code: apicode.HandoffForbidden},
+			},
 		},
 	}
 }

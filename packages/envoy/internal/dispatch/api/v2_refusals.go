@@ -16,6 +16,11 @@ var (
 	documentPreconditionRefusal = apicode.Refusal{Condition: apicode.DocumentPreconditionUnmet, Code: apicode.PreconditionFailed}
 	envoyUnreachableRefusal     = apicode.Refusal{Condition: apicode.EnvoyUnreachable, Code: apicode.EnvoyUnavailable}
 	envoyRefillingRefusal       = apicode.Refusal{Condition: apicode.EnvoyListRefilling, Code: apicode.EnvoyRefilling}
+	// actingSessionMismatchRefusal is actingPerson's refusal of a `session` parameter naming
+	// another session than the credential proved, which a row declares where a value of its
+	// request, not every request, acts as the person (openAPIOperationCodes declares it for a row
+	// whose OAuthScopes hold person, and for a body that names its writer).
+	actingSessionMismatchRefusal = apicode.Refusal{Condition: apicode.ActingSessionMismatch, Code: apicode.ActorSessionMismatch}
 )
 
 // unsubscribeRefusals are the refusals of the unsubscription of a session from an owner's topics

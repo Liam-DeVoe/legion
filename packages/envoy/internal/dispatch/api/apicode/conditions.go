@@ -135,7 +135,8 @@ var (
 	// that carries an anchor or a suggestion, a reply_to or an ask_id naming nothing of the owner,
 	// a turn that is neither human nor agent.
 	CommentInvalid = Condition{"comment input invalid"}
-	// MentionInvalid is a comment's mentions or delivery the write refuses.
+	// MentionInvalid is a comment's mentions, a delivery mode, or a mention target the write
+	// refuses, or a mention reply's blank body.
 	MentionInvalid = Condition{"mentions invalid"}
 	// AskIDShort is a comment's ask_id that is no full ask id.
 	AskIDShort = Condition{"ask id not a full id"}
@@ -178,6 +179,77 @@ var (
 	// PreconditionMalformed is a precondition no write of the route can hold to: one naming blocks
 	// on an upload, or one on an upload stored as a file.
 	PreconditionMalformed = Condition{"precondition malformed"}
+	// SuggestionActionInvalid is an accept of an unanchored suggestion, or an accept or a reject of
+	// a comment that holds no suggestion.
+	SuggestionActionInvalid = Condition{"suggestion action invalid"}
+	// MessageInvalid is a message's body given blank, or an in_reply_to_block the write refuses.
+	MessageInvalid = Condition{"message input invalid"}
+	// MessageInputRefused is a message's target, delivery mode or in_reply_to the write refuses,
+	// or a delivery reply's blank body.
+	MessageInputRefused = Condition{"message target or delivery refused"}
+	// SessionIDBlank is a {session_id} of a session's conversations that is blank.
+	SessionIDBlank = Condition{"session id blank"}
+	// BroadcastInputInvalid is a broadcast's delivery mode or sessions the write refuses.
+	BroadcastInputInvalid = Condition{"broadcast input invalid"}
+	// HandoffInputInvalid is a handoff's phase that is no lowercase slug, or a body that is not one
+	// JSON object as a string.
+	HandoffInputInvalid = Condition{"handoff input invalid"}
+	// AgentTokenNameBlank is a personal token's name given blank.
+	AgentTokenNameBlank = Condition{"agent token name blank"}
+	// TokenScopesInvalid is a personal token's scopes left out of a change of them, or naming a
+	// scope the deployment does not know or the caller does not hold.
+	TokenScopesInvalid = Condition{"token scopes invalid"}
+	// MarkKindUnknown is a mark's kind that is none of the six a mark has.
+	MarkKindUnknown = Condition{"mark kind unknown"}
+	// MarkStateInvalid is a mark's set or a document mark's read_version the write refuses.
+	MarkStateInvalid = Condition{"mark state invalid"}
+	// SnoozeInvalid is an ask mark's snoozed_until left out or not in the future.
+	SnoozeInvalid = Condition{"snooze invalid"}
+	// ReferenceQueryInvalid is a reference read naming neither or both of to and from, or a
+	// reference that does not parse.
+	ReferenceQueryInvalid = Condition{"reference query invalid"}
+	// RoleHoldersInvalid is a role-holder set the write refuses: no holders, a role that is none of
+	// the six, a session that is no session id, a role or a session named twice.
+	RoleHoldersInvalid = Condition{"role holders invalid"}
+)
+
+// The conditions of who the caller is, where the route takes only some callers.
+var (
+	// ActingSessionMismatch is a request naming, in its body's actor or its session parameter, a
+	// session other than the one its credential proved.
+	ActingSessionMismatch = Condition{"acting session other than the one the credential proved"}
+	// ReplyNotTheRecipient is a delivery reply from a cookie caller, from a session the attempt is
+	// not for, or naming neither or both of body and error.
+	ReplyNotTheRecipient = Condition{"reply from a caller that may not answer the attempt"}
+	// AcceptNotTheRecipient is a delivery accept from a cookie caller or from a session the attempt
+	// is not for.
+	AcceptNotTheRecipient = Condition{"accept from a caller that may not take the attempt"}
+	// HandoffFromCookie is a handoff a cookie caller writes, which an agent session writes alone.
+	HandoffFromCookie = Condition{"handoff from a cookie caller"}
+	// RoleHolderNotTheDaemon is a role-holder set written by any actor but its project's Legion
+	// daemon session.
+	RoleHolderNotTheDaemon = Condition{"role holders from another than the project's daemon"}
+	// DirectThreadWithoutSession is a direct conversation read by a credential without the person
+	// scope that names no session.
+	DirectThreadWithoutSession = Condition{"direct conversation read with no session named"}
+	// DirectThreadOfAnotherSession is a direct conversation read as a session it is not addressed
+	// to and that has not replied in it.
+	DirectThreadOfAnotherSession = Condition{"direct conversation read as a session outside it"}
+)
+
+// The conditions of the delivery attempt an accept names (PUT
+// /api/v2/messages/{id}/deliveries/{attempt}/state), each one of its compare-and-set's tests.
+var (
+	AcceptOfIndirectMessage      = Condition{"accept of a message not sent directly to the session"}
+	AcceptOfMessageNoPersonWrote = Condition{"accept of a message no person wrote"}
+	AcceptOfAgentWrittenMessage  = Condition{"accept of a message an agent wrote for its person"}
+	AcceptOfOtherMode            = Condition{"accept of a message sent neither as a Send nor as an Aside"}
+	AcceptOfOlderAttempt         = Condition{"accept of an attempt that is not the message's latest"}
+	AcceptAfterAccept            = Condition{"accept of a message accepted before"}
+	AcceptOfAttemptNoPersonAsked = Condition{"accept of an attempt no person requested"}
+	AcceptOfAttemptAnotherAsked  = Condition{"accept of an attempt another than the author requested"}
+	AcceptOfFailedAttempt        = Condition{"accept of a failed attempt"}
+	AcceptOfStaleAttempt         = Condition{"accept of an attempt older than a minute"}
 )
 
 // The conditions of a write another write changed the ground under.
@@ -192,6 +264,28 @@ var (
 	QuoteAmbiguous = Condition{"quote ambiguous"}
 	// RouteMoved is a comment whose issue's delivery route changed while it was being written.
 	RouteMoved = Condition{"delivery route changed"}
+	// MessageTargetMoved is a message whose target changed while its delivery was being recorded.
+	MessageTargetMoved = Condition{"message target changed"}
+	// DeleteRacedSend is a delete of a post whose pending send its own sender moved while the
+	// delete was being written.
+	DeleteRacedSend = Condition{"send moved under a delete"}
+	// SuggestionDecided is an accept, a reject or a resolve of a suggestion another caller already
+	// accepted or rejected.
+	SuggestionDecided = Condition{"suggestion already decided"}
+	// MarkStateMoved is a mark write under a token or version the mark no longer stands at.
+	MarkStateMoved = Condition{"mark state moved"}
+)
+
+// The conditions of what a request names that nothing holds, or that names more than one thing.
+var (
+	// CorrectionOfDirectMessage is an edit or a delete of a message of a conversation with no issue.
+	CorrectionOfDirectMessage = Condition{"correction of a direct message"}
+	// BroadcastReachesNobody is a broadcast none of whose sessions can take it.
+	BroadcastReachesNobody = Condition{"broadcast reaches no session"}
+	// ReferenceNodeMissing is a reference read of a node nothing holds.
+	ReferenceNodeMissing = Condition{"reference node missing"}
+	// RefPrefixAmbiguous is a reference's id written short that two items or more carry.
+	RefPrefixAmbiguous = Condition{"reference prefix ambiguous"}
 )
 
 // The conditions of a service Dispatch relies on.

@@ -309,7 +309,9 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
 			IDs:         documentIDs(),
-			Refusals:    listRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
+			Refusals: listRefusals(
+				documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal, actingSessionMismatchRefusal,
+			),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/asks", Auth: authAny, Versions: onlyV2,

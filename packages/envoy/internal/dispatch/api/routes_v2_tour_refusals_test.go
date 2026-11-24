@@ -44,6 +44,15 @@ var tourRefusals = map[string][]tourRefusal{
 	"GET /api/v2/nodes": {
 		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
 	},
+	"GET /api/v2/agents/{session_id}/artifacts": {
+		{Name: "a session_id that is no session id", Change: refusalPath("session_id", "no session"), Code: apicode.InvalidSessionID},
+	},
+	"GET /api/v2/issues/{key}/handoffs": {
+		{Name: "a phase that is no lowercase slug", Change: refusalQuery("phase", "Not A Phase"), Code: apicode.HandoffInput},
+	},
+	"GET /api/v2/references": {
+		{Name: "from beside to", Change: refusalQuery("from", "dispatch://NONE-1"), Code: apicode.InvalidReference},
+	},
 }
 
 // TestV2RouteTourRefusalsAreListedOnTheirOperations sends, for each step of the route tour, the

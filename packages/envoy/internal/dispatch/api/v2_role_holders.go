@@ -60,7 +60,11 @@ func (s *server) v2RoleHolderRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: issueRoleHoldersInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: issueRoleHolders{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal,
+				{Condition: apicode.RoleHolderNotTheDaemon, Code: apicode.RoleHolderForbidden},
+				{Condition: apicode.RoleHoldersInvalid, Code: apicode.InvalidRoleHolder},
+			},
 		},
 	}
 }

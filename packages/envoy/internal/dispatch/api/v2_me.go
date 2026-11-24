@@ -37,15 +37,31 @@ var (
 	threadMissingRefusal     = apicode.Refusal{Condition: apicode.ThreadMissing, Code: apicode.ThreadNotFound}
 )
 
-// markTargetRefusals are the 404s of a mark's {kind}/{id}: its target, by kind, which must exist,
-// but for an agent mark's session, which keeps the answer /api/v1 gives it
-// (dispatch://INFRA-4071/spec R7).
+// markTargetRefusals are the refusals of a mark's {kind}/{id}: a kind that is none of the six, and
+// the 404s of its target, by kind, which must exist, but for an agent mark's session, which keeps
+// the answer /api/v1 gives it (dispatch://INFRA-4071/spec R7).
 func markTargetRefusals() []apicode.Refusal {
 	return []apicode.Refusal{
 		undeclaredKeyRefusal, issueMissingRefusal, documentMissingRefusal, threadMissingRefusal,
 		messageMissingRefusal, askMissingRefusal,
+		{Condition: apicode.MarkKindUnknown, Code: apicode.InvalidKind},
 	}
 }
+
+// markWriteRefusals are the refusals of a write of marks (writeMarks): its targets' (markTargetRefusals),
+// a state or a read_version it refuses, an ask mark's snooze it refuses, and a mark that moved from
+// the state the write was read under.
+func markWriteRefusals() []apicode.Refusal {
+	return append(markTargetRefusals(),
+		apicode.Refusal{Condition: apicode.MarkStateInvalid, Code: apicode.InvalidState},
+		apicode.Refusal{Condition: apicode.SnoozeInvalid, Code: apicode.SnoozeInput},
+		apicode.Refusal{Condition: apicode.MarkStateMoved, Code: apicode.StateStale},
+	)
+}
+
+// tokenScopesInvalidRefusal is the refusal of a personal token's scopes, at its create and at a
+// change of them (tokenScopes).
+var tokenScopesInvalidRefusal = apicode.Refusal{Condition: apicode.TokenScopesInvalid, Code: apicode.TokenScopesInput}
 
 // markKinds are the kinds of mark (the route map's section (e)), in the order a list of every kind
 // answers them.
@@ -113,7 +129,7 @@ func (s *server) v2MeRows() []routeRow {
 				"is the one project key the credential lets the caller write, null where it names none. scopes is the " +
 				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
 				"reaches, and approve settles what a person settles. sign_in_required is true where Dispatch refuses " +
-				"every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which " +
+				"every write of the credential with a 403 until a person signs in on its machine, which " +
 				"is a broker-issued token of a machine nobody has signed in on, and false for every other credential, " +
 				"an exchange entry's token naming its account among them.",
 			Handler:  s.getMeV2,
@@ -149,7 +165,10 @@ func (s *server) v2MeRows() []routeRow {
 			OAuthScopes:       settles,
 			Scope:             scopeSession,
 			AnswerHoldsSecret: true,
-			Refusals:          []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, tokenScopesInvalidRefusal,
+				{Condition: apicode.AgentTokenNameBlank, Code: apicode.AgentTokenInput},
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/me/agent-tokens/{id}", Auth: authAny, Versions: onlyV2,
@@ -178,7 +197,7 @@ func (s *server) v2MeRows() []routeRow {
 			OAuthScopes: settles,
 			Scope:       scopeSession,
 			IDs:         tokenIDs(),
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, agentTokenMissingRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, agentTokenMissingRefusal, tokenScopesInvalidRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/me/answers", Auth: authAny, Versions: onlyV2,
@@ -241,7 +260,7 @@ func (s *server) v2MeRows() []routeRow {
 			},
 			OAuthScopes: person,
 			Scope:       scopeSession,
-			Refusals:    markTargetRefusals(),
+			Refusals:    markWriteRefusals(),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/me/marks/{kind}/{id}", Auth: authAny, Versions: onlyV2,
@@ -276,7 +295,7 @@ func (s *server) v2MeRows() []routeRow {
 			OAuthScopes: person,
 			Scope:       scopeSession,
 			IDs:         markIDs(),
-			Refusals:    markTargetRefusals(),
+			Refusals:    markWriteRefusals(),
 		},
 	}
 }

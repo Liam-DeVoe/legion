@@ -194,7 +194,7 @@ func (s *server) v2MiscRows() []routeRow {
 				"offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader " +
 				"may see, a login nobody holds among them, lists no row, so the answer never says whether that person " +
 				"exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers " +
-				"the same rows under rows, and 404 NOT_FOUND where this lists none for another login.",
+				"the same rows under rows, and a 404 where this lists none for another login.",
 			Handler:  s.listPersonNodesV2,
 			Resource: "nodes", Kind: kindCollection, CrossProject: true,
 			Query:       personNodesV2Query{},
