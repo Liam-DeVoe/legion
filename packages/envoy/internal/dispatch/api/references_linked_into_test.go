@@ -77,10 +77,10 @@ const referencesGrowthBound = 6.5
 //
 // Negative control: with oneRowPerNode's exclusion written back as the array, `where not
 // (row(f.node_kind, f.node_id) = any(array(select row(x.kind, x.id) from ` + own + ` x)))`, the
-// test fails at the ratio: 11.5 to 12.6 in the implementer's pod, where it also fails at the
-// budget, every route read answering 503 REFERENCES_TIMEOUT, and 14.2 to 15.0 on the build farm,
-// where every route read answers 200 inside the budget (2026-11-22); 13.2 to 16.3 in its
-// build-farm runs from then to 2026-11-24 (referencesGrowthBound).
+// test fails at the ratio: 11.52 and 12.36 in the implementer's pod (2026-11-22), where it also
+// fails at the budget, every route read answering 503 REFERENCES_TIMEOUT, and from 13.21 to 16.33
+// on the build farm (2026-11-22 to 2026-11-24), where every route read answers 200 inside the
+// budget: the runs referencesGrowthBound's comment names.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
 	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
 	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
