@@ -167,7 +167,7 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 			}
 			owner := strings.ToLower(repo.Owner())
 			if owner == "" {
-				owner = "sjawhar"
+				owner = "example-org"
 			}
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
 				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
