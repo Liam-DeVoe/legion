@@ -130,6 +130,24 @@ honest_result() {
     fi
 }
 
+# unchecked_result <name> <symbol> <listed> <run>; a symbol part of the row f-our-1 that
+# fails nothing, which passes when the gate ran, its record names no failure of
+# citation-our-code, and its text lists the part <symbol> as not checked <listed> times, 0 or
+# 1, by the line `not checked: f-our-1 cites the part "<symbol>"`; the text gives the FAIL line
+# its failure quotes.
+unchecked_result() {
+    local name="$1" symbol="$2" listed="$3" run="$4" times
+    case_read "$name" "$run" || return 0
+    times="$(grep -cxF "  not checked: f-our-1 cites the part \"$symbol\"" "$run/text")"
+    if printf '%s' "$RUN_FAILED" | grep -qx citation-our-code; then
+        case_failed "$name" "$(grep '^FAIL citation-our-code' "$run/text" | head -1)"
+    elif [ "$times" != "$listed" ]; then
+        case_failed "$name" "its run lists the part as not checked $times times, not $listed"
+    else
+        case_passed "$name"
+    fi
+}
+
 # passed_result <name> <run>; an honest form that passes only when the gate ends with its
 # all-passed line, with no failure of any family; the text gives the FAIL lines its
 # failure quotes.
@@ -6034,15 +6052,7 @@ for form in held unread; do
         exit 1
     }
     out="$(fixture_run "$dir" --citations)"
-    case_read "$words_case" "$out" || continue
-    times="$(grep -cxF "  not checked: f-our-1 cites the part \"$symbol\"" "$out/text")"
-    if printf '%s' "$RUN_FAILED" | grep -qx citation-our-code; then
-        case_failed "$words_case" "$(grep '^FAIL citation-our-code' "$out/text" | head -1)"
-    elif [ "$times" != "$listed" ]; then
-        case_failed "$words_case" "its run lists the part as not checked $times times, not $listed"
-    else
-        case_passed "$words_case"
-    fi
+    unchecked_result "$words_case" "$symbol" "$listed" "$out"
 done
 
 # 194. A quoted string is read as text its file holds, its quotes among it (the architect's
@@ -6812,7 +6822,8 @@ done
 # '3.14' over one holding `version 3.14`, running --citations over each (symbol_plant): the
 # first two must fail citation-our-code, naming the part as no line or line range the gate
 # reads; the last must pass it. ef564aae did the same, since it failed such a part before any
-# reading after its text, and the case holds that the new order keeps it.
+# reading after its text; the case holds that the readings after its text, which never read
+# such a part as a namespace, hold neither of the first two.
 for form in version prefixed honest; do
     case "$form" in
     version) symbol='3.14' text=$'version 3 lists 14 items\n' detail='3\.14' ;;
@@ -6914,15 +6925,7 @@ for form in module file namespace held; do
         exit 1
     }
     out="$(fixture_run "$dir" --citations)"
-    case_read "$words_case" "$out" || continue
-    times="$(grep -cxF "  not checked: f-our-1 cites the part \"$symbol\"" "$out/text")"
-    if printf '%s' "$RUN_FAILED" | grep -qx citation-our-code; then
-        case_failed "$words_case" "$(grep '^FAIL citation-our-code' "$out/text" | head -1)"
-    elif [ "$times" != "$listed" ]; then
-        case_failed "$words_case" "its run lists the part as not checked $times times, not $listed"
-    else
-        case_passed "$words_case"
-    fi
+    unchecked_result "$words_case" "$symbol" "$listed" "$out"
 done
 
 # 218. A cited path is read as its characters stand, and a glob's characters but `*` too, by
@@ -7034,22 +7037,22 @@ for form in text name other; do
 done
 
 # 221. A path part below a cited glob holding no `/` is read at any depth, as the glob itself is
-# (the architect's ruling on the open point of case 220: the rule above paths_at holds in every
-# reading of a cited path). Form 7 reads a path part below each directory or glob the citation
-# names by paths_at over the glob and the part joined, `pkg*/sub/x.py`, which holds a `/` and so
-# was read from the root alone, while the glob `pkg*` names its paths at any depth. So at
-# ef564aae and after case 220, with a/pkg1/sub/x.py and a/pkg1/sub/tools/run.sh committed,
-# `sub/tools`, cited in pkg*, failed, though a/pkg1 is a path the glob names and sub/tools stands
-# below it; `sub/x.py` failed there too at ef564aae, and after case 220 held only by its file's
-# name (5c). The case commits a/pkg1/sub/x.py and a/pkg1/sub/tools/run.sh, then, in another
-# fixture, a/pkg1/other.py alone, and writes the row f-our-1 as citing the file field 'pkg*'
-# with the symbol 'sub/x.py', then 'sub/tools', over each tree, running --citations over each
-# (symbol_plant): over the first tree both must pass citation-our-code; over the second both
-# must fail it, naming the part and pkg*. At ef564aae the two over the first tree failed.
+# (the architect's ruling: the rule above paths_at holds in every reading of a cited path).
+# Form 7 read a path part below each directory or glob the citation names by paths_at over the
+# glob and the part joined, `pkg*/sub/tools`, which holds a `/` and so was read from the root
+# alone, while the glob `pkg*` names its paths at any depth, and 5c read a file's name below a
+# glob from the root alone too. So at ef564aae, with a/pkg1/sub/x.py and
+# a/pkg1/sub/tools/run.sh committed, `sub/x.py` and `sub/tools`, cited in pkg*, each failed,
+# though a/pkg1 is a path the glob names and each stands below it. The case commits
+# a/pkg1/sub/x.py and a/pkg1/sub/tools/run.sh, then, in another fixture, a/pkg1/other.py
+# alone, and writes the row f-our-1 as citing the file field 'pkg*' with the symbol
+# 'sub/x.py', then 'sub/tools', over each tree, running --citations over each (symbol_plant):
+# over the first tree both must pass citation-our-code; over the second both must fail it,
+# naming the part and pkg*. At ef564aae the two over the first tree failed.
 for form in name directory name-other directory-other; do
     case "$form" in
-    name | name-other) symbol='sub/x.py' ;;
-    directory | directory-other) symbol='sub/tools' ;;
+    name | name-other) symbol='sub/x.py' detail='sub/x\.py' ;;
+    directory | directory-other) symbol='sub/tools' detail='sub/tools' ;;
     esac
     case "$form" in
     *-other) tree=(a/pkg1/other.py $'OTHER = 1\n') ;;
@@ -7065,9 +7068,102 @@ for form in name directory name-other directory-other; do
     case "$form" in
     *-other)
         case_result "a path part $symbol cited in pkg*, over a tree whose only path the glob names is a/pkg1/other.py, fails --citations, naming the part and the glob" \
-            "citation-our-code: f-our-1 cites the symbol $(printf '%s' "$symbol" | sed 's/[.]/\\./g'), which pkg\\* does not hold" "$out"
+            "citation-our-code: f-our-1 cites the symbol $detail, which pkg\\* does not hold" "$out"
         ;;
     *) honest_result "a path part $symbol cited in pkg*, which stands below a/pkg1, a path the glob names, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 222. A package's __init__.pyi stub is the package where no __init__.py stands, as a .pyi is the
+# module where no .py of its name stands (the simplification pass of round 51, the class of
+# cases 190, 191 and 211: a reader that names a module by its file holds every file Python's
+# import takes for it). module_names read __init__.pyi as the module __init__, and
+# module_below took a directory for a package only where it held __init__.py, so at ef564aae
+# `pkg.func`, cited in pkg/__init__.pyi, which declares func, failed citation-our-code on the
+# component pkg, which the stub's text does not write, and so did `core.setup` and `lib.hook`,
+# cited in lib, where lib/core/__init__.pyi declares setup and lib/__init__.pyi declares hook,
+# on the component core. The case commits those three stubs, lib/core/__init__.pyi declaring
+# extra too, their text writing none of pkg, lib, core and check as a word, and writes the row
+# f-our-1 as citing pkg/__init__.pyi with the symbol 'pkg.func', then lib with 'core.setup,
+# lib.hook', then lib with 'core.check', a name the stub does not declare, then, over a tree
+# that also holds lib/core/__init__.py, which declares setup alone, lib with 'core.extra',
+# running --citations over each (symbol_plant): the first two must pass citation-our-code; the
+# third must fail it, naming check and lib/core/__init__.pyi; and the fourth, read in
+# lib/core/__init__.py, as Python's import takes the .py, must fail it, naming extra and
+# lib/core/__init__.py. At ef564aae the first two failed, and the third failed naming no file.
+for form in named below missing py-first; do
+    case "$form" in
+    named) cited='pkg/__init__.pyi' symbol='pkg.func' ;;
+    below) cited='lib' symbol='core.setup, lib.hook' ;;
+    missing) cited='lib' symbol='core.check' ;;
+    py-first) cited='lib' symbol='core.extra' ;;
+    esac
+    case "$form" in
+    py-first) init=(lib/core/__init__.py $'def setup(row):\n    return row\n') ;;
+    *) init=() ;;
+    esac
+    dir="$(symbol_plant "symbol-package-stub-$form" "$cited" "$symbol" pkg/__init__.pyi $'def func(row: int) -> int: ...\n' \
+        lib/core/__init__.pyi $'def setup(row: int) -> int: ...\ndef extra() -> None: ...\n' lib/__init__.pyi $'def hook(row: int) -> int: ...\n' "${init[@]}")" &&
+        ! grep -rqwE 'pkg|lib|core|check' "$dir/repo/pkg" "$dir/repo/lib" || {
+        printf 'FAIL the symbol %s cited in %s and the package stubs could not be planted in the fixture row f-our-1\n' "$symbol" "$cited"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    missing)
+        case_result "a dotted name core.check, cited in lib, where the package stub lib/core/__init__.pyi does not declare check, fails --citations, naming check and the stub" \
+            "citation-our-code: f-our-1 cites the symbol core\\.check, whose prefix names the file lib/core/__init__\\.pyi as the module core, and lib/core/__init__\\.pyi does not hold the name 'check'" "$out"
+        ;;
+    py-first)
+        case_result "a dotted name core.extra, cited in lib, where only lib/core/__init__.pyi beside lib/core/__init__.py declares extra, is read in __init__.py and fails --citations, naming extra" \
+            "citation-our-code: f-our-1 cites the symbol core\\.extra, whose prefix names the file lib/core/__init__\\.py as the module core, and lib/core/__init__\\.py does not hold the name 'extra'" "$out"
+        ;;
+    *) honest_result "dotted names $symbol, cited in $cited, functions of packages whose only package file is an __init__.pyi stub, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 223. A cited path is read as its characters stand whatever they are, by every reading of the
+# paths the commit tracks (the simplification pass of round 51: a reader of git's list of paths
+# reads each path as git holds it). paths_at, paths_below and the reading of a path below a
+# cited directory read git ls-tree's list without -z, in which git quotes a path holding a byte
+# above 127, a `\` or a `"`, while here_grep hands git the cited path itself. So at ef564aae a
+# file field docs/café.md failed as a path the repository does not hold, though the commit
+# holds that file, and so did docs/a\b.md and docs/say"hi".md; and `menu.md`, cited in notes,
+# which holds notes/index.md too, failed though notes/café/menu.md stands. The case commits
+# docs/café.md, docs/a\b.md and docs/say"hi".md, each holding ALPHA_X, and notes/index.md and
+# notes/café/menu.md, whose text does not write menu.md, and writes the row f-our-1
+# (symbol_plant, the file field set by jq, which writes a `\` and a `"` as JSON does) as citing
+# each of the three files with the symbol 'ALPHA_X', then docs/cafe.md, which the tree does
+# not hold, with 'ALPHA_X', then notes with 'menu.md', a file's name only a path below notes
+# ends with (5c), running --citations over each: each must pass citation-our-code but
+# docs/cafe.md, which must fail it, naming the field. At ef564aae each of the four that must
+# pass failed, the last on 5c, its file field held by notes/index.md.
+for form in field backslash quote field-other name; do
+    case "$form" in
+    field) cited='docs/café.md' symbol='ALPHA_X' ;;
+    backslash) cited='docs/a\b.md' symbol='ALPHA_X' ;;
+    quote) cited='docs/say"hi".md' symbol='ALPHA_X' ;;
+    field-other) cited='docs/cafe.md' symbol='ALPHA_X' ;;
+    name) cited='notes' symbol='menu.md' ;;
+    esac
+    dir="$(symbol_plant "symbol-path-unquoted-$form" docs/café.md "$symbol" docs/café.md $'ALPHA_X = 1\n' 'docs/a\b.md' $'ALPHA_X = 1\n' \
+        'docs/say"hi".md' $'ALPHA_X = 1\n' notes/index.md $'# the notes\n' notes/café/menu.md $'# the menu of the day\n')" &&
+        claims="$dir/repo/docs/research/internet-of-cognition/claims.jsonl" &&
+        jq -c --arg f "$cited" 'if .id == "f-our-1" then .evidence.file = $f else . end' "$claims" >"$dir/claims.jsonl" &&
+        mv "$dir/claims.jsonl" "$claims" && [ "$(jq -r 'select(.id == "f-our-1") | .evidence.file' "$claims")" = "$cited" ] &&
+        [ "$(git -C "$dir/repo" ls-tree -r -z --name-only HEAD | grep -zcxE 'docs/café\.md|docs/a\\b\.md|docs/say"hi"\.md|notes/index\.md|notes/café/menu\.md')" = 5 ] &&
+        ! git -C "$dir/repo" grep -qF menu.md HEAD -- notes || {
+        printf 'FAIL the citation of %s with the symbol %s could not be planted in the fixture row f-our-1\n' "$cited" "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    field-other)
+        case_result "a file field docs/cafe.md over a tree whose only such file is docs/café.md fails --citations, naming the field" \
+            "citation-our-code: f-our-1 cites docs/cafe\\.md, which this repository does not hold" "$out"
+        ;;
+    name) honest_result "a symbol part menu.md cited in notes, a file's name only notes/café/menu.md ends with, passes citation-our-code" citation-our-code "$out" ;;
+    *) honest_result "a symbol part ALPHA_X cited in $cited, a file the tree holds that holds ALPHA_X, passes citation-our-code" citation-our-code "$out" ;;
     esac
 done
 

@@ -5877,7 +5877,10 @@ shape_order() {
 # `notes/a[bc].md` names that file and never notes/ab.md (case 218), `notes/*` names
 # notes/deep/x.md and `notes/**/x.md` names notes/a/x.md and never notes/a/b/x.md (case 219),
 # `*.cfg` names notes/deep/x.cfg (case 220), and `sub/tools` below `pkg*` names
-# a/pkg1/sub/tools/run.sh (case 221).
+# a/pkg1/sub/tools/run.sh (case 221). The paths the commit tracks are read as git ls-tree -z
+# lists them, each ending with a NUL and none quoted, since without -z git quotes a path
+# holding a byte above 127, a `\` or a `"`, and core.quotePath=false leaves the last two
+# quoted: so docs/café.md and docs/a\b.md are read as they are written (case 223).
 
 # cited_regex <path> [<below>]; prints the extended regular expression of the paths a cited
 # path names, by the rule above, which a path the commit tracks matches whole; given <below>,
@@ -5885,13 +5888,8 @@ shape_order() {
 # the cited path's own characters are and the cited path alone deciding where they are read
 # from.
 cited_regex() {
-    local regex
-    regex="$(printf '%s' "$1${2+/$2}" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
-    case "$1" in
-    */*) printf '^%s(/|$)' "$regex" ;;
-    *'*'*) printf '(^|/)%s(/|$)' "$regex" ;;
-    *) printf '^%s(/|$)' "$regex" ;;
-    esac
+    if [[ "$1" == *'*'* && "$1" != */* ]]; then printf '(^|/)'; else printf '^'; fi
+    printf '%s\n' "$1${2+/$2}" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g; s/$/(\/|$)/'
 }
 
 # here_grep <root> <commit> <-P or -E> <pattern> <path>...; returns 0 when a line of the paths
@@ -5908,7 +5906,9 @@ here_grep() {
     for path in "$@"; do
         case "$path" in
         ':(glob)'*)
-            glob="$(printf '%s' "${path#':(glob)'}" | sed 's/[[?\]/\\&/g; s/[*][*]*/*/g')"
+            glob="${path#':(glob)'}"
+            glob="${glob//'\'/'\\'}" glob="${glob//'['/'\['}" glob="${glob//'?'/'\?'}"
+            while [[ "$glob" == *'**'* ]]; do glob="${glob//'**'/'*'}"; done
             case "$glob" in
             */*) specs+=(":(glob)$glob" ":(glob)$glob/**") ;;
             *) specs+=(":(glob)**/$glob" ":(glob)**/$glob/**") ;;
@@ -5917,22 +5917,20 @@ here_grep() {
         *) specs+=(":(literal)$path") ;;
         esac
     done
-    git -C "$root" grep -q"${how#-}" -- "$pattern" "$commit" -- "${specs[@]}" 2>/dev/null
+    git -C "$root" grep -q "$how" -- "$pattern" "$commit" -- "${specs[@]}" 2>/dev/null
 }
 
-# paths_at <repo root> <commit> <pathspec> [<below>]
+# paths_at <repo root> <commit> <pathspec>
 #
 # The paths a citation names, at one commit. A citation writes a path, a directory, a
 # glob such as `*.py`, or several of those separated by a comma or by the word "and".
 # Each is read here, so a citation of a set of files resolves when the commit holds at
 # least one path of every part it names, each read by the rule above (cited_regex): so
-# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216). Given <below>, a path a
-# symbol part writes, it reads that path below each of them instead, by the same rule.
+# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216).
 paths_at() {
-    local root="$1" commit="$2" spec="$3" part names below=()
-    [ "$#" -lt 4 ] || below=("${4%/}")
-    names="$(git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null)"
-    [ -n "$names" ] || return 1
+    local root="$1" commit="$2" spec="$3" part names=()
+    mapfile -d '' -t names < <(git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null)
+    [ "${#names[@]}" -gt 0 ] || return 1
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
@@ -5943,7 +5941,7 @@ paths_at() {
         case "$part" in
         *' '*) continue ;;
         esac
-        printf '%s\n' "$names" | grep -qE "$(cited_regex "$part" "${below[@]}")" || return 1
+        printf '%s\0' "${names[@]}" | grep -zqE "$(cited_regex "$part")" || return 1
     done < <(printf '%s\n' "$spec" | sed 's/ and /\n/g; s/,/\n/g')
     # A citation whose every part is written in words, such as "20 pyproject.toml files
     # under backend/", names a set a reader reads rather than a path, and the gate holds
@@ -6018,9 +6016,10 @@ symbol_file() {
 
 # paths_below <repo root> <commit> <path>...; prints each path the commit tracks that one of
 # the paths a citation names, as resolve_symbol holds them, a glob written :(glob)<glob>,
-# names by the rule above paths_at (cited_regex), the path itself or one below it, so that a
-# file's name is looked for where the citation points and nowhere else in the tree. It prints
-# nothing and returns 1 when no path does.
+# names by the rule above paths_at (cited_regex), the path itself or one below it, each
+# ending with a NUL, as git ls-tree -z lists it, so that a file's name is looked for where the
+# citation points and nowhere else in the tree. It prints nothing and returns 1 when no path
+# does.
 paths_below() {
     local root="$1" commit="$2" path regex=""
     shift 2
@@ -6028,7 +6027,7 @@ paths_below() {
         regex="$regex${regex:+|}($(cited_regex "${path#':(glob)'}"))"
     done
     [ -n "$regex" ] || return 1
-    git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null | grep -E "$regex"
+    git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null | grep -zE "$regex"
 }
 
 # module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
@@ -6073,18 +6072,18 @@ module_file() {
 # module_names <run> <file>; returns 0 when the run of dotted components names the file as a
 # module, as Python names one, and 1 when it does not, by bash alone: the file is a module
 # only when its name ends with .py or .pyi, and the run ends with the file's stem, its name
-# without that extension, or, for a package's __init__.py, with the name of the directory it
-# stands in, and each dotted component before that is the next directory up the file's path,
-# matched whole, from the file upward. So `engine` and `api.engine` name
-# packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while `other.mod` does
-# not, `pkg` and `a.pkg` name a/pkg/__init__.py, and `schema` names no module of
-# pkg/schema.json, which is no Python file.
+# without that extension, or, for a package's __init__.py or its __init__.pyi stub, with the
+# name of the directory it stands in, and each dotted component before that is the next
+# directory up the file's path, matched whole, from the file upward. So `engine` and
+# `api.engine` name packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while
+# `other.mod` does not, `pkg` and `a.pkg` name a/pkg/__init__.py and a/pkg/__init__.pyi, and
+# `schema` names no module of pkg/schema.json, which is no Python file.
 module_names() {
     local run="$1" path="$2" name stem dir head
     name="${path##*/}"
     if [[ "$path" == */* ]]; then dir="${path%/*}"; else dir=""; fi
     case "$name" in
-    __init__.py)
+    __init__.py | __init__.pyi)
         [ -n "$dir" ] || return 1
         stem="${dir##*/}"
         if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
@@ -6108,23 +6107,36 @@ module_names() {
     return 0
 }
 
+# package_init <repo root> <commit> <directory>; prints the file that makes the directory a
+# package, its __init__.py, or its __init__.pyi stub where no __init__.py stands, as Python's
+# import takes the .py, and returns 1 when the commit holds neither as a file.
+package_init() {
+    local name
+    for name in __init__.py __init__.pyi; do
+        [ "$(git -C "$1" cat-file -t "$2:$3/$name" 2>/dev/null)" = blob ] || continue
+        printf '%s' "$3/$name"
+        return 0
+    done
+    return 1
+}
+
 # module_below <repo root> <commit> <run> <directory>; prints the file below a directory the
 # citation names that the run of dotted components names as a module, and returns 1 when it
 # names none. The run names every directory between that directory and the file: its
 # components are the directory's own last directories, none or more, matched whole and in
 # order, as module_names matches them, then a path below it, each component a directory,
-# ending in a module, a file named by the last component and .py, or .pyi where no .py of
-# that name stands, as `core.verifier` and `lib.core.verifier` name lib/core/verifier.py
-# below lib, or in a package, a directory holding __init__.py, as `core` names
-# lib/core/__init__.py; the directory's own last directories alone name its own __init__.py,
-# as `lib` names lib/__init__.py. A file of any other extension is no module, so
-# `core.schema` names lib/core/schema.py and never lib/core/schema.json beside it, and no
-# file where schema.json stands alone. A package comes before a module of its name, as
-# Python imports it, and a .py before a .pyi, as Python's import takes the .py. Only a file at
-# the commit counts, read by git ls-tree and git cat-file of <commit>:<path>, which take no
-# pathspec.
+# ending in a module, a file named by the last component and .py or .pyi, as `core.verifier`
+# and `lib.core.verifier` name lib/core/verifier.py below lib, or in a package, a directory
+# holding __init__.py or __init__.pyi (package_init), as `core` names lib/core/__init__.py;
+# the directory's own last directories alone name its own package, as `lib` names
+# lib/__init__.py. A .py comes before a .pyi of its name, as Python's import takes the .py.
+# A file of any other extension is no module, so `core.schema` names lib/core/schema.py and
+# never lib/core/schema.json beside it, and no file where schema.json stands alone. A package
+# comes before a module of its name, as Python imports it. Only a file at the commit counts,
+# read by git ls-tree -z, whose names git does not quote, and git cat-file of
+# <commit>:<path>, which take no pathspec.
 module_below() {
-    local root="$1" commit="$2" run="$3" top="$4" comps=() up=() j i m k base last listing meta entry package module
+    local root="$1" commit="$2" run="$3" top="$4" comps=() up=() j i m k base last meta entry package module
     IFS=. read -r -a comps <<<"$run"
     IFS=/ read -r -a up <<<"$top"
     m="${#comps[@]}" k="${#up[@]}"
@@ -6133,19 +6145,16 @@ module_below() {
             [ "${comps[i]}" = "${up[k - j + i]}" ] || continue 2
         done
         if [ "$j" = "$m" ]; then
-            [ "$(git -C "$root" cat-file -t "$commit:$top/__init__.py" 2>/dev/null)" = blob ] || continue
-            printf '%s' "$top/__init__.py"
-            return 0
+            package_init "$root" "$commit" "$top" && return 0
+            continue
         fi
         base="$top"
         for ((i = j; i < m - 1; i++)); do base="$base/${comps[i]}"; done
         last="${comps[m - 1]}" package="" module=""
-        listing="$(git -C "$root" ls-tree "$commit:$base" 2>/dev/null)" || continue
-        while IFS=$'\t' read -r meta entry; do
+        while IFS=$'\t' read -r -d '' meta entry; do
             case "$meta" in
             *' tree '*)
-                [ "$entry" = "$last" ] && [ "$(git -C "$root" cat-file -t "$commit:$base/$entry/__init__.py" 2>/dev/null)" = blob ] &&
-                    package="$base/$entry/__init__.py"
+                [ "$entry" = "$last" ] && package="$(package_init "$root" "$commit" "$base/$entry")"
                 ;;
             *' blob '*)
                 case "$entry" in
@@ -6154,7 +6163,7 @@ module_below() {
                 esac
                 ;;
             esac
-        done <<<"$listing"
+        done < <(git -C "$root" ls-tree -z "$commit:$base" 2>/dev/null)
         [ -n "$package$module" ] || continue
         printf '%s' "${package:-$module}"
         return 0
@@ -6162,10 +6171,10 @@ module_below() {
     return 1
 }
 
-# module_names_held <file> <names> <root> <commit>; returns 0 when the file holds each name of
+# dotted_names_held <file> <names> <root> <commit>; returns 0 when the file holds each name of
 # <names>, its dotted components in turn, as a whole token (token_held), and otherwise prints
 # the first it does not hold, an empty name among them, and returns 1.
-module_names_held() {
+dotted_names_held() {
     local path="$1" rest="$2" root="$3" commit="$4" name
     while :; do
         name="${rest%%.*}"
@@ -6182,12 +6191,12 @@ module_names_held() {
 # part's prefix names as the module <run> (module_file) each name after the run, <names>, its
 # dotted components in turn, the prefix's components after the run and then the local part,
 # as `Engine` and `match` after `engine` in `engine.Engine.match`: each stands in the file as
-# a whole token (module_names_held). It returns 0 when each does; else it fails <family>,
+# a whole token (dotted_names_held). It returns 0 when each does; else it fails <family>,
 # naming the row, the part, the file, the module and the first name the file does not hold,
 # an empty name among them, and returns 1.
 module_held() {
     local family="$1" id="$2" part="$3" run="$4" path="$5" rest="$6" root="$7" commit="$8" name
-    name="$(module_names_held "$path" "$rest" "$root" "$commit")" && return 0
+    name="$(dotted_names_held "$path" "$rest" "$root" "$commit")" && return 0
     fail "$family" "$id cites the symbol $part, whose prefix names the file $path as the module $run, and $path does not hold the name '$name' after it as a word at $commit"
     return 1
 }
@@ -6370,7 +6379,7 @@ symbol_refused() {
 # from the nearest file before it. A path of the file field names what the rule above
 # paths_at says it names, its characters themselves and a glob's `*` within one path element,
 # and every reading of a path, here_grep's search of the text among them, reads that same set
-# (cases 216, 218, 219, 220). Text here holds is text a file of here holds as a whole
+# (cases 216, 218, 219, 220, 223). Text here holds is text a file of here holds as a whole
 # token (whole_token, token_held): its first character, where it is a letter, a digit or `_`,
 # follows none of those, and its last, where it is one, is followed by none, so
 # `TesterVerdictRequire` does not stand in `TesterVerdictRequired`. A file beside the paths
@@ -6433,24 +6442,26 @@ symbol_refused() {
 #          `engine.Engine.match` writes and then the local part, or fails naming the first it
 #          does not hold (module_held). A module is a Python file alone: a .py file, a .pyi
 #          stub, a .py coming before a .pyi of its name as Python's import takes the .py, or a
-#          package's __init__.py. A file of any other extension is never read as a module, and
-#          a part whose run names only such a file is read as the next reading gives it
-#          (cases 210, 211). A run names a file the citation names when it ends with the
-#          file's stem, its name without .py or .pyi, each component before that being the
-#          next directory up, matched whole (module_names): `engine.match` and
-#          `api.engine.match` read packages/daemon/internal/api/engine.py, `other.mod.func`
-#          names no module of pkg/mod.py (cases 187, 188, 189), and `schema.load` names no
-#          module of pkg/schema.json, so it is read as a namespace and its prefix schema must
-#          stand in that file (case 211); or when it ends with the name of the directory a
-#          package's __init__.py stands in, as `pkg.func` and `a.pkg.func` read
-#          a/pkg/__init__.py (case 190). A run names a file below a directory the citation
-#          names when its components are that directory's own last directories, none or more,
-#          then the path below it to a module or to a package, a package before a module of
-#          its name (module_below): cited in lib, `core.verifier.verify` and
-#          `lib.core.verifier.verify` read lib/core/verifier.py, `core.setup`
-#          lib/core/__init__.py and `lib.hook` lib/__init__.py (case 191), and
-#          `core.schema.load` reads lib/core/schema.py and never lib/core/schema.json beside
-#          it (case 210);
+#          package's __init__.py, or its __init__.pyi stub where no __init__.py stands. A file
+#          of any other extension is never read as a module, and a part whose run names only
+#          such a file is read as the next reading gives it (cases 210, 211). A run names a
+#          file the citation names when it ends with the file's stem, its name without .py or
+#          .pyi, each component before that being the next directory up, matched whole
+#          (module_names): `engine.match` and `api.engine.match` read
+#          packages/daemon/internal/api/engine.py, `other.mod.func` names no module of
+#          pkg/mod.py (cases 187, 188, 189), and `schema.load` names no module of
+#          pkg/schema.json, so it is read as a namespace and its prefix schema must stand in
+#          that file (case 211); or when it ends with the name of the directory a package's
+#          __init__.py or __init__.pyi stands in, as `pkg.func` and `a.pkg.func` read
+#          a/pkg/__init__.py (case 190) and `pkg.func` reads pkg/__init__.pyi (case 222). A
+#          run names a file below a directory the citation names when its components are that
+#          directory's own last directories, none or more, then the path below it to a module
+#          or to a package, a package before a module of its name (module_below): cited in
+#          lib, `core.verifier.verify` and `lib.core.verifier.verify` read
+#          lib/core/verifier.py, `core.setup` lib/core/__init__.py and `lib.hook`
+#          lib/__init__.py (case 191), or lib/core/__init__.pyi and lib/__init__.pyi where no
+#          __init__.py stands (case 222), and `core.schema.load` reads lib/core/schema.py and
+#          never lib/core/schema.json beside it (case 210);
 #        - `Namespace.Symbol`, any other prefix: the part holds when here holds the local part
 #          and each component of the prefix too, each a word of letters, digits, `_` and `-`
 #          (prefix_held), so `Engin.match` fails where `class Engine` and `def match` stand,
@@ -6475,12 +6486,8 @@ symbol_refused() {
 #     `protocols/accord`, `skills/`, `src/mas/library/*` (cases 198, 202). It is read in turn
 #     as a file beside the paths, which becomes here; as text here holds; as a file's name, as
 #     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
-#     below a directory or a glob the citation names, by the rule above paths_at, a glob's `*`
-#     any run of characters within one path element and every other character itself, so
-#     `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216), and the part read below a
-#     cited glob where that glob is read, at any depth for one holding no `/`, so `sub/tools`
-#     cited in `pkg*` holds where a/pkg1/sub/tools/run.sh stands (case 221); and never as a
-#     pattern over text; else the part fails.
+#     below a directory or a glob the citation names, by the rule above paths_at (cases 216,
+#     221); and never as a pattern over text; else the part fails.
 #  8. A pattern: a table head, a part in neither 1 nor 2 that begins with `[` and ends with
 #     `]`, and any other part holding `|`, `*`, `?` or `\`. Its text alone decides how it is
 #     read, by three rules:
@@ -6532,13 +6539,14 @@ symbol_refused() {
 # 2024-11-23, and `2023|2024` where a line of it matches (case 214). A namespace reading,
 # `Namespace:Symbol` in 6 and `Namespace.Symbol` in 5d, reads the part neither as a file nor
 # as text, only each component of its prefix as a word, so it never holds such a part. Where
-# no other reading holds it, the part fails by name as no line or line range this gate
-# reads: `3.14` fails so in a file that holds 3 and 14 as words and not 3.14, and holds in
-# one that holds 3.14 (case 215). A citation whose file field names no path, each part of it
-# written in words, as "15 pyproject.toml files under backend/", holds its symbol to no file:
-# each part in a form is not checked. A part not checked, there or in 2, is written to
-# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row, so
-# that a part nothing read is never counted as checked.
+# no reading of its form applies to it, the part fails by name as no line or line range this
+# gate reads: `3.14` fails so in a file that holds 3 and 14 as words and not 3.14, and holds
+# in one that holds 3.14 (case 215); a file or module reading that applies and does not hold
+# it fails naming that file, as for any part. A citation whose file field names no path, each
+# part of it written in words, as "15 pyproject.toml files under backend/", holds its symbol
+# to no file: each part in a form is not checked. A part not checked, there or in 2, is
+# written to $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with
+# its row, so that a part nothing read is never counted as checked.
 
 # resolve_symbol <id> <repo root> <commit> <pathspec> <symbol> [<family>]; reads each part of
 # a citation's symbol by the symbol grammar above and fails <family>, citation-our-code unless
@@ -6630,9 +6638,11 @@ resolve_symbol() {
         fi
         # digit: a part of 3 to 8 that starts with a digit, as "12a" or "2024-report.md". Each
         # reading of its form below that reads it as a file or as text here holds reads it; a
-        # namespace reading (prefix_held) reads neither, so it never holds such a part; and
-        # where no reading holds it, it fails, naming the row and the part, as no line this
-        # gate reads, rather than being read as the line its first digits name.
+        # namespace reading (prefix_held) reads neither, so it never holds such a part. Where
+        # no reading of its form applies to it, it fails, naming the row and the part, as no
+        # line this gate reads, rather than being read as the line its first digits name; a
+        # file or module reading that applies and does not hold it fails naming that file, as
+        # for any part.
         digit=""
         case "$part" in [0-9]*) [ "$form" = words ] || digit=1 ;; esac
         # 5a, 7: a file's name or a path that is a file beside the paths the citation names
@@ -6657,7 +6667,7 @@ resolve_symbol() {
             case "$part" in
             *.[A-Za-z]*)
                 paths_below "$root" "$commit" "${pathspec[@]}" |
-                    grep -qE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
+                    grep -zqE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
                 ;;
             esac
             ;;
@@ -6688,7 +6698,7 @@ resolve_symbol() {
                         module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
                         continue
                     fi
-                    if module_names_held "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" >/dev/null; then
+                    if dotted_names_held "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" >/dev/null; then
                         here=("$path") here_name="$path"
                         continue
                     fi
@@ -6715,7 +6725,7 @@ resolve_symbol() {
                 ':(glob)'*) path="${path#':(glob)'}" ;;
                 *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
                 esac
-                paths_at "$root" "$commit" "$path" "$part" && held=0 && break
+                git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null | grep -zqE "$(cited_regex "$path" "${part%/}")" && held=0 && break
             done
             [ "$held" -eq 0 ] && continue
             ;;
