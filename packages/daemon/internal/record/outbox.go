@@ -1327,12 +1327,9 @@ type SuperviseRequest struct {
 	WakeKind string `json:"wakeKind,omitempty"`
 	// RefusedPod marks a start a refused launch queued (workflow's queueRefusedStart): the uid of
 	// the issue pod whose refusal of the claim's launch queued it (supervise.Machine.RefusedPod).
-	// The end of a start row asks the workflow to read the claim's queued starts again while the
-	// claim's last launch stands refused (the daemon outbox's startRowEnded), and a start marked
-	// with the pod that still refuses the claim asks nothing: it was queued for that refusal, and a
-	// start queued for it again would end the same way. A start marked with a pod that no longer
-	// refuses the claim asks again, as an unmarked start does. Every other start carries none. The
-	// release before decodes strictly (DisallowUnknownFields), so the way back of
+	// The end of a start marked with the pod that still refuses the claim asks the workflow for no
+	// further start (the daemon outbox's startRowEnded, which says why). Every other start carries
+	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
 	// 20261123203837_plan_step_agent deletes the key from each queued row before that release boots.
 	RefusedPod string `json:"refusedPod,omitempty"`
 }

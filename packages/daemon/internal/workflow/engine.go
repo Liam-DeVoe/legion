@@ -2026,12 +2026,8 @@ func (e *Engine) startRefusedClaim(ctx context.Context, tx pgx.Tx, issue record.
 // has its slot, and its start would wait for one for ever; the skip is logged.
 //
 // Either start is marked with the pod whose refusal queued it (fact.Pod,
-// record.SuperviseRequest.RefusedPod). The end of a start row of a claim whose last launch stands
-// refused asks for the claim's start again (RefusedStartEnded, the daemon outbox's startRowEnded),
-// and the end of a start marked with the pod that still refuses the claim asks nothing: a start
-// queued for that refusal again would end the same way. So a start this queues adds at most one
-// more, whichever fence ends it, and a start of an earlier refusal, whose pod has gone, still asks
-// again where a new pod refuses the launch its own resume raised.
+// record.SuperviseRequest.RefusedPod), so that its end asks for no further start while that pod
+// refuses the claim (the daemon outbox's startRowEnded says why).
 //
 // Nor is a start queued that the outbox would finish without acting, before it reaches the claim
 // (the daemon outbox's start): the start of the role of a stopped task's step (StoppedStepRole),

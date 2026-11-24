@@ -61,9 +61,6 @@ func newPodRefusalRigOf(t *testing.T, answers func(pool *store.Pool, records rec
 	clock := &heldClock{}
 	sup.deps.Clock = clock
 	told := answers(pool, runner.records)
-	// The runtime reads the claims' machines through the outbox, as the daemon's does once attach
-	// has stored it (workflowRuntime.outboxWake).
-	told.outboxWake.Store(runner)
 	sup.deps.PodRefused = told.podRefused
 	runner.handlers = told.handlers
 	if deps != nil {
@@ -672,11 +669,13 @@ func (r *podRefusalRig) startRow() record.OutboxRow {
 	return row
 }
 
-// podRefusedSpecs is the spec builder of a test whose launch is refused before the claim asks to
-// hold its session: it answers every launch with pod-1's refusal (runtime.AwaitsPodUpdate), as the
-// runtime answers a launch into a pod built without the role's slot. A launch builds its spec
-// before it holds the names of the session it resumes (supervise's start), so this refusal leaves
-// the claim holding nothing, and another claim can then hold the session the claim records.
+// podRefusedSpecs is the spec builder of a test that needs a claim refused by its pod while it
+// holds no name of the session it records. It answers every launch with pod-1's refusal
+// (runtime.AwaitsPodUpdate), which no real spec builder returns: it stands in for a state that a
+// daemon may not reach in one run, since a real launch holds the session's names before the
+// runtime can refuse it and the machine keeps the names it holds. A launch builds its spec before
+// it holds those names (supervise's start), so this refusal leaves the claim holding nothing, and
+// another claim can then hold the session the claim records.
 type podRefusedSpecs struct{}
 
 func (podRefusedSpecs) SpawnSpec(_ context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {

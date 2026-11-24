@@ -733,9 +733,8 @@ type startMarks struct {
 	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
 	// refusedPod is the uid of the issue pod whose refusal of the claim's launch queued the start
-	// (record.SuperviseRequest.RefusedPod): the send of an owed entry queueRefusedStart makes sets
-	// it, so the end of that start asks the workflow nothing while that pod still refuses the claim
-	// (the daemon outbox's startRowEnded). Every other door leaves it empty.
+	// (record.SuperviseRequest.RefusedPod), which the send of an owed entry queueRefusedStart makes
+	// sets. Every other door leaves it empty.
 	refusedPod string
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It

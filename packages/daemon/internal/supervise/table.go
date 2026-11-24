@@ -2741,9 +2741,8 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // failed claim is never resumed by rule. A claim whose last launch its issue's pod refused is
 // refused while that pod stands (podStillRefuses), before its session is asked about, as resume
 // asks them: the refusal answers runtime.ErrAwaitsPodUpdate, on which an outbox start waits for the
-// pod (internal/daemon's start), whatever the session's own answer would have been. A claim
-// recording a session it does not hold is not resumed by rule either (resumeRefusal): it stays
-// suspended, and the line says why.
+// pod (internal/daemon's startRowEnded says why). A claim recording a session it does not hold is
+// not resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason

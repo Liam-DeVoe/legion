@@ -1893,9 +1893,9 @@ const (
 	refusalRetryMost  = time.Hour
 )
 
-// applyRefusalFact applies a fact about a launch of machine's claim that the issue pod pod refused
-// — the refusal's report (workflowRuntime.podRefused) or its re-check at the end of a start row
-// (outbox's startRowEnded) — by apply, trying it again on a backoff (retryUntilApplied, from
+// applyRefusalFact applies the fact id about a launch of machine's claim that the issue pod pod
+// refused — the refusal's report (workflowRuntime.podRefused) or its re-check at the end of a start
+// row (outbox's startRowEnded) — by apply, trying it again on a backoff (retryUntilApplied, from
 // refusalRetryFirst doubling to refusalRetryMost) until it is applied, the machine no longer
 // reports the refusal, or ctx ends. line is the ERROR line each failed try logs, with attrs.
 //
@@ -1908,26 +1908,22 @@ const (
 // The tries go on, at least one an hour, for as long as the store refuses the fact, since the fact
 // is what queues the claim's start, and a cap would leave nothing to bring the claim back but a
 // restart, which recovers nothing a try does not. So while a try fails, the machine carries the
-// fact as not recorded (supervise.Machine.RefusalNotRecorded), which the operator's listing shows
-// (`legion claims list` prints `refusal-unrecorded`); a try taken, or a fact dropped, clears it. A
-// nil machine — the claim's machine could not be found — reads nothing and marks nothing, and the
-// fact is tried as it was reported.
-func applyRefusalFact(ctx context.Context, log *slog.Logger, machine *supervise.Machine, pod, line string, apply func(context.Context) error, attrs ...any) {
+// fact, by id, as not recorded (supervise.Machine.RefusalNotRecorded), which the operator's listing
+// shows (`legion claims list` prints `refusal-unrecorded`); a try of it taken, or the fact dropped,
+// clears that fact's mark, and the machine drops every mark of a refusal it drops or replaces.
+func applyRefusalFact(ctx context.Context, log *slog.Logger, machine *supervise.Machine, id, pod, line string, apply func(context.Context) error, attrs ...any) {
 	retryUntilApplied(ctx, log, line, refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
-		if machine == nil {
-			return apply(ctx)
-		}
 		if refused := machine.RefusedPod(); refused != pod {
 			log.Info("a fact of a refused launch is not applied: the claim's machine no longer reports that refusal",
 				append(attrs[:len(attrs):len(attrs)], "pod", pod, "refusedPod", refused)...)
-			machine.RefusalRecorded()
+			machine.RefusalRecorded(id)
 			return nil
 		}
 		if err := apply(ctx); err != nil {
-			machine.RefusalNotRecorded(err)
+			machine.RefusalNotRecorded(id, pod, err)
 			return err
 		}
-		machine.RefusalRecorded()
+		machine.RefusalRecorded(id)
 		return nil
 	}, attrs...)
 }
@@ -2635,7 +2631,7 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // refused and reported again, while every other claim of the deployment would be stopped and
 // started for it; and an hourly report, which finds the start the first one queued, would restart
 // the daemon for a fact that queues nothing.
-func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
+func (w *workflowRuntime) podRefused(m *supervise.Machine, c supervise.Claim, pod, detail string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
 	}
@@ -2645,7 +2641,7 @@ func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker).
 		ctx := store.ForConcurrentWorker(w.untilStop())
-		applyRefusalFact(ctx, w.log, w.machineOf(c.Token), pod, "apply a launch its issue's pod refused", func(ctx context.Context) error {
+		applyRefusalFact(ctx, w.log, m, id, pod, "apply a launch its issue's pod refused", func(ctx context.Context) error {
 			_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
 			return err
 		}, "claim", c.Token, "issue", c.Issue, "role", c.Role)
@@ -2659,17 +2655,6 @@ func (w *workflowRuntime) untilStop() context.Context {
 		return context.Background()
 	}
 	return w.stopped
-}
-
-// machineOf is the machine of token's claim, read through the outbox attach stored (outboxWake),
-// as stepAgent reads it; nil before attach, and for a claim no machine supervises.
-func (w *workflowRuntime) machineOf(token claim.Token) *supervise.Machine {
-	r := w.outboxWake.Load()
-	if r == nil || r.supervisor == nil {
-		return nil
-	}
-	machine, _ := r.supervisor.Machine(token)
-	return machine
 }
 
 // applySessionFact applies one of the two session facts, a lost session and a session store
