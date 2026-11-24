@@ -341,6 +341,60 @@ func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testi
 	}
 }
 
+// A leader read waited for through BoundedOn fails with ErrRequestLostWithConnection at the
+// reconnect when its connection is cut under it, rather than waiting out its bound. The leader
+// reads main's #5132 added on the listener's paths each run so: the delete of a session's entry
+// and its conditional delete (session.SessionRegistry.Delete and DeleteIf), the delete of a
+// session's interest row (store's deleteInterest), the read of a session's record before its
+// consumer is deleted (session.SessionRegistry.RefreshFromLeader), and the read of a role's claim
+// that the session relay judges a role message by and the kept lane's handover resolves the
+// role's holder with (store.Registry.RoleClaimFromLeader). A leader read is a stream message get,
+// `$JS.API.STREAM.MSG.GET.KV_<bucket>` (NewestFromLeader), whose answer nats.go waits for on its
+// shared response subscription, and nats.go fails no request its connection drops, so a bare
+// leader read whose request died with the old socket waits out its whole bound. The read is
+// GetFromLeader of a role's claim on a handle opened on the client's connection, held to
+// lostReadBound; the relay drops its request, and the cut comes once that request is out. The
+// reconnect takes at most a quarter of the bound, and the read fails before half of it.
+func TestALeaderReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
+	const (
+		role  = "reviewer"
+		claim = `{"holder_session_id":"ses_leader_read_lost"}`
+	)
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.STREAM.MSG.GET.KV_"+RoleClaimBucket)
+	client, err := Connect([]string{relay.URL()})
+	if err != nil {
+		t.Fatalf("connect through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js := client.JS()
+	t.Cleanup(func() { _ = js.DeleteKeyValue(RoleClaimBucket) })
+	if _, err := EnsureKeyValue(t.Context(), client.Connection(), js, &nats.KeyValueConfig{Bucket: RoleClaimBucket, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("create the role bucket: %v", err)
+	}
+	kv, err := OpenKeyValue(t.Context(), client.Connection(), js, RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket on the client's connection: %v", err)
+	}
+	if _, err := kv.Put(role, []byte(claim)); err != nil {
+		t.Fatalf("write the claim the row reads: %v", err)
+	}
+	read := func(ctx context.Context) (nats.KeyValueEntry, bool, error) {
+		return BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, role) })
+	}
+
+	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a leader read", lostReadBound, func(ctx context.Context) error {
+		_, _, err := read(ctx)
+		return err
+	})
+
+	// The read made again on the connection that came back is answered.
+	ctx, cancel := context.WithTimeout(context.Background(), lostReadBound)
+	defer cancel()
+	if entry, answered, err := read(ctx); err != nil || !answered || string(entry.Value()) != claim {
+		t.Fatalf("the leader read again after the reconnect = %v, answered %t; want the claim", err, answered)
+	}
+}
+
 // streamInfoThroughRelay connects the stream's owner to the test server directly, so the stream
 // exists, and a client through a relay that drops the stream's STREAM.INFO once armed. The client
 // owns no stream, so no ensure sends a STREAM.INFO of its own at the reconnect, and it reads the

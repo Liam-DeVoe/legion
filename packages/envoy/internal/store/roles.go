@@ -665,10 +665,17 @@ func decodeReadRoleClaim(entry nats.KeyValueEntry) (RoleClaim, error) {
 // for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
 // message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
 // decodes from is.
+//
+// The read is bounded by its connection as RoleClaim's direct get is (bus.BoundedOn): one whose
+// connection is lost before the leader answers fails at the reconnect with
+// bus.ErrRequestLostWithConnection rather than waiting out ctx, since nats.go fails no request its
+// connection drops. A read that did not answer is an error, never the zero claim of a role no
+// record claims.
 func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
-	leader, err := r.roles().ReadFromLeader(ctx, role)
+	roles := r.roles()
+	leader, answered, err := bus.BoundedOn(ctx, roles, func() (bus.LeaderEntry, error) { return roles.ReadFromLeader(ctx, role) })
 	switch {
-	case err != nil:
+	case !answered, err != nil:
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
 		return RoleClaim{}, nil
