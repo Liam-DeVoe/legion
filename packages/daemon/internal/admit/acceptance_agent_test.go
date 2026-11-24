@@ -14,9 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// acceptance is the role of the step of the type acceptance (plan.BuiltinRoles).
-const acceptance claim.Role = "acceptance"
-
 // runAtStep writes key's plan of one task, a, at generation, from words (such as `implementer
 // acceptance`, or `implementer acceptance:owner` for the owner's acceptance), its agents named as
 // a given plan names them (record.NameAgents), and its task running at step position.
@@ -63,9 +60,9 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 			const root, key = "LEGION-760", "LEGION-761"
 			seedTreeAndMember(t, pool, root, key, phase.Accepting, 1, false)
 			runAtStep(t, pool, key, 1, 2, tc.words...)
-			token := keyedToken(t, key, claim.Agent(acceptance))
+			token := keyedToken(t, key, claim.Agent(claim.RoleAcceptance))
 			inTx(t, pool, func(tx pgx.Tx) {
-				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: acceptance, Claim: token,
+				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleAcceptance, Claim: token,
 					Entry: seededEntry, EntryTask: seededEntryTask(key), EntryRaisedAt: fixedNow}); err != nil {
 					t.Fatalf("record the acceptance's phases row of %s: %v", key, err)
 				}
@@ -80,7 +77,7 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 				}
 				return
 			}
-			if want := (convergeStart{role: acceptance, task: seededEntryTask(key), entry: seededEntry}); len(starts) != 1 ||
+			if want := (convergeStart{role: claim.RoleAcceptance, task: seededEntryTask(key), entry: seededEntry}); len(starts) != 1 ||
 				(convergeStart{role: starts[0].role, task: starts[0].task, entry: starts[0].entry}) != want {
 				t.Fatalf("the start rows of %s = %+v, want the one start of its agent of acceptance carrying the work of entry %d: that agent holds no claim, so it was given nothing", key, starts, seededEntry)
 			}
