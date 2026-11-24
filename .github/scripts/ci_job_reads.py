@@ -3349,7 +3349,7 @@ GATES = [
                                                            "imports @legion/envoy-client/test/subscribe-answer, and "
                                                            "packages/pi-shared/test/omp-harness.ts:17, which this "
                                                            "package's omp tests drive, imports it too"),
-        ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-legion/src/tools.test.ts:12 imports "
+        ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-legion/src/tools.test.ts:14 imports "
                                                          "@legion/envoy-client/test/fake-dispatch"),
         # envoy-client's sources, and cipher-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
@@ -3388,6 +3388,7 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the pack's bundle inlines it"),
         ("packages/pi-shared/test/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/test/*, and the typecheck compiles extensions/legion-phase-stall-omp.test.ts:14 and legion-role-tools-omp.test.ts:13, which import it"),
         ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-shared/test/omp-harness.ts:17 imports it, and the typecheck compiles that harness for the omp tests it includes"),
+        ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-legion/src/tools.test.ts:14 imports @legion/envoy-client/test/fake-dispatch, and the typecheck compiles the package's src tests"),
         # envoy-client's sources, and cipher-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion-build', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "the typecheck compiles packages/pi-legion's extensions and src tests, which import @legion/test-fixtures"),
