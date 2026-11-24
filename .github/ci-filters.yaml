@@ -1704,6 +1704,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/dispatch/githubapp/**'
   - 'packages/envoy/internal/fixtureenv/*'
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
