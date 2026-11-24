@@ -60,6 +60,13 @@ func askOpenRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	}, more...)
 }
 
+// The refusals of a follow and an unfollow of an ask (changeAskFollowerV2, askFollowerActor): a
+// blank {session_id}, and another session's follow from a credential without the person scope.
+var (
+	followerSessionBlankRefusal   = apicode.Refusal{Condition: apicode.FollowerSessionBlank, Code: apicode.FollowerInput}
+	followOfAnotherSessionRefusal = apicode.Refusal{Condition: apicode.FollowOfAnotherSession, Code: apicode.FollowerForbidden}
+)
+
 // askRowText is what every description of a route answering asks says of the row it answers.
 const askRowText = "Each ask is one row: the ask's own fields at top level, opened_event_id, ref (its dispatch:// address, " +
 	"\"\" for an ask no address names), issue {key, title, assignee} or document {project, slug, name}, the issue's priority " +
@@ -106,7 +113,10 @@ func (s *server) v2AskRows() []routeRow {
 			List:         askList,
 			Shape:        routeShape{Status: http.StatusOK, Response: askListV2{}},
 			Authorities:  []authorityRule{askWaitingOnMeAuthority, askMarkAuthority},
-			Refusals:     listRefusals(),
+			Refusals: listRefusals(
+				actingSessionMismatchRefusal, assigneeNotSignedInRefusal, refPrefixAmbiguousRefusal,
+				apicode.Refusal{Condition: apicode.QuestionSourceWithoutDocument, Code: apicode.NotFound},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/asks/{id}", Auth: authAny, Versions: onlyV2,
@@ -121,7 +131,7 @@ func (s *server) v2AskRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: askV2{}},
 			IDs:         askIDs(),
 			Authorities: []authorityRule{askMarkAuthority},
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, askMissing},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, askMissing, actingSessionMismatchRefusal},
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/asks/{id}", Auth: authAny, Versions: onlyV2,
@@ -141,8 +151,14 @@ func (s *server) v2AskRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: askWriteV2{}},
 			Authorities: []authorityRule{askAskedOfAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
-			IDs:      askIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing, notAuthorRefusal},
+			IDs: askIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, askMissing, notAuthorRefusal, assigneeNotSignedInRefusal, valuePastBoundRefusal,
+				issueClosedRefusal,
+				{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
+				{Condition: apicode.AskNotOpenToEdit, Code: apicode.AskNotOpen},
+				{Condition: apicode.AskKindChange, Code: apicode.AskKindFixed},
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/asks/{id}/followers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -154,8 +170,11 @@ func (s *server) v2AskRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusNoContent},
 			Scope: scopeProject, ProjectOf: projectPathAsk, SessionPath: "session_id",
-			IDs:      askIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing},
+			IDs: askIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, askMissing, followerSessionBlankRefusal, followOfAnotherSessionRefusal,
+				{Condition: apicode.SessionNotFollowing, Code: apicode.FollowerNotFound},
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/asks/{id}/followers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -170,7 +189,7 @@ func (s *server) v2AskRows() []routeRow {
 			Shape: routeShape{Status: http.StatusOK, Response: model.AskFollower{}},
 			Scope: scopeProject, ProjectOf: projectPathAsk, SessionPath: "session_id",
 			IDs:      askIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing, followerSessionBlankRefusal, followOfAnotherSessionRefusal},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/asks/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -201,7 +220,19 @@ func (s *server) v2AskRows() []routeRow {
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
 			IDs: askIDs(),
 			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, askMissing,
+				undeclaredKeyRefusal, askMissing, issueClosedRefusal, valuePastBoundRefusal,
+				{Condition: apicode.AskAnsweredBefore, Code: apicode.AskAnswered},
+				{Condition: apicode.AnsweredFirstByAnother, Code: apicode.AskClosed},
+				{Condition: apicode.AskResolvedBefore, Code: apicode.AskResolved},
+				{Condition: apicode.AnswerMoved, Code: apicode.AskAnswerChanged},
+				{Condition: apicode.ApprovalAnsweredBefore, Code: apicode.AskApprovalReview},
+				{Condition: apicode.QuestionEditedSinceRead, Code: apicode.AskEdited},
+				{Condition: apicode.ApprovalDeclined, Code: apicode.AskNotDeclinable},
+				{Condition: apicode.RevisionMissing, Code: apicode.AskRevisionRequired},
+				{Condition: apicode.AnswerInvalid, Code: apicode.InvalidAnswer},
+				{Condition: apicode.ResolutionInvalid, Code: apicode.InvalidResolution},
+				{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
+				{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
 			},
 		},
 		{
@@ -215,7 +246,7 @@ func (s *server) v2AskRows() []routeRow {
 			List:        askList,
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
-			Refusals:    listRefusals(issueMissing),
+			Refusals:    listRefusals(issueMissing, actingSessionMismatchRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/asks", Auth: authAny, Versions: onlyV2,

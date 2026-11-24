@@ -286,6 +286,100 @@ var (
 	ReferenceNodeMissing = Condition{"reference node missing"}
 	// RefPrefixAmbiguous is a reference's id written short that two items or more carry.
 	RefPrefixAmbiguous = Condition{"reference prefix ambiguous"}
+	// QuestionSourceWithoutDocument is an ask list's source whose text belongs to no document.
+	QuestionSourceWithoutDocument = Condition{"question source on no document"}
+	// CheckMissing is a result's check that names no check block of the issue's Verification
+	// document or of an ancestor's.
+	CheckMissing = Condition{"check missing"}
+	// CheckRefAmbiguous is a result's check named by a block id that is not unique among them.
+	CheckRefAmbiguous = Condition{"check reference ambiguous"}
+	// IssueRefAmbiguous is an issue reference that names more than one issue.
+	IssueRefAmbiguous = Condition{"issue reference ambiguous"}
+	// ResultCommitUnheld is a result's commit that no repository it may be of holds.
+	ResultCommitUnheld = Condition{"result commit held by no repository"}
+	// GitHubReadFailed is a read of GitHub that did not answer: a rate limit, a 5xx, a transport
+	// failure.
+	GitHubReadFailed = Condition{"github read failed"}
+	// SessionNotFollowing is the unfollow of an ask by a session that does not follow it.
+	SessionNotFollowing = Condition{"session not following"}
+)
+
+// The conditions of an issue's write and of the members of an issue's body.
+var (
+	AdvancesInvalid            = Condition{"advances invalid"}
+	AdvancesRevisionMoved      = Condition{"advances revision moved"}
+	AssigneeNotSignedIn        = Condition{"assignee nobody signed in as"}
+	BlockedByInvalid           = Condition{"blocked_by invalid"}
+	ComponentsInvalid          = Condition{"components invalid"}
+	IssueInputInvalid          = Condition{"issue input invalid"}
+	PriorityInvalid            = Condition{"priority invalid"}
+	LabelsInvalid              = Condition{"labels invalid"}
+	ParentInvalid              = Condition{"parent invalid"}
+	ParentChainTooDeep         = Condition{"parent chain too deep"}
+	IssueRefInvalid            = Condition{"issue reference invalid"}
+	ExternalOfAnotherProject   = Condition{"external reference linked to another project"}
+	TitleNearCopy              = Condition{"title a near copy of another issue's"}
+	ParentOutsideCallerProject = Condition{"parent outside the credential's project"}
+	ExternalLinkHeld           = Condition{"external link held by another issue"}
+	IssueStatusInvalid         = Condition{"issue status invalid"}
+	ExternalURLInvalid         = Condition{"external url invalid"}
+	IssueSequenceMoved         = Condition{"issue sequence moved"}
+	ParentLockContended        = Condition{"parent lock contended"}
+	RankInvalid                = Condition{"rank invalid"}
+	IssueRouteInvalid          = Condition{"issue route invalid"}
+	AdvancesFilterInvalid      = Condition{"advances filter invalid"}
+	ClosedWindowInverted       = Condition{"closed window inverted"}
+	// ClaimHolderMoved is a claim write whose holder changed twice while it ran.
+	ClaimHolderMoved = Condition{"claim holder moved"}
+	// IssueHeldByAnother is a claim or a release the caller may not make over the holder.
+	IssueHeldByAnother = Condition{"issue held by another"}
+	// ForceWithoutPersonScope is a forced claim from a credential that does not hold the person
+	// scope.
+	ForceWithoutPersonScope = Condition{"forced claim without the person scope"}
+	// DecisionTextMoved is a keep of a decision whose text changed since the caller read it.
+	DecisionTextMoved = Condition{"decision text moved"}
+	// KeepWithoutDigest is a keep of a decision that names no text_sha256.
+	KeepWithoutDigest = Condition{"keep without a digest"}
+	// ReferencesBudgetSpent is a read of an issue's references that spent its statement budget.
+	ReferencesBudgetSpent = Condition{"references read budget spent"}
+)
+
+// The conditions of a check result's record and retraction, and of a step's and a plan's write.
+var (
+	ResultInputInvalid     = Condition{"result input invalid"}
+	ResultCountsContradict = Condition{"result counts contradict its verdict"}
+	ResultOfCICheck        = Condition{"result of a check CI proves"}
+	CheckReworded          = Condition{"check reworded while its result was written"}
+	ResultRetractedBefore  = Condition{"result retracted before"}
+	RetractionByOther      = Condition{"retraction by a caller the result is not open to"}
+	RetractionReasonBlank  = Condition{"retraction reason blank"}
+	StepInputInvalid       = Condition{"step input invalid"}
+	StepOfAnotherIssue     = Condition{"step of another issue"}
+	StepWriterNotTheDaemon = Condition{"step or plan written by another than the project's daemon"}
+	PlanInputInvalid       = Condition{"plan input invalid"}
+	PlanOfAnotherIssue     = Condition{"plan of another issue"}
+)
+
+// The conditions of an ask's write: its reword, its answer, its decline and resolution, its
+// followers.
+var (
+	AskNotOpenToEdit = Condition{"reword of an ask that is not open"}
+	AskKindChange    = Condition{"reword of an approval ask"}
+	// AskAnsweredBefore is a resolve or a decline of an ask already answered.
+	AskAnsweredBefore = Condition{"ask answered before"}
+	// AnsweredFirstByAnother is a first answer to an ask somebody answered first.
+	AnsweredFirstByAnother  = Condition{"ask answered first by another"}
+	AskResolvedBefore       = Condition{"ask resolved before"}
+	AnswerMoved             = Condition{"answer changed since it was read"}
+	ApprovalAnsweredBefore  = Condition{"answer change of an approval"}
+	QuestionEditedSinceRead = Condition{"question edited since it was read"}
+	ApprovalDeclined        = Condition{"decline of an approval request"}
+	RevisionMissing         = Condition{"answer naming no revision"}
+	AnswerInvalid           = Condition{"answer invalid"}
+	ResolutionInvalid       = Condition{"resolution invalid"}
+	NotTheAnswerer          = Condition{"answer change by another than the answerer"}
+	FollowerSessionBlank    = Condition{"follower session blank"}
+	FollowOfAnotherSession  = Condition{"follow of another session without the person scope"}
 )
 
 // The conditions of a service Dispatch relies on.
@@ -302,6 +396,9 @@ var (
 	FileStoreDown = Condition{"file store unavailable"}
 	// FileBytesMissing is a file version whose bytes the file store does not hold.
 	FileBytesMissing = Condition{"file bytes missing"}
+	// FileStoreNotConfigured is a file version whose bytes are in a file store this server is
+	// not configured to read.
+	FileStoreNotConfigured = Condition{"file store not configured"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of

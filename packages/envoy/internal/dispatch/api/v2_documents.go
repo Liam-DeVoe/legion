@@ -623,6 +623,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, documentMissingRefusal, versionMissingRefusal, fileStoreDownRefusal,
 				{Condition: apicode.FileBytesMissing, Code: apicode.FileMissing},
+				{Condition: apicode.FileStoreNotConfigured, Code: apicode.FileStoreUnconfigured},
 			},
 		},
 		{

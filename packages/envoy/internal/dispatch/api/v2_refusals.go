@@ -21,6 +21,9 @@ var (
 	// request, not every request, acts as the person (openAPIOperationCodes declares it for a row
 	// whose OAuthScopes hold person, and for a body that names its writer).
 	actingSessionMismatchRefusal = apicode.Refusal{Condition: apicode.ActingSessionMismatch, Code: apicode.ActorSessionMismatch}
+	assigneeNotSignedInRefusal   = apicode.Refusal{Condition: apicode.AssigneeNotSignedIn, Code: apicode.AssigneeNotAllowed}
+	gitHubReadFailedRefusal      = apicode.Refusal{Condition: apicode.GitHubReadFailed, Code: apicode.GitHubUnreadable}
+	refPrefixAmbiguousRefusal    = apicode.Refusal{Condition: apicode.RefPrefixAmbiguous, Code: apicode.IDAmbiguous}
 )
 
 // unsubscribeRefusals are the refusals of the unsubscription of a session from an owner's topics

@@ -57,6 +57,71 @@ var (
 	dependencyLoopRefusal = apicode.Refusal{Condition: apicode.DependencyLoop, Code: apicode.DependencyCycle}
 )
 
+// The refusals of the members an issue's create and its patch both read (createIssueFrom,
+// patchIssueAs), and of the filters both lists of issues read (answerIssueListV2).
+var (
+	priorityInvalidRefusal = apicode.Refusal{Condition: apicode.PriorityInvalid, Code: apicode.InvalidPriority}
+	labelsInvalidRefusal   = apicode.Refusal{Condition: apicode.LabelsInvalid, Code: apicode.LabelsInput}
+	issueRefInvalidRefusal = apicode.Refusal{Condition: apicode.IssueRefInvalid, Code: apicode.InvalidIssueRef}
+)
+
+// issueFieldRefusals are the refusals of the members an issue's create and its patch both take,
+// with more, the route's own, after them: its advances, assignee, blocked_by, components,
+// priority, labels and parent, a title past its bound, and the input either refuses whole.
+func issueFieldRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal, valuePastBoundRefusal, assigneeNotSignedInRefusal, priorityInvalidRefusal,
+		labelsInvalidRefusal,
+		{Condition: apicode.AdvancesInvalid, Code: apicode.AdvancesInput},
+		{Condition: apicode.BlockedByInvalid, Code: apicode.BlockedByInput},
+		{Condition: apicode.ComponentsInvalid, Code: apicode.ComponentsInput},
+		{Condition: apicode.IssueInputInvalid, Code: apicode.InvalidIssue},
+		{Condition: apicode.ParentInvalid, Code: apicode.ParentInput},
+		{Condition: apicode.ParentChainTooDeep, Code: apicode.ParentTooDeep},
+	}, more...)
+}
+
+// issueListRefusals are the refusals of both lists of issues (answerIssueListV2), with more, the
+// route's own, after them: a list's, the filters it refuses, the listener a route filter or reach
+// reads, and the acting person pinned=true reads.
+func issueListRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return listRefusals(append([]apicode.Refusal{
+		priorityInvalidRefusal, labelsInvalidRefusal, envoyUnreachableRefusal, envoyRefillingRefusal,
+		actingSessionMismatchRefusal,
+		{Condition: apicode.AdvancesFilterInvalid, Code: apicode.InvalidAdvances},
+		{Condition: apicode.ClosedWindowInverted, Code: apicode.InvalidClosedWindow},
+	}, more...)...)
+}
+
+// The refusals of an issue's claim (claimCycle): a holder that moved twice, a holder the caller
+// may not displace, and the listener that judges a session holder's liveness.
+var (
+	claimHolderMovedRefusal   = apicode.Refusal{Condition: apicode.ClaimHolderMoved, Code: apicode.ClaimContended}
+	issueHeldByAnotherRefusal = apicode.Refusal{Condition: apicode.IssueHeldByAnother, Code: apicode.IssueClaimed}
+)
+
+// checkResultRefusals are the refusals a result's record and its dry run both answer before the
+// record writes (readResultRequest, checkResultInput.refusal), with more, the route's own, after them.
+func checkResultRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal, issueMissingRefusal, gitHubReadFailedRefusal, resultInputInvalidRefusal,
+		{Condition: apicode.ResultCountsContradict, Code: apicode.ResultContradicts},
+		{Condition: apicode.CheckMissing, Code: apicode.UnknownCheck},
+		{Condition: apicode.CheckRefAmbiguous, Code: apicode.CheckAmbiguous},
+		{Condition: apicode.ResultOfCICheck, Code: apicode.CheckProvedByCI},
+		{Condition: apicode.ResultCommitUnheld, Code: apicode.ResultCommitUnknown},
+	}, more...)
+}
+
+// The refusals of a result's input, and of a step's, a rating's and a plan's write
+// (writeIssueStep, putIssuePlanFrom).
+var (
+	resultInputInvalidRefusal = apicode.Refusal{Condition: apicode.ResultInputInvalid, Code: apicode.ResultInput}
+	stepInputInvalidRefusal   = apicode.Refusal{Condition: apicode.StepInputInvalid, Code: apicode.StepInput}
+	stepOfAnotherIssueRefusal = apicode.Refusal{Condition: apicode.StepOfAnotherIssue, Code: apicode.StepOtherIssue}
+	stepWriterRefusal         = apicode.Refusal{Condition: apicode.StepWriterNotTheDaemon, Code: apicode.StepWriter}
+)
+
 // issuePinnedAuthority is the authority of GET /api/v2/issues's pinned=true (authorities_v2.go):
 // the pins are one person's, so reading them needs the person scope.
 var issuePinnedAuthority = authorityRule{
@@ -123,7 +188,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[model.IssueSummary]{}},
 			List:        issueList,
 			Authorities: []authorityRule{issuePinnedAuthority},
-			Refusals:    listRefusals(),
+			Refusals:    issueListRefusals(issueRefInvalidRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues", Auth: authAny, Versions: onlyV2,
@@ -157,8 +222,14 @@ func (s *server) v2IssueRows() []routeRow {
 				}},
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
 			},
-			Scope:    scopeProjectInBody,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, dependencyLoopRefusal},
+			Scope: scopeProjectInBody,
+			Refusals: issueFieldRefusals(
+				dependencyLoopRefusal, issueRefInvalidRefusal,
+				apicode.Refusal{Condition: apicode.IssueRefAmbiguous, Code: apicode.AmbiguousIssueRef},
+				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
+				apicode.Refusal{Condition: apicode.TitleNearCopy, Code: apicode.PossibleDuplicate},
+				apicode.Refusal{Condition: apicode.ParentOutsideCallerProject, Code: apicode.ProjectScope},
+			),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/issues", Auth: authAny, Versions: onlyV2,
@@ -171,7 +242,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[model.IssueSummary]{}},
 			List:        issueList,
 			Authorities: []authorityRule{issuePinnedAuthority},
-			Refusals:    listRefusals(projectMissingRefusal),
+			Refusals:    issueListRefusals(projectMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}", Auth: authAny, Versions: onlyV2,
@@ -236,10 +307,18 @@ func (s *server) v2IssueRows() []routeRow {
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{
-				undeclaredKeyRefusal, issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal,
-				{Condition: apicode.OpenForeignChild, Code: apicode.ForeignChildOpen},
-			},
+			Refusals: issueFieldRefusals(
+				issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal, issueClosedRefusal,
+				apicode.Refusal{Condition: apicode.OpenForeignChild, Code: apicode.ForeignChildOpen},
+				apicode.Refusal{Condition: apicode.AdvancesRevisionMoved, Code: apicode.AdvancesRevision},
+				apicode.Refusal{Condition: apicode.ExternalLinkHeld, Code: apicode.ExternalLinkTaken},
+				apicode.Refusal{Condition: apicode.IssueStatusInvalid, Code: apicode.InvalidStatus},
+				apicode.Refusal{Condition: apicode.ExternalURLInvalid, Code: apicode.InvalidURL},
+				apicode.Refusal{Condition: apicode.IssueSequenceMoved, Code: apicode.IssueChanged},
+				apicode.Refusal{Condition: apicode.ParentLockContended, Code: apicode.ParentContended},
+				apicode.Refusal{Condition: apicode.RankInvalid, Code: apicode.RankInput},
+				apicode.Refusal{Condition: apicode.IssueRouteInvalid, Code: apicode.RouteInvalid},
+			),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/claim", Auth: authAny, Versions: onlyV2,
@@ -252,7 +331,10 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusOK, Response: claimAnswer{}, Refusals: claimRefusals},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, claimHolderMovedRefusal, issueHeldByAnotherRefusal,
+				envoyUnreachableRefusal,
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/claim", Auth: authAny, Versions: onlyV2,
@@ -266,7 +348,11 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: claimIssueInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: claimAnswer{}, Refusals: claimRefusals},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, claimHolderMovedRefusal, issueHeldByAnotherRefusal,
+				envoyUnreachableRefusal, issueClosedRefusal,
+				{Condition: apicode.ForceWithoutPersonScope, Code: apicode.OAuthScopeRequired},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/collaborators", Auth: authAny, Versions: onlyV2,
@@ -335,7 +421,11 @@ func (s *server) v2IssueRows() []routeRow {
 			Scope:       scopeProject, ProjectOf: projectPathIssue,
 			IDs: &idRoute{Reason: "a decision's heading block id, which names a block of the issue's decisions document; " +
 				"the path names no document to resolve a prefix within"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, blockMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, blockMissingRefusal,
+				{Condition: apicode.DecisionTextMoved, Code: apicode.DecisionChanged},
+				{Condition: apicode.KeepWithoutDigest, Code: apicode.InvalidKeep},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/references", Auth: authAny, Versions: onlyV2,
@@ -364,7 +454,7 @@ func (s *server) v2IssueRows() []routeRow {
 				Status: http.StatusOK, Response: page[referenceRowV2]{},
 				Also: []routeAnswer{{Status: http.StatusNotModified}},
 			},
-			Refusals: listRefusals(issueMissingRefusal),
+			Refusals: listRefusals(issueMissingRefusal, apicode.Refusal{Condition: apicode.ReferencesBudgetSpent, Code: apicode.ReferencesTimeout}),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/checks", Auth: authAny, Versions: onlyV2,
@@ -434,7 +524,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: checkResultInput{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: checkResultRecorded{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: checkResultRefusals(issueClosedRefusal, apicode.Refusal{Condition: apicode.CheckReworded, Code: apicode.CheckContended}),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/results/dry-run", Auth: authAny, Versions: onlyV2,
@@ -450,7 +540,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: checkResultInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: checkResultDryRun{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: checkResultRefusals(),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/subscribers", Auth: authAny, Versions: onlyV2,
@@ -463,7 +553,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Query:       issueSubscribersV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[subscriber]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(issueMissingRefusal),
+			Refusals:    listRefusals(issueMissingRefusal, envoyUnreachableRefusal, envoyRefillingRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/subscribers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -477,7 +567,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusNoContent},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathIssue, SessionPath: "session_id",
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: append(unsubscribeRefusals(), undeclaredKeyRefusal, issueMissingRefusal),
 		},
 		{
 			Method: http.MethodPut, Pattern: "/results/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -495,8 +585,13 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyStateUnion, Arms: map[string]any{"retracted": retractResultStateInput{}}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.CheckResult{}},
 			Scope: scopeProject, ProjectOf: projectPathResult,
-			IDs:      &idRoute{Reason: "a check result id"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, resultMissingRefusal},
+			IDs: &idRoute{Reason: "a check result id"},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, resultMissingRefusal,
+				{Condition: apicode.ResultRetractedBefore, Code: apicode.ResultRetracted},
+				{Condition: apicode.RetractionByOther, Code: apicode.RetractionForbidden},
+				{Condition: apicode.RetractionReasonBlank, Code: apicode.RetractionInput},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/steps", Auth: authAny, Versions: onlyV2,
@@ -531,8 +626,11 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: stepRecordInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.StepRecord{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			IDs:      &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal},
+			IDs: &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal, stepInputInvalidRefusal,
+				stepOfAnotherIssueRefusal, stepWriterRefusal,
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}/rating", Auth: authAny, Versions: onlyV2,
@@ -559,8 +657,11 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: stepRatingInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.StepRecord{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			IDs:      &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for the run of a retro"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal},
+			IDs: &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for the run of a retro"},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal, stepInputInvalidRefusal,
+				stepOfAnotherIssueRefusal, stepWriterRefusal,
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/plans/{id}", Auth: authAny, Versions: onlyV2,
@@ -589,8 +690,12 @@ func (s *server) v2IssueRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: planRecordInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.PlanRecord{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			IDs:      &idRoute{Reason: "a plan id: the uuid the Legion daemon derives for the plan of one run of an issue"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			IDs: &idRoute{Reason: "a plan id: the uuid the Legion daemon derives for the plan of one run of an issue"},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, issueMissingRefusal, stepWriterRefusal,
+				{Condition: apicode.PlanInputInvalid, Code: apicode.PlanInput},
+				{Condition: apicode.PlanOfAnotherIssue, Code: apicode.PlanOtherIssue},
+			},
 		},
 	}
 }
