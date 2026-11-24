@@ -6,20 +6,40 @@ disable-model-invocation: true
 
 # Thermonuclear Deep Review
 
+Audit a branch or PR diff for security and correctness: report the issues in the code the pull request adds or modifies, in the unchanged consumers of the behavior it changes and in its PR body's claims. The report opens with the verdict that a PR gate reads.
+
 Make your own scratch as `skill://thermonuclear-code-quality` says.
 
 ## Verdict
 
-The first line of the report is the verdict, in exactly this form, because a PR gate reads only that line. `<sha>` is the short sha of the head you reviewed, or the sha your brief names when you have no shell:
+The first line of the report is the verdict, in exactly this form, because a PR gate reads only that line:
 
-- `Verdict: CHANGES at <sha>` when the report has a Medium or High finding.
-- `Verdict: APPROVE at <sha>` when it has none. Minor findings do not block.
+| Verdict line | When |
+| --- | --- |
+| `Verdict: CHANGES at <sha>` | The report has a Medium or High finding |
+| `Verdict: APPROVE at <sha>` | The report has none. Minor findings do not block |
 
-Trace each finding end to end before you rate it. Minor changes no behavior, hides no error and breaks no gate. Any other finding is Medium, or High when the report holds its trace: developers who get false High findings stop listening.
+`<sha>` is the short sha of the head you reviewed, or the sha your brief names when you have no shell.
+
+Trace each finding end to end before you rate it.
+
+| Rating | When |
+| --- | --- |
+| Minor | It changes no behavior, hides no error and breaks no gate |
+| Medium | Any other finding |
+| High | Any other finding whose trace the report holds: developers who get false High findings stop listening |
 
 ## Scope
 
-Audit the range your brief names, or the checked-out branch against its base when it names none. Report issues in code the pull request (the checked-out branch against its base) adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only the pull request's diff and that diff never shows them. A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.
+Audit the range your brief names, or the checked-out branch against its base when it names none.
+
+Report issues in each of these, because the author fixes only the pull request's diff and that diff never shows them:
+
+- code the pull request (the checked-out branch against its base) adds or modifies
+- the unchanged consumers check 2 finds
+- the PR body's claims (check 6)
+
+A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.
 
 ## Checks
 
@@ -55,21 +75,28 @@ For each row whose surface the diff touches, answer with a file:line citation.
 | `transport` | TLS or certificate verification, a signature, an HMAC, a randomness source, or a read or write that untrusted input sizes with no bound | what changed, the check or bound it relies on, and the ASVS identifier it maps to |
 
 - Cite an OWASP ASVS v5.0.0 identifier where one applies (`v5.0.0-1.2.5` style).
-- A security finding with no stated exploit path is hardening, ranked Minor. One that states an exploit path is a finding at its real priority.
-- Report at most two hardening items, ranked, and put the rest in one paragraph.
+
+| A security finding that | Is |
+| --- | --- |
+| States no exploit path | Hardening, ranked Minor |
+| States an exploit path | A finding at its real priority |
+
+- Report at most two hardening items, ranked. Put the rest in one paragraph.
 - Start each security finding with its row's tag, `Security[<tag>]:`.
 - When the diff touches a row, end the report with one `Security:` line: each touched row's tag and its answer with file:line.
 
 ## Findings
 
 - Never report a finding whose open question you can settle by reading code. When you cannot settle it, say what you searched and where.
-- Rate each finding; the lead disposes of it (act on, consider, noted or dismissed). Give each the trace, the consumer it breaks and what it depends on, and put on the must-fix list only what must be fixed before this change ships.
+- Rate each finding. The lead disposes of it (act on, consider, noted or dismissed).
+- Give each finding the trace, the consumer it breaks and what it depends on.
+- Put on the must-fix list only what must be fixed before this change ships.
 - Do not review a diff you wrote: hand it to a session that did not write it.
 
 ## PR discussion
 
 Only after your own audit, and only with a Medium or High finding on a branch that has a PR:
 
-1. Read the PR's comments and review comments, bots' included, with `gh` or `glab`.
-2. Check their findings in the code: a comment is not evidence. Include the valid ones you missed; for one you share, add their evidence if yours lacks it.
-3. Mark each finding that came from that discussion.
+1. **Read the PR's comments and review comments**, bots' included, with `gh` or `glab`.
+2. **Check their findings in the code:** a comment is not evidence. Include the valid ones you missed. For one you share, add their evidence if yours lacks it.
+3. **Mark each finding that came from that discussion.**
