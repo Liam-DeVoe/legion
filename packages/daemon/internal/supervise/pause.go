@@ -234,15 +234,15 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
-// was held for has ended (decision 7): a reservation from the limiter, told to the daemon as the
-// moment the pacing lets it out (wakeLetOut, decision 14), then its timer, exactly as the wake gate
-// parks a launch (reserveWake, parkWake). A launch the reservation lets out now runs now, and a
-// daemon whose pacing is off runs it now, unpaced. A launch that had its turn from the pacing
-// before the pause's gate held it (wake.paid) runs now without a reservation: a wake the pacing
-// parked, whose turn met the pause, writes its one wake line now, reporting the whole of its hold
-// from its reservation (runWake), and one that passed the wake gate wrote its line there
-// (wake.ran). Its callers are the gate's own stop finding no pause open (pauseStopDue) and the
-// resume's event (resumePause).
+// was held for has ended (decision 7): a place at its queue's tail in the pacing's queues
+// (placeWake), its turn then the queues', exactly as the wake gate parks a launch (reserveWake,
+// park, wakeNow), told to the daemon (wakeLetOut, decision 14). A launch whose turn is now runs
+// now, as the gate runs one, and a daemon whose pacing is off runs it now, unpaced. A launch that
+// had its turn from the pacing before the pause's gate held it (wake.paid) runs now with no place
+// of its own: a wake the pacing let out, whose turn met the pause, writes its one wake line now,
+// reporting the whole of its hold from its reservation (runWake), and one that passed the wake gate
+// wrote its line there (wake.ran). Its callers are the gate's own stop finding no pause open
+// (pauseStopDue) and the resume's event (resumePause).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0
@@ -252,20 +252,20 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 		return m.runWake(ctx, waiting, true)
 	}
 	now := m.deps.Clock.Now()
-	reserve := m.deps.WakePace.Reserve
-	if reserve == nil {
+	waiting.reserved = now
+	if m.deps.WakePace.Queue == nil {
 		m.wake = nil
-		waiting.at, waiting.reserved = now, now
 		return m.runWake(ctx, waiting, false)
 	}
-	at := reserve(now)
-	m.wakeLetOut(at)
-	waiting.at, waiting.reserved, waiting.paid = at, now, true
-	if !at.After(now) {
+	place := m.placeWake()
+	if m.bindWake(waiting, place, true) {
 		m.wake = nil
+		waiting.ticket, waiting.paid = place, true
+		m.wakeLetOut(now)
 		return m.runWake(ctx, waiting, true)
 	}
-	return m.parkWake(ctx, waiting, at.Sub(now))
+	m.wakeLetOut(waiting.due())
+	return m.waitOnMachine(ctx, waiting)
 }
 
 // resumePause is the resume's event (ResumePause): what this claim holds of the pause that ended

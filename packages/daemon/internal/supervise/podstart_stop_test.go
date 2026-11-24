@@ -294,15 +294,15 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: r.m.View().Claim.Generation, Sequence: 1,
 				Refused: true, Message: "400 the provider refused the turn", HTTPStatus: 400, Unprompted: true})
 		}},
-		// The wake pacing's park replaces the gate's (parkWake, waitOnMachine). No event of the
+		// The wake pacing's park replaces the gate's (park, waitOnMachine). No event of the
 		// table raises a second launch over a claim whose launch waits at the gate, so the case
-		// parks that wake where a decision would (insideDecision); its turn is an hour away, and
-		// the test never reaches it.
+		// parks that wake where a decision would (insideDecision), at a place in queues whose
+		// turn is an hour away, which the test never reaches.
 		{name: "another park", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
 			return h.insideDecision(r.m, func() error {
-				now := h.clock.Now()
-				return r.m.parkWake(h.ctx, &wake{at: now.Add(time.Hour), reserved: now, kind: WakeLaunch, state: StateLaunching,
-					run: func(context.Context) error { return nil }}, time.Hour)
+				queue := NewWakeQueues(func(now time.Time) time.Time { return now.Add(time.Hour) }, time.Hour, h.clock)
+				return r.m.park(h.ctx, &wake{reserved: h.clock.Now(), kind: WakeLaunch, state: StateLaunching,
+					run: func(context.Context) error { return nil }}, queue.Place(string(r.token), time.Time{}))
 			})
 		}},
 		// A path added later that drops the parked wake and takes nothing out of the gate: the

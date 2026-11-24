@@ -834,12 +834,26 @@ func (h *harness) start(c Claim) {
 }
 
 // restart is a daemon restart: the machine is dropped with whatever it held in memory — its
-// timers die with it — and a new one is built from what the store read back.
+// timers die with it, and so does the place its wake held in the pacing's queues — and a new one
+// is built from what the store read back. The queues themselves outlive the restart here, where a
+// restarted daemon builds its own (the daemon's run), so the dropped machine's place is taken out
+// by hand: left waiting, it would be let out onto a machine that is gone.
 func (h *harness) restart() {
 	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	h.m.dropWakePlace()
 	h.start(h.store.load(h.token))
+}
+
+// dropWakePlace takes the place the machine's waiting wake holds out of the pacing's queues
+// (restart).
+func (m *Machine) dropWakePlace() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wake != nil && m.wake.ticket != nil {
+		m.wake.ticket.Stop()
+	}
 }
 
 // handle posts one event and waits for the decision it starts, with the agent answering a turn's

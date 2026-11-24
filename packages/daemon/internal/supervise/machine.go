@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // ClaimState is where a claim is in its life.
@@ -347,6 +348,14 @@ type Claim struct {
 	// yesterday, and a claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
+	// MessageMark is when a message was last marked as waiting for this claim's role
+	// (dispatch://INFRA-5682 R1): a start row of a role_message or agent_message wake, or the
+	// Envoy listener's report of such a wake for the claim, whatever its state. The store writes it
+	// in the transaction of that start row or report and clears it once the role starts a turn
+	// after it (store's MarkMessageWake, upsertClaim); a claim's own write never sets it, since
+	// the machine learns of it only after it was written (Machine.MarkMessage). A mark no later than
+	// LastTurnStart is spent: the role has had a turn since the message (MessageWaiting).
+	MessageMark time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
 	// reported, in (generation, sequence) order and bounded by the launch failure limit
 	// (recordTurnOutcome). They are the window RefusedRun derives the run of refused turns from,
@@ -804,6 +813,17 @@ func (c Claim) RuleHoldError() error {
 	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
 }
 
+// MessageWaiting is when a message was marked as waiting for this claim's role (MessageMark), and
+// whether one still waits: a mark the role has started a turn since is spent, since the role read
+// its messages in that turn. A paced wake of a claim one waits for waits in the pacing's message
+// queue (reserveWake, dispatch://INFRA-5682 R1).
+func (c Claim) MessageWaiting() (time.Time, bool) {
+	if c.MessageMark.IsZero() || !c.MessageMark.After(c.LastTurnStart) {
+		return time.Time{}, false
+	}
+	return c.MessageMark, true
+}
+
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
 // in flight knows.
 type ClaimView struct {
@@ -832,6 +852,11 @@ type ClaimView struct {
 	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
 	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
+	// wakePlace is the place in the pacing's queues of the wake WakeWaiting names, nil for none:
+	// its moment is an estimate read from that place whenever the view is read (View,
+	// WaitingWake), since a wake joining or leaving the queues ahead of it moves it with no
+	// decision of this machine's.
+	wakePlace *wakepace.Ticket
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -1681,14 +1706,15 @@ type Machine struct {
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
 	// process-less one parked the claim launching with no process, which the boot repairs to
 	// launch_uncertain and relaunches; one over a process whose death the claim's record charges
-	// is raised again by the boot's replay of that death (RecordedDeath). The boot reserves the
-	// turns of both in one order, the order their claims' work was owed (RequestSpawn.Turn,
-	// RecordedDeath.Turn), so the queue it rebuilds keeps the order this one drained. One over a
-	// process still running is posted again by the boot's own stale-plugin pass, and one over a
-	// death no record charges is raised again by the runtime's next observation of the dead
-	// process. Each is paced again from an empty bucket, and no wake runs twice. A launch waiting
-	// for its issue pod's start is held here too, until the gate's grant fires TimerPodStart
-	// (askPod, wake.park, podStartDue), and a restart finds it as it finds a process-less wake.
+	// is raised again by the boot's replay of that death (RecordedDeath). The boot places both in
+	// one pass, in the order their claims' work was owed and a claim a message waits for first
+	// (RequestSpawn.Place, RecordedDeath.Place), so the queue it rebuilds keeps the order this one
+	// drained. One over a process still running is posted again by the boot's own stale-plugin
+	// pass, and one over a death no record charges is raised again by the runtime's next
+	// observation of the dead process. Each is placed again in queues with nothing ahead of them,
+	// and no wake runs twice. A launch waiting for its issue pod's start is held here too, until
+	// the gate's grant fires TimerPodStart (askPod, wake.park, podStartDue), and a restart finds
+	// it as it finds a process-less wake.
 	wake *wake
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
 	// contract that relaunch is made for and the wake kind its launch waits under
@@ -1808,7 +1834,9 @@ func (p awaitedPrompts) LogValue() slog.Value { return slog.AnyValue(p.ids()) }
 // fires (due), so a later arming can tell whether it would fire sooner. TimerPodStart's is no
 // timer of the clock's: it fires at the pod's gate's grant, so it has no due and nothing to
 // cancel, and the start it waits for leaves the gate at the end of the decision that drops its
-// wake, for what that decision left of the claim (askPod, endPodPark).
+// wake, for what that decision left of the claim (askPod, endPodPark). TimerWake's fires at the
+// turn the pacing's queues let its wake out, so it has no due either, and its cancel is the wake's
+// place in those queues (bindWake).
 type armed struct {
 	seq        uint64
 	deliveryID string
@@ -2447,6 +2475,11 @@ func (m *Machine) Claim() Claim {
 func (m *Machine) View() ClaimView {
 	v := *m.view.Load()
 	v.Claim = copyClaim(v.Claim)
+	if v.WakeWaiting != nil && v.wakePlace != nil {
+		waiting := *v.WakeWaiting
+		waiting.At = v.wakePlace.Estimate()
+		v.WakeWaiting = &waiting
+	}
 	return v
 }
 
@@ -2456,13 +2489,18 @@ func (m *Machine) View() ClaimView {
 // api.WakesWaitingOf). It never waits on the decision in flight, as View does not, and it copies
 // no claim: publish stores a view built fresh and mutates no stored one, so every field read here
 // is one nothing writes again. A machine holding no wake allocates nothing, which is every machine
-// outside a wave.
+// outside a wave. Its moment is the estimate the wake's place in the pacing's queues gives now
+// (wakepace.Ticket.Estimate): a waiting wake has no moment of its own (dispatch://INFRA-5682 R1).
 func (m *Machine) WaitingWake() *WaitingWake {
 	v := m.view.Load()
 	if v.WakeWaiting == nil {
 		return nil
 	}
-	return &WaitingWake{Claim: v.Token, Issue: v.Issue, Role: v.Role, Kind: v.WakeWaiting.Kind, At: v.WakeWaiting.At}
+	at := v.WakeWaiting.At
+	if v.wakePlace != nil {
+		at = v.wakePlace.Estimate()
+	}
+	return &WaitingWake{Claim: v.Token, Issue: v.Issue, Role: v.Role, Kind: v.WakeWaiting.Kind, At: at}
 }
 
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
@@ -2513,7 +2551,7 @@ func (m *Machine) current() Claim {
 func (m *Machine) publish() {
 	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}
 	if m.wake != nil && m.wake.pause == 0 && m.wake.park == nil {
-		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
+		view.WakeWaiting, view.wakePlace = &WakeWaiting{Kind: m.wake.kind, At: m.wake.due()}, m.wake.ticket
 	}
 	m.view.Store(view)
 }
@@ -2922,7 +2960,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, false, time.Time{}, cause)
+	return m.launchAfter(ctx, false, false, false, nil, cause)
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2968,16 +3006,16 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
 // relaunchLater arms — is a request's no longer, and passes false.
 //
-// turn is the moment the request already reserved for this launch in the wake pacing, the zero
-// time for every launch that reserved none, which the gate decides by the rule RequestSpawn.Turn
-// states. Only the gate reads it, and no field of the machine holds it; a retry raised anew from
-// the top reserves afresh, passing the zero time.
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
+// place is the place the request already gave this launch in the wake pacing's queues, nil for
+// every launch given none, which the gate decides by the rule RequestSpawn.Place states. Only the
+// gate reads it, and no field of the machine holds it; a retry raised anew from the top is placed
+// afresh, passing nil.
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, place *wakepace.Ticket, cause string) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, nil, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, exempt, turn, func(ctx context.Context) error {
+	return m.reserveWake(ctx, exempt, place, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, requested, cause)
 	}, again)
 }
@@ -3231,7 +3269,7 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 // pause (heldTryWake, wake.again).
 func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 	return m.retryHolding(l.intent, func(ctx context.Context) error {
-		return m.launchAfter(ctx, l.charged, l.exempt, false, time.Time{}, noEnd)
+		return m.launchAfter(ctx, l.charged, l.exempt, false, nil, noEnd)
 	})
 }
 
@@ -3333,7 +3371,7 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error {
-		return m.launchAfter(ctx, charged, exempt, false, time.Time{}, noEnd)
+		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
 	})
 	return errors.Join(err, m.persist(ctx))
 }
@@ -3776,7 +3814,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	}
 	uncharged := m.endUncharged("died")
 	if m.claim.DeathCharged {
-		return m.relaunchDeath(ctx, ended, uncharged, time.Time{})
+		return m.relaunchDeath(ctx, ended, uncharged, nil)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
@@ -3799,7 +3837,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchDeath(ctx, ended, uncharged, time.Time{}))
+	return errors.Join(m.persist(ctx), m.relaunchDeath(ctx, ended, uncharged, nil))
 }
 
 // relaunchDeath is the relaunch a death of the claim's process raises, ended being how that
@@ -3807,13 +3845,13 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // (relaunchAfterFailure), or, for an end endUncharged charges nothing (uncharged), a launch
 // that charges no launch failure and waits no backoff. died raises it at every report of the
 // death, and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise
-// one relaunch the same way. turn is the moment the boot reserved for that relaunch
-// (RecordedDeath.Turn), and the zero time for died, whose relaunch the gate reserves.
-func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool, turn time.Time) error {
+// one relaunch the same way. place is the place the boot gave that relaunch in the pacing's
+// queues (RecordedDeath.Place), and nil for died, whose relaunch the gate places.
+func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool, place *wakepace.Ticket) error {
 	if uncharged {
-		return m.launchAfter(ctx, false, false, false, turn, ended)
+		return m.launchAfter(ctx, false, false, false, place, ended)
 	}
-	return m.relaunchAfterFailure(ctx, CauseDied, ended, turn)
+	return m.relaunchAfterFailure(ctx, CauseDied, ended, place)
 }
 
 // relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
@@ -3831,12 +3869,12 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // the death decided first, nor over a suspension held for the claim, which the report of the
 // death ends where it lands (died, endHeld): run here, a launch the burst lets straight out would
 // let the process go with the hold (letGo), and the claim would run where it should be suspended.
-// The turn such a replay carries is left spent, as a dropped wake leaves its token spent — but
-// for a relaunch a report parked at a later moment than that turn, which moves to the turn
-// (takeEarlierTurn): a report that came after the boot's pass reserved the turn parks its own
-// moment behind every turn the pass handed out, and the relaunch would otherwise lose its owed
-// place. Moving a wake that already waits launches nothing a hold would forbid that the wake
-// would not launch at its own moment, so the move asks nothing of a hold.
+// The place such a replay carries is left to the boot, which stops it — but for a relaunch a
+// report parked at a later place than it, which moves there (takeEarlierPlace): a report that came
+// after the boot's pass placed the relaunch parks its own place behind every place the pass gave
+// out, and the relaunch would otherwise lose its owed place. Moving a wake that already waits
+// launches nothing a hold would forbid that the wake would not launch at its own turn, so the move
+// asks nothing of a hold.
 //
 // It writes one line for each claim whose relaunch it raises or moves, which is what the boot's
 // count of recorded deaths is read against.
@@ -3851,7 +3889,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: the claim's record moved on from the death the boot read; nothing is relaunched for it",
 			"generation", m.claim.Generation, "read", recorded.Generation, "deathCharged", m.claim.DeathCharged)
 		return nil
-	case m.takeEarlierTurn(recorded.Turn):
+	case m.takeEarlierPlace(recorded.Place.ticket):
 		relaunching()
 		return nil
 	case m.launchMet() || m.held != nil:
@@ -3860,7 +3898,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	relaunching()
-	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"), recorded.Turn)
+	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"), recorded.Place.ticket)
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why
@@ -3949,7 +3987,7 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // it ends is one stop. Nothing else tells it: a failure (fail), a worker's exit (release, retire)
 // and the registration deadline's retirement end a process and send no stop. A death whose
 // relaunch the wake pacing parked keeps the dead process's locator until the wake's turn
-// (parkWake), so a suspension that arrives meanwhile stops that process again and sends a second
+// (waitOnMachine), so a suspension that arrives meanwhile stops that process again and sends a second
 // stop. The first runs on a goroutine nothing in the decision waits for (Deps.SessionGone), so it
 // may still be in flight or may have failed, and the second can find the dead process's
 // registration still there. The second is told, as every stop is, once the process has ended,
@@ -4345,7 +4383,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 	if m.launchWaits() {
 		m.log.Info("supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
 			"incarnation", observation.Locator.Incarnation, "observed", string(observation.Kind),
-			"detail", observation.Detail, "due", m.wake.at)
+			"detail", observation.Detail, "due", m.wake.due())
 		return nil
 	}
 	switch observation.Kind {
@@ -4424,7 +4462,7 @@ func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharg
 // What becomes of that process is already decided — the turn lets it go and starts the next
 // (wakeNow, launchNow) — so every answer the runtime could give decides nothing (judge), and
 // the one that reaches no judgement at all, a runtime that cannot answer, would arm the probe
-// interval the park disarmed (parkWake) and ask again at every interval of a wait that is tens
+// interval the park disarmed (waitOnMachine) and ask again at every interval of a wait that is tens
 // of minutes long in a wave. The callers' own timers are not armed again here for the same
 // reason: the launch's turn arms the new process's (armBoot).
 func (m *Machine) probe(ctx context.Context, alive func(context.Context) error, again TimerKind, after time.Duration) error {
@@ -4434,7 +4472,7 @@ func (m *Machine) probe(ctx context.Context, alive func(context.Context) error, 
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: the process a waiting launch replaces is not probed; its turn replaces that process",
-			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.at)
+			"incarnation", m.claim.Locator.Incarnation, "due", m.wake.due())
 		return nil
 	}
 	observation, err := m.deps.Runtime.Probe(ctx, *m.claim.Locator)

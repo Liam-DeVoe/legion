@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // pauseFlag is the daemon's pause flag as a test drives it (Deps.Paused): the open pause's id, 0
@@ -174,22 +175,30 @@ func (h *harness) owedStopsNow() []PauseStop {
 	return slices.Clone(h.m.owedStops())
 }
 
-// countedReserve wraps the harness's pacing so a test reads how many tokens were taken from it.
-func countedReserve(h *harness) func() int {
+// countedReserve builds the harness's pacing queues over reserve, the Reserve of a limiter whose
+// Interval is interval, on the harness's clock (NewWakeQueues), counting each token the queues take
+// from it, so a test reads how many were taken. The caller builds the harness's machine again
+// (start), as the daemon builds its machines over the queues it holds.
+func countedReserve(h *harness, reserve func(now time.Time) time.Time, interval time.Duration) func() int {
 	var mu sync.Mutex
 	taken := 0
-	inner := h.deps.WakePace.Reserve
-	h.deps.WakePace.Reserve = func(now time.Time) time.Time {
+	h.deps.WakePace.Queue = NewWakeQueues(func(now time.Time) time.Time {
 		mu.Lock()
 		taken++
 		mu.Unlock()
-		return inner(now)
-	}
+		return reserve(now)
+	}, interval, h.clock)
 	return func() int {
 		mu.Lock()
 		defer mu.Unlock()
 		return taken
 	}
+}
+
+// countedPace is countedReserve over a limiter of the shipped pace, as pacedDeps builds one.
+func countedPace(h *harness) func() int {
+	limiter := wakepace.New(wakeRate, 1, func(time.Duration) time.Duration { return wakePart })
+	return countedReserve(h, limiter.Reserve, limiter.Interval())
 }
 
 // A pause's hold over a claim in a turn survives a start row leased before the pause (decision
@@ -345,7 +354,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 		c := wakeClaim(testToken, StateSuspended)
 		c.SuspendedBy = SuspendedByReleased
 		h, flag, stops := pauseHarness(t, c, pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedPace(h)
 		h.start(c)
 		flag.set(7)
 
@@ -360,7 +369,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 
 	t.Run("a relaunch over the process of an idle claim that died", func(t *testing.T) {
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedPace(h)
 		h.start(queuedClaim())
 		h.reach(StateIdle)
 		before := taken()
@@ -374,7 +383,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 
 	t.Run("a stalled turn's replacement", func(t *testing.T) {
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedPace(h)
 		h.start(queuedClaim())
 		last, swept := stalledSweep(h)
 		before := taken()
@@ -423,7 +432,7 @@ func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testin
 			h.wantWaitingWake(WakeLaunch)
 			flag.set(7)
 			pacedDeps(wakeRate)(&h.deps)
-			taken := countedReserve(h)
+			taken := countedPace(h)
 			h.restart()
 			if c := h.claim(); c.Locator == nil || !c.DeathCharged || c.Pending != nil {
 				t.Fatalf("the restored claim records %+v, want a charged death with a locator and no task that could owe its own launch", c)
@@ -476,15 +485,13 @@ func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
 	passed := func(t *testing.T) (h *harness, flag *pauseFlag, stops *stopTransaction, taken func() int, arm func()) {
 		t.Helper()
 		var armed atomic.Bool
-		h, flag, stops = pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Interval: time.Minute / wakeRate, Reserve: func(now time.Time) time.Time {
-				if armed.CompareAndSwap(true, false) {
-					flag.set(7)
-				}
-				return now
-			}}
-		})
-		taken = countedReserve(h)
+		h, flag, stops = pauseHarness(t, queuedClaim(), func(d *Deps) { d.WakePace = WakePace{Rate: wakeRate, Burst: 1} })
+		taken = countedReserve(h, func(now time.Time) time.Time {
+			if armed.CompareAndSwap(true, false) {
+				flag.set(7)
+			}
+			return now
+		}, time.Minute/wakeRate)
 		h.start(queuedClaim())
 		return h, flag, stops, taken, func() { armed.Store(true) }
 	}
@@ -1271,7 +1278,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), func(d *Deps) {
 			d.WakeLetOut = func(_ claim.Token, _ string, _ claim.Role, at time.Time) { stamps = append(stamps, at) }
 		})
-		taken := countedReserve(h)
+		taken := countedPace(h)
 		h.start(queuedClaim())
 		flag.set(7)
 		h.must(RequestSpawn{Claim: h.token})
@@ -1349,10 +1356,8 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 	// the pacing gave.
 	parked := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
 		t.Helper()
-		h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Minute) }}
-		})
-		taken := countedReserve(h)
+		h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) { d.WakePace = WakePace{Rate: wakeRate, Burst: 1} })
+		taken := countedReserve(h, func(now time.Time) time.Time { return now.Add(time.Minute) }, time.Minute)
 		h.start(queuedClaim())
 		return h, flag, stops, taken
 	}
