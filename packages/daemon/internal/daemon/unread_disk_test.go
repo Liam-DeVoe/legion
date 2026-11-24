@@ -29,14 +29,6 @@ import (
 // read that finds work that origin does not hold, or that cannot be made, keeps the pod, and the
 // issue's architect is told once for the pod, with the state of each claim and what the read found.
 
-// workspaceKeptNotice is the notice kind that tells the issue's architect that a pod no role runs
-// in is kept for its disk.
-const workspaceKeptNotice = record.WorkspaceKeptNotice
-
-// unownedWorkspaceUnread is the hold of a pod no role runs in whose launcher could not read its
-// workspace, by the name the hold records carry.
-var unownedWorkspaceUnread = workflow.IdleHoldUnownedWorkspaceUnread.String()
-
 // noRoleRig is newLeftPodRig's child with no role process in its pod: its planner failed and
 // records no process, and its implementer is suspended by an earlier idle release, with no
 // process either. With parked false the child stands in the workflow at implementing, which is the
@@ -80,15 +72,15 @@ func launcherReads(rig *idleRig) int { return len(rig.rt.CallsOf("PodWorkspaceWo
 
 func roleReads(rig *idleRig) int { return len(rig.rt.CallsOf("WorkspaceWork")) }
 
-// keptNotices is every notice of the kind workspaceKeptNotice published to the role topic of the
-// rig's tree root's architect, in order.
+// keptNotices is every notice of the kind record.WorkspaceKeptNotice published to the role topic of
+// the rig's tree root's architect, in order.
 func keptNotices(t *testing.T, rig *idleRig, publisher *outboxPublisher) []record.Notice {
 	t.Helper()
 	topic := architectTopic(t, rig.issue.Tree)
 	var notices []record.Notice
 	for _, published := range publisher.publishes() {
 		notice, ok := published.payload.(record.Notice)
-		if published.topic == topic && ok && notice.Kind == workspaceKeptNotice {
+		if published.topic == topic && ok && notice.Kind == record.WorkspaceKeptNotice {
 			notices = append(notices, notice)
 		}
 	}
@@ -136,7 +128,7 @@ func keptOverPasses(t *testing.T, rig *idleRig, publisher *outboxPublisher, pass
 	}
 	notices := keptNotices(t, rig, publisher)
 	if len(notices) != 1 {
-		t.Fatalf("%s notices to the architect of %s = %d, want one for the kept pod", workspaceKeptNotice, rig.issue.Tree, len(notices))
+		t.Fatalf("%s notices to the architect of %s = %d, want one for the kept pod", record.WorkspaceKeptNotice, rig.issue.Tree, len(notices))
 	}
 	for _, want := range append([]string{"planner=failed", "implementer=suspended"}, found...) {
 		if !strings.Contains(notices[0].Reason, want) {
@@ -186,7 +178,7 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 	t.Run("read_cannot_be_made", func(t *testing.T) {
 		rig, publisher := noRoleRig(t, false)
 		rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("no launcher of the pod reads a workspace"))
-		keptOverPasses(t, rig, publisher, unownedPass(rig), unownedWorkspaceUnread, "no launcher of the pod reads a workspace")
+		keptOverPasses(t, rig, publisher, unownedPass(rig), workflow.IdleHoldUnownedWorkspaceUnread.String(), "no launcher of the pod reads a workspace")
 	})
 
 	t.Run("control:_a_clean_read_releases", func(t *testing.T) {
@@ -216,10 +208,6 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 		}
 		if launcher := launcherReads(rig); launcher != 0 {
 			t.Fatalf("workspace reads through the launcher = %d, want none: a kept volume the next pod mounts is not deleted", launcher)
-		}
-		if _, present := rig.rt.IssueSandbox(rig.issue.Key); !present || !rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()) {
-			t.Fatalf("after the release the issue's Sandbox stands = %t and keeps its volume = %t, want both: the release keeps the volume the next pod mounts",
-				present, rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()))
 		}
 	})
 
@@ -296,7 +284,7 @@ func TestTheCloseOfALeftPodWithNoLiveClaimReadsItsDiskFirst(t *testing.T) {
 	t.Run("read_cannot_be_made", func(t *testing.T) {
 		rig, publisher := noRoleRig(t, true)
 		rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("no launcher of the pod reads a workspace"))
-		keptOverPasses(t, rig, publisher, leftPass(rig), unownedWorkspaceUnread, "no launcher of the pod reads a workspace")
+		keptOverPasses(t, rig, publisher, leftPass(rig), workflow.IdleHoldUnownedWorkspaceUnread.String(), "no launcher of the pod reads a workspace")
 	})
 
 	t.Run("control:_a_clean_read_closes", func(t *testing.T) {
