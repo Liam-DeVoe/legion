@@ -194,8 +194,9 @@ type releaseRecord struct {
 // one.
 func (*releaseRecord) PauseRefusesProjectRelease(context.Context, string) error { return nil }
 
-func (s *releaseRecord) StartProjectRelease(_ context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
-	return store.ProjectRelease{ID: 1, Project: project, StartedAt: startedAt, BoundAt: boundAt}, s.takenOver, s.stop, nil
+func (s *releaseRecord) StartProjectRelease(_ context.Context, project string, now func() time.Time, bound time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
+	startedAt := now().UTC()
+	return store.ProjectRelease{ID: 1, Project: project, StartedAt: startedAt, BoundAt: startedAt.Add(bound)}, s.takenOver, s.stop, nil
 }
 
 func (*releaseRecord) RecordProjectRelease(context.Context, int64, json.RawMessage) error { return nil }
@@ -284,6 +285,47 @@ func (s *releaseRecord) ClaimHolds(_ context.Context, _ string, token claim.Toke
 
 func (s *releaseRecord) PullRequestMerged(context.Context, string) (bool, error) {
 	return s.merged, s.mergedErr
+}
+
+// unansweredStart is a release's store whose start answers only once its context ends, with that
+// context's error, as the store does while it runs a write that does not commit again and again
+// (store.StartProjectRelease).
+type unansweredStart struct{ *releaseRecord }
+
+func (unansweredStart) StartProjectRelease(ctx context.Context, _ string, _ func() time.Time, _ time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {
+	<-ctx.Done()
+	return store.ProjectRelease{}, nil, nil, ctx.Err()
+}
+
+// dispatch://INFRA-3583 R7: a start whose record the store does not commit answers the store's
+// error at a deadline of its own, a tenth of the bound and at least projectReleaseStartFloor
+// (projectReleaseStartBound), and not at the end of the request, which the command holds open long
+// past the bound. The mark is clear again, so the daemon starts the project's work as before and
+// the operator's next run gets a whole bound. The negative control is the store called on the
+// request's context, on which the start answers only once the request ends.
+func TestAProjectReleaseStartTheStoreDoesNotAnswerGivesUpAtItsOwnDeadline(t *testing.T) {
+	t.Parallel()
+	mark := &projectRelease{}
+	r := &projectReleaser{ctx: context.Background(), project: "legion", mark: mark, store: unansweredStart{&releaseRecord{}},
+		pods: &releasePods{}, defaultBound: time.Minute, now: time.Now, log: quietLogger()}
+	request, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	began := time.Now()
+	_, started, err := r.Start(request, 10*time.Second, false)
+	took := time.Since(began)
+	if !errors.Is(err, context.DeadlineExceeded) || started {
+		t.Fatalf("Start whose store never answered = started %v, %v; want the deadline's error", started, err)
+	}
+	if took < projectReleaseStartFloor || took > 30*time.Second || request.Err() != nil {
+		t.Fatalf("Start whose store never answered answered after %s, the request %v; want at least %s, the start's deadline for a bound of 10s, and well before the request's minute ended",
+			took, request.Err(), projectReleaseStartFloor)
+	}
+	if mark.held() {
+		t.Fatal("the start that answered an error left the mark held, which holds every start of the project until the next boot")
+	}
+	if round := r.AskRound(); round != "" {
+		t.Fatalf("the start that answered an error asks under %q, want no round", round)
+	}
 }
 
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue

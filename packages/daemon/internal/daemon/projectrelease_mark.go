@@ -123,11 +123,12 @@ func (r *projectRelease) finished() bool {
 // project for it. Its record did not commit, but for one case: a commit whose outcome the store
 // had still not said when the start's context ended (store.ErrCommitOutcomeUnknown). Such a record
 // may have committed, and then, with no release running it, it refuses every pause until the
-// operator's retry runs a release whose finish leaves the newest record finished, and every idle
-// release until the next boot ends it (store.StartProjectRelease). A task a machine held back
-// while the mark stood is sent at once (unmarked) rather than at the claim's next event; a held
-// outbox row runs at its next read, within releaseHoldSpacing, a launch the launch check refused
-// at its probe-interval retry, and the periodic work at its next tick.
+// operator's retry runs a release whose finish leaves the newest record finished
+// (store.ProjectReleasingError), and every idle release until the next boot ends it
+// (store.Store.EndProjectReleasesAtBoot). A task a machine held back while the mark stood is sent
+// at once (unmarked) rather than at the claim's next event; a held outbox row runs at its next
+// read, within releaseHoldSpacing, a launch the launch check refused at its probe-interval retry,
+// and the periodic work at its next tick.
 func (r *projectRelease) unmark() {
 	r.hook.Store(nil)
 	r.marked.Store(false)

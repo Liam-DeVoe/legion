@@ -15,11 +15,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// releaseStart and releaseBound are the start and the bound every release of this file records.
+// releaseStart and releaseBound are the start and the bound every release of this file records,
+// and releaseLength the bound a start of one is given, from releaseStart to releaseBound.
 var (
-	releaseStart = time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
-	releaseBound = releaseStart.Add(30 * time.Minute)
+	releaseStart  = time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
+	releaseBound  = releaseStart.Add(releaseLength)
+	releaseLength = 30 * time.Minute
 )
+
+// atReleaseStart is the clock a release of this file is started on: it reads releaseStart every
+// time, so each run of the start records the same start.
+func atReleaseStart() time.Time { return releaseStart }
 
 // seedProjectClaim writes one claim of project in state, suspended by by when it is suspended,
 // with a session of its own. The controller's claim is on no issue and no tree.
@@ -160,7 +166,7 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	otherRow := queueReleaseRow(t, st, "OTHER-1", "issue_release", `{"tree":"OTHER-1","generation":1,"treeGeneration":1}`)
 	markIdleRelease(t, st, "other", "OTHER-1", releaseKindUnowned, otherRow, otherRow)
 
-	release, takenOver, stop, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	release, takenOver, stop, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 	if err != nil {
 		t.Fatalf("StartProjectRelease: %v", err)
 	}
@@ -233,19 +239,22 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	})
 }
 
-// A release's start refuses a release with no project and one bound before it starts, and writes
-// nothing for either.
+// A release's start refuses a release with no project, one with no clock to read its start from
+// and one bound before it starts, and writes nothing for any of them.
 func TestStartProjectReleaseRefusesAReleaseItCouldNotCarryOut(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
-	if _, _, _, err := st.StartProjectRelease(ctx, "", releaseStart, releaseBound); err == nil {
+	if _, _, _, err := st.StartProjectRelease(ctx, "", atReleaseStart, releaseLength); err == nil {
 		t.Fatal("a release with no project was recorded")
 	}
-	if _, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseStart.Add(-time.Second)); err == nil {
+	if _, _, _, err := st.StartProjectRelease(ctx, "legion", nil, releaseLength); err == nil {
+		t.Fatal("a release with no clock was recorded")
+	}
+	if _, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, -time.Second); err == nil {
 		t.Fatal("a release bound before its start was recorded")
 	}
 	if _, found, err := st.ReadProjectRelease(ctx, "legion"); err != nil || found {
-		t.Fatalf("ReadProjectRelease after two refusals = %t, %v; want no release", found, err)
+		t.Fatalf("ReadProjectRelease after three refusals = %t, %v; want no release", found, err)
 	}
 }
 
@@ -279,7 +288,7 @@ func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t 
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	release, takenOver, stop, err := faulted.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	release, takenOver, stop, err := faulted.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 	testdb.Met(t, fired)
 	if err != nil {
 		t.Fatalf("the start whose commit landed and whose reply was lost = %v, want nil", err)
@@ -302,6 +311,60 @@ func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t 
 	}
 }
 
+// A release's start whose first run did not commit runs again (transactUntilCommitted), and each
+// run reads its start from the clock again: the record holds the start the run that committed
+// read, and the whole bound counted from it, so a run that did not commit takes nothing of the time
+// the asked roles have to push their work. Here the first run's commit never reaches the server,
+// which rolls it back, and the clock has moved on a minute when the second run reads it. The
+// negative control is a start read once before the first run: the record then holds the first
+// run's start, a minute before the run that committed.
+func TestAProjectReleaseStartRunAgainCountsItsBoundFromTheRunThatCommitted(t *testing.T) {
+	st := migratedStore(t)
+	proxied, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
+	faulted, err := Open(context.Background(), proxied)
+	if err != nil {
+		t.Fatalf("open the store through the fault proxy: %v", err)
+	}
+	t.Cleanup(faulted.Close)
+
+	// The clock moves on a minute at each read, so the start a run reads tells which run it was.
+	var reads []time.Time
+	clock := func() time.Time {
+		at := releaseStart.Add(time.Duration(len(reads)) * time.Minute)
+		reads = append(reads, at)
+		return at
+	}
+	fired := fault.Cut("insert into project_releases", testdb.CutBeforeCommit)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	release, _, _, err := faulted.StartProjectRelease(ctx, "legion", clock, releaseLength)
+	testdb.Met(t, fired)
+	if err != nil {
+		t.Fatalf("the start whose first run's commit never reached the server = %v, want nil", err)
+	}
+	read, found, err := st.ReadProjectRelease(context.Background(), "legion")
+	if err != nil || !found || read.ID != release.ID {
+		t.Fatalf("the project's newest release = %+v, %t, %v; want the release %d the start answered", read, found, err, release.ID)
+	}
+	committed := releaseStart.Add(time.Minute)
+	for _, got := range []struct {
+		name    string
+		release ProjectRelease
+	}{{"the start's answer", release}, {"the record", read}} {
+		if !got.release.StartedAt.Equal(committed) {
+			t.Fatalf("%s started at %s, want %s, the start the run that committed read (the clock read %v)",
+				got.name, got.release.StartedAt, committed, reads)
+		}
+		if bound := got.release.BoundAt.Sub(got.release.StartedAt); bound != releaseLength {
+			t.Fatalf("%s is bound %s after its start, want the whole bound of %s", got.name, bound, releaseLength)
+		}
+	}
+	var records int
+	if err := st.Pool().QueryRow(context.Background(), `select count(*) from project_releases where project = 'legion'`).Scan(&records); err != nil || records != 1 {
+		t.Fatalf("the project holds %d release records (%v), want the one of the run that committed", records, err)
+	}
+}
+
 // A release's record grows as it acts, finishes once with its last result, and is ended by the
 // next boot of its project's daemon and by nothing else: the newest release of the project is
 // what a read answers, a write after the finish is refused, and a boot ends every release of its
@@ -312,15 +375,15 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 	if _, found, err := st.ReadProjectRelease(ctx, "legion"); err != nil || found {
 		t.Fatalf("ReadProjectRelease of a project that never released = %t, %v; want none", found, err)
 	}
-	earlier, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart.Add(-time.Hour), releaseBound.Add(-time.Hour))
+	earlier, _, _, err := st.StartProjectRelease(ctx, "legion", func() time.Time { return releaseStart.Add(-time.Hour) }, releaseLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, _, _, err := st.StartProjectRelease(ctx, "other", releaseStart, releaseBound)
+	other, _, _, err := st.StartProjectRelease(ctx, "other", atReleaseStart, releaseLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	release, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +479,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
 		}{
 			{"the read on the pool", func() error { return st.PauseRefusesProjectRelease(ctx, "legion") }},
 			{"the release's transaction", func() error {
-				_, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+				_, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 				return err
 			}},
 		} {
@@ -450,7 +513,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
 	if err := st.PauseRefusesProjectRelease(ctx, "legion"); err != nil {
 		t.Fatalf("the read once the last hold ended = %v, want no refusal", err)
 	}
-	release, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	release, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 	if err != nil || release.ID == 0 {
 		t.Fatalf("the release once the last hold ended = %+v, %v; want it recorded", release, err)
 	}
@@ -477,7 +540,7 @@ func TestAPauseIsRefusedWhileAProjectReleaseRuns(t *testing.T) {
 		t.Run(end.name, func(t *testing.T) {
 			st := migratedStore(t)
 			seedPauseClaims(t, st)
-			release, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+			release, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 			if err != nil {
 				t.Fatalf("record the release: %v", err)
 			}

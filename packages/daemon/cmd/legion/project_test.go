@@ -258,7 +258,7 @@ func TestPauseCommands(t *testing.T) {
 		ctx := context.Background()
 		reach := []string{"--operator-token-file", d.tokenFile}
 		started := d.clock.now().Add(-time.Minute)
-		release, _, _, err := d.store.StartProjectRelease(ctx, "legion", started, started.Add(30*time.Minute))
+		release, _, _, err := d.store.StartProjectRelease(ctx, "legion", func() time.Time { return started }, 30*time.Minute)
 		if err != nil {
 			t.Fatalf("record the release: %v", err)
 		}

@@ -429,7 +429,7 @@ func TestPauseRoutes(t *testing.T) {
 		implementer, _ := h.launch("LEGION-208", claim.RoleImplementer)
 		h.ready(implementer, "ses_implementer", 1)
 		started := pauseStartsAt.Add(-5 * time.Minute)
-		release, _, _, err := h.store.StartProjectRelease(h.ctx, testProject, started, started.Add(30*time.Minute))
+		release, _, _, err := h.store.StartProjectRelease(h.ctx, testProject, func() time.Time { return started }, 30*time.Minute)
 		if err != nil {
 			t.Fatalf("record the release: %v", err)
 		}

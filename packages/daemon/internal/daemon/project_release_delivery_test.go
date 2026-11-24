@@ -105,7 +105,7 @@ func (r *releaseDeliveryRig) recordEndedRelease(t *testing.T, endedAt time.Time,
 	t.Helper()
 	ctx := context.Background()
 	startedAt := endedAt.Add(-time.Hour)
-	release, _, _, err := r.st.StartProjectRelease(ctx, "legion", startedAt, startedAt.Add(30*time.Minute))
+	release, _, _, err := r.st.StartProjectRelease(ctx, "legion", func() time.Time { return startedAt }, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("record the project release: %v", err)
 	}

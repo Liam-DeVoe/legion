@@ -55,6 +55,22 @@ const (
 	projectReleaseListPause = 10 * time.Second
 )
 
+// projectReleaseStartDivisor and projectReleaseStartFloor are how long a release's start tries to
+// record the release (projectReleaseStartBound): the bound divided by projectReleaseStartDivisor,
+// a tenth of it, and never less than projectReleaseStartFloor, which leaves the start of a short
+// bound time for the store to run its write again after its first wait of a second.
+const (
+	projectReleaseStartDivisor = 10
+	projectReleaseStartFloor   = 2 * time.Second
+)
+
+// projectReleaseStartBound is how long the start of a release of bound tries to record it before
+// it clears the mark and answers the store's error (Start): a tenth of bound, and at least
+// projectReleaseStartFloor.
+func projectReleaseStartBound(bound time.Duration) time.Duration {
+	return max(bound/projectReleaseStartDivisor, projectReleaseStartFloor)
+}
+
 // releaseUnknownKind is why a Sandbox whose labels name none of the kinds a release takes is
 // left, by the release and by its dry run alike.
 const releaseUnknownKind = "its labels name no kind of Sandbox the release deletes"
@@ -100,7 +116,7 @@ const projectReleaseErrorInFull = "project release: an error in full; the result
 // request merged, which the read of the issue's workspace carries to the shim (unpushedRead).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
-	StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
+	StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
 	RecordProjectRelease(ctx context.Context, id int64, result json.RawMessage) error
 	FinishProjectRelease(ctx context.Context, id int64, result json.RawMessage, at time.Time) error
 	ReadProjectRelease(ctx context.Context, project string) (store.ProjectRelease, bool, error)
@@ -333,8 +349,20 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	if !r.mark.mark() {
 		return api.ProjectReleaseResponse{}, false, errors.New("the project release's mark is already held, with no release of this process recorded")
 	}
-	startedAt := r.now().UTC()
-	release, takenOver, stop, err := r.store.StartProjectRelease(ctx, r.project, startedAt, startedAt.Add(bound))
+	// The store runs the record's write again after each run that did not commit, until its
+	// context ends, and the request's context ends only when the command stops waiting, long after
+	// the bound. Each run counts the bound from its own start, but a run whose reply was lost keeps
+	// the start it wrote while the store asks whether it committed, and all that time the mark
+	// holds every start of the project with no release running. So the start records under a
+	// deadline of its own and answers after at most a tenth of the bound, and at least
+	// projectReleaseStartFloor (projectReleaseStartBound), rather than at the request's end, with
+	// at most store.CommitSettleBound more for a commit already sent: a record that commits by then
+	// leaves the asked roles most of the bound. An error clears the mark below (unmark), so the
+	// operator's next run gets a whole bound; a run whose outcome is still unknown at the deadline
+	// answers store.ErrCommitOutcomeUnknown, which unmark's doc follows.
+	recording, cancel := context.WithTimeout(ctx, projectReleaseStartBound(bound))
+	release, takenOver, stop, err := r.store.StartProjectRelease(recording, r.project, r.now, bound)
+	cancel()
 	if err != nil {
 		r.mark.unmark()
 		return api.ProjectReleaseResponse{}, false, err

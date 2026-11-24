@@ -94,8 +94,10 @@ type ProjectReleaseClaim struct {
 	State   supervise.ClaimState
 }
 
-// StartProjectRelease records a project release of project, started at startedAt and bound at
-// boundAt, in one transaction with the two things the release must read from that same moment.
+// StartProjectRelease records a project release of project, started when a run of its write reads
+// now and bound bound after that start, in one transaction with the two things the release must
+// read from that same moment. A release with no project, no clock or a negative bound is refused
+// before anything is written.
 //
 // It takes over every idle release of the project still in flight: each issue_releases mark of
 // the project is deleted, and the outbox rows of that release still queued — its save
@@ -123,23 +125,21 @@ type ProjectReleaseClaim struct {
 // release's record and is refused (ProjectReleasingError).
 //
 // It runs until one run commits (transactUntilCommitted), as a write whose caller must know its
-// outcome does (TakeWorkspaceBundleForRestore): the caller runs the release, and arms the
-// backstops of the releases taken over, only on this answer. Each run writes and reads everything
-// again, so what it answers is the committed run's. What it still answers ErrCommitOutcomeUnknown
-// for is a run whose outcome the store has not said when ctx ends, or when the pool closes first.
-// The caller then clears its mark and runs nothing, while the record may have committed. A record
-// that did is the project's newest and Runs with no release running it: a pause is refused
-// (ProjectReleasingError) until the operator's retry runs a release whose finish leaves the newest
-// record finished; an idle release is refused (errProjectReleaseRunning) until the next boot ends
-// the record (EndProjectReleasesAtBoot), as after any project release; and the claims the idle
-// releases it took over had stopped get no backstop.
-func (s *Store) StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (ProjectRelease, []TakenOverIdleRelease, []ProjectReleaseClaim, error) {
+// outcome does (TakeWorkspaceBundleForRestore). Each run writes and reads everything again, so
+// what it answers is the committed run's. Each run reads its start from now and counts the bound
+// from that start, so the record's start and bound are the committed run's, and a run that did
+// not commit takes nothing of the bound. It answers ErrCommitOutcomeUnknown when ctx ends, or the
+// pool closes, before the store says a run's outcome, and that run's record, which Runs, may then
+// stand.
+func (s *Store) StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (ProjectRelease, []TakenOverIdleRelease, []ProjectReleaseClaim, error) {
 	if project == "" {
 		return ProjectRelease{}, nil, nil, errors.New("a project release needs its project")
 	}
-	if startedAt.IsZero() || boundAt.Before(startedAt) {
-		return ProjectRelease{}, nil, nil, fmt.Errorf("a project release of %s needs a start and a bound no earlier than it, not %s and %s",
-			project, startedAt.Format(time.RFC3339), boundAt.Format(time.RFC3339))
+	if now == nil {
+		return ProjectRelease{}, nil, nil, fmt.Errorf("a project release of %s needs a clock to read its start from", project)
+	}
+	if bound < 0 {
+		return ProjectRelease{}, nil, nil, fmt.Errorf("a project release of %s needs a bound that is not negative, not %s", project, bound)
 	}
 	var (
 		release   ProjectRelease
@@ -154,9 +154,13 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		if err := releasePauseRefusal(ctx, tx, project); err != nil {
 			return err
 		}
+		// Read in each run, once its wait for the serializer is over, so neither that wait nor a
+		// run the store refused and ran again costs the release any of its bound, which counts
+		// from the run that commits.
+		startedAt := now().UTC()
 		var err error
 		release, err = scanProjectRelease(tx.QueryRow(ctx, `insert into project_releases (project, started_at, bound_at)
-			values ($1, $2, $3) returning `+projectReleaseColumns, project, startedAt, boundAt))
+			values ($1, $2, $3) returning `+projectReleaseColumns, project, startedAt, startedAt.Add(bound)))
 		if err != nil {
 			return fmt.Errorf("record the release: %w", err)
 		}

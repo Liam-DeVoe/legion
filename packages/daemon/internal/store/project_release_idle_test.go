@@ -49,10 +49,10 @@ func TestAnIdleReleaseIsRefusedWhileAProjectReleaseNoBootEndedRuns(t *testing.T)
 		return rows, marks
 	}
 
-	if _, _, _, err := st.StartProjectRelease(ctx, "other", releaseStart, releaseBound); err != nil {
+	if _, _, _, err := st.StartProjectRelease(ctx, "other", atReleaseStart, releaseLength); err != nil {
 		t.Fatalf("start another project's release: %v", err)
 	}
-	if _, _, _, err := st.StartProjectRelease(ctx, "legion", releaseStart, releaseBound); err != nil {
+	if _, _, _, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength); err != nil {
 		t.Fatalf("start the project release: %v", err)
 	}
 
