@@ -20,5 +20,5 @@
 
 delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-forward-lost' and split_part(issue, '-', 1) = '<PROJECT>';
-delete from outbox where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'covers' where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';

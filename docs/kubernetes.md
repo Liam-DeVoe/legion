@@ -2956,19 +2956,21 @@ A plan given or a step started since the first run shows there, and to finish or
 In a rollback past several releases, run this section's steps first, before the ways back of the older releases: the release that keys a phases row by its step, the release whose deployment defines roles, and the release whose owner's plan picks the steps, with the migrations its section runs before it (`20261117213545_plan_step_agent.up.sql`, `20261117201743_plan_roles.up.sql`).
 The stops need this release's `stop_task`, and the statement reads the plan rows that the last of those ways back drops.
 
-No migration of that earlier release deletes the `owner-step`, `merge-forward-lost` and `slot_credential` rows, nor a merge-forward row that carries `covers`, so the delete is the operator's.
+No migration of that earlier release deletes the `owner-step`, `merge-forward-lost` and `slot_credential` rows, nor takes `covers` off a merge-forward row, so these statements are the operator's.
 Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
 
 ```sql
 delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-forward-lost' and split_part(issue, '-', 1) = '<PROJECT>';
-delete from outbox where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'covers' where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 Each deleted `owner-step` row is a step or a retro of the owner that its owner is never told of.
 Each deleted `merge-forward-lost` row is an ask or a review that did not reach its agent, which the architect is never told of.
-Each deleted merge-forward row that carries `covers` is an ask or a review its agent is never told of: the earlier release asks again on its next confirmed conflict at that head only where its record holds no ask, and the record holds this one, so the message is lost.
+Each merge-forward row that carried `covers` stays without it, and the earlier release sends it as it sends an ask or a review of its own, to the claim the row names.
+So the ask or the review that the pull request's record says was asked is still sent: the merger does not wait for an approval nobody was asked for, and the merge forward is not left unasked at that head, which the earlier release asks again only where its record holds no ask.
+What the row loses is what `covers` added in place of the message it stood in for, which was never queued: the ask no longer tells its agent that it also works the step the issue stands at, to write nothing else in the workspace until the merge is pushed and then go on with that step at the head the merge leaves, and the review no longer tells its agent to go on with that step at the new head.
 Each deleted `slot_credential` row is a write the earlier release makes anyway: its refresh writes every slot for its claim's own role's App within a minute.
 
 ### Pinning a release that drops what a running pod still uses
