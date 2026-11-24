@@ -60,7 +60,7 @@ export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
 /**
  * Transcript entry recording a card held for a settled host (`UnwrittenFrames`): a stored card,
  * the `stored` hand-over of a `low` card, that waits for the session's store, held or handed and
- * not stored yet; or an inert card (a late BTW) held while the host is busy:
+ * not stored yet; or an inert card, such as a late BTW, held while the host is busy:
  * `{identity, content, dispatch_message_id?, deliver_as}`, the frame's identity, what the card is
  * handed as and how (`stored` or `inert`). The card's frame is answered `done` once this record
  * is written, so the stream keeps no copy of it. A card recorded here whose write the session's

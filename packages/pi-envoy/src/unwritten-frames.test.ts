@@ -28,6 +28,12 @@ const writtenCard = (details: Record<string, string>) => ({
   details,
 });
 
+/** The entry the host writes for a card that names `details`, as the branch holds it. */
+const storedEntry = (details: Record<string, string>) => ({
+  type: "custom_message",
+  ...writtenCard(details),
+});
+
 interface Handed {
   readonly content: unknown;
   readonly deliverAs: CardDelivery;
@@ -479,7 +485,7 @@ describe("an inert card", () => {
         data: storedCardRecord(card),
       })),
       // The host wrote the second card before the stop.
-      { type: "custom_message", ...writtenCard({ event_id: "event-2" }) },
+      storedEntry({ event_id: "event-2" }),
     ];
     const held = heldStoredCards(transcript);
     expect(held).toEqual([
@@ -558,12 +564,6 @@ describe("an inert card", () => {
 // waits, held or handed, its record in the transcript holds it across a restart, so its claim
 // settles once that record is written.
 describe("a stored card", () => {
-  /** The entry the host writes for a card that names `details`, as the branch holds it. */
-  const storedEntry = (details: Record<string, string>) => ({
-    type: "custom_message",
-    ...writtenCard(details),
-  });
-
   test("sent while the host is not settled is held and recorded, its claim settles, and the first settled check hands it", async () => {
     const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
     const frame = dispatchFrame(1);

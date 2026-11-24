@@ -10,7 +10,7 @@ import { sessionDirectory, writeAtomically } from "./dispatch-session-directory"
 import { messageFor } from "./errors";
 import { jsonLineRecord } from "./json-line-record";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
-import { inFront, type NamedWords, TextInFront, wordsBlocks } from "./words-block";
+import { type NamedWords, TextInFront, wordsBlocks } from "./words-block";
 
 /**
  * People's answers on every model request: what people wrote in the last 72
@@ -254,11 +254,11 @@ export interface RenderSessionAnswersOptions {
  * with `withoutCommand`). Items are
  * filtered by the 72-hour window at `now` first. Undefined when the window holds nothing.
  *
- * Each item's blocks take their tags again against all of the list in front of them (`inFront`):
- * the failure reason and every earlier item hold other authors' words, so no two blocks of the
- * list share a tag, and nothing ahead of a block opens or closes it. An item whose tags nothing
- * ahead holds is joined exactly as `renderSessionAnswerItem` gives it. Each draw scans the list
- * so far again, and the cap keeps that under 8,000 characters.
+ * Each item's blocks take their tags again against all of the list in front of them (`TextInFront`,
+ * as `inFront` would give them): the failure reason and every earlier item hold other authors'
+ * words, so no two blocks of the list share a tag, and nothing ahead of a block opens or closes it.
+ * An item whose tags nothing ahead holds is joined exactly as `renderSessionAnswerItem` gives it.
+ * The list is scanned for tags once, as it grows, and the first item that does not fit ends it.
  */
 export function renderSessionAnswers(
   items: readonly SessionAnswer[],
@@ -278,12 +278,15 @@ export function renderSessionAnswers(
       ? SESSION_ANSWERS_MARKER
       : `${SESSION_ANSWERS_MARKER}\nAs read at ${options.cached.readAt}; this read failed: ${failureSentence(options.cached.reason)}`;
   const namesCommand = options.withoutCommand !== true;
+  const list = new TextInFront(header);
   let text = header;
   let shown = 0;
   for (const item of inWindow) {
-    const next = inFront([text], renderSessionAnswerItem(item));
+    list.card(renderSessionAnswerItem(item));
+    const next = list.text();
     const after = count - shown - 1;
     const needed = next.length + (after === 0 ? 0 : 2 + leftOutLine(after, namesCommand).length);
+    // The item that does not fit is in `list` now, but the loop ends here and reads `list` no more.
     if (needed >= SESSION_ANSWERS_MAX_CHARS) break;
     text = next;
     shown += 1;

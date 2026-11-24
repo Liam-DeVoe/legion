@@ -1165,10 +1165,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
     // The held cards the transcript records as waiting and shows no write of, which a restart or
     // a session change cut short, are held again, each to be handed as its record says: a stored
-    // card at the first settled check, an inert card (a late BTW) at the first settled heartbeat.
-    // Their frames were answered `done` once they were recorded, and a copy the relay sends again
-    // is that held card (`UnwrittenFrames.sendCard`). This comes after the release above, so no
-    // card of the session left stands under a frame's keys.
+    // card at the first settled check, an inert card, such as a late BTW, at the first settled
+    // heartbeat. Their frames were answered `done` once they were recorded, and a copy the relay
+    // sends again is that held card (`UnwrittenFrames.sendCard`). This comes after the release
+    // above, so no card of the session left stands under a frame's keys.
     unwritten.requeueStored(heldStoredCards(entries));
     if (unwritten.waitsOnStored()) checkStoredCards();
   };
