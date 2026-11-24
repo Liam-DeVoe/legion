@@ -4,7 +4,7 @@ import type { MyReplyRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { InboxShow } from "../refs/routes";
-import { questionLine } from "./question-line";
+import { useThreadLine } from "./ThreadTitle";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";
 
 /** What a thread row's Dismiss does, as the Inbox hands it to the three surfaces that draw one:
@@ -49,6 +49,7 @@ export function DismissControl({
   thread: MyReplyRow;
 }): ReactNode {
   const dismiss = useContext(RowDismissContext);
+  const line = useThreadLine(thread);
   if (dismiss === undefined) return null;
   const named = dismissThreadRow(thread);
   const restoring = dismiss.show === "dismissed";
@@ -56,7 +57,7 @@ export function DismissControl({
   const live = dismiss.pending.has(named.id);
   return (
     <button
-      aria-label={`${label}: ${questionLine(thread.subject)}`}
+      aria-label={`${label}: ${line}`}
       className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
         shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
       }`}

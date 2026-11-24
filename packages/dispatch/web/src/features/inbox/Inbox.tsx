@@ -147,7 +147,7 @@ import {
 } from "./sections";
 import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
-import { ThreadTitle } from "./ThreadTitle";
+import { ThreadTitle, useThreadLine } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
@@ -597,6 +597,7 @@ function ThreadShortRow({
   thread,
 }: InboxRowProps & ShortRowProps & { thread: MyReplyRow }): ReactNode {
   const reference = threadReferenceRoute(thread);
+  const line = useThreadLine(thread);
   // The column draws an ask's thread with the ask's card, whose reply the Inbox holds by ask
   // (`AskReplyWritesContext`): it can be out or failed while the column shows another row. The
   // row then says it is out, or why it failed; the Retry is the card's, once the column shows the
@@ -605,14 +606,7 @@ function ThreadShortRow({
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
-      }
+      check={<MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -729,6 +723,7 @@ function ThreadCardRow({
   section,
   thread,
 }: InboxRowProps & { thread: MyReplyRow }): ReactNode {
+  const line = useThreadLine(thread);
   return (
     <InboxRowShell
       group={groupKey}
@@ -740,12 +735,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
+        <MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>
