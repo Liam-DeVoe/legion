@@ -1256,18 +1256,23 @@ test.skipIf(skip)(
 );
 
 // One command runs for a session at a time: a second is answered naming the first rather than
-// queued behind it.
+// queued behind it. The first runs until the case releases it, on a session whose limit is the
+// default two minutes, so it is still running when the second is taken however long that takes.
+// On the shell session's 2 s limit the first `!sleep 600` could end before the second was taken,
+// and the second then ran; the limit's own answer is the row above's.
 test.skipIf(skip)(
   "a second `!` sent while one runs is answered naming the command still running",
   async () => {
-    const session = await shellSession();
-    const first = await session.send("!sleep 600");
+    const session = await startSession();
+    const command = "!while [ ! -f released ]; do sleep 0.05; done; printf released";
+    const first = await session.send(command);
     const second = await session.send("!printf hi");
     expect(await session.reply(second, "the reply to the second command")).toBe(
-      "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
+      `!printf hi\n\nThe command was not run: this session is still running ${command}.`
     );
-    expect(await session.reply(first, "the reply to the command still running")).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+    await Bun.write(path.join(session.workspace, "released"), "");
+    expect(await session.reply(first, "the reply to the first command once released")).toBe(
+      `${command}\n\n\`\`\`\nreleased\n\`\`\``
     );
   },
   120_000

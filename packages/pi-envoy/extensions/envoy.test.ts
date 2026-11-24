@@ -106,7 +106,9 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -15621,34 +15623,76 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({ body: answer });
       }, 20_000);
 
+      // The limit is the module's own timer, so the row holds it on Bun's fake clock from before
+      // the message is pushed, and moves the clock to it only once the command has printed and
+      // then written its mark; the message, Dispatch's answers and the command itself still run on
+      // the real event loop (`@legion/test-fixtures/fake-clock`). On the real clock a 1,000 ms
+      // limit decided this row: a shell that starts later than that is stopped before it has
+      // printed anything. The one wait's bound is the row's deadline, read before the clock is held.
       test("stops a command past its limit and says when, keeping what it printed", async () => {
-        const { agent, delivered, replied, replies } = await bootShellSession(
-          "shell-command-stopped",
-          { accept: () => ({ accepted: true, body: "!printf early; sleep 600" }), limitMs: 1_000 }
-        );
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-        await delivered(1);
-        await replied(1);
+        const command = "!printf early; : > printed; sleep 600";
+        const { agent, replies, work } = await bootShellSession("shell-command-stopped", {
+          accept: () => ({ accepted: true, body: command }),
+          limitMs: 1_000,
+        });
+        const boundMs = Math.floor(timeLeft());
+        let limited = false;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
+          await turnsUntil(() => replies.length > 0, "the reply to the command", {
+            boundMs,
+            state: () => (limited ? "its limit had passed" : "it had written no mark"),
+            each: () => {
+              if (limited || !existsSync(join(work, "printed"))) return;
+              limited = true;
+              jest.advanceTimersByTime(1_000);
+            },
+          });
+        } finally {
+          // A wait that failed leaves the command running: its held limit ends it.
+          if (replies.length === 0) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+          body: `${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
         });
-      }, 20_000);
+      });
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
-      // second message is taken while the first command still runs.
+      // second message is taken while the first command still runs. The first command's limit is
+      // held on Bun's fake clock until the second has been answered, so the first is still running
+      // then however late the second is taken; the clock then moves to the limit, and the first is
+      // answered as stopped. On the real clock a 1,000 ms limit could end the first command before
+      // the second was taken.
       test("answers a second command naming the one still running", async () => {
-        const { agent, replied, replies } = await bootShellSession("shell-command-busy", {
+        const { agent, replies } = await bootShellSession("shell-command-busy", {
           accept: (count) => ({ accepted: true, body: count === 1 ? "!sleep 600" : "!printf hi" }),
           limitMs: 1_000,
         });
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
-        agent.push(
-          directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
-        );
-        await replied(2);
+        const boundMs = Math.floor(timeLeft());
+        let limited = false;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
+          agent.push(
+            directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
+          );
+          await turnsUntil(() => replies.length >= 2, "the replies to both commands", {
+            boundMs,
+            state: () => (limited ? "the first's limit had passed" : "the second had no reply"),
+            each: () => {
+              if (limited || !replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))) return;
+              limited = true;
+              jest.advanceTimersByTime(1_000);
+            },
+          });
+        } finally {
+          // A wait that failed leaves the first command running: its held limit ends it.
+          if (replies.length < 2) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
           body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
@@ -15658,7 +15702,7 @@ console.log(JSON.stringify(args));
             body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
-      }, 20_000);
+      });
 
       test("cuts output past the bound and says so", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession("shell-command-cut", {
