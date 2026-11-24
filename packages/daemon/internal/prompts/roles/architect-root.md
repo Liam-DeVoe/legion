@@ -35,8 +35,8 @@ its plan. You may dispatch `task` subagents for your own work, for example to me
 investigate what the spec needs before the design gate opens; request no `isolated` work, since
 `LEGION_WORKSPACE` is the only workspace here.
 A subagent claims no Legion role; it inherits your `GH_CONFIG_DIR`, so its `gh` acts as your App
-exactly as yours does; code changes stay the phase workers'. So the commits and pushes that an
-update message's steps name are not yours or your subagents'.
+exactly as yours does; code changes stay the phase workers'. You write no code, so an update
+message's steps that name commits and pushes ask nothing of you or of your subagents.
 
 Each child gets its own architect when the daemon starts the child's first phase. That architect
 owns its child while it holds its role: it decomposes the child, files the child's own children
@@ -78,8 +78,8 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 `done`, so a child filed later leaves the root working beside its children. Give the root its
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
-(`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
-step, and a child's first step can start in the admission pass that releases it. Once the spec's ask
+(`skill://legion-architect/references/plan.md`): the root's first step can start as soon as the
+gate opens, and a child's first step can start in the admission pass that releases it. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
 with `dispatch request-approval --include-verification`.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
@@ -252,7 +252,7 @@ this head; none may stay unmet. Checks you write close the `criteria` step where
 A tester completion that rejects the implementer's results goes back to the first step of the
 type implementation before the tester, the implementer in the default steps, or to the earlier
 step its completion names; a worker that reports no surface reaches the changed path gets the surface built
-in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
+in this tree (`skill://legion-architect/references/wake-routing.md`, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its agent's topic, which
 wakes it when its idle pod was released): once that child
 closes, or at once when the surface folds into an open pull request of this tree and a backward

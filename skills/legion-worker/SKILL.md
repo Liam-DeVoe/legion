@@ -77,7 +77,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  Later phases push to that branch and edit that pull request.
+  A later phase that pushes uses that branch, and a later phase that edits a pull request edits that one.
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.

@@ -43,7 +43,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
 6. A root: file every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
-   the gate's opening starts the root's own first phase, and a later child runs beside it.
+   a child open when the gate opens holds the root's own first phase, and a child filed later runs beside that phase.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
   one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
@@ -79,7 +79,8 @@ A parent's own first phase does not start while Dispatch shows an open child und
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none.
+  The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 

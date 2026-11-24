@@ -18,14 +18,14 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the controller.
 
-- `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
+- `ISSUE_NOT_OWNED`: the move is another architect's, so send it to the architect above you.
 
 - `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed.
   Release again once it has closed, unless it is the tree's root.
 
 ## Creating children
 
-1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
+1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read no other spec.
    Cite no item number of another document and copy no text that does not apply to the child.
 
 2. Red-team the list with a fresh `task(agent="oracle")`, and `wait` for its verdict.

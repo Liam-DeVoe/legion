@@ -41,14 +41,16 @@ The table lists Legion's steps in the order of the default steps:
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required: it also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it, the implementer or a role of this deployment of that type where one stands before the implementer. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). A step of a role of this deployment runs them only where its prompt file asks it to. |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
+A step of a role of this deployment runs the checks only where its prompt file asks it to.
+
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds.
-Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name (`absent`).
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of four kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, no run answers its name (`absent`), or its `run` is a whole test suite.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 
@@ -64,7 +66,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 ## When to give it
 
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+- **A root:** before `register_gate`, because the root's first step can start as soon as the gate opens.
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
