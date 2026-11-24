@@ -494,6 +494,10 @@
           "status": "unregistered"
         }
       ],
+      "slot": {
+        "index": 1,
+        "admittedAt": "2026-09-21T19:05:26Z"
+      },
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
@@ -675,6 +679,10 @@
           "status": "approved"
         }
       ],
+      "slot": {
+        "index": 3,
+        "admittedAt": "2026-09-22T08:14:52Z"
+      },
       "mergeWait": {
         "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
         "headUpdatedAt": "2026-09-22T08:58:40Z",
@@ -734,6 +742,10 @@
           "status": "approved"
         }
       ],
+      "slot": {
+        "index": 4,
+        "admittedAt": "2026-09-19T10:27:44Z"
+      },
       "mergeWait": {
         "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
         "mergeState": "blocked",
@@ -760,7 +772,11 @@
       "tree": "LEGION-240",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "slot": {
+        "index": 5,
+        "admittedAt": "2026-09-22T08:36:05Z"
+      }
     },
     "LEGION-241": {
       "key": "LEGION-241",
@@ -782,6 +798,10 @@
           "pass": 0,
           "rounds": 0
         }
+      },
+      "slot": {
+        "index": 6,
+        "admittedAt": "2026-09-22T08:39:47Z"
       }
     }
   },

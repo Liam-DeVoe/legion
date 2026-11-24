@@ -316,6 +316,9 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
+			// The state lists `active` by slot index (record.Store.Slots), so each issue's `slot`
+			// below is its place in it, 0 to 6: the lowest index free at the pass that took it
+			// (admit's nextSlotIndex), at a moment before anything its own record says it did since.
 			Cap:    7,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// The line is two long and carries one member of each of its two parts, in the order
@@ -603,6 +606,10 @@ func populatedState(t *testing.T) State {
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				Slot: &SlotView{
+					Index:      1,
+					AdmittedAt: time.Date(2026, 9, 21, 19, 5, 26, 0, time.UTC),
+				},
 				// Its implementer failed while implementing and nothing will wake that claim, so
 				// the issue's one rendered answer is the stopped claim rather than a queue
 				// (`why`, api.WhyClaimStopped).
@@ -768,6 +775,10 @@ func populatedState(t *testing.T) State {
 				DefaultBranch:    "main",
 				Workers:          map[claim.Role]PhaseView{},
 				StartWaitsForPod: []string{"checker"},
+				Slot: &SlotView{
+					Index:      5,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 36, 5, 0, time.UTC),
+				},
 			},
 			"LEGION-241": {
 				Key:           "LEGION-241",
@@ -781,6 +792,10 @@ func populatedState(t *testing.T) State {
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
 					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
+				},
+				Slot: &SlotView{
+					Index:      6,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 39, 47, 0, time.UTC),
 				},
 			},
 			"LEGION-214": {
@@ -903,6 +918,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &reviewApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      3,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 14, 52, 0, time.UTC),
+				},
 			},
 			"LEGION-219": {
 				Key:           "LEGION-219",
@@ -957,6 +976,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      4,
+					AdmittedAt: time.Date(2026, 9, 19, 10, 27, 44, 0, time.UTC),
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -1218,10 +1241,15 @@ func TestStateGolden(t *testing.T) {
 // The populated state is written by hand, as a state the daemon serves, so its admission block
 // holds to the rules the daemon's own pass builds that block by. An issue that holds a slot or
 // waits in the line stands in a live tree, so its tree is one `trees` names (record.LiveRoots: a
-// root at work has its lifecycle open, and a root in the line is queued). And every issue the
+// root at work has its lifecycle open, and a root in the line is queued). Every issue the
 // state records that has not finished stands in `active`, `waiting` or `held`, since the held
-// list is every candidate that stands in neither of the other two (record.HeldList). A golden
-// that breaks either rule shows every reader of state.json a state the daemon never serves.
+// list is every candidate that stands in neither of the other two (record.HeldList). And
+// `active` and each issue's `slot` are read from the same slot rows (internal/projection's
+// slotViews), in the order of their index, which the slots table keeps unique and never negative
+// (record.Store.Slots): so an issue carries a slot view exactly when `active` names it, and
+// `active` lists its issues by that index, each a different one, each slot with the moment the
+// pass took it (admit's PutSlot of the pass's now). A golden that breaks any of these rules
+// shows every reader of state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1249,6 +1277,31 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	for key, issue := range state.Issues {
 		if issue.Phase != phase.Done && !named[key] {
 			t.Errorf("%s stands at %s, and the admission names it in none of `active`, `waiting` and `held`", key, issue.Phase)
+		}
+	}
+	active := map[string]bool{}
+	previous, previousKey := -1, ""
+	for _, key := range admission.Active {
+		active[key] = true
+		issue, recorded := state.Issues[key]
+		if !recorded {
+			continue
+		}
+		if issue.Slot == nil {
+			t.Errorf("%s stands in `active`, and its issue carries no `slot`", key)
+			continue
+		}
+		if issue.Slot.AdmittedAt.IsZero() {
+			t.Errorf("%s holds slot %d, and its `slot` names no moment it took it", key, issue.Slot.Index)
+		}
+		if issue.Slot.Index <= previous {
+			t.Errorf("%s holds slot %d after %s at slot %d in `active`, which lists the slots by their index, each a different one from 0", key, issue.Slot.Index, previousKey, previous)
+		}
+		previous, previousKey = issue.Slot.Index, key
+	}
+	for key, issue := range state.Issues {
+		if issue.Slot != nil && !active[key] {
+			t.Errorf("%s carries slot %d, and `active` does not name it", key, issue.Slot.Index)
 		}
 	}
 }
