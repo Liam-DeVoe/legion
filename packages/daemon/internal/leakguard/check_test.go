@@ -210,10 +210,7 @@ func TestThePrivateCopyIsMadeUnderTheRolesOwnDirectory(t *testing.T) {
 // has its mode exactly, whatever the umask took off the create's: under a umask that takes the
 // owner's read off, the launcher is still 0500, so it runs, and each file it reads 0400.
 func TestACopyFileIsWrittenOnlyWhereNothingIsAndOfItsModeExactly(t *testing.T) {
-	held := heldCheck{files: map[string][]byte{}}
-	for _, name := range ManifestFiles {
-		held.files[name] = []byte("the copy of " + name + "\n")
-	}
+	held := aHeldCheck()
 	const kept = "a file outside the copy\n"
 	for _, tc := range []struct {
 		name  string
@@ -232,9 +229,10 @@ func TestACopyFileIsWrittenOnlyWhereNothingIsAndOfItsModeExactly(t *testing.T) {
 				t.Fatal(err)
 			}
 			copies := filepath.Join(base, "leak-check-*")
-			err := beforeTheFirstWrite(t, copies, func(dir string) error {
-				return tc.plant(outside, filepath.Join(dir, ManifestFiles[0]))
-			}, func() error {
+			err := beforeTheFirstWrite(t, copies, func(dir string) (string, error) {
+				path := filepath.Join(dir, ManifestFiles[0])
+				return path, tc.plant(outside, path)
+			}, "the private copy beside "+tc.name, func() error {
 				_, err := held.privateCopy(base, base)
 				return err
 			})
@@ -274,6 +272,15 @@ func TestACopyFileIsWrittenOnlyWhereNothingIsAndOfItsModeExactly(t *testing.T) {
 			}
 		}
 	})
+}
+
+// aHeldCheck is a held check whose every manifest file holds the copy of its name.
+func aHeldCheck() heldCheck {
+	held := heldCheck{files: map[string][]byte{}}
+	for _, name := range ManifestFiles {
+		held.files[name] = []byte("the copy of " + name + "\n")
+	}
+	return held
 }
 
 // The visibility read is the one the shared check itself makes, argv for argv and variable for

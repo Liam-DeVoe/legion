@@ -36,10 +36,7 @@ func TestAServedCheckInstalledWhileTheProcessForksRuns(t *testing.T) {
 // role's guard copies the check and runs the copy, beside the goroutines of the shim or the tree
 // command that start other commands. Each run makes a copy, runs it and removes it.
 func TestAPrivateCopyMadeWhileTheProcessForksRuns(t *testing.T) {
-	held := heldCheck{files: map[string][]byte{}}
-	for _, name := range ManifestFiles {
-		held.files[name] = []byte("the copy of " + name + "\n")
-	}
+	held := aHeldCheck()
 	held.files[checkName] = []byte("#!/bin/sh\nexit 0\n")
 	base := t.TempDir()
 	testexec.RunsBeside(t, 400, func(int) error {

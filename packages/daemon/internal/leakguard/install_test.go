@@ -870,9 +870,10 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			t.Run(tc.name+" at "+at.name, func(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "leak-check")
 				target := filepath.Join(t.TempDir(), "target")
-				err := beforeTheFirstWrite(t, filepath.Join(filepath.Dir(dir), ".leak-check-install-*"), func(staging string) error {
-					return tc.plant(filepath.Join(staging, at.path), target)
-				}, func() error {
+				err := beforeTheFirstWrite(t, filepath.Join(filepath.Dir(dir), ".leak-check-install-*"), func(staging string) (string, error) {
+					path := filepath.Join(staging, at.path)
+					return path, tc.plant(path, target)
+				}, "the install beside "+tc.name, func() error {
 					_, err := install(t, dir, theTag, body)
 					return err
 				})
@@ -891,36 +892,6 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			})
 		}
 	}
-}
-
-// beforeTheFirstWrite calls write, which makes a directory pattern matches and then writes into
-// it by programfile.Write, and calls plant with that directory before the first of those writes:
-// it holds syscall.ForkLock for writing, which Write takes for reading, from before write starts
-// until the directory is there and plant has returned. It answers what write answered, within the
-// test's bound (testwait.Receive), since a write that opened a planted fifo waits for a reader.
-// Such a write still holds ForkLock for reading, so no later row can take it: the table that
-// plants a fifo plants it last.
-func beforeTheFirstWrite(t *testing.T, pattern string, plant func(dir string) error, write func() error) error {
-	t.Helper()
-	planted := make(chan error, 1)
-	syscall.ForkLock.Lock()
-	go func() {
-		defer syscall.ForkLock.Unlock()
-		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-			if made, _ := filepath.Glob(pattern); len(made) == 1 {
-				planted <- plant(made[0])
-				return
-			}
-		}
-		planted <- errors.New("nothing matched " + pattern + " within 10s")
-	}()
-	done := make(chan error, 1)
-	go func() { done <- write() }()
-	err := testwait.Receive(t, "the write beside what was planted", done)
-	if plantErr := <-planted; plantErr != nil {
-		t.Fatalf("the plant: %v", plantErr)
-	}
-	return err
 }
 
 func remove(t *testing.T, path string) {
