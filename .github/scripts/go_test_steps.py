@@ -260,7 +260,7 @@ AUDITED_SCRIPTS = {
                 "./internal/testnats/hooktest/",
         },
         modules={"-C packages/daemon -jsonfile go-daemon-forced-order.json ./internal/testnats/": "packages/daemon"},
-        sha256="a8fd7da1174bfb1b3f4b7d9aad78b9e9fb1254bcf00c3b82ab19e07a21439636",
+        sha256="aa34e6801114f44fce6a7889e97fcac6e6febac68a5973fdd948cf30252522a1",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
