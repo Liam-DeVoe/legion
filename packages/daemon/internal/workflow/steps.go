@@ -459,6 +459,13 @@ func (e *Engine) readAgent(ctx context.Context, tx pgx.Tx, agent claim.Token) St
 // handoff names when its role is the role of from's phase. Its one caller names it for the step it
 // found the issue in (nameMoveEnd), so from runs a step, whose phase has a role, and a completion
 // of no role names no report.
+//
+// The step's end commit is the commit its end read. A review decision (an approval or a request
+// for changes) ends the step at the head that review read, the head its Legion footer names
+// (record.ReviewDecision.Head), whatever the pull request's head is then: beside a fix that pushed
+// Y, a review of X ends its step at X, and the round ends before the reviewer's completion names
+// any commit. Every other end takes the commit the completion reported, and where that names none
+// endRun reads the task's head.
 func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
@@ -468,7 +475,20 @@ func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff 
 	if handoff.Role == phase.RoleFor(from) {
 		end.Report, end.Commit = handoff.HandoffRecord, handoff.HandoffCommit
 	}
+	if reviewed := reviewedCommitOf(trigger, handoff); reviewed != "" {
+		end.Commit = reviewed
+	}
 	return end
+}
+
+// reviewedCommitOf is the commit a review decision that ends a step read: the head the decision on
+// handoff names, for a move on a review's approval or its request for changes; "" for every other
+// move and for a decision that names no head.
+func reviewedCommitOf(trigger TriggerKind, handoff record.PhaseRow) string {
+	if (trigger != TriggerReviewApproved && trigger != TriggerReviewRejected) || handoff.Decision == nil {
+		return ""
+	}
+	return handoff.Decision.Head
 }
 
 // StartStepRecord writes the start of the step issue stands in on the walk of its run
