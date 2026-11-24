@@ -29,6 +29,7 @@ var (
 	_ runtime.PodWorkspaceReader  = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader   = (*Runtime)(nil)
 	_ runtime.PodTakenReader      = (*Runtime)(nil)
+	_ runtime.ActReader           = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -904,6 +905,15 @@ func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
 		return !live || now != podUID, true
 	}
 	return false, true
+}
+
+// ReadAct satisfies runtime.ActReader as PodTaken answers.
+func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
+	state := runtime.ActNotMade
+	if taken, _ := r.PodTaken(issue, act.Target); taken {
+		state = runtime.ActMade
+	}
+	return decide(ctx, state)
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that

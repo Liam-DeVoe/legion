@@ -280,6 +280,53 @@ type PodTakenReader interface {
 	PodTaken(issue, podUID string) (taken, read bool)
 }
 
+// Takes is what a destructive act on an issue's pod takes, which says what shows the act made
+// (ActReader): the pod (TakesPod), or the kept volume the issue's Sandbox owns (TakesVolume).
+type Takes string
+
+const (
+	// TakesPod is an act that takes the pod: the suspension of the issue's Sandbox over it, which
+	// takes a disk that is the pod's own with it. Its target is the pod's uid.
+	TakesPod Takes = "pod"
+	// TakesVolume is an act that takes the kept volume the issue's Sandbox owns: the delete of that
+	// Sandbox, which takes the volume with it. Its target is the Sandbox's uid.
+	TakesVolume Takes = "volume"
+)
+
+// RecordedAct is a destructive act on an issue's pod that the daemon recorded before the runtime
+// made it (internal/daemon's finishReplacements): what it takes, and the uid of its target.
+type RecordedAct struct {
+	Takes  Takes
+	Target string
+}
+
+// ActState is what the runtime reads of a recorded act (ActReader).
+type ActState int
+
+const (
+	// ActUncertain is an act of which the runtime cannot say whether it was made: its record
+	// stands for a later read.
+	ActUncertain ActState = iota
+	// ActNotMade is an act that was not made, and that nothing is making now.
+	ActNotMade
+	// ActMade is an act that was made.
+	ActMade
+)
+
+// ActReader reads whether a recorded act on issue's pod was made (GPT-6.1 Sol's point 2 on #5285
+// at fa9deb04). It takes the pod's launch turn without waiting for it, so no act on the pod runs
+// while it reads, and answers ErrTurnBusy, calling nothing, where another holds the turn. Under the
+// turn it reads the target from the cluster's API, never from a store that may be stale, and hands
+// decide what that says (ActState); decide runs under the turn, and its error is the answer. A
+// read that fails is the answer too, and decide is not called.
+type ActReader interface {
+	ReadAct(ctx context.Context, issue string, act RecordedAct, decide func(context.Context, ActState) error) error
+}
+
+// ErrTurnBusy is ActReader asked while another holds the pod's launch turn: an act on the pod may
+// be under way, so nothing is decided of it.
+var ErrTurnBusy = errors.New("another holds the pod's launch turn")
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the

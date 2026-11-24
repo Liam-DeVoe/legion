@@ -18,6 +18,7 @@ import (
 var (
 	_ runtime.IssuePodReplacer = (*Runtime)(nil)
 	_ runtime.PodTakenReader   = (*Runtime)(nil)
+	_ runtime.ActReader        = (*Runtime)(nil)
 )
 
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
@@ -576,6 +577,18 @@ func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
 	}
 	pod := r.storedPod(name)
 	return !ownedBy(pod, u.GetUID()) || string(pod.UID) != podUID, true
+}
+
+// ReadAct satisfies runtime.ActReader as PodTaken answers, from the stores and without the pod's
+// launch turn.
+func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
+	state := runtime.ActUncertain
+	if taken, read := r.PodTaken(issue, act.Target); read && taken {
+		state = runtime.ActMade
+	} else if read {
+		state = runtime.ActNotMade
+	}
+	return decide(ctx, state)
 }
 
 // replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
