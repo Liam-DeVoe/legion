@@ -2,8 +2,9 @@ package daemon
 
 // podreplace.go is the record of each replacement of an issue pod that may take a disk (R7 of
 // dispatch://INFRA-3271; GPT-6.1 Sol's points 1 and 2 on #5285 at 0259f8af, which INFRA-3118's
-// architect ruled fixes inside R7). The daemon writes the record before the runtime acts, keyed by
-// the issue and the pod's uid (store's pod_replacements): an update round's replacement before the
+// architect ruled fixes inside R7). The daemon writes the record before the runtime acts, under an
+// identity of the act's own and never the pod's, with what the act takes and its target (store's
+// pod_replacements; Sol's points 3 and 4 at fa9deb04): an update round's replacement before the
 // call whose last word the runtime asks under the pod's launch turn (recordRoundReplacement,
 // recordedDue), one a launch makes as the round's own as the launch's reading of the round answers
 // it (roundPodEndsAtLaunch), and a launch's own replacement before its suspension
