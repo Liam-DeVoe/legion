@@ -468,11 +468,17 @@ func (t PlanTask) workMerged() bool {
 }
 
 // TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
-// task that will merge (Merging) and each task whose work merged (WorkMerged).
+// task that will merge (Merging), each task whose work merged (WorkMerged), and each task that a
+// leave of its issue wrote left at its merge. Such a task's issue was parked while its merge waited
+// for the issues beneath it or stood in a merge queue, and that merge can land, or have landed,
+// before a later leave sets the issue done. It is the one set of the merges of a run: the merge
+// pull requests of an issue (Store.MergePullRequests), its merge (Store.MergePullRequest) and the
+// one task that merges (OnlyTaskThatMerges) read it.
 func (p StoredPlan) TasksThatMerge() []string {
 	tasks := p.Merging()
 	for _, row := range p.Tasks {
-		if row.workMerged() && !slices.Contains(tasks, row.Task) {
+		leftAtMerge := row.State == TaskLeft && row.Place == TaskPlace{Kind: PlaceMerge}
+		if (row.workMerged() || leftAtMerge) && !slices.Contains(tasks, row.Task) {
 			tasks = append(tasks, row.Task)
 		}
 	}
