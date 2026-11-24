@@ -1237,20 +1237,6 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	return finished
 }
 
-// tellIssueOfRound writes body, a message round owes the issue, on the issue, and logs what came of
-// the write: the line failed at Error where the write failed, and the line foreign where nothing
-// was written because the issue is another project's (writeOnIssue). Its caller names its own
-// message in both lines (podWentWithoutItsRound).
-func (s *supervision) tellIssueOfRound(ctx context.Context, issue, round, body, failed, foreign string) {
-	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: body})
-	switch {
-	case err != nil:
-		s.log.Error(failed, "issue", issue, "round", round, "error", err)
-	case !written:
-		s.log.Info(foreign, "issue", issue, "round", round)
-	}
-}
-
 // workspaceRead is what the read of an issue's workspace before one of a round's replacements
 // answered (readPodWorkspace): the round it was made for, who makes the replacement (by,
 // roundReplacer), the role whose process made it ("" for the pod's launcher), the moment it began
@@ -2436,9 +2422,15 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 		s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	}
-	s.tellIssueOfRound(ctx, issue, round, podWentMessage(round, reasons, lost, kept),
-		"supervise: write on the issue that its pod went without its update round",
-		"supervise: nothing is written on the issue that its pod went without its update round: its issue is another project's, whose rows this daemon writes none of")
+	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost, kept)})
+	switch {
+	case err != nil:
+		s.log.Error("supervise: write on the issue that its pod went without its update round",
+			"issue", issue, "round", round, "error", err)
+	case !written:
+		s.log.Info("supervise: nothing is written on the issue that its pod went without its update round: its issue is another project's, whose rows this daemon writes none of",
+			"issue", issue, "round", round)
+	}
 	s.endPodUpdates(issue, group, round)
 }
 
