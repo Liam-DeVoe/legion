@@ -3277,7 +3277,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
           "skill-cuts: stopped: the budget is spent, so no new model call starts, and task need-1 has no capture; " +
           `the runs so far are saved under ${out}\n`,
       });
-      // Well within the 180 s the hint run's turn waits for a hint it is owed.
+      // Well within the 60 s the hint run's turn waits with no hint request or answer.
       expect(performance.now() - started).toBeLessThan(120_000);
       expect(existsSync(loadCapturePaths(out, "omp", "need-1").body)).toBe(false);
     },

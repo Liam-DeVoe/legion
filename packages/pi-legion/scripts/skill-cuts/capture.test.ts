@@ -1398,9 +1398,198 @@ export default function bootProbe(pi) {
         }
       ).catch((caught: unknown) => caught);
       expect(failed).toBeInstanceOf(BudgetSpent);
-      // Well within the 180 s the hint run's turn waits for a hint it is owed.
+      // Well within the 60 s the hint run's turn waits with no hint request or answer.
       expect(performance.now() - started).toBeLessThan(120_000);
       expect(existsSync(path.join(dir, "out-budget"))).toBe(false);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // The rows on the hint run's bounds. Each needs real time: the bounds are Oh My Pi's own, on
+  // the real binary (it gives a hint request up after 30 s and asks 4 at a time), which no fake
+  // clock reaches.
+  /** The skill a hint request's body names. */
+  const hintSkillOf = (body: MessagesBody) =>
+    /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
+
+  // Catches: a bound on the whole hint run (the 180 s the turn waited at 525af9d8, "Oh My Pi
+  // asked for no hint of skill <name> within 180000 ms"), which a profile of more hints than fit
+  // in it, every one of them answered in time, failed on every run with an empty cache.
+  test(
+    "a hint run longer than 180 s finishes: 32 hints, each answered after 25 s with Oh My Pi asking 4 at a time, are each stored and listed, the turn waiting while hint requests and answers keep coming",
+    async () => {
+      await captures();
+      const repos = path.join(dir, "repos");
+      const MANY_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+      const names = Array.from(
+        { length: 30 },
+        (_, at) => `chore-${String(at + 1).padStart(2, "0")}`
+      );
+      writeTree(
+        path.join(repos, "acme/skills", MANY_COMMIT),
+        Object.fromEntries(
+          names.map((name) => [
+            `skills/${name}/SKILL.md`,
+            `---\nname: ${name}\ndescription: Use when a task asks for the made-up ${name} of the fixture project.\n---\n\n# ${name}\n`,
+          ])
+        )
+      );
+      const base = f1Case("many-1");
+      const c: Case = {
+        ...base,
+        profile: {
+          ...base.profile,
+          skills: [
+            ...base.profile.skills,
+            ...names.map((name) => ({
+              repo: "acme/skills",
+              commit: MANY_COMMIT,
+              path: `skills/${name}`,
+              name,
+            })),
+          ],
+        },
+      };
+      const slowHints: HintWriter = async (body) => {
+        await Bun.sleep(25_000);
+        return {
+          text: `Use for the ${hintSkillOf(body)} work, slow stand-in hint.`,
+          model: body.model,
+        };
+      };
+      const started = performance.now();
+      const made = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-many"),
+          scratchDir: path.join(dir, "scratch"),
+          // A cache of its own, so every hint is owed and the hint run asks for each.
+          cacheDir: path.join(dir, "cache-many"),
+          source: localSource(repos),
+          models: path.join(dir, "models.yml"),
+          hints: slowHints,
+          session: SESSION,
+        }
+      );
+      // 8 rounds of 4 hints at 25 s each: more than the 180 s the whole hint run had.
+      expect(performance.now() - started).toBeGreaterThan(180_000);
+      expect(made.record.timings.hintRunMs).toBeGreaterThan(180_000);
+      const listed = Object.fromEntries(skillListing(made.body));
+      expect(Object.keys(listed).sort()).toEqual(["alpha", "beta", ...names]);
+      for (const [name, line] of Object.entries(listed)) {
+        expect(line).toBe(`Use for the ${name} work, slow stand-in hint.`);
+      }
+      expect(made.record.hints.every((hint) => hint.written)).toBe(true);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a hint answered after Oh My Pi gave its request up (30 s, the most a gateway call
+  // that is tried again can take) reported as Oh My Pi failing to store a hint it keeps, as
+  // 525af9d8 reported it ("a hint Oh My Pi keeps, and its database holds no row of it"), because
+  // the capture counted a hint as written once the recorder answered, not once Oh My Pi stored its
+  // row; and the hints Oh My Pi did store dropped with it.
+  test(
+    "a hint answered after Oh My Pi's 30 s fails the capture naming that limit and the answer's time, once the turn has waited for the row; the hint Oh My Pi did store is kept in the cache",
+    async () => {
+      await captures();
+      const lateHints: HintWriter = async (body) => {
+        const skill = hintSkillOf(body);
+        if (skill === "beta") await Bun.sleep(31_000);
+        return { text: `Use for the ${skill} work, late stand-in hint.`, model: body.model };
+      };
+      const c = f1Case("late-1");
+      const cacheDir = path.join(dir, "cache-late");
+      const failed = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-late"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir,
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints: lateHints,
+          // A shorter wait once hint requests and answers stop, yet longer than Oh My Pi's 30 s,
+          // so that the turn is still held when beta's answer comes.
+          hintIdleMs: 35_000,
+          session: SESSION,
+        }
+      ).catch((caught: unknown) => caught);
+      expect(failed).toBeInstanceOf(Error);
+      const message = (failed as Error).message;
+      expect(message).toContain(
+        'case late-1 arm old: Oh My Pi stored no hint of skill beta: the model wrote "Use for the beta work, late stand-in hint."'
+      );
+      expect(message).toMatch(
+        / 3\d{4} ms after Oh My Pi asked, past the 30000 ms Oh My Pi waits for a hint before it gives the request up/
+      );
+      // alpha's hint, which Oh My Pi stored, is kept, so a run made again asks for beta's alone.
+      const kept = readdirSync(path.join(cacheDir, "hints")).map((file) =>
+        JSON.parse(readFileSync(path.join(cacheDir, "hints", file), "utf8"))
+      );
+      expect(kept.map((hint) => [hint.name, hint.hint])).toEqual([
+        ["alpha", "Use for the alpha work, late stand-in hint."],
+      ]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a profile that installs one text twice, once as `<namespace>/<name>`, whose capture
+  // owed a hint of each copy, though Oh My Pi drops the copy whose text it admitted already and so
+  // asks one hint: the hint run waited for the second until its bound and failed on every run
+  // ("Oh My Pi asked for no hint of skill pi-envoy/plain-words within 180000 ms", 2026-11-24).
+  test(
+    "a profile that installs beta twice, once as pi-envoy/beta with the same text, lists beta once and owes one hint of it, as Oh My Pi asks",
+    async () => {
+      await captures();
+      const asked: string[] = [];
+      const twiceHints: HintWriter = async (body) => {
+        const skill = hintSkillOf(body);
+        asked.push(skill);
+        return { text: `Use for the ${skill} work, stand-in hint.`, model: body.model };
+      };
+      const base = f1Case("twice-1");
+      const c: Case = {
+        ...base,
+        profile: {
+          ...base.profile,
+          skills: [
+            ...base.profile.skills,
+            {
+              repo: "acme/skills",
+              commit: COMMIT,
+              path: "skills/beta",
+              name: "beta",
+              namespace: "pi-envoy",
+            },
+          ],
+        },
+      };
+      const made = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-twice"),
+          scratchDir: path.join(dir, "scratch"),
+          // A cache of its own, so every hint is owed and the hint run asks for each.
+          cacheDir: path.join(dir, "cache-twice"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints: twiceHints,
+          session: SESSION,
+        }
+      );
+      expect(asked.sort()).toEqual(["alpha", "beta"]);
+      expect(Object.fromEntries(skillListing(made.body))).toEqual({
+        alpha: "Use for the alpha work, stand-in hint.",
+        beta: "Use for the beta work, stand-in hint.",
+      });
+      expect(made.record.hints.map((hint) => hint.skill).sort()).toEqual(["alpha", "beta"]);
     },
     ROW_TIMEOUT_MS
   );

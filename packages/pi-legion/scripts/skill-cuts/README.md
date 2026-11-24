@@ -208,10 +208,22 @@ at most 100 characters; else its first sentence, when that sentence ends within 
 characters and has 40 or more; else those 99 characters cut before their last space when 40 or
 more come before it, or else whole, and followed by `…`. The runner asks no more for that text,
 because Oh My Pi asks that model no more either. The cache file and the capture record's `hints`
-say `kept: false`, give the
-reply, and say why. Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on,
-Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints run at the API's
-default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
+say `kept: false`, give the reply, and say why. The run that writes the missing hints (the hint
+run) holds Oh My Pi's turn until Oh My Pi has stored the row of each in its
+`skill-descriptions.db`, read as the turn waits, and ends the turn once it has. Oh My Pi asks for
+at most 4 hints at a time and gives a request up after 30 s, storing nothing of it and asking no
+more for it in that run, so the turn has no bound of its own as a whole: it waits as long as hint
+requests and answers keep coming, and ends once 60 s pass with neither. The hint run's Oh My Pi
+may take its time limit plus 30 s for each 4 hints owed. A hint Oh My Pi stored no row of fails
+the capture, naming why from what the recorder saw (no request came, its answer had not come, or
+its answer came after Oh My Pi's 30 s, as a gateway call tried again can), after every hint Oh
+My Pi did store is cached, so a run made again asks for the others alone. A profile that
+installs one text twice, once as `<namespace>/<name>`, lists it once: Oh My Pi admits the bare
+copies first, then each namespace's, and drops a copy whose body and frontmatter are those of a
+copy of its name it admitted before, so the capture lists that copy nowhere and owes it no hint.
+Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on, Sonnet, Fable and Mythos
+5 on or Haiku 5.5 on, which take none, so their hints run at the API's default of 1. `gateway.ts`
+sends each body to its API's route (the key as `x-api-key`, or as
 `authorization: Bearer` on the Responses route), tries a call again on a 429 or a 5xx, a failed
 connection, a timeout or a reply it cannot read (8 tries in all, 91 s of back-off), but never a
 stream refused on a content policy (the error's type, a Responses error's `code`, ends in `_policy`,
