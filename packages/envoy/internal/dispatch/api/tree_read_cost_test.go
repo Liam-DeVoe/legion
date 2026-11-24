@@ -1119,8 +1119,9 @@ func requireReadCostTreeIssueShape(t *testing.T, s *readCostServer, corpus *read
 	shape.hold(t, s.name, "asks on the tree issue", len(asks), readCostTreeAsks, true)
 }
 
-// readCostDocumentNode is one entry of the skeleton read's document_nodes: a document of the issue,
-// by its artifact id and its slug, and the blocks the blocks read lists for it.
+// readCostDocumentNode is one entry of the skeleton read's document_nodes: a document of the issue
+// whose blocks the skeleton read leaves out, by its artifact id and its slug, and the blocks the
+// blocks read lists for it.
 type readCostDocumentNode struct {
 	ArtifactID string `json:"artifact_id"`
 	Slug       string `json:"slug"`
@@ -1133,13 +1134,16 @@ type readCostDocumentNode struct {
 //
 // The skeleton read, which pull request #4180 builds, answers the typed blocks of the issue's role
 // documents and no block of its other documents, its newest 200 comments with comments_before null
-// where no older one remains, its asks, and document_nodes: an entry for each document, with the
-// blocks the blocks read lists for it. The read it replaces, this head's while the answer holds no
-// document_nodes, answers the role documents' typed blocks and every block of the other documents
-// (issueTreeBuilder.excluded). So on either read the typed blocks of each type are held, and one
-// page; the blocks of tree.md are held to every one on the older read and none on the skeleton
-// read; and its comments, its asks, comments_before and document_nodes are held on the skeleton
-// read alone, and printed on the older read.
+// where no older one remains, its asks, and document_nodes: an entry for each document whose
+// blocks it leaves out, with the blocks the blocks read lists for it. A role document's prose is
+// kept out of every query, so a role document gets no entry, and the one entry here is tree.md
+// (INFRA-1253's spec v213, R2, R8 and R16). The read it replaces, this head's while the answer
+// holds no document_nodes, answers the role documents' typed blocks and every block of the other
+// documents (issueTreeBuilder.excluded). So on either read the typed blocks of each type are held,
+// and one page; the blocks of tree.md are held to every one on the older read and none on the
+// skeleton read; and its comments, its asks, comments_before and document_nodes, the one entry
+// tree.md with its readCostTreeBlocks blocks, are held on the skeleton read alone, and printed on
+// the older read.
 func requireReadCostTreeReadShape(t *testing.T, s *readCostServer, corpus *readCostCorpus, shape *readCostShape) bool {
 	t.Helper()
 	var tree struct {
@@ -1167,14 +1171,12 @@ func requireReadCostTreeReadShape(t *testing.T, s *readCostServer, corpus *readC
 			asks++
 		}
 	}
-	documents := append(slices.Clone(roles), readCostRoleDocument{id: corpus.treeDocument, slug: "tree-md", name: "tree.md", blocks: readCostTreeBlocks})
-	var answeredTyped, wantTyped, wantDocuments []string
+	// treeSlug is tree.md's slug, by which, or by its artifact id, document_nodes names it.
+	const treeSlug = "tree-md"
+	var answeredTyped, wantTyped []string
 	for _, role := range roles {
 		answeredTyped = append(answeredTyped, fmt.Sprintf("%d %s", typed[role.typ], role.typ))
 		wantTyped = append(wantTyped, fmt.Sprintf("%d %s", role.blocks/2, role.typ))
-	}
-	for _, document := range documents {
-		wantDocuments = append(wantDocuments, fmt.Sprintf("%s %d", document.slug, document.blocks))
 	}
 	answeredDocuments := "absent"
 	if tree.DocumentNodes != nil {
@@ -1190,9 +1192,9 @@ func requireReadCostTreeReadShape(t *testing.T, s *readCostServer, corpus *readC
 	}
 	t.Logf("c-read-cost: %s's tree read of %s answers typed blocks of its role documents (%s), %d blocks of tree.md, %d comments, "+
 		"%d asks, comments_before %s and document_nodes %s; the skeleton read of INFRA-1253's spec v213 answers typed blocks (%s), "+
-		"no block of tree.md, %d comments, %d asks, comments_before null and document_nodes of %d entries (%s)", s.name, corpus.treeIssue,
+		"no block of tree.md, %d comments, %d asks, comments_before null and document_nodes of 1 entry (%s %d)", s.name, corpus.treeIssue,
 		strings.Join(answeredTyped, ", "), others, comments, asks, before, answeredDocuments, strings.Join(wantTyped, ", "),
-		readCostTreeComments, readCostTreeAsks, len(documents), strings.Join(wantDocuments, ", "))
+		readCostTreeComments, readCostTreeAsks, treeSlug, readCostTreeBlocks)
 	for _, role := range roles {
 		shape.hold(t, s.name, role.typ+" blocks of the "+role.name+" the tree read answers", typed[role.typ], role.blocks/2, true)
 	}
@@ -1209,16 +1211,14 @@ func requireReadCostTreeReadShape(t *testing.T, s *readCostServer, corpus *readC
 	if tree.CommentsBefore != nil {
 		shape.failed = append(shape.failed, fmt.Sprintf("the skeleton read answered comments_before %s, though no comment is older than its page", *tree.CommentsBefore))
 	}
-	shape.hold(t, s.name, "entries of the skeleton read's document_nodes", len(*tree.DocumentNodes), len(documents), true)
-	for _, document := range documents {
-		count := -1
-		for _, node := range *tree.DocumentNodes {
-			if node.ArtifactID == document.id || node.Slug == document.slug {
-				count = node.BlockCount
-			}
+	shape.hold(t, s.name, "entries of the skeleton read's document_nodes", len(*tree.DocumentNodes), 1, true)
+	count := -1
+	for _, node := range *tree.DocumentNodes {
+		if node.ArtifactID == corpus.treeDocument || node.Slug == treeSlug {
+			count = node.BlockCount
 		}
-		shape.hold(t, s.name, "block_count the skeleton read's document_nodes gives "+document.name, count, document.blocks, true)
 	}
+	shape.hold(t, s.name, "block_count the skeleton read's document_nodes gives tree.md", count, readCostTreeBlocks, true)
 	return true
 }
 
