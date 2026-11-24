@@ -372,7 +372,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 		tokens[role.role] = token
 		claims = append(claims, supervise.Claim{
 			Token: token, Project: owedProject, Tree: owedIssue, Issue: owedIssue, Role: role.role,
-			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion(),
 			Session: "ses_" + string(role.role), SessionFile: "/sessions/" + string(role.role) + ".jsonl",
 			Locator: podUpdateLocator(token, owedIssue, owedPod),
 		})
@@ -412,7 +412,7 @@ func (r *owedWriteRig) boot() {
 		Limits: supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second,
 			Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)

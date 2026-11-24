@@ -777,7 +777,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

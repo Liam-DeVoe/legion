@@ -445,7 +445,7 @@ func (r *pauseDaemonRig) running(issue string, role claim.Role, state supervise.
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: state, Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: podLocator(token, issue),
+		PluginContract: api.DaemonAPIVersion(), Locator: podLocator(token, issue),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -455,7 +455,7 @@ func (r *pauseDaemonRig) released(issue string, role claim.Role) supervise.Claim
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 }
 
 // unfinished is role's claim of issue as a daemon stopped mid-launch left it: launching, with no
@@ -464,7 +464,7 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateLaunching, Session: "ses-" + string(token),
-		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion,
+		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion(),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -772,7 +772,7 @@ func (r *pauseDaemonRig) controllerUp() *shim {
 	r.awaitState(token, supervise.StateShimConnected, "the controller's shim said hello")
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("register the controller = %d; body %s", status, body)

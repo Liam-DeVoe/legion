@@ -123,7 +123,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding

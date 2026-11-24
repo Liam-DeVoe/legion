@@ -275,7 +275,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 		// The mark the shaping writes on every state it serves (stateFor, ContractView). The
 		// source of a state answers none, so it is written here, where the walk reads the two
 		// numbers of the key and every record describes them.
-		Contract:  &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion},
+		Contract:  &ContractView{Daemon: DaemonAPIVersion(), Caller: DaemonAPIVersion()},
 		Admission: Admission{Cap: 1, Active: []string{"SHAPES-1"}, Trees: []string{"SHAPES-1", "SHAPES-2"}},
 		Issues: map[string]Issue{
 			"SHAPES-1": {
@@ -992,7 +992,7 @@ func (k callerKind) stated(contract int) int {
 // contract for the caller the header places, and a pod at the contract itself for the other.
 func (k callerKind) claims(contract int) []supervise.Claim {
 	if k.states {
-		return podClaims(DaemonAPIVersion)
+		return podClaims(DaemonAPIVersion())
 	}
 	return podClaims(contract)
 }
@@ -1076,7 +1076,7 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 // all: a client parses it on every answer that is not a success.
 func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	t.Helper()
-	return withoutUntypedSettings(carriedShapes(t, caller), typedSettings)
+	return withoutUntypedSettings(carriedShapes(t, caller), typedSettings())
 }
 
 // carriedShapes is servedShapes with every key path the bodies carry, the settings paths no
@@ -1098,10 +1098,10 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	// other caller's claims are its pod's, which record the contract itself (callerKind.claims).
 	var stated []http.Handler
 	if caller.states {
-		stated = stateHandlers(t, states, caller.claims(DaemonAPIVersion))
+		stated = stateHandlers(t, states, caller.claims(DaemonAPIVersion()))
 	}
 	served := map[shapeKey]answerShape{}
-	for _, contract := range SupportedContracts {
+	for _, contract := range SupportedContracts() {
 		if !caller.reaches(contract) {
 			// No pod reading places a caller here (callerKind.reaches), so no shape of this
 			// kind is read for this contract.
@@ -1125,7 +1125,7 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 			}
 			return restore, strip
 		}
-		for _, answer := range Answers {
+		for _, answer := range Answers() {
 			if answer.Since > contract {
 				continue
 			}
@@ -1143,7 +1143,7 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 			}
 			paths, carried := collectedShape(t,
 				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, placed),
-				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields, answer.ID))
+				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields(), answer.ID))
 			values := make(map[string][]string, len(carried))
 			for path, carriedHere := range carried {
 				values[path] = slices.Sorted(maps.Keys(carriedHere))
@@ -1326,12 +1326,12 @@ func recordsByKey(records []contractShape) map[shapeKey]contractShape {
 func updatedRecords(onFile, fresh []contractShape) []contractShape {
 	records := make([]contractShape, 0, len(onFile)+len(fresh))
 	for _, record := range onFile {
-		if record.Contract != DaemonAPIVersion {
+		if record.Contract != DaemonAPIVersion() {
 			records = append(records, record)
 		}
 	}
 	for _, record := range fresh {
-		if record.Contract == DaemonAPIVersion {
+		if record.Contract == DaemonAPIVersion() {
 			records = append(records, record)
 		}
 	}
@@ -1351,7 +1351,7 @@ func TestContractShapesFixture(t *testing.T) {
 		golden(t, contractShapesFixture, sortedShapeRecords(onFile))
 		return
 	}
-	fresh := shapeRecords(servedShapes(t, callerKinds[0]), EnumeratedFields)
+	fresh := shapeRecords(servedShapes(t, callerKinds[0]), EnumeratedFields())
 	if !written {
 		golden(t, contractShapesFixture, fresh)
 		return
@@ -1377,14 +1377,14 @@ func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	for _, caller := range callerKinds {
 		t.Run(caller.name, func(t *testing.T) {
 			served := servedShapes(t, caller)
-			for _, contract := range SupportedContracts {
+			for _, contract := range SupportedContracts() {
 				if !caller.reaches(contract) {
 					// servedShapes reads no shape for a contract no caller of this kind can
 					// be at (callerKind.reaches): every build from shapedAnswersContract on
 					// states its contract in the header.
 					continue
 				}
-				for _, answer := range Answers {
+				for _, answer := range Answers() {
 					if answer.Since > contract {
 						continue
 					}
@@ -1410,7 +1410,7 @@ func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 // contract in the header, so podContracts leaves its claims out, and the pod reading of such a
 // contract answers DaemonAPIVersion, which equals the contract only while it is the daemon's own.
 func TestTheTwoCallersAreServedTheSameContracts(t *testing.T) {
-	for _, contract := range SupportedContracts {
+	for _, contract := range SupportedContracts() {
 		statedRestore, statedStrip := callerKinds[0].contracts(t, contract, callerKinds[0].claims(contract))
 		if statedRestore != contract || statedStrip != contract {
 			t.Errorf("contract %d is served (%d, %d), want the contract itself on both sides: every contract of SupportedContracts is a shape this daemon describes",
@@ -1515,8 +1515,8 @@ func unshapedServingDown(kind string, id AnswerID) string {
 // reports, as one list a scratch change can be held to.
 func allShapeProblems(records map[shapeKey]contractShape, served map[shapeKey]answerShape) []string {
 	problems := []string{}
-	for _, contract := range SupportedContracts {
-		for _, answer := range Answers {
+	for _, contract := range SupportedContracts() {
+		for _, answer := range Answers() {
 			if answer.Since > contract {
 				continue
 			}
@@ -1553,12 +1553,12 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	}
 	noBody := map[AnswerID]bool{}
 	want := map[shapeKey]bool{}
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		noBody[answer.ID] = answer.NoBody
-		if answer.Since > DaemonAPIVersion {
-			t.Errorf("the %s answer arrived at %d, above this daemon's own contract %d", answer.ID, answer.Since, DaemonAPIVersion)
+		if answer.Since > DaemonAPIVersion() {
+			t.Errorf("the %s answer arrived at %d, above this daemon's own contract %d", answer.ID, answer.Since, DaemonAPIVersion())
 		}
-		for _, contract := range SupportedContracts {
+		for _, contract := range SupportedContracts() {
 			if answer.Since <= contract {
 				want[shapeKey{contract: contract, answer: answer.ID}] = true
 			}
@@ -1569,14 +1569,14 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// shape for. A value older than the field's own answer is no error — the record answer
 	// arrived at 193 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
-	for _, field := range EnumeratedFields {
-		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {
+	for _, field := range EnumeratedFields() {
+		if !slices.ContainsFunc(Answers(), func(answer Answer) bool { return answer.ID == field.Answer }) {
 			t.Errorf("answers.go's EnumeratedFields declares `%s` of the %s answer, which is no row of Answers", field.KeyPath, field.Answer)
 		}
 		for _, value := range field.Values {
-			if value.Since < ServingFloor || value.Since > DaemonAPIVersion {
+			if value.Since < ServingFloor || value.Since > DaemonAPIVersion() {
 				t.Errorf("answers.go's EnumeratedFields gives `%s` of `%s` the arrival %d, outside the floor %d and this daemon's own contract %d: a value older than the floor is recorded from the floor up, as an answer is",
-					value.Value, field.KeyPath, value.Since, ServingFloor, DaemonAPIVersion)
+					value.Value, field.KeyPath, value.Since, ServingFloor, DaemonAPIVersion())
 			}
 		}
 	}
@@ -1604,7 +1604,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 			t.Errorf("%s records the %s answer at contract %d with its key paths out of order",
 				contractShapesFixture, record.Answer, record.Contract)
 		}
-		wantDomains := domainsOf(EnumeratedFields, record.Answer, record.Contract)
+		wantDomains := domainsOf(EnumeratedFields(), record.Answer, record.Contract)
 		for path, domain := range record.Domains {
 			admitted, declared := wantDomains[path]
 			if !declared {
@@ -1643,22 +1643,22 @@ func TestEveryStateRecordHoldsTheSettingsKeysItsReaderTypesAndNoOther(t *testing
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
 	}
-	for _, setting := range typedSettings {
-		if setting.Since < ServingFloor || setting.Since > DaemonAPIVersion ||
-			(setting.Until != 0 && (setting.Until < setting.Since || setting.Until >= DaemonAPIVersion)) {
+	for _, setting := range typedSettings() {
+		if setting.Since < ServingFloor || setting.Since > DaemonAPIVersion() ||
+			(setting.Until != 0 && (setting.Until < setting.Since || setting.Until >= DaemonAPIVersion())) {
 			t.Errorf("answers.go's typedSettings types `%s` from %d to %d, outside the floor %d and this daemon's own contract %d, with an end below its start, or with an end at or above %d that no Until writes",
-				setting.Key, setting.Since, setting.Until, ServingFloor, DaemonAPIVersion, DaemonAPIVersion)
+				setting.Key, setting.Since, setting.Until, ServingFloor, DaemonAPIVersion(), DaemonAPIVersion())
 		}
 	}
 	records := loadContractShapes(t)
-	for _, contract := range SupportedContracts {
+	for _, contract := range SupportedContracts() {
 		record, recorded := records[shapeKey{contract: contract, answer: AnswerState}]
 		if !recorded {
 			t.Errorf("contract %d: the state has no record in %s", contract, contractShapesFixture)
 			continue
 		}
 		want := map[string]bool{}
-		for _, setting := range typedSettings {
+		for _, setting := range typedSettings() {
 			if typedAt(setting, contract) {
 				want[settingsKeyPathPrefix+setting.Key] = true
 			}
@@ -1700,7 +1700,7 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
 	}
 	records := loadContractShapes(t)
-	for _, field := range EnumeratedFields {
+	for _, field := range EnumeratedFields() {
 		if field.Answer == AnswerIssueRecord {
 			continue
 		}
@@ -1710,7 +1710,7 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 		}
 		earliest := arrivalsOf(field.Values).field
 		key := 0
-		for _, contract := range SupportedContracts {
+		for _, contract := range SupportedContracts() {
 			record, recorded := records[shapeKey{contract: contract, answer: field.Answer}]
 			if recorded && slices.Contains(record.KeyPaths, field.KeyPath) && (key == 0 || contract < key) {
 				key = contract
@@ -1746,7 +1746,7 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	// of the settings block apply the record's rule themselves, the second with a declaration of
 	// its own.
 	carried := carriedShapes(t, callerKinds[0])
-	served := withoutUntypedSettings(carried, typedSettings)
+	served := withoutUntypedSettings(carried, typedSettings())
 	// Every scratch change below but the third, which rewrites a record by hand, and the two of
 	// the settings block, which read the records as they stand, is what the gate reads after an
 	// author ran `-update`, which rewrites this daemon's own contract's records and leaves every
@@ -1762,15 +1762,15 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	t.Run("a key the current contract serves is removed with no stand-in", func(t *testing.T) {
 		const removed = "daemon.project"
 		changed := withoutServedKey(t, served, AnswerState, removed)
-		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields), changed)
-		wantProblemsNaming(t, problems, removed, SupportedContracts, DaemonAPIVersion)
+		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields()), changed)
+		wantProblemsNaming(t, problems, removed, SupportedContracts(), DaemonAPIVersion())
 	})
 
 	t.Run("a key is added with no serving-down", func(t *testing.T) {
 		const added = "issues.*.check.nextLook"
 		changed := withServedKey(t, served, AnswerState, added)
-		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields), changed)
-		wantProblemsNaming(t, problems, added, SupportedContracts, DaemonAPIVersion)
+		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields()), changed)
+		wantProblemsNaming(t, problems, added, SupportedContracts(), DaemonAPIVersion())
 	})
 
 	t.Run("a record of a contract below this daemon's own is rewritten", func(t *testing.T) {
@@ -1800,7 +1800,7 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		// And `-update` does not clear it: the fixture's own writer leaves a record below this
 		// daemon's own contract where it is, so the red stands until the serving-down is put
 		// back or the record is corrected by hand.
-		written := updatedRecords(rewrittenFile, shapeRecords(served, EnumeratedFields))
+		written := updatedRecords(rewrittenFile, shapeRecords(served, EnumeratedFields()))
 		for _, record := range written {
 			if record.Contract == ServingFloor && record.Answer == AnswerState && !slices.Contains(record.KeyPaths, rewritten) {
 				t.Errorf("`-update` rewrote the record of the state at the floor: an author who meets a red check could clear it by running the golden test")
@@ -1810,11 +1810,11 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 
 	t.Run("a body is added to a route that answers 204", func(t *testing.T) {
 		changed := maps.Clone(served)
-		for _, contract := range SupportedContracts {
+		for _, contract := range SupportedContracts() {
 			key := shapeKey{contract: contract, answer: AnswerNoContent}
 			changed[key] = answerShape{paths: []string{"accepted"}}
 		}
-		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields), changed)
+		problems := allShapeProblems(afterUpdate(changed, EnumeratedFields()), changed)
 		var below []string
 		for _, problem := range problems {
 			if !strings.Contains(problem, string(AnswerNoContent)) {
@@ -1825,9 +1825,9 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		}
 		// Every contract below this daemon's own reads the record that says the route writes no
 		// body, and reads a body: two problems each, the body itself and its one key.
-		if len(below) != 2*(len(SupportedContracts)-1) {
+		if len(below) != 2*(len(SupportedContracts())-1) {
 			t.Errorf("a body on the 204 routes was caught at %d problems, want 2 for each of the %d contracts below this daemon's own:\n%s",
-				len(below), len(SupportedContracts)-1, strings.Join(below, "\n"))
+				len(below), len(SupportedContracts())-1, strings.Join(below, "\n"))
 		}
 		if len(below) > 0 {
 			t.Logf("the gate reported %d problems, the first of them: %s", len(below), below[0])
@@ -1857,10 +1857,10 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 			{name: "a fourth stranded state", field: "strandedClaims.*.state", added: "parked"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				widened := withDeclaredValue(t, EnumeratedFields, AnswerState, tc.field, tc.added, DaemonAPIVersion)
+				widened := withDeclaredValue(t, EnumeratedFields(), AnswerState, tc.field, tc.added, DaemonAPIVersion())
 				changed := withServedValue(t, served, AnswerState, tc.field, tc.added)
 				problems := allShapeProblems(afterUpdate(changed, widened), changed)
-				wantProblemsNaming(t, problems, tc.field, SupportedContracts, DaemonAPIVersion)
+				wantProblemsNaming(t, problems, tc.field, SupportedContracts(), DaemonAPIVersion())
 				for _, problem := range problems {
 					if !strings.Contains(problem, "`"+tc.added+"`") {
 						t.Errorf("the gate reported a problem naming the field and not the value `%s`: %s", tc.added, problem)
@@ -1879,18 +1879,18 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		// contract's record, which is the whole of the remedy; a shape change at a contract the
 		// base already carries owes a new number first (version.go's Bump rule).
 		const typedKey = "admission_cap"
-		if settingsTyped(typedSettings, DaemonAPIVersion, typedKey) {
+		if settingsTyped(typedSettings(), DaemonAPIVersion(), typedKey) {
 			t.Fatalf("answers.go's typedSettings already types `%s`; declaring it proves nothing", typedKey)
 		}
-		declared := append(slices.Clone(typedSettings), TypedSetting{Key: typedKey, Since: DaemonAPIVersion})
+		declared := append(slices.Clone(typedSettings()), TypedSetting{Key: typedKey, Since: DaemonAPIVersion()})
 		changed := withoutUntypedSettings(carried, declared)
 		problems := allShapeProblems(asOnFile, changed)
-		wantProblemsNaming(t, problems, settingsKeyPathPrefix+typedKey, []int{DaemonAPIVersion}, 0)
+		wantProblemsNaming(t, problems, settingsKeyPathPrefix+typedKey, []int{DaemonAPIVersion()}, 0)
 		if len(problems) != 1 {
 			t.Errorf("the gate reported %d problems for one typed key at this contract, want one:\n%s",
 				len(problems), strings.Join(problems, "\n"))
 		}
-		if after := allShapeProblems(afterUpdate(changed, EnumeratedFields), changed); len(after) != 0 {
+		if after := allShapeProblems(afterUpdate(changed, EnumeratedFields()), changed); len(after) != 0 {
 			t.Errorf("`-update` left %d problems, the first: %s", len(after), after[0])
 		}
 	})
@@ -1904,7 +1904,7 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		for _, added := range []string{"settings.a_later_legion_yaml_key", "settings.runtime.kubernetes.a_later_block_key"} {
 			changed = withServedKey(t, changed, AnswerState, added)
 		}
-		if problems := allShapeProblems(asOnFile, withoutUntypedSettings(changed, typedSettings)); len(problems) != 0 {
+		if problems := allShapeProblems(asOnFile, withoutUntypedSettings(changed, typedSettings())); len(problems) != 0 {
 			t.Errorf("a settings key no reader types turned the gate red at %d problems, the first: %s", len(problems), problems[0])
 		}
 	})
@@ -2019,7 +2019,7 @@ func wantProblemsNaming(t *testing.T, problems []string, path string, contracts 
 			t.Errorf("the gate reported a problem naming no `%s`: %s", path, problem)
 			continue
 		}
-		for _, contract := range SupportedContracts {
+		for _, contract := range SupportedContracts() {
 			if strings.HasPrefix(problem, fmt.Sprintf("contract %d, ", contract)) {
 				naming[contract]++
 			}
@@ -2103,7 +2103,7 @@ func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 	paths := map[answerField]string{}
 	declared := map[answerField]bool{}
 	realised := map[answerField]bool{}
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		fixture := fixtures[answer.ID]
 		if len(fixture.roots) == 0 {
 			// The 204 answers write no body, so their types declare nothing to realise.
@@ -2166,18 +2166,18 @@ func TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody(t *testing.T) {
 	fixtures := answerFixtures(t)
 	carriedPaths := map[AnswerID]map[string]bool{}
 	carriedValues := map[AnswerID]map[string]map[string]bool{}
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		fixture := fixtures[answer.ID]
 		if len(fixture.roots) == 0 {
 			// The 204 answers write no body, so no field of theirs is enumerated.
 			continue
 		}
 		carriedPaths[answer.ID], carriedValues[answer.ID] = collectedShape(t, fixture.marshalled(t, answer.ID),
-			fixture.shape(t), enumeratedPathsOf(EnumeratedFields, answer.ID))
+			fixture.shape(t), enumeratedPathsOf(EnumeratedFields(), answer.ID))
 	}
 
 	asked := 0
-	for _, field := range EnumeratedFields {
+	for _, field := range EnumeratedFields() {
 		if !carriedPaths[field.Answer][field.KeyPath] {
 			t.Errorf("the %s answer: answers.go's EnumeratedFields declares `%s`, and no fixture body carries that key path, so no record describes it and the value comparison reads no value there. Give a fixture body of the answer (answerFixtures) a value at that key path.",
 				field.Answer, field.KeyPath)

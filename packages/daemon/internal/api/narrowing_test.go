@@ -133,7 +133,7 @@ func narrowingState(t *testing.T) State {
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
-	for _, narrowing := range stateNarrowings {
+	for _, narrowing := range stateNarrowings() {
 		if strip >= narrowing.contract {
 			continue
 		}
@@ -144,7 +144,7 @@ func narrowingsExpected(state State, contract int) []string {
 	}
 	var took tookOff
 	stateFor(state, restore, strip, &took)
-	for place, row := range valueStrips {
+	for place, row := range valueStrips() {
 		if took.value(place) {
 			dropped = append(dropped, row.dropped)
 		}
@@ -195,9 +195,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if line.Caller != remote || line.Pod != statePodUID {
 			t.Errorf("the line names the caller %q in pod %q, want %q in %q", line.Caller, line.Pod, remote, statePodUID)
 		}
-		if line.PluginContract != recordFieldsContract-1 || line.DaemonContract != DaemonAPIVersion {
+		if line.PluginContract != recordFieldsContract-1 || line.DaemonContract != DaemonAPIVersion() {
 			t.Errorf("the line names the contracts %d and %d, want the caller's %d and the daemon's %d",
-				line.PluginContract, line.DaemonContract, recordFieldsContract-1, DaemonAPIVersion)
+				line.PluginContract, line.DaemonContract, recordFieldsContract-1, DaemonAPIVersion())
 		}
 		// What was dropped, key by key, so a line that named the contract alone — or one arm's
 		// keys under another arm's narrowing — fails here.
@@ -230,7 +230,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if !carried {
 			t.Fatalf("the body served to a pod at %d carries no `contract` mark: %s", recordFieldsContract, body)
 		}
-		want := map[string]any{"daemon": float64(DaemonAPIVersion), "caller": float64(recordFieldsContract)}
+		want := map[string]any{"daemon": float64(DaemonAPIVersion()), "caller": float64(recordFieldsContract)}
 		if len(mark) != len(want) || mark["daemon"] != want["daemon"] || mark["caller"] != want["caller"] {
 			t.Errorf("the mark is %v, want %v: the contract the daemon declares and the one the caller's pod records", mark, want)
 		}
@@ -272,10 +272,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if !carried {
 			t.Fatalf("the operator's own answer carries no `contract` mark: %s", body)
 		}
-		if mark["daemon"] != float64(DaemonAPIVersion) {
-			t.Errorf("the operator's answer was built at %v, want the contract the daemon declares, %d", mark["daemon"], DaemonAPIVersion)
+		if mark["daemon"] != float64(DaemonAPIVersion()) {
+			t.Errorf("the operator's answer was built at %v, want the contract the daemon declares, %d", mark["daemon"], DaemonAPIVersion())
 		}
-		if mark["caller"] != float64(DaemonAPIVersion) || len(mark) != 2 {
+		if mark["caller"] != float64(DaemonAPIVersion()) || len(mark) != 2 {
 			t.Errorf("the operator's answer carries the mark %v, want the daemon's number as both the daemon's and the caller's: nothing narrows that reader", mark)
 		}
 		if len(narrowings) != 0 {
@@ -470,12 +470,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// operator the two numbers of one request apart.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
 		// Below assignmentsContract the plan's band finds no assignment left, so it writes none.
-		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)-1+3 {
+		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings())-1+3 {
 			t.Fatalf("a caller below every row expects %d lines, want the %d rows but the plan's, the retired entries' own, the hold reason's and the caches source's: %v",
-				len(want), len(stateNarrowings)-1, want)
+				len(want), len(stateNarrowings())-1, want)
 		}
 		namedBy := map[string]int{}
-		for _, narrowing := range stateNarrowings {
+		for _, narrowing := range stateNarrowings() {
 			if contract, named := namedBy[narrowing.dropped]; named {
 				t.Errorf("the rows of contracts %d and %d both drop %q: each row names its own keys",
 					contract, narrowing.contract, narrowing.dropped)
@@ -516,7 +516,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					contract, value.PluginContract, value.Follows, restore, followsRestore)
 			}
 		}
-		for _, narrowing := range stateNarrowings {
+		for _, narrowing := range stateNarrowings() {
 			if !told[narrowing.dropped] {
 				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
 			}
@@ -561,7 +561,7 @@ func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	// contract it writes (projectState) and the mark stateFor writes before any band runs.
 	served := state
 	served.LowestPluginContract = lowestPluginContract(claims)
-	served.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: stripContract(below)}
+	served.Contract = &ContractView{Daemon: DaemonAPIVersion(), Caller: stripContract(below)}
 	marshalled := func(body State) []byte {
 		t.Helper()
 		encoded, err := json.Marshal(body)
@@ -572,7 +572,7 @@ func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	}
 	before := marshalled(served)
 	var want []string
-	for _, narrowing := range stateNarrowings {
+	for _, narrowing := range stateNarrowings() {
 		narrowed := served
 		if narrowing.state != nil {
 			narrowed, _ = narrowing.state(narrowed)
@@ -595,7 +595,7 @@ func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("the daemon logged the drops %q for the empty state, want only the bands that changed the wire, %q", got, want)
 	}
-	for _, narrowing := range stateNarrowings {
+	for _, narrowing := range stateNarrowings() {
 		if narrowing.state == nil && slices.Contains(got, narrowing.dropped) {
 			t.Errorf("the daemon logged %q for an issue that carries none of those keys", narrowing.dropped)
 		}
@@ -609,9 +609,9 @@ func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 // DaemonAPIVersion at each merge, and this is what makes a renumber that leaves this constant
 // behind fail here, as every other narrowing constant's own bound does.
 func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
-	if recordFieldsContract > DaemonAPIVersion {
+	if recordFieldsContract > DaemonAPIVersion() {
 		t.Fatalf("recordFieldsContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			recordFieldsContract, DaemonAPIVersion)
+			recordFieldsContract, DaemonAPIVersion())
 	}
 }
 

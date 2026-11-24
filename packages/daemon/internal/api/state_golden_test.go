@@ -1155,7 +1155,7 @@ func newest(times ...time.Time) time.Time {
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
+	state.Contract = &ContractView{Daemon: DaemonAPIVersion(), Caller: DaemonAPIVersion()}
 	golden(t, "state.json", state)
 }
 
@@ -1825,7 +1825,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
 // written out so that the plugin's own side reads the same rows the daemon shapes by.
 func TestAnswersGolden(t *testing.T) {
-	golden(t, "answers.json", Answers)
+	golden(t, "answers.json", Answers())
 }
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
@@ -1836,7 +1836,7 @@ func TestAnswersGolden(t *testing.T) {
 // reads at a path no row declares. A value added on one side and not the other is red rather
 // than silent.
 func TestEnumeratedFieldsGolden(t *testing.T) {
-	golden(t, "enumerated-fields.json", EnumeratedFields)
+	golden(t, "enumerated-fields.json", EnumeratedFields())
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of

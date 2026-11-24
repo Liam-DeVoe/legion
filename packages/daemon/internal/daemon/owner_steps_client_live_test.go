@@ -116,7 +116,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l := newOwnerStepsClientLive(t)
 	planned, returnRefused, stopped, older := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
 	l.note("Dispatch %s, project %s, issues %s, %s, %s and %s; daemon at %s (contract %d); client of %s",
-		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion, l.root)
+		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion(), l.root)
 	l.check("older-client-tree", l.olderClient)
 
 	// register_plan with the architect's grant, and its control: the same call naming a version
@@ -266,7 +266,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		// now launched nothing for it (each boot gets a fresh fake runtime).
 		registered := l.client(l.oldTree, tester, "register", map[string]any{"bootToken": tester.bootToken, "sessionId": tester.session,
 			"ompSessionFile": "/sessions/" + tester.session + ".jsonl", "agentId": tester.session, "pluginContract": l.oldContract}, nil)
-		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion); registered.OK ||
+		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion()); registered.OK ||
 			registered.Error != "LegionDaemonApiError" || registered.Status != http.StatusConflict || !strings.Contains(registered.Message, want) {
 			t.Fatalf("the contract %d client's own registration %s, want LegionDaemonApiError 409 saying it %s", l.oldContract, registered, want)
 		}
@@ -347,7 +347,7 @@ func (l *ownerStepsClientLive) olderClient() {
 	l.run(tree, "bun", "install", "--frozen-lockfile")
 	l.oldTree, l.oldContract = tree, contract
 	l.note("the plugin of the release before: %s (%s), at contract %d, the newest commit below contract %d on the first-parent line of %s; its tree in %s with its own bun install",
-		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion, ref, tree)
+		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion(), ref, tree)
 }
 
 // releaseBefore answers the newest commit of main's first-parent line whose daemon API contract is
@@ -364,11 +364,11 @@ func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 		t.Fatalf("this checkout holds no %s: scripts/e2e/owner-steps-client.sh fetches it before it builds this driver (%v)", ref, err)
 	}
 	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
-		if contract := l.contractAt(commit); contract < api.DaemonAPIVersion {
+		if contract := l.contractAt(commit); contract < api.DaemonAPIVersion() {
 			return commit, contract, ref
 		}
 	}
-	t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion)
+	t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion())
 	return "", 0, ""
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -307,9 +308,9 @@ func TestEveryTableHoldsTheRowsOfARegisteredEntry(t *testing.T) {
 		t.Errorf("the last band is {%d %q}, want the entry's at %d", band.contract, band.dropped, number)
 	}
 	strips := valueStrips()
-	if len(strips) != len(frozenValueStrips)+1 || strips[len(strips)-1].dropped != "the every-table entry's strip" {
+	if frozen := len(frozenValueStrips()); len(strips) != frozen+1 || strips[len(strips)-1].dropped != "the every-table entry's strip" {
 		t.Errorf("valueStrips() holds %d rows, the last dropping %q, want the %d frozen and then the entry's",
-			len(strips), strips[len(strips)-1].dropped, len(frozenValueStrips))
+			len(strips), strips[len(strips)-1].dropped, frozen)
 	}
 	standing := standIns()
 	if len(standing) != len(frozenStandIns)+1 || standing[len(standing)-1].contract != number {
@@ -456,31 +457,54 @@ func TestNoTwoEntriesShareAnId(t *testing.T) {
 	}
 }
 
-// entryFixtureName is the name of one entry fixture: the entry's id and its slug.
-var entryFixtureName = regexp.MustCompile(`^\d{14}_[a-z0-9]+(-[a-z0-9]+)*\.json$`)
+// entryFixtureName is the name of one entry fixture: the entry's 14-digit id, then its slug.
+var entryFixtureName = regexp.MustCompile(`^[0-9]{14}_.+\.json$`)
 
 // Each entry this package registers has one fixture, `contracts/<id>_<slug>.json` beside the
 // records, and each fixture is a registered entry's, so the count of fixtures is the count of
 // entries, which is the count a reader with no Go toolchain adds to L
-// (`scripts/daemon-contract.sh`, `daemonContract()` of packages/contracts). The directory holds
-// entry fixtures and nothing else, and a tree with no entry holds no such directory, which counts
-// as no fixture.
+// (`scripts/daemon-contract.sh`, `daemonContract()` of packages/contracts, `legion-pins`). The
+// directory holds entry fixtures and nothing else: each member is a regular file whose name is
+// an entry fixture's, and a subdirectory, a symlink, a submodule or a file of another name is
+// refused by name, as every reader that counts the fixtures refuses it rather than count it. An
+// entry's id is 14 digits. A tree with no entry holds no such directory, which counts as no
+// fixture. A run with -update writes the fixture of each entry that has none, so it counts
+// nothing; the run after it does.
 func TestEveryEntryHasOneFixture(t *testing.T) {
+	if *updateGolden {
+		t.Skip("the entry fixtures are being written; run the suite again without -update")
+	}
 	dir := goldenPath("contracts")
+	if info, err := os.Lstat(dir); err == nil && !info.IsDir() {
+		t.Fatalf("%s is a %s, not a directory: it holds the entry fixtures", dir, kindOf(info.Mode()))
+	}
 	listed, err := os.ReadDir(dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("read %s: %v", dir, err)
 	}
 	fixtures := map[string]bool{}
-	for _, file := range listed {
-		if file.IsDir() || !entryFixtureName.MatchString(file.Name()) {
-			t.Errorf("%s holds %s, which is no entry fixture (<id>_<slug>.json): the directory holds entry fixtures and nothing else", dir, file.Name())
+	for _, member := range listed {
+		path := filepath.Join(dir, member.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Errorf("lstat %s: %v", path, err)
 			continue
 		}
-		fixtures[file.Name()] = true
+		if !info.Mode().IsRegular() {
+			t.Errorf("%s is a %s, which no entry fixture is: the directory holds regular files named <id>_<slug>.json and nothing else", path, kindOf(info.Mode()))
+			continue
+		}
+		if !entryFixtureName.MatchString(member.Name()) {
+			t.Errorf("%s is no entry fixture's name (<14-digit id>_<slug>.json): the directory holds entry fixtures and nothing else", path)
+			continue
+		}
+		fixtures[member.Name()] = true
 	}
 	registered := map[string]bool{}
 	for _, entry := range registeredEntries {
+		if !entryIDForm.MatchString(strconv.Itoa(entry.id)) {
+			t.Errorf("%s has the id %d, which is no entry id: an entry's id is the 14 digits of the UTC second it was made", entry.fileName(), entry.id)
+		}
 		name := fmt.Sprintf("%d_%s.json", entry.id, entry.slug)
 		registered[name] = true
 		if !fixtures[name] {
@@ -494,5 +518,18 @@ func TestEveryEntryHasOneFixture(t *testing.T) {
 	}
 	if len(fixtures) != len(registeredEntries) {
 		t.Errorf("%s holds %d entry fixtures, want one for each of the %d entries this package registers", dir, len(fixtures), len(registeredEntries))
+	}
+}
+
+// kindOf is what a member of the entry fixture directory that is no regular file is, as a
+// refusal names it.
+func kindOf(mode fs.FileMode) string {
+	switch {
+	case mode.IsDir():
+		return "directory"
+	case mode&fs.ModeSymlink != 0:
+		return "symlink"
+	default:
+		return "file of mode " + mode.String()
 	}
 }

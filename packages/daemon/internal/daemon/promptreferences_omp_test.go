@@ -184,7 +184,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 			// daemon's. The image build's probe skips the agents' models, and so does this, since
 			// the profile configures none of the roles the shipped agents name.
 			gate := pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
-				contract: api.DaemonAPIVersion, skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+				contract: api.DaemonAPIVersion(), skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 			err := gate.verify(context.Background())
 			switch {
 			case testCase.refusal == "" && err != nil:

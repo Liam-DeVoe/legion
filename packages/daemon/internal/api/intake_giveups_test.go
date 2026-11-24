@@ -712,8 +712,8 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // states its contract in the header, and a pod's claims place no caller at 193 or above
 // (podContracts), so the header is what places a caller below this band.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
-	if intakeGiveUpsContract > DaemonAPIVersion {
-		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)
+	if intakeGiveUpsContract > DaemonAPIVersion() {
+		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion())
 	}
 	older, narrowings := stateNarrowedStating(t, populatedState(t), "192.0.2.1:41000", nil, intakeGiveUpsContract-1)
 	current := stateStating(t, stateServer(t, populatedState(t), nil), "192.0.2.1:41000", intakeGiveUpsContract)
