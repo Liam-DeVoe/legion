@@ -1,8 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -201,4 +205,20 @@ func TestAFailedFixClaimEndsTheFixAndTellsTheOwner(t *testing.T) {
 		assertPhase(t, r.pool, phase.Implementing)
 		assertToldOnceNaming(t, "the worker-died notices", r.workerDied(), string(claim.RoleReviewer), "does not work")
 	})
+}
+
+// A new generation of the run ends the fix of the generation before: the re-admission clears the
+// tree's generation, its settle ends the earlier generation's runs, and the fix ends stopped,
+// taking no way. No failure of the earlier generation carries into the new one, whose rule judges
+// the head again.
+func TestANewGenerationEndsTheOldFixAndJudgesTheHeadAgain(t *testing.T) {
+	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+
+	applyInTx(t, r.pool, r.engine, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-208", stepClock.Add(time.Hour))
+	})
+
+	r.assertWayDropped("stopped", fixHead)
+	assertStrings(t, "the failures of the new generation", outboxStrings(t, r.pool, `select check_id || '@' || head from ci_failures
+		where issue = $1 and generation > 1`, "LEGION-208"), nil)
 }
