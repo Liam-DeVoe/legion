@@ -5,7 +5,7 @@ body: |-
   covers a resume, a start sent again to a fresh session, a later step, a return and the retro.
   The running agent is sent nothing for the version. A version that removes a running task or
   changes any other part of it is still refused. The answer of `register_plan` names each task's
-  running steps, each with the role whose agent works it (`running`, contract 235). The owner's
+  running steps, each with the role whose agent works it (`running`, contract 262). The owner's
   prompt puts a decision for an agent into the text of its task's block, in a later version of
   `plan.md`. A phase worker takes a newer `plan.md` that changes only its own block's text, or
   only blocks under another task, for the owner's decision. It sends the planner nothing for it,
