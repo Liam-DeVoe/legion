@@ -1195,8 +1195,7 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // type implementation before its place (workflow's mergeForward), and the issue's move into
 // accepting, retro or merging is what asks for that merge (dispatch://INFRA-4374 R0,
 // record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the
-// engine has just ended. At a review step the owner does no round ends by a review on GitHub: the
-// engine settles nothing there (workflow's settleRound), and the step ends by the owner's report.
+// engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's

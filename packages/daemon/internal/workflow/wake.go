@@ -371,8 +371,9 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts. The claim it wakes is the one it was
-// armed for (fact.Claim, the claim BackstopTarget named at the release: the owner at a place it
-// works alone, and the worker of the open phase elsewhere), where that claim stands released.
+// armed for (fact.Claim, the claim BackstopTargetAt read at the release: the owner at a place it
+// works alone, and the claim the record gives the open phase's step elsewhere), where that claim
+// stands released.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
