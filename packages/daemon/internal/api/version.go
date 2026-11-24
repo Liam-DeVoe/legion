@@ -3542,7 +3542,7 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 247: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// 257: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
 // commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
@@ -3558,14 +3558,14 @@ package api
 // release has no table, and its step does nothing; the reader passes over a field of an identity
 // it does not know, so a field a later release adds turns no step off. No shape of `GET
 // /legion/v1/state` or of a request moves, and this change adds no store migration; its records
-// in contract-shapes.json and request-shapes.json are 232's, written again at 247 by `-update`.
+// in contract-shapes.json and request-shapes.json are 232's, written again at 257 by `-update`.
 // (This entry moved from 230 to 247 at the forward merge of 2026-11-24 that brought in acade985,
-// where main carried 232, dispatch://INFRA-4508's entry above: a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head of each of the 139 open pull requests of
-// cybermonklabs/legion, of 480 open, whose file list names this file or is cut short, made on
-// 2026-11-24 between 13:30:27Z and 13:32:35Z, found each of 233 to 246 declared by another pull
-// request (246 by #4960) and 247 by none, so 247 is the lowest number above main's 232 that no
-// open pull request declares. This entry stood at 200, 202, 209, 212, 221, 225 and 230 before.
-// Read the base's own number and every open pull request again at the next merge rather than from
-// this line.)
-const DaemonAPIVersion = 247
+// where main carried 232, dispatch://INFRA-4508's entry above, and from 247 to 257 on 2026-11-24,
+// because open pull request #5384 declares 247 too. The architect of INFRA-3118 gave this change
+// 257, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of each of the 141 open pull
+// requests of cybermonklabs/legion, of 473 open, whose file list names this file or is cut short,
+// made on 2026-11-24 between 15:24:54Z and 15:27:05Z, found 247 declared by #4580 and #5384, 250 by
+// #5365, 251 by #5307, 252 by #4540, 254 by #4432 and 255 by #5164, and 257 by none. This entry
+// stood at 200, 202, 209, 212, 221, 225, 230 and 247 before. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 257

@@ -79,7 +79,7 @@ It carries:
   The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
   It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
   Then it hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the line it read, but for a revision argument whose meaning the rewrite changed, which then names the commits it named before the step, as the step left them, and with `--ignore-working-copy` where the step took its one snapshot of the working copy, so the push takes no second one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  The step gives each commit the push sends the author of the role that its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (daemon API contract 247, below), prints one `legion jj:` line for each commit it rewrote, sets the author of no commit with no such trailer, and adds no refusal to the push.
+  The step gives each commit the push sends the author of the role that its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (daemon API contract 257, below), prints one `legion jj:` line for each commit it rewrote, sets the author of no commit with no such trailer, and adds no refusal to the push.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
@@ -3635,8 +3635,8 @@ this release finds no row for that tree, runs it in no arm — so it too changes
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
-**The identities of an issue's roles in each role's process (daemon API contract 247).**
-A release at contract 247 tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
+**The identities of an issue's roles in each role's process (daemon API contract 257).**
+A release at contract 257 tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
 Its value is one JSON object from each role to the `name` and `email` that role's App commits as, keys sorted.
 The daemon writes it from the identities it already resolves for each role.
 A launch whose other App's lease cannot be minted still happens: its table holds the roles of its own App alone, the daemon logs a warning naming the claim, that App and the error, and the step leaves the author of a commit whose trailer names a role left out as it is.
@@ -3644,7 +3644,7 @@ The controller gets none, and `legion controller start` drops one it inherits.
 The push step of `legion jj` reads it before each `jj git push`, and gives each commit the push sends the author of the role that the commit's first `Legion-Role` trailer names ([Worker image](#worker-image)).
 The variable is the daemon's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and so is a provider key of that name.
 
-To roll this release back to a contract below 247, re-pin the earlier release, with no change to `legion.yaml`.
+To roll this release back to a contract below 257, re-pin the earlier release, with no change to `legion.yaml`.
 There is no SQL to run and no column to drop: the change adds no store migration, and no record holds the table.
 What the rollback costs is the step:
 the earlier daemon tells no role the table, so the step does nothing, and a commit can again reach the remote with another role's App as its author.
