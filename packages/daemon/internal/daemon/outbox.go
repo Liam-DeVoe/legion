@@ -2760,6 +2760,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
+		// A start that leaves a session (record.SuperviseRequest.LeaveSession) reaches a claim that
+		// may still run in it: the agent of a name a key held, whose step's agent of a later
+		// generation starts in a session of its own. The claim is suspended first, as the daemon and
+		// keeping its session, so the decision below brings it back and leaves that session there
+		// (supervise's revive); the start waits on the row's backoff until it runs nothing.
+		if found {
+			err := r.suspendToLeave(ctx, machine, token, row, payload)
+			if errors.Is(err, supervise.ErrStepLeft) {
+				r.log.Info("outbox start serves a step its issue left before its claim left a key's session; finished without acting", "row", row.ID,
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
@@ -2871,7 +2887,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// own, which the workflow's move of the issue does not wait on, so the machine judges the
 		// same rule again under its own lock before it starts a process, and a start the issue has
 		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation}
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, LeaveSession: payload.LeaveSession}
 		var brought error
 		switch state {
 		case supervise.StateQueued:
