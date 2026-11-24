@@ -14,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -605,6 +606,7 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	}
 	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	registry.cache = newInterestCopy(registry)
+	registry.chunks = kvchunk.NewChunks(registry.now)
 	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
 	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, kvwatch.WithScanIdleTimeout(idle))
