@@ -17,3 +17,11 @@ body: |-
   own notices, by its kind, and each notice's kind names the tool whose description holds its step
   (`notice: messages may be missing (envoy_inbox)`): Oh My Pi shows the model only the first line
   of a tool's description until the model opens the tool's device.
+  The list of what people wrote to a session (`renderSessionAnswers`, which every model request
+  carries, and `dispatch answers`) draws each item's words the same way. The ask's question
+  (`question`), the options an answer chose (`selected`, one to a line), Dispatch's words beside a
+  decline (`dispatch_words`) and the person's own words (`text`) each come in a block of their own
+  after the item's two lines (the time, the person and the relation, then the reference). No words
+  close their block or stand as one of the list's own lines, and each block's tag also steps past
+  the tags in everything before it in the list. An issue's title or a token's name stays on its
+  line, because each run of white space in it, a new line included, prints as one space.

@@ -94,6 +94,13 @@ const publishQuestion = "The document is ready for readers. How should we publis
 const draftQuestion = "The document needs a publication decision. How should we proceed?";
 const releaseQuestion = "The release is ready. How should we proceed?";
 
+/** The four sentences Dispatch writes beside a person's note when they decline to answer, word
+ *  for word as `DeclineDispatchWords` (`packages/envoy/internal/dispatch/model/model.go`) holds
+ *  them, so a decline in these tests carries what Dispatch sends. */
+const DECLINE_DISPATCH_WORDS =
+  "The person chose not to answer this question. Decide the next step without an answer. " +
+  "Do not ask this question again unless the facts change. Write in your work what you assumed.";
+
 const openAsk = {
   id: "ask-1",
   issue_key: "DSP-1",
@@ -838,9 +845,6 @@ describe("renderInbound dispatch events", () => {
   // payload as it came.
   test("a resolution kind this build does not know still reads the words Dispatch wrote", () => {
     const note = "Whoever builds it decides.";
-    const dispatchWords =
-      "The person chose not to answer this question. Decide the next step without an answer. " +
-      "Do not ask this question again unless the facts change. Write in your work what you assumed.";
     const declined = {
       ...openAsk,
       state: "resolved",
@@ -849,7 +853,7 @@ describe("renderInbound dispatch events", () => {
         at: "2026-09-10T00:01:00Z",
         kind: "declined",
         reason: note,
-        dispatch_words: dispatchWords,
+        dispatch_words: DECLINE_DISPATCH_WORDS,
       },
     };
     const card = (payload: object) =>
@@ -862,13 +866,15 @@ describe("renderInbound dispatch events", () => {
     // Its card carries the raw payload, which is how a build older than this change reads both
     // parts of a decline.
     expect(card({ ...declined, edited_by: actor }).envoy.dispatch).toMatchObject({
-      payload: { resolution: { kind: "declined", reason: note, dispatch_words: dispatchWords } },
+      payload: {
+        resolution: { kind: "declined", reason: note, dispatch_words: DECLINE_DISPATCH_WORDS },
+      },
     });
 
     const read = card(declined);
     expect(read.envoy.dispatch).toMatchObject({
       resolved: "declined",
-      dispatch_words: dispatchWords,
+      dispatch_words: DECLINE_DISPATCH_WORDS,
     });
     expect(read.blocks).toEqual([
       {
@@ -888,7 +894,7 @@ describe("renderInbound dispatch events", () => {
     });
     expect(unknownKind.envoy.dispatch).toMatchObject({
       resolved: "handed_to_the_council",
-      dispatch_words: dispatchWords,
+      dispatch_words: DECLINE_DISPATCH_WORDS,
     });
     expect(unknownKind.blocks).toEqual([]);
   });
@@ -2673,7 +2679,7 @@ describe("what a card carries", () => {
                 at: "2026-11-14T20:05:00Z",
                 kind: "declined",
                 reason: "Not this week.\nAsk again after the release.",
-                dispatch_words: "The person chose not to answer this question.",
+                dispatch_words: DECLINE_DISPATCH_WORDS,
               },
             },
             person,
@@ -2851,7 +2857,7 @@ describe("what a card carries", () => {
     const resolution = cardOf<{ dispatch: Record<string, unknown> }>(declined?.content ?? "");
     expect(resolution.envoy.dispatch).toMatchObject({
       resolved: "declined",
-      dispatch_words: "The person chose not to answer this question.",
+      dispatch_words: DECLINE_DISPATCH_WORDS,
     });
     // The options an answer chose stay fields beside the blocks of its words.
     const answered = cases.find(({ label }) => label.startsWith("an ask's answer"));

@@ -26,10 +26,10 @@ const DISPATCH_WORDS_LABEL = "Dispatch's words:";
  * under the label that names them; `undefined` where the record holds none, which is every
  * resolution but a decline and a Dispatch older than the field.
  *
- * The surfaces that show a closed ask as text read it: a line of the search answer, a bullet of
- * `dispatch_ask_read`'s detail block and a line of the answers list. (The delivery card states
- * the words as a field of their own, `dispatch_words`.) They draw it differently, so this gives
- * the label and the words and never the layout -
+ * The surfaces that show a closed ask as text read it: a line of the search answer and a bullet
+ * of `dispatch_ask_read`'s detail block. (The delivery card states the words as a field of their
+ * own, `dispatch_words`, and the answers list as a block of their own, `renderSessionAnswerItem`.)
+ * They draw it differently, so this gives the label and the words and never the layout -
  * the caller puts the one line where its own reader expects it. `render` shapes the words first
  * for a reader that needs it, as the search answer indents what runs under its hit.
  */
