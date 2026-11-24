@@ -209,7 +209,7 @@ var countsGroups = func() []countsGroup {
 // state rows from the first key on every call and passes over every one before $1 (from the
 // middle key at scale 0.3 of the coverage-scale corpus, 1,683 state rows in 2.2 ms, measured in
 // dispatch://INFRA-4864's pod).
-var staleIssueKeys = `
+const staleIssueKeys = `
 	select i.key
 	from ` + issueSourceFrom + `
 	left join search_coverage_issues s on s.key = i.key and s.key > $1
