@@ -475,6 +475,55 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
   }
 });
 
+// At a desktop width Details' Escape is the drawer's but in a field that takes text, which keeps
+// its own Escape, by the field test the keymap reads (`takesText`), which the header's actions
+// menu reads for its Escape too. A text box beside the drawer keeps the press and Details stays
+// open; a `<select>` and a range take no text, so Escape closes Details from them as from a
+// button.
+test("at a desktop width Escape closes Details from beside it but in a field that takes text", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  try {
+    for (const [name, control, closes] of [
+      ["a text box", <input aria-label="beside" key="text" />, false],
+      [
+        "a select",
+        <select aria-label="beside" key="select">
+          <option>one</option>
+        </select>,
+        true,
+      ],
+      ["a range", <input aria-label="beside" key="range" type="range" />, true],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+          <QueryClientProvider client={landingClient([])}>
+            <KeymapProvider>
+              <MarginProvider>
+                <Details open>
+                  <Margin />
+                </Details>
+                {control}
+              </MarginProvider>
+            </KeymapProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        const details = await screen.findByTestId("desktop-margin-shell");
+        await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+        act(() => screen.getByLabelText("beside").focus());
+        await user.keyboard("{Escape}");
+        expect(details.hasAttribute("hidden"), `Escape on ${name} beside Details`).toBe(closes);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+  }
+});
+
 test("a desktop comment deep link activates Comments and scrolls its card from Pinned", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({

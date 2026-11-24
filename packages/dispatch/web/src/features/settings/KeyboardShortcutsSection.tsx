@@ -12,6 +12,7 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { SearchBox } from "../../components/SearchBox";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   borderDefault,
   calloutInfoBg,
@@ -294,8 +295,10 @@ export function KeyboardShortcutsSection(): ReactNode {
     if (current === undefined || event.key === "Tab") return;
     event.preventDefault();
     event.stopPropagation();
-    // A held key repeats its press, which is no second press of a key of two.
-    if (event.nativeEvent.isComposing || event.repeat) return;
+    // A held key repeats its press, which is no second press of a key of two. An input method's
+    // key (`inputMethodKey`) records nothing and cancels nothing: one pressed in a composition,
+    // or the one that ends it, which Safari sends with `isComposing` false and keyCode 229.
+    if (inputMethodKey(event.nativeEvent) || event.repeat) return;
     if (event.key === "Escape") {
       cancel();
       return;

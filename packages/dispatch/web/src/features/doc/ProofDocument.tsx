@@ -25,6 +25,7 @@ import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   badgeMed,
   dangerText,
@@ -261,12 +262,13 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
 }
 
 /** The page editor's `keydown` handler of `handleDOMEvents`: true for a plain Escape, which
- *  ProseMirror then leaves to the page (`leave-editor`); a press during an input method's
- *  composition, or with a modifier, stays the editor's. */
+ *  ProseMirror then leaves to the page (`leave-editor`); a press with a modifier stays the
+ *  editor's, and so does an input method's (`inputMethodKey`): one pressed during a composition,
+ *  or the one that ends it, which Safari sends with `isComposing` false and keyCode 229. */
 function plainEscape(_view: EditorHandle["view"], event: KeyboardEvent): boolean {
   return (
     event.key === "Escape" &&
-    !event.isComposing &&
+    !inputMethodKey(event) &&
     !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
   );
 }

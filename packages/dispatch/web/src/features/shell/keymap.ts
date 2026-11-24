@@ -1,6 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
 import { PANEL_ATTRIBUTE, takesText, typedOnMenuTrigger } from "../../components/key-targets";
+import { inputMethodKey } from "../../lib/input-method";
 
 import { IS_MAC, stepsOf } from "./key-text";
 import {
@@ -705,7 +706,11 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       return [...described.values()];
     },
     handleKeyDown(event) {
-      if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
+      // A key already taken, a modifier alone, and an input method's key (`inputMethodKey`) - one
+      // pressed in a composition, or the one that ends it, which Safari sends with `isComposing`
+      // false and keyCode 229 - run no binding: the last is the input method's, and the Escape that
+      // ends a composition closes no dialog and leaves no field.
+      if (event.defaultPrevented || inputMethodKey(event) || MODIFIER_KEYS[event.key] === true) {
         return;
       }
       const editable = isEditableTarget(event);

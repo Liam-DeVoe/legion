@@ -2989,3 +2989,38 @@ test("the actions group closes once a focus moved by code goes to a control outs
     restore();
   }
 });
+
+// The group's Escape is the group's but in a field that takes text, whose Escape is the field's,
+// by the field test the keymap reads (`takesText`), as Details reads it for its own Escape. A
+// focus that falls to the page's body leaves the group open, and a field the reader then reaches
+// takes no focus out of the group: Escape there leaves the group open and the focus in the field,
+// where it closed the group and took the focus out of the field onto the group's control. Escape
+// from the control still closes the group.
+test("the open actions group leaves an Escape pressed in a field that takes text to the field", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const field = document.body.appendChild(document.createElement("input"));
+
+  try {
+    const { control, first } = await openIssueActionsByKey(user);
+    act(() => first.blur());
+    expect(control, "a focus fallen to the body closed the group").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    act(() => field.focus());
+    await user.keyboard("{Escape}");
+    expect(field, "Escape in a field took the focus out of it").toHaveFocus();
+    expect(control, "Escape in a field closed the group").toHaveAttribute("aria-expanded", "true");
+
+    act(() => control.focus());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+    expect(control).toHaveFocus();
+  } finally {
+    field.remove();
+    view.unmount();
+    restore();
+  }
+});

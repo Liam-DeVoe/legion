@@ -5,8 +5,13 @@ import { usePanelDismiss } from "./usePanelDismiss";
 
 // The Escape that ends an IME composition is the composition's: the open panel stays open, the
 // focus stays where it is, and the key goes on to the view behind. An Escape after the
-// composition closes the panel and puts the focus back on its trigger.
-test("an Escape that ends an IME composition leaves the open panel open", () => {
+// composition closes the panel and puts the focus back on its trigger. Chromium and Firefox mark
+// that Escape `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode
+// 229 (WebKit bug 165004).
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("an Escape that ends an IME composition, marked by %s, leaves the open panel open", (_mark, composing) => {
   const trigger = document.createElement("button");
   const panel = document.createElement("div");
   const field = document.createElement("input");
@@ -31,7 +36,7 @@ test("an Escape that ends an IME composition leaves the open panel open", () => 
       new KeyboardEvent("keydown", {
         bubbles: true,
         cancelable: true,
-        isComposing: true,
+        ...composing,
         key: "Escape",
       })
     );

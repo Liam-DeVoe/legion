@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
+import { takesText } from "../../components/key-targets";
 import {
   borderDefault,
   focusVisibleRing,
@@ -304,23 +305,21 @@ function DetailsDrawer({
         : null;
     closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
-    // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
-    // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
-    // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
-    // drawer open under it, with the focus on the dialog itself (its first frame), on its field,
-    // or gone to the page (a press on the list's text), and a menu open in the drawer closes
-    // before the drawer does, since Escape closes the innermost layer.
+    // drawer's alone. A field that takes text keeps its own Escape, which leaves the field,
+    // wherever it is - inside the drawer or beside it - by the field test the keymap reads
+    // (`takesText`), as the header's actions menu reads it for its own Escape
+    // (`IssueActionsMenu.tsx`). So does a layer over the drawer or inside it: an open dialog -
+    // the navigation's sheet, the list of keys - closes on its own Escape and leaves the drawer
+    // open under it, with the focus on the dialog itself (its first frame), on its field, or gone
+    // to the page (a press on the list's text), and a menu open in the drawer closes before the
+    // drawer does, since Escape closes the innermost layer. A `<select>` and a list's trigger take
+    // no text, so an Escape on one closes the drawer, as on a button: shut, neither holds a text
+    // of the reader's for Escape to leave, and a list's open panel takes its Escape before the
+    // drawer hears it (`AnchoredPanel`).
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
-      const field =
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          target.tagName === "SELECT" ||
-          target.tagName === "TEXTAREA" ||
-          (target instanceof HTMLInputElement &&
-            !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
-      if (field) return;
+      if (target instanceof Element && takesText(target)) return;
       if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
       if (dialogOpen()) return;
       if (box.current?.querySelector('[role="menu"]') != null) return;

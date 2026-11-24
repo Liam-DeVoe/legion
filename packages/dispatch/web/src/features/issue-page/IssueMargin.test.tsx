@@ -957,8 +957,13 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
 
 // An Escape that ends an IME composition gives up what the reader was composing, and the
 // blocked-by editor closed on it, with the list typed into it. The editor leaves that press alone,
-// unmarked, as the page's other editors do, and a plain Escape still closes it.
-test("an Escape that ends an IME composition leaves the blocked-by editor open with its list", async () => {
+// unmarked, as the page's other editors do, and a plain Escape still closes it. Chromium and
+// Firefox mark it `isComposing`; Safari sends it after the composition's end, unmarked, with
+// keyCode 229 (WebKit bug 165004).
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("an Escape that ends an IME composition, marked by %s, leaves the blocked-by editor open with its list", async (_mark, composing) => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const escapes = watchEscapes();
@@ -972,7 +977,7 @@ test("an Escape that ends an IME composition leaves the blocked-by editor open w
     await user.click(keys);
     await user.paste("CORE-2");
     // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(keys, { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(keys, { ...composing, key: "Escape" });
     expect(
       screen.queryByLabelText("Issues CORE-1 waits on"),
       "an Escape that ended an IME composition closed the blocked-by editor"
@@ -4664,8 +4669,8 @@ test("the line moved by a write elsewhere into an Advances row at the cap leaves
   }
 });
 
-// `checkVisibility()` is missing from browsers Dispatch still runs on (`shell/roving.ts`), and
-// there `usableControl` reads the attributes alone: a control that takes a press is still
+// On an element that has no `checkVisibility()`, `usableControl` reads the attributes alone
+// (`usable-control.ts`): with the method taken off the DOM, a control that takes a press is still
 // listed, and an element that has left the page still takes none.
 test("with no checkVisibility, Add still lists a control that takes a press", async () => {
   const user = userEvent.setup();

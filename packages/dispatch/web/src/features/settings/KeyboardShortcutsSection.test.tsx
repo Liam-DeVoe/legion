@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -476,6 +476,41 @@ test("Escape, and Tab out of the recorder with no press waiting, end a recording
       expect(within(line("inbox.snooze")).queryByRole("alert")).toBeNull();
     });
     expect(stored()).toEqual({});
+  } finally {
+    view.unmount();
+  }
+});
+
+// An input method's key is no press of the reader's: one pressed in a composition, which Chromium
+// and Firefox mark `isComposing`, or the one that ends it, which Safari sends unmarked with keyCode
+// 229 (WebKit bug 165004). An Escape so sent cancels no recording, a letter is recorded as no key,
+// and the recorder waits for the next press.
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("an input method's Escape or letter, marked by %s, neither ends a recording nor is recorded", async (_mark, composing) => {
+  const view = drawSection();
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      const add = control("inbox.snooze", "Add key");
+      await user.click(add);
+      // user-event cannot mark a key as an input method's, so each press is made by hand.
+      act(() => {
+        for (const key of ["Escape", "q"]) {
+          add.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...composing, key })
+          );
+        }
+      });
+      await jump(CHORD_TIMEOUT_MS);
+      expect(add.textContent, "an input method's key ended the recording").toBe(RECORDING);
+      expect(stored(), "an input method's key was recorded").toEqual({});
+
+      await user.keyboard("c");
+      await jump(CHORD_TIMEOUT_MS);
+    });
+    expect(stored()).toEqual({ "inbox.snooze": ["b", "h", "c"] });
   } finally {
     view.unmount();
   }

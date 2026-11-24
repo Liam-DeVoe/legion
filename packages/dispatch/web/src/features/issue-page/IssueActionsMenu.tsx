@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { heldPress } from "../../components/held-press";
+import { takesText } from "../../components/key-targets";
 import {
   pageHairBorder,
   pageHeaderControl,
@@ -31,7 +32,8 @@ import { CONTROL_LABELS } from "./page-words";
  * The open group closes in these ways:
  * - a second press on its control, 'Issue actions';
  * - a press outside the control and the group, which leaves the focus where the press lands;
- * - Escape, and an action pressed from the open group, which give the focus back to the control,
+ * - Escape anywhere but in a field that takes text, whose Escape is the field's, and an action
+ *   pressed from the open group, which give the focus back to the control,
  *   as the ARIA menu-button pattern does (WCAG 2.4.3): the group hides the focused action as it
  *   closes, and with no control focused the browser would leave the focus on the page's body,
  *   so the next Tab would start again from the top of the page;
@@ -63,8 +65,14 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     };
     // The press is the open group's alone, as a menu's is: the page's own Escape - which closes
     // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one.
+    // A press in a field that takes text is the field's, which leaves the field, by the field
+    // test the keymap reads (`takesText`), as Details reads it for its own Escape (`Margin.tsx`):
+    // a focus that fell to the page's body leaves the group open (`closeOnFocusAway`), and a Tab
+    // from there into a field moves no focus out of the group, so the group stays open around a
+    // field the reader types in.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (event.target instanceof Element && takesText(event.target)) return;
       event.preventDefault();
       setOpen(false);
       control.current?.focus();

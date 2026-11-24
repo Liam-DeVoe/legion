@@ -384,7 +384,9 @@ export function DecisionsFilterBody({
   // focus on the first row the list draws of a question it answers, and lands nowhere where the
   // list draws none of them. A decision the list draws before the asks read has answered may
   // yet turn out to be a write-up, which leaves the list once it does, so the address lands on
-  // no decision until the seam can tell.
+  // no decision until the seam can tell. The row takes the focus with no scroll of the browser's
+  // own, as every hand-off of the body gives it: it brings itself on screen as it takes the focus
+  // (`useRowOnScreen`).
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
@@ -401,7 +403,7 @@ export function DecisionsFilterBody({
     const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
-    row.focus();
+    row.focus({ preventScroll: true });
   }, [drawn, partOf, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told
   // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
@@ -543,7 +545,11 @@ export function DecisionsFilterBody({
     )
       return;
     event.preventDefault();
-    footControl.current?.focus();
+    // The control can stand out of sight above the row the reader is on: it scrolls to its
+    // nearest edge only where the reader cannot see it whole, with no scroll of the browser's
+    // own, which would centre it (`focusIntoView`).
+    const control = footControl.current;
+    if (control !== null) focusIntoView(control);
   };
   // The foot leaves the page where its last decision moves up to another part, as when a read
   // ties it to a statement, and the browser moves the focus its control held to the page's

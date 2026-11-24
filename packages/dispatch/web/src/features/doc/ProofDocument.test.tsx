@@ -1187,7 +1187,8 @@ test("Escape takes the focus out of the editor the reader edits onto the documen
     const editor = editors[0];
     if (editor === undefined) throw new Error("no editor");
     // ProseMirror leaves a plain Escape to the page, whose registry reads it; an Escape with a
-    // modifier, and every other key, stay the editor's.
+    // modifier, an input method's Escape - one pressed in a composition, or the one that ends it,
+    // which Safari sends unmarked with keyCode 229 - and every other key stay the editor's.
     const { keydown } = editor.viewProps.handleDOMEvents as {
       keydown(view: unknown, event: KeyboardEvent): boolean;
     };
@@ -1195,6 +1196,14 @@ test("Escape takes the focus out of the editor the reader edits onto the documen
     expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape", shiftKey: true }))).toBe(
       false
     );
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { isComposing: true, key: "Escape" })),
+      "Escape in a composition"
+    ).toBe(false);
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { key: "Escape", keyCode: 229 })),
+      "Escape at keyCode 229"
+    ).toBe(false);
     expect(keydown(null, new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
     expect(appKeymap.describe().filter((entry) => entry.id === "leave-editor")).toMatchObject([
       { keys: ["Escape"], label: "Take the focus out of the editor", scope: "document" },
@@ -1206,6 +1215,14 @@ test("Escape takes the focus out of the editor the reader edits onto the documen
     editor.root.contentEditable = "true";
     editor.root.tabIndex = 0;
     editor.root.focus();
+
+    // The registry leaves the Escape that ends a composition in Safari to the input method too:
+    // the focus stays in the editor.
+    expect(
+      pressThroughRegistry(editor.root, { ...ESCAPE, keyCode: 229 }),
+      "Escape at keyCode 229"
+    ).toBe(false);
+    expect(document.activeElement, "Escape at keyCode 229").toBe(editor.root);
 
     expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
     expect(document.activeElement).toBe(article);

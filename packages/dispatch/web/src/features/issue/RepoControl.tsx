@@ -6,6 +6,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   badgeLow,
   badgePrimary,
@@ -663,7 +664,8 @@ function RepositoryBox({
               : (event) => {
                   // A press that ends an IME composition gives up what the reader was composing,
                   // not the box: the place leaves it alone, unmarked, as the key registry does.
-                  if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+                  // Safari sends it with `isComposing` false and keyCode 229 (`inputMethodKey`).
+                  if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
                   // Inside `NoTooltips` the press is the box's, from the box or from its clear
                   // control: it puts back what the issue holds, closes the box in a row of
                   // Details, and closes nothing around it. On a phone the box sits in Details, a

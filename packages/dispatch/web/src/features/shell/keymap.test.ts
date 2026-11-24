@@ -555,6 +555,32 @@ test("an already-handled key (defaultPrevented) or one mid-IME-composition is le
   expect(next.fired()).toBe(1);
 });
 
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that key is the input
+// method's as well. An Escape so sent in a field runs no binding, one that fires in a field (a
+// dialog's close) included, and neither does a letter; the plain keys after them do.
+test("a key an input method sends at keyCode 229, as Safari sends the one that ends a composition, is left alone", () => {
+  const { keymap, press } = harness();
+  const close = binding("close", "Escape", { inEditable: true });
+  const next = binding("next", "j");
+  keymap.register("global", [close.definition, next.definition]);
+  const field = document.createElement("input");
+  document.body.append(field);
+  try {
+    expect(press("Escape", { keyCode: 229, target: field }), "Escape at keyCode 229").toBe(false);
+    expect(close.fired(), "Escape at keyCode 229").toBe(0);
+    expect(press("j", { keyCode: 229 }), "j at keyCode 229").toBe(false);
+    expect(next.fired(), "j at keyCode 229").toBe(0);
+
+    press("Escape", { target: field });
+    expect(close.fired()).toBe(1);
+    press("j");
+    expect(next.fired()).toBe(1);
+  } finally {
+    field.remove();
+  }
+});
+
 test("project and board are page scopes: their bindings are described under their own scope and the innermost wins", () => {
   const { keymap, press } = harness();
   const toggleView = binding("toggle-view", "v");

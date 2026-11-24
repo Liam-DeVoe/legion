@@ -1439,6 +1439,34 @@ test("a send that lands leaves a focus the reader took off the composer while it
   }
 });
 
+// Safari sends the Escape that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004). The row's composer leaves
+// that press to the input method (`MentionComposer`'s own Escape), and the page's Escape back to
+// the row (`agents.back`) reads it by the same rule (`inputMethodKey`, through the keymap), so the
+// focus stays in the composer. A plain Escape then goes back to the row.
+test("an Escape that ends an IME composition in a row's composer, at keyCode 229, leaves the focus in the composer", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await user.click(comment);
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(comment, { isComposing: false, key: "Escape", keyCode: 229 });
+    expect(comment, "the Escape that ended a composition left the composer").toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(document.activeElement?.matches("[data-agent-row]")).toBe(true);
+    expect(document.activeElement?.contains(comment)).toBe(true);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 const coreIssue: IssueSummary = {
   advances: [],
   advances_revision: 0,

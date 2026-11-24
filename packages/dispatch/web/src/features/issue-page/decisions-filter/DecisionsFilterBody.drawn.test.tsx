@@ -1405,13 +1405,15 @@ test("a focused entry that another person deletes gives the focus to its neighbo
 });
 
 // A read that moves the entry the reader is on to another part, or takes it away, hands the focus
-// on, and the browser's own scroll of a focused element would move the page under the reader:
-// Chromium and Firefox centre a row, the tree or the foot's control that is not wholly in view.
-// So each focus the hand-off gives is without that scroll (`preventScroll`): the row it lands on
-// brings itself on screen by the page's one rule only where the reader cannot see it whole
-// (`useRowOnScreen`), the tree takes the focus only to pass it on, and the foot's control scrolls
-// to its nearest edge only where it is not wholly in sight (`focusIntoView`).
-test("a hand-off as a read moves or takes away the reader's entry gives every focus with no scroll of the browser's own", async () => {
+// on, an address that names an entry puts the focus on its row (R19), and Left on a row of the
+// foot puts it on the foot's control; the browser's own scroll of a focused element would move
+// the page under the reader: Chromium and Firefox centre a row, the tree or the foot's control
+// that is not wholly in view. So each focus the body gives is without that scroll
+// (`preventScroll`): the row it lands on brings itself on screen by the page's one rule only
+// where the reader cannot see it whole (`useRowOnScreen`), the tree takes the focus only to pass
+// it on, and the foot's control scrolls to its nearest edge only where it is not wholly in sight
+// (`focusIntoView`).
+test("a hand-off as a read moves or takes away the reader's entry, an address's landing, and Left from a foot row give every focus with no scroll of the browser's own", async () => {
   /** Each focus given since the last `handOff()`: the element and whether it was asked to scroll
    *  nothing. */
   let given: { readonly element: Element; readonly still: boolean }[] = [];
@@ -1519,6 +1521,29 @@ test("a hand-off as a read moves or takes away the reader's entry gives every fo
       { at: control.textContent?.trim(), still: true },
     ]);
     foot.unmount();
+
+    // The address names an entry: its row takes the focus as the list draws it.
+    handOff();
+    const named = renderBody(whole, { reveal: D("second") });
+    await waitFor(() => expect(focusedRow(named)).toBe(D("second")));
+    expect(handOff()).toEqual([{ at: D("second"), still: true }]);
+    named.unmount();
+
+    // Left on a row of the foot goes up to the foot's control.
+    const unfolded = renderBody(whole);
+    const footControl = footControlOf(unfolded) as HTMLElement;
+    await act(async () => footControl.click());
+    const footRow = rowOf(unfolded, D("replaced"));
+    await act(async () => footRow.focus());
+    handOff();
+    await act(async () => {
+      footRow.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" })
+      );
+    });
+    expect(footControl).toHaveFocus();
+    expect(handOff()).toEqual([{ at: footControl.textContent?.trim(), still: true }]);
+    unfolded.unmount();
   } finally {
     spy.mockRestore();
   }

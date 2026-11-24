@@ -6050,6 +6050,8 @@ test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor a
 
 /** A control a reader types or picks a draft in, as Details on a phone draws it. */
 interface DraftControl {
+  /** What the control is, as a row's name says it. */
+  readonly name: string;
   readonly surface: Surface;
   /** The control as the page draws it, open or not yet. */
   readonly node: ReactNode;
@@ -6069,6 +6071,7 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
   ...FIELD_EDITORS.map(
     ([field, label]): DraftControl => ({
       draft: field === "route" ? "role:reviewer" : "CORE-12",
+      name: `the ${field} editor`,
       fieldOf: (view) => within(view.container).queryByRole("textbox", { name: label }),
       node: <OpenFieldForm field={field} onClose={() => undefined} />,
       open: async (view, user, draft) => {
@@ -6085,6 +6088,7 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
   ),
   {
     draft: "acme/web",
+    name: "the repository box",
     fieldOf: (view) =>
       within(view.container).queryByRole("combobox", { name: "Repository of CORE-1" }),
     node: <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />,
@@ -6106,6 +6110,7 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
   ...(["inside", "outside"] as const).map(
     (surface): DraftControl => ({
       draft: "evals-now",
+      name: `the priority list's text box ${surface} NoTooltips`,
       fieldOf: () => within(document.body).queryByRole("combobox", { name: "Search priorities" }),
       node: addablePriorityLine(surface),
       open: async (view, user, draft) => {
@@ -6125,56 +6130,83 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
   ),
 ];
 
+/** Opens `control` in a sheet that closes on Escape, with a listener on `document`, where a panel
+ *  listens, and fires in its field an Escape that ends an IME composition, marked as `composing`
+ *  says: the control stays open with the draft and the focus in its field, and the press goes on
+ *  unmarked and unstopped, as the key registry leaves it, so it closes nothing around the control
+ *  either - neither the sheet nor a panel. A plain Escape then closes the control and not the
+ *  sheet. */
+async function composingEscapeLeaves(
+  user: UserEvent,
+  control: DraftControl,
+  composing: KeyboardEventInit
+): Promise<void> {
+  // What each Escape closed, in order.
+  const closed: string[] = [];
+  // Each Escape that went on past the control to `document`, where a panel listens.
+  const reached: KeyboardEvent[] = [];
+  const onDocument = (event: KeyboardEvent) => {
+    if (event.key === "Escape") reached.push(event);
+  };
+  document.addEventListener("keydown", onDocument);
+  const escapes = recordEscapes();
+  const view = draw(
+    <KeymapProvider>
+      <EscapeSheet onClose={() => closed.push("sheet")}>{control.node}</EscapeSheet>
+    </KeymapProvider>,
+    control.surface
+  );
+  try {
+    const field = await control.open(view, user, control.draft);
+    expect(field.value, control.name).toBe(control.draft);
+    expect(document.activeElement, control.name).toBe(field);
+
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { ...composing, key: "Escape" });
+    await settleReads();
+    expect(control.fieldOf(view), control.name).toBe(field);
+    expect(field.value, control.name).toBe(control.draft);
+    expect(document.activeElement, control.name).toBe(field);
+    expect(
+      escapes.presses.map((event) => event.defaultPrevented),
+      control.name
+    ).toEqual([false]);
+    expect(reached, control.name).toHaveLength(1);
+    expect(closed, control.name).toEqual([]);
+
+    await user.keyboard("{Escape}");
+    expect(control.fieldOf(view), control.name).toBeNull();
+    expect(
+      escapes.presses.map((event) => event.defaultPrevented),
+      control.name
+    ).toEqual([false, true]);
+    expect(reached, control.name).toHaveLength(1);
+    expect(closed, control.name).toEqual([]);
+  } finally {
+    escapes.stop();
+    document.removeEventListener("keydown", onDocument);
+    undraw(view);
+  }
+}
+
 // An Escape that ends an IME composition gives up what the reader was composing, not the control
 // they compose in: each control a reader types or picks a draft in stays open with the draft and
-// the focus in its field, and the press goes on unmarked and unstopped, as the key registry
-// leaves it, so it closes nothing around the control either - neither Details, a sheet on a phone
-// that closes on Escape, nor a panel listening on `document`. A plain Escape then closes the
-// control and not the sheet, as before.
+// the focus in its field, and closes nothing around it (`composingEscapeLeaves`).
 test("an Escape that ends an IME composition leaves each open control and its draft", async () => {
   const user = userEvent.setup();
   for (const control of DRAFT_CONTROLS) {
-    // What each Escape closed, in order.
-    const closed: string[] = [];
-    // Each Escape that went on past the control to `document`, where a panel listens.
-    const reached: KeyboardEvent[] = [];
-    const onDocument = (event: KeyboardEvent) => {
-      if (event.key === "Escape") reached.push(event);
-    };
-    document.addEventListener("keydown", onDocument);
-    const escapes = recordEscapes();
-    const view = draw(
-      <KeymapProvider>
-        <EscapeSheet onClose={() => closed.push("sheet")}>{control.node}</EscapeSheet>
-      </KeymapProvider>,
-      control.surface
-    );
-    try {
-      const field = await control.open(view, user, control.draft);
-      expect(field.value).toBe(control.draft);
-      expect(document.activeElement).toBe(field);
-
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
-      await settleReads();
-      expect(control.fieldOf(view)).toBe(field);
-      expect(field.value).toBe(control.draft);
-      expect(document.activeElement).toBe(field);
-      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false]);
-      expect(reached).toHaveLength(1);
-      expect(closed).toEqual([]);
-
-      await user.keyboard("{Escape}");
-      expect(control.fieldOf(view)).toBeNull();
-      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false, true]);
-      expect(reached).toHaveLength(1);
-      expect(closed).toEqual([]);
-    } finally {
-      escapes.stop();
-      document.removeEventListener("keydown", onDocument);
-      undraw(view);
-    }
+    await composingEscapeLeaves(user, control, { isComposing: true });
   }
+});
+
+// Safari sends the Escape that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Escape is the input
+// method's as well, and leaves each control, its draft and everything around it as the marked one
+// does.
+test.each(
+  DRAFT_CONTROLS.map((control) => [control.name, control] as const)
+)("an Escape that ends an IME composition in Safari, at keyCode 229, leaves %s open with its draft", async (_name, control) => {
+  await composingEscapeLeaves(userEvent.setup(), control, { isComposing: false, keyCode: 229 });
 });
 
 /** The form an editor's box sits in. */

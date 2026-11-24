@@ -67,8 +67,9 @@ export function focusedMatching(selector: string): HTMLElement | null {
  * past it. None of the lists that rove keeps rows in a closed `details` today - the Inbox
  * renders no row of a folded band and Architecture renders only the current level's rows - and
  * this rule is what lets the next banded list use one safely.
- * `checkVisibility()` would answer this and more, and needs Safari 17.4 / Chrome 105 /
- * Firefox 106; a focus rule is not worth raising the browsers Dispatch runs on.
+ * The DOM alone answers that case, so the rule reads no style: `checkVisibility()` would answer
+ * it and more - a row the stylesheet hides as well - at the cost of a style read of every row on
+ * each key.
  */
 function reachableRows(nodes: readonly HTMLElement[]): HTMLElement[] {
   return nodes.filter((node) => node.closest("details:not([open])") === null);

@@ -15,6 +15,7 @@ import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   card,
   linkText,
@@ -747,7 +748,9 @@ export function RefPreviewHost(): ReactNode {
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
     // open. With no open card the key passes through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      // An Escape that ends an input method's composition is the input method's
+      // (`inputMethodKey`), and the card stays open.
+      if (inputMethodKey(event)) return;
       if (event.key === "Escape" && state?.phase === "open") {
         event.stopPropagation();
         closeRefPreview();

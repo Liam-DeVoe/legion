@@ -428,8 +428,13 @@ test("Escape closes the open card", async () => {
 
 // The Escape that ends an IME composition is the composition's (decision 325): the open card stays
 // open and the key goes on to the page, which the card's capture listener on `document` would
-// stop. An Escape after the composition closes the card and stops there.
-test("an Escape that ends an IME composition leaves the open card open", () => {
+// stop. An Escape after the composition closes the card and stops there. Chromium and Firefox mark
+// that Escape `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode
+// 229 (WebKit bug 165004).
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("an Escape that ends an IME composition, marked by %s, leaves the open card open", (_mark, composing) => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
   const behind: KeyboardEvent[] = [];
@@ -450,7 +455,7 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
         new KeyboardEvent("keydown", {
           bubbles: true,
           cancelable: true,
-          isComposing: true,
+          ...composing,
           key: "Escape",
         })
       );
