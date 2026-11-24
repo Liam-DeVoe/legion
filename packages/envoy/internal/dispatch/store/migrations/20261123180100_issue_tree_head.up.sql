@@ -1,5 +1,9 @@
--- 20261123140000_issue_tree_head.up.sql — the head projection of each issue's tree, and the mark
+-- 20261123180100_issue_tree_head.up.sql — the head projection of each issue's tree, and the mark
 -- that says an issue's rows may be read.
+--
+-- It is dated after every type migration of its release. While it is pending, the census reads
+-- its triggers on graph_nodes and graph_tuples as a change of those tables, and a type migration
+-- after it in the same deploy could no longer be admitted as a bounded write (pgmigrate's census).
 --
 -- The tree read with no version (GET /api/v1/issues/{key}/tree) answers the head of an issue's
 -- tree. Walking the tuple log for it probes graph_tuples several times a node, and over a tree of

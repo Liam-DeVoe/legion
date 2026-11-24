@@ -38,7 +38,7 @@ var reviewedTriggerFunctions = map[string]string{
 // payload, which Postgres folds into one per transaction, and no table read.
 const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block_schema', '');\n  return null;\nend "
 
-// reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261123140000_issue_tree_head
+// reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261123180100_issue_tree_head
 // created it, the body graph_nodes_head_marks runs: for each row, a probe of issue_head_nodes_node
 // for the node, then, for each issue that probe and the node's address name, the issue's head fill
 // lock in share mode and a delete of its issue_head_marks row by its primary key.

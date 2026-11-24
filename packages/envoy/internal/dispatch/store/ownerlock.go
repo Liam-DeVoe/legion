@@ -30,7 +30,7 @@ const OwnerLockNamespace int32 = 0x4F574E52
 // takers take it and nothing else does: the fill of an issue's head rows (graphcensus'
 // FillIssueHeads), in exclusive mode right after the issue's owner lock and before it reads the
 // issue's rows, holding it until it commits the issue's mark; and the trigger of graph_tuples and
-// graph_nodes (issue_head_marks_drop, migration 20261123140000_issue_tree_head), in share mode, for
+// graph_nodes (issue_head_marks_drop, migration 20261123180100_issue_tree_head), in share mode, for
 // a write of a build that keeps no head rows, before it deletes the issue's mark. So such a write
 // that holds no owner lock of the issue - an issue's create - waits for a fill of the issue that
 // runs and then deletes the mark the fill committed, while the fill waits for nothing that write, or

@@ -202,7 +202,7 @@ type reviewedTrigger struct {
 // replaced it.
 //
 // graph_tuples and graph_nodes each hold the head projection's trigger (migration
-// 20261123140000_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
+// 20261123180100_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
 // insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows.
 var reviewedTriggers = []reviewedTrigger{
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",

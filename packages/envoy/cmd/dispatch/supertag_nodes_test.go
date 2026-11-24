@@ -235,10 +235,18 @@ func writeRowsBeforeTheStore(t *testing.T, ctx context.Context, pool *store.Pool
 // node to every comment writeRowsBeforeTheStore wrote (its Rows; its Nodes count the author's node
 // too): a backfill that wrote nothing would leave graph_nodes and graph_tuples as the migrations
 // alone left them, and this test would prove nothing about a store it filled.
+//
+// This build's backfill stands in for the released one, and it also writes the head projection,
+// whose tables (headMigration) come after every type migration this test applies: a released
+// backfill writes none of them. So the run has the head migration applied just before it and
+// undone just after, from the migration's own files, and the runner then meets that migration as
+// pending with the rest.
 func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
+	execHeadMigration(t, ctx, database.Pool, "up")
 	var out strings.Builder
 	report, err := graphcensus.Backfill(ctx, database, &out)
+	execHeadMigration(t, ctx, database.Pool, "down")
 	t.Logf("backfill-graph-store:\n%s", out.String())
 	if err != nil {
 		t.Fatalf("backfill-graph-store: %v", err)
@@ -253,6 +261,23 @@ func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 		return
 	}
 	t.Fatalf("the backfill reported no comment kind: %+v", report.Kinds)
+}
+
+// headMigration is the store's migration that creates the head projection's tables and their
+// triggers, by its file stem.
+const headMigration = "20261123180100_issue_tree_head"
+
+// execHeadMigration runs the head migration's .up.sql or .down.sql (direction), read from disk
+// (storeMigrationsDir), whole over pool, as the runner would run it.
+func execHeadMigration(t *testing.T, ctx context.Context, pool *store.Pool, direction string) {
+	t.Helper()
+	sql, err := os.ReadFile(storeMigrationsDir + "/migrations/" + headMigration + "." + direction + ".sql")
+	if err != nil {
+		t.Fatalf("read the head migration's %s file: %v", direction, err)
+	}
+	if _, err := pool.Exec(ctx, string(sql)); err != nil {
+		t.Fatalf("run the head migration's %s file: %v", direction, err)
+	}
 }
 
 // backfilledRows is every node that is no type node, and every tuple out of one, as its row
