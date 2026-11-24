@@ -22,19 +22,17 @@ Never merge to refresh CI or to pick up the default branch: each merge is a new 
 
 Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. Push the merge as any code push and build the branch: a clean merge can change a function's signature under the branch's own callers. Run again each `before_merge` check the merge can reach (*Reading a merge of the base*, below), and record each other `before_merge` check again at the merge head as carried from its earlier pass, without running it (`skill://legion-worker/references/results.md#what-a-result-is`). A `ci_check` check is read again from its CI run at the merge head. The merger records none itself: it asks the implementer, and the tester where the task has a tester step, to record theirs at the merge head (its role prompt, "A head that conflicts with its base").
+2. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`.
 
-   ```bash
-   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-     jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
-   ```
+After a retarget, do the same onto the new base, and cite the new head's run in the PR body.
 
-   Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
-3. Push the merge as any code push and build the branch: a clean merge can change a function's signature under the branch's own callers. Run again each `before_merge` check the merge can reach (*Reading a merge of the base*, below), and record each other `before_merge` check again at the merge head as carried from its earlier pass, without running it (`skill://legion-worker/references/results.md#what-a-result-is`). A `ci_check` check is read again from its CI run at the merge head. The merger records none itself: it asks the implementer, and the tester where the task has a tester step, to record theirs at the merge head (its role prompt, "A head that conflicts with its base").
-4. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`.
+What jj does here that an agent may not expect:
 
-After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`.
+- After `jj new <bookmark> <base>`, `@` is the merge commit itself: an edit after it changes the merge, and `@-` names both of its parents.
+- `jj git push` refuses a commit with no description, and `@` after a `jj split` is one.
+- jj reads a bare branch name in a revset as an expression, so a name git accepts, such as `release|stable`, can name other revisions. The JSON-quoted name that `gh pr view <n> --json baseRefName -q '.baseRefName | @json'` prints is read as that one name.
+- `jj undo` and `jj op restore` act on the repository's operation log, which holds the operations of every role of the issue and of the repository's other workspaces, so the last operation there can be another's.
 
 ## Reading a merge of the base
 
