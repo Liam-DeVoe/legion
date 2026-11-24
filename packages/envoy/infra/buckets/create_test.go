@@ -93,7 +93,6 @@ func TestACreateOfAnAbsentBucketTakesNoWriterProof(t *testing.T) {
 	for _, flags := range [][]string{
 		{"--host", "box-1"},
 		{"--kube-context", "prod"},
-		{"--namespace", "envoy"},
 		{"--this-machine"},
 		{"--connz", "http://127.0.0.1:8222"},
 		{"--first-deployment"},
@@ -255,29 +254,6 @@ func TestACreateOfABucketThereWithAnotherConfigurationNamesIt(t *testing.T) {
 			}
 			assertUnchanged(t, js, c.bucket, before)
 		})
-	}
-}
-
-// recreate keeps the writer proof: with a writer running on the named host it is refused naming
-// it, its proof having run (one host query), and the bucket is left as it was; with none it
-// deletes and creates the bucket after the proof, taken twice. The same writer leaves create
-// untouched (TestACreateOfAnAbsentBucketTakesNoWriterProof), so the proof is recreate's.
-func TestRecreateStillTakesTheWriterProof(t *testing.T) {
-	uri, js := server(t)
-	makeBuckets(t, js, bus.KnownSessionBucket)
-	before := streamOf(t, js, bus.KnownSessionBucket)
-	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
-	w := &world{hostAnswers: map[string][]string{"box-1": {writer}}}
-	code, stdout, stderr := runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.KnownSessionBucket, "--host", "box-1")
-	if code != 1 || !strings.Contains(stderr, "blocked: host box-1: process 4242 envoy-listener runs") || len(w.calls) != 1 {
-		t.Fatalf("recreate while a writer runs = %d, calls %q, want refused by its proof\n%s%s", code, w.calls, stdout, stderr)
-	}
-	assertUnchanged(t, js, bus.KnownSessionBucket, before)
-
-	w = &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
-	code, stdout, stderr = runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.KnownSessionBucket, "--host", "box-1")
-	if code != 0 || len(w.calls) != 2 || !streamOf(t, js, bus.KnownSessionBucket).Created.After(before.Created) {
-		t.Fatalf("recreate with no writer = %d, calls %q, want the bucket made again after two proofs\n%s%s", code, w.calls, stdout, stderr)
 	}
 }
 

@@ -57,11 +57,12 @@ serves without (the last bullet):
 A deployment's buckets therefore come from the operator. `envoy-infra buckets create` makes each
 bucket that is absent and takes no writer proof, so it needs nothing stopped: an absent bucket holds
 no write to lose. It can run again: a bucket there at the copies asked for with its own
-configuration is left as it is. **The proof `recreate` and `check` take is best effort** until the
-coming server-side hold lands: it checks only the Kubernetes contexts, hosts and machine
-(`--this-machine`) it is given, by process name, and holds nothing once it has checked. Before
-each of those, stop every listener of the deployment (and every envoy-dispatch, for
-`envoy_ci_state`) and confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
+configuration is left as it is. **The proof `check` takes is best effort**: it checks only the
+Kubernetes contexts, hosts and machine (`--this-machine`) it is given, by process name, and holds
+nothing once it has checked. Before a check, stop every listener of the deployment (and every
+envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has ended
+([`envoy-infra buckets`](#envoy-infra-buckets)). `envoy-infra buckets recreate` refuses until
+INFRA-4219's writer hold ships it (cybermonklabs/legion#4698).
 
 - **A first deployment:** once the NATS server is up, run `envoy-infra buckets create` at the
   deployment's copies (`--replicas`, or `ENVOY_NATS_REPLICAS`). It needs no listener or
@@ -69,10 +70,10 @@ each of those, stop every listener of the deployment (and every envoy-dispatch, 
   buckets and serves once they exist.
 - **Deleting a bucket under running listeners does not empty it for them:** each serves its last
   copy for reads within its stale bound, answers every write that needs the bucket 503, and never
-  brings the bucket back. To empty a bucket, or to replace one, stop every listener of the
-  deployment first (and every envoy-dispatch, for `envoy_ci_state`, which it writes too), then run
-  `envoy-infra buckets recreate --bucket <name>` with the inventory, then start them again. Never
-  delete one with `nats kv rm` or `nats stream rm`.
+  brings the bucket back. No command empties or replaces a bucket yet: `envoy-infra buckets
+  recreate` refuses, reading and deleting nothing, until INFRA-4219's writer hold ships it as a
+  held command (cybermonklabs/legion#4698), since no reading of pods, processes or connections
+  proves that no writer runs. Never delete one with `nats kv rm` or `nats stream rm`.
 - **A hub whose storage is replaced** (`gcp:NatsHub` on a new disk, a new `hostname` or `zone`,
   [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: run
   `envoy-infra buckets create` against it. Its listeners wait for the buckets and serve once they
@@ -115,9 +116,10 @@ or recreate a copied bucket refuse a server without that mark.
 
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
 stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
-that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), creates and recreates
-the buckets a listener copies ([`envoy-infra buckets`](#envoy-infra-buckets)), and checks a
-clustered hub's routes after its route authorization's rollout (`envoy-infra routes`,
+that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), creates the buckets a
+listener copies and checks that no writer of them runs
+([`envoy-infra buckets`](#envoy-infra-buckets)), and checks a clustered hub's routes after its
+route authorization's rollout (`envoy-infra routes`,
 [docs/nats-hub.md](docs/nats-hub.md#route-authorization)).
 
 ## Install
@@ -3398,32 +3400,34 @@ the one output format. The listener's first filter, for a listener named `exampl
 
 ## `envoy-infra buckets`
 
-`envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one once it
-has checked that no writer of it runs: every envoy-listener of the deployment, and every
-envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no such check: it makes
-only a bucket that is absent, which holds no write to lose.
+`envoy-infra buckets` creates the key-value buckets a listener copies, and checks that no writer of
+them runs: every envoy-listener of the deployment, and every envoy-dispatch when `envoy_ci_state`
+is among the buckets. `create` takes no such check: it makes only a bucket that is absent, which
+holds no write to lose.
 
-**The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
-writer gets past it six ways: a host, dev box or namespace you do not name, a binary renamed to a
-name the check does not know, a program a pod's launcher picks from what the pod does not show or
-as its script reads it alone (a script file, a file or a command's output it reads, a variable of
-the image's own environment, a variable the script gives no literal value, a glob, bash's
-`${!REF}`), a pod deleted with `--force` whose containers still run (a cluster is read through its
-API, not its nodes' runtimes), a writer that starts between the final scan and the create, and a
-restore after `check` that nothing holds. So before every `recreate` or `check`, stop every
-listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each
-host that it has ended; the check confirms what you did, and does not replace it. `create` needs
-no listener stopped and prints no warning.
+`recreate` refuses until INFRA-4219's writer hold ships it (cybermonklabs/legion#4698). Before it
+reads any argument, it exits 1 with a refusal naming that hold and that pull request: it connects to
+nothing, runs no kubectl, ssh or sh, and deletes nothing. No reading of pods, processes or
+connections proves that no writer runs: a writer can connect, write and leave between two reads;
+the hub's `auth.conf` shows neither the grants each server has loaded nor the auth service's
+per-connection decisions; and a server-side writer (a stream source, a republish, a push consumer)
+needs no connection. #4698 replaces the refusal with a `recreate` that runs only inside an
+established and verified writer hold, from before its first delete through its last create.
+
+**The check is best effort.** Every `check` prints so first, on standard error. A writer gets past
+it three ways: a host or dev box you do not name, a binary renamed to a name the check does not
+know, and a restore after `check` that nothing holds. So before every `check`, stop every listener
+of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it
+has ended; the check confirms what you did, and does not replace it. `create` needs no listener
+stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
-every server's connz shows the operator alone, and a server it cannot reach stops the hold. Six
+every server's connz shows the operator alone, and a server it cannot reach stops the hold. Three
 tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
 hold leaves no writer a connection.
 
 ```sh
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 --replicas 3
-NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets recreate --bucket envoy_sessions \
-  --nats nats://<hub>:4222 --kube-context <cluster> --namespace envoy --namespace dispatch --host <machine>
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
 ```
 
@@ -3500,73 +3504,15 @@ applies it, so the bucket the run was on may be there although no `created` line
 `create` again to see what the hub holds: that bucket is then present, or absent and made. A bucket
 a `created` line above names stays.
 
-`recreate` deletes each `--bucket`, checks again that no writer runs, since one started between
-the check and the delete may have written to the deleted bucket, and only then creates it.
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
-restore`.
+restore`. It needs an inventory of every place a writer runs, and refuses with exit 2 without one:
 
-`recreate` and `check` need an inventory of every place a writer runs, and refuse with exit 2
-without one:
-
-- `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context), with
-  `--namespace <ns>` once for each namespace where the deployment's writers run, such as `envoy` and
-  `dispatch`; each needs the other. A namespace is an RFC 1123 label (at most 63 lower-case
-  letters, digits and `-`, starting and ending with a letter or a digit), and any other value is
-  refused with exit 2 before anything runs: kubectl would read one starting with `-`, such as
-  `--all-namespaces`, as its own flag. Every `--namespace` is read in every `--kube-context`, and a
-  namespace a context does not hold blocks, naming the context. For each namespace the check reads
-  the namespace (`kubectl get namespace/<ns> -o name`; one the API does not hold blocks, since its
-  pod list would be empty) and its pods (`kubectl get pods --namespace=<ns> -o json`) through the
-  Kubernetes API, which GKE Autopilot allows, and blocks on each container, init container (a
-  native sidecar among them) or ephemeral container that has not terminated and may write one of
-  the buckets named. Which buckets a container may write is read from its configuration: a
-  listener (one that sets `ENVOY_MACHINE_ID`, or is named or runs as `listener` or
-  `envoy-listener`) writes `envoy_interests`, `envoy_roles`, `envoy_sessions` and
-  `envoy_known_sessions`, and `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` (read
-  as the listener reads it: split at commas, each entry trimmed of white space), holds a `$(VAR)`
-  reference, or comes from a Secret, a ConfigMap or a field; `envoy-dispatch` writes
-  `envoy_ci_state`. A container started through a launcher - a command whose first word is not
-  `envoy-listener`, the held-port wrapper `envoy-listener-heldport` or `envoy-dispatch`, such as a
-  shell, `env`, `tini` or `dumb-init`, or the image's entrypoint when the container sets `args`
-  alone - whose later words (of the command or its `args`) name `envoy-listener`, or
-  `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
-  envoy-listener']` or `[tini, --, envoy-listener]`, counts as a writer of every bucket, since the
-  launcher may set `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its
-  blocker says so, naming the launcher quoted. One whose later words name `envoy-dispatch` writes
-  `envoy_ci_state` too; for a launcher whose words name neither, the launcher rule adds none. The
-  words are read as the kubelet and then a shell run them. A `$(VAR)` reference becomes the value
-  the container's `env` gives `VAR`, so `[$(PROGRAM)]` with `PROGRAM=envoy-dispatch` runs
-  envoy-dispatch. Then each `$NAME`, `${NAME}` and `${NAME...}` becomes the value the container's
-  `env` gives `NAME` (a literal, or a field of the pod such as a label) or the value a literal
-  assignment in the script gave it before (`NAME=value`, `export NAME=value`, a quoted value, a
-  value its own expansions make): a top-level assignment, or one before a special builtin or of
-  `export`, replaces the name's value from there on, while one in a branch, a loop or after `&&` or
-  `||` adds a value and replaces none, and the words of a statement are read before its assignments,
-  so `ROLE=dispatch exec envoy-$ROLE` runs the pod's `ROLE`. `$1` to `$9` become the words after a
-  `-c` script, an unset name's `${NAME:-word}` becomes its word, `${NAME##pattern}` and the other
-  trims remove a matching prefix or suffix, a backslash before a line break joins the two lines, and
-  quotes and backslashes go; that reading is read again until it changes nothing, and a reading the
-  proof cannot finish within its bounds counts as a writer. So `sh -c 'exec "envoy-${ROLE}"'` with
-  `ROLE=dispatch`, from the `env` or from a label, and `PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch;
-  exec "$PROGRAM"` both run envoy-dispatch, and their blocker says the words name it `as the shell
-  reads them`. A
-  reference or an expansion of a variable whose value the pod does not show - from a Secret or a
-  ConfigMap, or one an `envFrom` source may set (one of a name its prefix and a key of
-  `[-._a-zA-Z0-9]+` form) - counts as a writer of every bucket, its blocker naming the expansion. A
-  variable neither the container's `env` nor a literal assignment of the script sets - one the
-  image's environment sets, or one the script sets from a command's output or a loop - is not read,
-  nor are a glob and bash's `${!REF}`, and a program a launcher picks through one of those, from a
-  script file, or from a file or a command's output it reads gets past the check: that is the third
-  way the warning names. Any word, value or reading holding a writer's name counts, a probe that
-  reads the listener's URL among them, so the check fails closed. A container whose `envFrom` may
-  set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the
-  name, and no `env` entry of that name, which takes precedence) counts as a writer of each bucket
-  that variable could select, and its blocker says so: one nothing else names a writer, with a
-  source of no prefix, blocks every bucket. No other container writes any. A pod of another
-  namespace is never read, so an Actions runner's container named `listener` does not block. No
-  node's kubelet runtime list is read (Autopilot refuses `nodes/proxy`), so a pod deleted with
-  `--force` whose containers still run gets past the check: that is the fourth way the warning
-  names, and `--connz` still sees its open connection.
+- `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
+  pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
+  `envoy-dispatch`) that has not terminated, and no node's kubelet runtime list
+  (`/api/v1/nodes/<node>/proxy/runningpods/`) holds one, since a pod deleted with `--force` keeps
+  its containers running after the API forgets it. A node whose runtime list does not answer
+  blocks, and so does an empty node list.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
   machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the
@@ -3588,10 +3534,8 @@ without one:
 
 Each kubectl and ssh call has a one-minute bound (kubectl's own `--request-timeout=45s` within
 it), and a call that does not finish blocks. Each blocker is printed with what it found and the
-command exits 1. A refusal before any change changes nothing; a refusal of `recreate`'s second
-check comes after its delete, and leaves each `--bucket` deleted and not created: stop the writer it
-names, then run `create`. A check that holds prints what it read: the nodes and machines it checked
-and how many processes it read.
+command exits 1. A refusal changes nothing. A check that holds prints what it read: the nodes and
+machines it checked and how many processes it read.
 
 A usage error exits 2 and echoes no word the command could not read, since an nkey seed may have
 been pasted there: a stray argument is named by its position (`word 6 after "buckets"`), a value
@@ -3621,8 +3565,8 @@ it is there with another, and nothing is updated or deleted. Besides:
 - it takes its replies on the default `_INBOX.` prefix, which a listener's user may receive on;
 - it logs one line to standard error before each create, naming the operator (`--operator`,
   required), the hub, the bucket and `break-glass`;
-- it is refused with `recreate` or `check`, beside `--inbox-prefix` (it takes `_INBOX.` already),
-  and without a `--bucket`.
+- it is refused with `check`, beside `--inbox-prefix` (it takes `_INBOX.` already), and without a
+  `--bucket`.
 
 The pull request that removes the create grant from the listener users at the cutover deletes the
 flag and this section.

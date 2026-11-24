@@ -25,20 +25,16 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// world is what the fake kubectl and ssh answer: the pods the API lists in each namespace
-// (podsIn, else pods for any namespace), the namespaces the API refuses or does not hold
-// (namespaceErr, keyed by the namespace, or by <context>/<namespace> for one context alone) and
-// the pod lists it fails (podsErr), and each host query's output, this machine's (--this-machine,
-// run through sh) under the key here. hostAnswers is consumed in order, so a test can make the
-// second proof differ from the first. The fake answers kubectl only as the proof calls it, with
-// the namespace as namespace/<ns> and --namespace=<ns>, never a word of its own.
+// world is what the fake kubectl and ssh answer: the pods the API lists, each node's runtime list
+// (or the error reading it), and each host query's output, this machine's (--this-machine, run
+// through sh) under the key here. hostAnswers is consumed in order, one answer a query.
 type world struct {
-	pods         string
-	podsIn       map[string]string
-	namespaceErr map[string]error
-	podsErr      map[string]error
-	hostAnswers  map[string][]string
-	hostErr      map[string]error
+	pods        string
+	nodes       string
+	running     map[string]string
+	runningErr  map[string]error
+	hostAnswers map[string][]string
+	hostErr     map[string]error
 	// hang names the programs ("kubectl", or the ssh program) whose calls never answer until
 	// their context ends, as a connected request that stops answering does.
 	hang  map[string]bool
@@ -61,36 +57,24 @@ func (w *world) run(ctx context.Context, name string, args ...string) ([]byte, e
 		return nil, ctx.Err()
 	}
 	if name == "kubectl" {
-		kube := ""
 		if len(args) > 2 && args[0] == "--context" {
-			kube, args = args[1], args[2:]
+			args = args[2:]
 		}
 		if !strings.HasPrefix(args[0], "--request-timeout=") {
 			return nil, fmt.Errorf("kubectl called without its request timeout: %v", args)
 		}
 		args = args[1:]
 		switch {
-		case len(args) == 4 && args[0] == "get" && strings.HasPrefix(args[1], "namespace/") && args[2] == "-o" && args[3] == "name":
-			namespace := strings.TrimPrefix(args[1], "namespace/")
-			if err := w.namespaceErr[kube+"/"+namespace]; err != nil {
-				return nil, err
-			}
-			if err := w.namespaceErr[namespace]; err != nil {
-				return nil, err
-			}
-			return []byte(args[1] + "\n"), nil
-		case len(args) == 5 && args[0] == "get" && args[1] == "pods" && strings.HasPrefix(args[2], "--namespace=") && args[3] == "-o" && args[4] == "json":
-			namespace := strings.TrimPrefix(args[2], "--namespace=")
-			if err := w.podsErr[namespace]; err != nil {
-				return nil, err
-			}
-			if pods, ok := w.podsIn[namespace]; ok {
-				return []byte(pods), nil
-			}
-			if w.pods == "" {
-				return []byte(noPods), nil
-			}
+		case args[0] == "get" && args[1] == "pods":
 			return []byte(w.pods), nil
+		case args[0] == "get" && args[1] == "nodes":
+			return []byte(w.nodes), nil
+		case args[0] == "get" && args[1] == "--raw":
+			node := strings.Split(args[2], "/")[4]
+			if err := w.runningErr[node]; err != nil {
+				return nil, err
+			}
+			return []byte(w.running[node]), nil
 		}
 		return nil, fmt.Errorf("unexpected kubectl %v", args)
 	}
@@ -122,7 +106,7 @@ func TestACallThatStopsAnsweringBlocksTheProofWithinItsBound(t *testing.T) {
 		args    []string
 		blocked string
 	}{
-		{"kubectl", []string{"--kube-context", "prod", "--namespace", "envoy"}, "kubernetes prod: namespace envoy: read it: kubectl did not finish within 200ms"},
+		{"kubectl", []string{"--kube-context", "prod"}, "kubernetes prod: list pods: kubectl did not finish within 200ms"},
 		{"ssh", []string{"--host", "box-1"}, "host box-1: unreachable or the query failed: ssh did not finish within 200ms"},
 	} {
 		t.Run(c.program, func(t *testing.T) {
@@ -180,49 +164,38 @@ func created(t *testing.T, js natsgo.JetStreamContext, bucket string) time.Time 
 	return info.Created
 }
 
-// Every writer proven ended, recreate deletes the bucket and creates it again with its copied
-// configuration: a new stream with the session bucket's age. Each named namespace is read, its
-// existence and then its pods, through the API alone, no node's runtime list is read, and the host
-// query is taken twice, before the delete and before the create.
-func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
+// Every writer proven ended, check says so and changes nothing. The kubelet's runtime list of every
+// node is read, and the host query is taken once.
+func TestCheckOnceEveryWriterIsProvenEnded(t *testing.T) {
 	uri, js := server(t)
 	config, _ := bus.CopiedBucketConfig(bus.SessionBucket, 1)
 	if _, err := js.CreateKeyValue(&config); err != nil {
 		t.Fatalf("create the bucket: %v", err)
 	}
 	before := created(t, js, bus.SessionBucket)
-	w := &world{hostAnswers: map[string][]string{"box-1": {clean(212), clean(213)}}}
-	code, stdout, stderr := runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.SessionBucket, "--kube-context", "prod", "--namespace", "envoy", "--namespace", "dispatch", "--host", "box-1")
-	if code != 0 {
-		t.Fatalf("recreate = %d\n%s%s", code, stdout, stderr)
+	w := &world{pods: noPods, nodes: "node-a node-b", running: map[string]string{"node-a": noPods, "node-b": noPods},
+		hostAnswers: map[string][]string{"box-1": {clean(212)}}}
+	code, stdout, stderr := runCommand(t, w, nil, "check", "--nats", uri, "--bucket", bus.SessionBucket, "--kube-context", "prod", "--host", "box-1")
+	if code != 0 || !strings.Contains(stdout, "proven: no writer of the buckets runs") {
+		t.Fatalf("check = %d\n%s%s", code, stdout, stderr)
 	}
-	info, err := js.StreamInfo("KV_" + bus.SessionBucket)
-	if err != nil {
-		t.Fatalf("read the recreated bucket: %v", err)
+	if after := created(t, js, bus.SessionBucket); !after.Equal(before) {
+		t.Fatalf("check changed the bucket: created %s, was %s", after, before)
 	}
-	if !info.Created.After(before) || info.Config.MaxAge != bus.SessionBucketMaxAge {
-		t.Fatalf("the bucket after recreate: created %s (before %s), max age %s; want a new stream with %s", info.Created, before, info.Config.MaxAge, bus.SessionBucketMaxAge)
-	}
-	calls := strings.Join(w.calls, "\n")
-	for _, namespace := range []string{"envoy", "dispatch"} {
-		for _, call := range []string{"kubectl --context prod --request-timeout=45s get namespace/" + namespace + " -o name", "kubectl --context prod --request-timeout=45s get pods --namespace=" + namespace + " -o json"} {
-			if !strings.Contains(calls, call) {
-				t.Fatalf("the proof never read %q; calls:\n%s", call, calls)
-			}
+	for _, call := range []string{"kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-a/proxy/runningpods/", "kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-b/proxy/runningpods/"} {
+		if !strings.Contains(strings.Join(w.calls, "\n"), call) {
+			t.Fatalf("the proof never read %q; calls:\n%s", call, strings.Join(w.calls, "\n"))
 		}
 	}
-	if strings.Contains(calls, "proxy") || strings.Contains(calls, "--all-namespaces") || strings.Contains(calls, " nodes") {
-		t.Fatalf("the proof read beyond the named namespaces' pods:\n%s", calls)
-	}
 	if len(w.hostAnswers["box-1"]) != 0 {
-		t.Fatalf("the host was queried %d times, want twice", 2-len(w.hostAnswers["box-1"]))
+		t.Fatal("the host was never queried")
 	}
 }
 
-// Each thing that may still run a writer refuses, and leaves the bucket as it was: a listener pod
-// the API lists in a named namespace, a named namespace the API does not hold, a pod list that does
-// not answer, a host running envoy-listener, an unreachable host, a host query cut short or reading
-// no process, and an open writer connection in the census.
+// Each thing that may still run a writer refuses, and leaves the bucket as it was: a pod the API
+// lists, a force-deleted pod its node's runtime still runs, a node whose runtime list does not
+// answer, a host running envoy-listener, an unreachable host, a host query cut short or reading no
+// process, and an open writer connection in the census.
 func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 	census := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -235,21 +208,22 @@ func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 		connz   string
 		blocked string
 	}{
-		{"a listener pod the API lists", world{podsIn: map[string]string{"envoy": podJSON("envoy", "hub-listener-0", "uid-1", "node-a", "listener", false)}},
-			"", "pod envoy/hub-listener-0 (uid uid-1, node node-a) runs container listener, which writes " + bus.InterestBucket},
-		{"a namespace the API does not hold", world{namespaceErr: map[string]error{"envoy": errors.New(`Error from server (NotFound): namespaces "envoy" not found`)}},
-			"", `namespace envoy: read it: Error from server (NotFound): namespaces "envoy" not found`},
-		{"a pod list that does not answer", world{podsErr: map[string]error{"envoy": errors.New("Error from server (Forbidden)")}},
-			"", "list pods in namespace envoy: Error from server (Forbidden)"},
-		{"a host running envoy-listener", world{hostAnswers: map[string][]string{"box-1": {"4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"}}},
+		{"a listener pod the API lists", world{pods: podJSON("hub", "hub-listener-0", "uid-1", "node-a", "listener", false), nodes: "node-a", running: map[string]string{"node-a": noPods}},
+			"", "pod hub/hub-listener-0 (uid uid-1, node node-a) runs container listener"},
+		{"a force-deleted pod its runtime still runs", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": podJSON("dispatch", "dispatch-7", "uid-2", "node-a", "envoy-listener", false)}},
+			"", "node node-a's runtime still runs pod dispatch/dispatch-7 (uid uid-2) container envoy-listener"},
+		{"a runtime list that does not answer", world{pods: noPods, nodes: "node-a", runningErr: map[string]error{"node-a": errors.New("Error from server (Forbidden)")}},
+			"", "node node-a: read its runtime's running pods: Error from server (Forbidden)"},
+		{"no node to read", world{pods: noPods, nodes: ""}, "", "the node list is empty"},
+		{"a host running envoy-listener", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {"4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"}}},
 			"", "host box-1: process 4242 envoy-listener runs"},
-		{"an unreachable host", world{hostErr: map[string]error{"box-1": errors.New("ssh: connect to host box-1 port 22: Connection timed out")}},
+		{"an unreachable host", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostErr: map[string]error{"box-1": errors.New("ssh: connect to host box-1 port 22: Connection timed out")}},
 			"", "host box-1: unreachable or the query failed"},
-		{"a host query cut short", world{hostAnswers: map[string][]string{"box-1": {"processes=12\n"}}},
+		{"a host query cut short", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {"processes=12\n"}}},
 			"", "host box-1: the query did not run to its end"},
-		{"a host query that read no process", world{hostAnswers: map[string][]string{"box-1": {clean(0)}}},
+		{"a host query that read no process", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {clean(0)}}},
 			"", "host box-1: the query read no process at all"},
-		{"an open listener connection", world{hostAnswers: map[string][]string{"box-1": {clean(150)}}},
+		{"an open listener connection", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {clean(150)}}},
 			"envoy-role-lane", `connection "envoy-role-lane" from 100.64.0.9:41000 as "UABC" is open`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -259,7 +233,7 @@ func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 				t.Fatalf("create the bucket: %v", err)
 			}
 			before := created(t, js, bus.InterestBucket)
-			args := []string{"recreate", "--nats", uri, "--bucket", bus.InterestBucket, "--kube-context", "prod", "--namespace", "envoy", "--host", "box-1"}
+			args := []string{"check", "--nats", uri, "--bucket", bus.InterestBucket, "--kube-context", "prod", "--host", "box-1"}
 			if c.connz != "" {
 				monitor := census(c.connz)
 				t.Cleanup(monitor.Close)
@@ -270,31 +244,12 @@ func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 			}
 			code, stdout, stderr := runCommand(t, &c.world, nil, args...)
 			if code != 1 || !strings.Contains(stderr, "refused") || !strings.Contains(stderr, c.blocked) {
-				t.Fatalf("recreate = %d, want 1 refused naming %q\n%s%s", code, c.blocked, stdout, stderr)
+				t.Fatalf("check = %d, want 1 refused naming %q\n%s%s", code, c.blocked, stdout, stderr)
 			}
 			if after := created(t, js, bus.InterestBucket); !after.Equal(before) {
-				t.Fatalf("a refused recreate changed the bucket: created %s, was %s", after, before)
+				t.Fatalf("a refused check changed the bucket: created %s, was %s", after, before)
 			}
 		})
-	}
-}
-
-// A writer that starts between the proof before the delete and the proof before the create may
-// have written to the deleted bucket, so the bucket is left deleted and nothing is created: the
-// operator stops it and runs create.
-func TestRecreateLeavesTheBucketDeletedWhenAWriterStartsBetweenItsProofs(t *testing.T) {
-	uri, js := server(t)
-	config, _ := bus.CopiedBucketConfig(bus.RoleClaimBucket, 1)
-	if _, err := js.CreateKeyValue(&config); err != nil {
-		t.Fatalf("create the bucket: %v", err)
-	}
-	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), "77 envoy-listener\nprocesses=151\n" + hostQueryDone + "\n"}}}
-	code, stdout, stderr := runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.RoleClaimBucket, "--host", "box-1")
-	if code != 1 || !strings.Contains(stdout, "deleted "+bus.RoleClaimBucket) || !strings.Contains(stderr, "the buckets are deleted and not created") {
-		t.Fatalf("recreate = %d\n%s%s", code, stdout, stderr)
-	}
-	if _, err := js.KeyValue(bus.RoleClaimBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
-		t.Fatalf("the bucket after a refused create: %v, want it missing", err)
 	}
 }
 
@@ -391,25 +346,24 @@ func TestACreateWithEveryBucketThereTakesNoProof(t *testing.T) {
 	}
 }
 
-// No inventory is a usage error for recreate and check, with --first-deployment as without it: an
-// empty server is no proof that no writer runs (a hub on a new disk is empty while its old clients
-// still run), so nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and
-// created the buckets with no writer proof. --this-machine alone is an inventory, of the machine
-// the command runs on; at 1160350af8 it was no flag at all.
+// No inventory is a usage error for check, with --first-deployment as without it: an empty server
+// is no proof that no writer runs (a hub on a new disk is empty while its old clients still run),
+// so nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and created the
+// buckets with no writer proof. --this-machine alone is an inventory, of the machine the command
+// runs on; at 1160350af8 it was no flag at all.
 func TestTheCommandNeedsAnInventory(t *testing.T) {
 	for _, args := range [][]string{
 		{"check", "--nats", "nats://127.0.0.1:1"},
 		{"check", "--nats", "nats://127.0.0.1:1", "--first-deployment"},
-		{"recreate", "--nats", "nats://127.0.0.1:1", "--bucket", bus.SessionBucket},
 	} {
 		code, _, stderr := runCommand(t, &world{}, nil, args...)
 		if code != 2 || !strings.Contains(stderr, "name every place a writer of the deployment runs") {
 			t.Fatalf("%v with no inventory = %d: %s", args, code, stderr)
 		}
 	}
-	code, _, stderr := runCommand(t, &world{}, nil, "recreate", "--nats", "nats://127.0.0.1:1", "--host", "box-1", "--bucket", "legion_agents")
+	code, _, stderr := runCommand(t, &world{}, nil, "check", "--nats", "nats://127.0.0.1:1", "--host", "box-1", "--bucket", "legion_agents")
 	if code != 2 || !strings.Contains(stderr, "legion_agents is no bucket a listener copies") {
-		t.Fatalf("recreate of a bucket no listener copies = %d: %s", code, stderr)
+		t.Fatalf("check of a bucket no listener copies = %d: %s", code, stderr)
 	}
 	// --this-machine names a place: the run goes on to connect, and fails there, at a closed port.
 	code, _, stderr = runCommand(t, &world{}, nil, "check", "--nats", "nats://127.0.0.1:1", "--this-machine")
@@ -566,11 +520,12 @@ func grantConfig(t *testing.T, public string, publish, subscribe []string, unres
 }
 
 // A NATS user granted exactly Grant() - the deployment's buckets user - runs every step the command
-// has, against a real server, with no refusal: check --first-deployment, create, check, recreate
-// and create again. The control removes one subject at a time from the grant and runs the step that
-// needs it, which the server refuses, exit 1, and the test names the subject. recreate and check
-// take the inventory (--host box-1), and create none. At 7b262c2e0a no such grant existed, and the
-// command's default _INBOX prefix was refused by any user granted its own inbox alone.
+// has, against a real server, with no refusal: check --first-deployment, create, check and create
+// again. The control removes one subject at a time from the grant and runs the step that needs it,
+// which the server refuses, exit 1, and the test names the subject. check takes the inventory
+// (--host box-1), and create none. recreate refuses before it connects (recreateRefusal), so it
+// is no step here. At 7b262c2e0a no such grant existed, and the command's default _INBOX prefix
+// was refused by any user granted its own inbox alone.
 func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	// A control's refused create or read is sent again until refusalWait (untilGranted): a second
@@ -604,7 +559,6 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 			{"check", "--first-deployment"},
 			{"create"},
 			{"check"},
-			{"recreate", "--bucket", bus.SessionBucket},
 			{"create"},
 		} {
 			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
@@ -620,7 +574,6 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 	}{
 		{"$JS.API.STREAM.CREATE.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
 		{"$JS.API.STREAM.INFO.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
-		{"$JS.API.STREAM.DELETE.KV_" + bus.SessionBucket, []string{"recreate", "--bucket", bus.SessionBucket}},
 		{"$JS.API.STREAM.INFO." + bus.Stream, []string{"check", "--first-deployment", "--bucket", bus.SessionBucket}},
 	} {
 		t.Run("control without "+c.subject, func(t *testing.T) {
@@ -737,10 +690,11 @@ func ownProcesses(own func() []*exec.Cmd) Runner {
 	}
 }
 
-// Every recreate and check prints the best-effort warning first, on standard error, whatever it
-// then does: a run whose proof holds, a refused one, a usage error. create takes no proof and
-// prints none, its own usage errors included. At 7b262c2e0a no run printed it.
-func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
+// Every check prints the best-effort warning first, on standard error, whatever it then does: a
+// run whose proof holds, a refused one, a usage error. create takes no proof and prints none, its
+// own usage errors included, and recreate prints its refusal alone. At 7b262c2e0a no run printed
+// it.
+func TestEveryCheckPrintsTheBestEffortWarning(t *testing.T) {
 	uri, _ := server(t)
 	for _, c := range []struct {
 		name  string
@@ -750,14 +704,14 @@ func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 	}{
 		{"a proof that holds", &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 0},
 		{"a refused run", &world{hostAnswers: map[string][]string{"box-1": {"7 envoy-listener\nprocesses=150\n" + hostQueryDone + "\n"}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 1},
-		{"a usage error", &world{}, []string{"recreate", "--nats", uri, "--bucket", bus.SessionBucket}, 2},
+		{"a usage error", &world{}, []string{"check", "--nats", uri, "--bucket", bus.SessionBucket}, 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			code, _, stderr := runCommand(t, c.world, nil, c.args...)
 			if code != c.code || !strings.HasPrefix(stderr, bestEffortWarning) {
 				t.Fatalf("%v = %d, want %d with the warning first on standard error:\n%s", c.args, code, c.code, stderr)
 			}
-			for _, way := range []string{"an omitted host, dev box or namespace", "--namespace, --host and --this-machine you name", "a renamed binary", "a program a pod's launcher picks from what the pod does not show", "a variable its script gives no literal value", "a glob", "bash's ${!REF}", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
+			for _, way := range []string{"an omitted host or dev box", "a renamed binary", "an unheld restore", "confirm on each host that it has ended"} {
 				if !strings.Contains(stderr, way) {
 					t.Fatalf("the warning does not name %q:\n%s", way, stderr)
 				}
@@ -767,6 +721,7 @@ func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 	for _, args := range [][]string{
 		{"create", "--nats", uri, "--bucket", bus.SessionBucket},
 		{"create", "--nats", uri, "--host", "box-1"},
+		{"recreate", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket},
 	} {
 		if _, _, stderr := runCreate(t, args...); strings.Contains(stderr, "WARNING: this proof is best effort") {
 			t.Errorf("%v printed the best-effort warning, which tells the operator to stop every listener:\n%s", args, stderr)
@@ -797,78 +752,39 @@ func TestTheUsageListsEveryFlag(t *testing.T) {
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
-// writer on a host the operator did not name gets past the check: recreate deletes and creates the
-// bucket while it runs. Today's outcome, asserted so that the hold, which excludes every writer at
-// the server whatever host it runs on, has to invert it. The same writer named with --host refuses,
-// so the pass is not vacuous.
+// writer on a host the operator did not name gets past the check: check proves that no writer runs
+// while it runs. Today's outcome, asserted so that the hold, which excludes every writer at the
+// server whatever host it runs on, has to invert it. The same writer named with --host refuses, so
+// the pass is not vacuous.
 func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilTheServerSideHoldLands(t *testing.T) {
-	uri, js := server(t)
+	uri, _ := server(t)
 	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
-	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}, "dev-box": {writer}}}
-	if code, _, stderr := runCommand(t, named, nil, "recreate", "--nats", uri, "--host", "box-1", "--host", "dev-box", "--bucket", bus.SessionBucket); code != 1 || !strings.Contains(stderr, "host dev-box: process 4242 envoy-listener runs") {
-		t.Fatalf("control: recreate with the writer's host named = %d, want refused naming it:\n%s", code, stderr)
+	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
+	if code, _, stderr := runCommand(t, named, nil, "check", "--nats", uri, "--host", "box-1", "--host", "dev-box", "--bucket", bus.SessionBucket); code != 1 || !strings.Contains(stderr, "host dev-box: process 4242 envoy-listener runs") {
+		t.Fatalf("control: check with the writer's host named = %d, want refused naming it:\n%s", code, stderr)
 	}
-	omitted := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}, "dev-box": {writer}}}
-	code, stdout, stderr := runCommand(t, omitted, nil, "recreate", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket)
-	if code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
-		t.Fatalf("recreate with the writer's host omitted = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout, stderr)
-	}
-	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the recreate: %v", err)
+	omitted := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
+	code, stdout, stderr := runCommand(t, omitted, nil, "check", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket)
+	if code != 0 || !strings.Contains(stdout, "proven: no writer of the buckets runs") {
+		t.Fatalf("check with the writer's host omitted = %d, want today's best-effort outcome, proven:\n%s%s", code, stdout, stderr)
 	}
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
-// writer whose binary was renamed gets past the host check, which reads process names: recreate
-// creates the bucket while the renamed writer runs on the named host. The hold refuses and kicks
-// its connection whatever its name. The stand-in runs throughout, so the pass is not vacuous.
+// writer whose binary was renamed gets past the host check, which reads process names: check
+// proves that no writer runs while the renamed writer runs on the named host. The hold refuses and
+// kicks its connection whatever its name. The stand-in runs throughout, so the pass is not vacuous.
 func TestBestEffortProofMissesARenamedBinaryUntilTheServerSideHoldLands(t *testing.T) {
-	uri, js := server(t)
+	uri, _ := server(t)
 	renamed := startStandIn(t, "renamed-writer")
 	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), []string{"recreate", "--nats", uri, "--host", "this-machine", "--ssh", localSSH(t), "--bucket", bus.SessionBucket}, &stdout, &stderr,
+	code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", localSSH(t), "--bucket", bus.SessionBucket}, &stdout, &stderr,
 		ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{renamed} }), http.DefaultClient)
 	if !running(renamed, "renamed-writer") {
 		t.Fatal("the renamed stand-in ended during the proof, so the test proves nothing")
 	}
-	if code != 0 {
-		t.Fatalf("recreate while a renamed writer runs = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
-	}
-	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the recreate: %v", err)
-	}
-}
-
-// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
-// writer that starts after the final scan and before the create gets past the check: here it starts
-// the moment recreate's second host query, the one before its create, returns clean, and the
-// command still creates the bucket. The hold, kept from the check through the change, refuses its
-// connection. The writer runs when the create completes, so the pass is not vacuous.
-func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilTheServerSideHoldLands(t *testing.T) {
-	uri, js := server(t)
-	ssh := localSSH(t)
-	var writer *exec.Cmd
-	scans := 0
-	judged := ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{writer} })
-	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		out, err := judged(ctx, name, args...)
-		if name == ssh {
-			if scans++; scans == 2 {
-				writer = startStandIn(t, "envoy-listener")
-			}
-		}
-		return out, err
-	}
-	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), []string{"recreate", "--nats", uri, "--host", "this-machine", "--ssh", ssh, "--bucket", bus.SessionBucket}, &stdout, &stderr, run, http.DefaultClient)
-	if writer == nil || !running(writer, "envoy-listener") {
-		t.Fatal("no writer started after the final scan, so the test proves nothing")
-	}
-	if code != 0 {
-		t.Fatalf("recreate with a writer started after the final scan = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
-	}
-	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the recreate: %v", err)
+	if code != 0 || !strings.Contains(stdout.String(), "proven: no writer of the buckets runs") {
+		t.Fatalf("check while a renamed writer runs = %d, want today's best-effort outcome, proven:\n%s%s", code, stdout.String(), stderr.String())
 	}
 }
 
