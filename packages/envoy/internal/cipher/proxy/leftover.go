@@ -27,7 +27,9 @@ const placeholderLeft = "this request still carries a placeholder after the swap
 // A placeholder is one as the broker mints it (placeholderIn). Headers are read in headersOf's
 // order only once one has been found to carry one, so which placeholder a line names does not
 // depend on the run, and a request that carries none - every request the swap served - costs no
-// sort.
+// sort. The unescape is read last and only where it says something the query as written did not:
+// a query that holds no escape unescapes to itself, which has been read already, and one that
+// holds an escape is not unescaped at all once an earlier text has answered.
 func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, values := range header {
 		for _, v := range values {
@@ -41,8 +43,13 @@ func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (st
 			}
 		}
 	}
-	for _, text := range [...]string{path, rawPath, rawQuery, lenientUnescape(rawQuery)} {
+	for _, text := range [...]string{path, rawPath, rawQuery} {
 		if placeholder := placeholderIn(text); placeholder != "" {
+			return placeholder, true
+		}
+	}
+	if unescaped := lenientUnescape(rawQuery); unescaped != rawQuery {
+		if placeholder := placeholderIn(unescaped); placeholder != "" {
 			return placeholder, true
 		}
 	}
