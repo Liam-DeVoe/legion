@@ -1535,7 +1535,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "a hook naming the architect",
 			body: aHook("{name: stuck, on: work_back, every: 1, roles: [architect], prompt: Words.}"),
-			want: "hooks[0].roles names the architect, which no hook writes to: the daemon's own wake to an architect is a notice",
+			want: "hooks[0].roles names the architect, which is no hook's own role: the daemon's own wake to an architect is a notice it writes itself",
 		},
 		{
 			name: "a hook whose moves are a word other than any",
