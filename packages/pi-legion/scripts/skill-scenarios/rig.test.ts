@@ -698,6 +698,14 @@ if (withoutLibpq) {
 describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
   const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+  /** The NATS URL of hostPort with the user name `user` and the password `s3cret` in it, as a URL
+   * an operator gives can carry them. */
+  const withPassword = (hostPort: string) => {
+    const url = new URL(`nats://${hostPort}`);
+    url.username = "user";
+    url.password = "s3cret";
+    return url.href;
+  };
   /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
    * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
    * that passed every check would reach psql at once. Answers services_up's status and standard
@@ -772,6 +780,61 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
         written: [],
       });
     }
+  });
+
+  /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
+   * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers,
+   * and a go that builds a fixturebuckets that fails, as the real one does on a server it cannot
+   * reach. Answers services_up's status, its output, fixturebuckets.log and the services
+   * directory. */
+  function provision(natsUrl: string) {
+    const dir = freshDir("services-provision");
+    const bin = path.join(dir, "bin");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(path.join(services, "logs"), { recursive: true });
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
+    writeFileSync(
+      path.join(bin, "psql"),
+      `#!/bin/sh\ncase "$*" in *max_connections*) echo 500 ;; *) echo 1 ;; esac\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "go"),
+      `#!/bin/sh\n[ "$1 $2" = "build -o" ] || exit 0\n` +
+        `printf '#!/bin/sh\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n` +
+        `chmod +x "$3"\n`,
+      { mode: 0o755 }
+    );
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `until_true() { shift 2; "$@" >/dev/null; }\nnats_ready() { :; }\n` +
+        `start_listener() { echo "the listener started" >&2; }\n` +
+        `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, path.join(dir, "root"), services],
+      {
+        PATH: `${bin}:${childEnv.PATH}`,
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://u:p@127.0.0.1:5432/postgres",
+        SKILL_SCENARIOS_NATS_URL: natsUrl,
+      }
+    );
+    const log = path.join(services, "logs", "fixturebuckets.log");
+    return { ...result, log: existsSync(log) ? readFileSync(log, "utf8") : "", services };
+  }
+
+  // Catches: a provisioning of a given NATS whose failure names its URL with the password in it.
+  // The batch hands fixturebuckets SKILL_SCENARIOS_NATS_URL, which can carry one: the failure
+  // names the server as safe_url prints it, and fixturebuckets.log holds what fixturebuckets
+  // printed, which names no user info (fixturebuckets/main_test.go).
+  test("a failed provisioning of a given NATS names it without its password", () => {
+    const { code, stdout, stderr, log, services } = provision(withPassword("127.0.0.1:4222"));
+    expect({ code, stdout, stderr, log }).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `skill-scenarios: fixturebuckets could not provision nats://user@127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
+      log: "fixturebuckets: nats: no servers available for connection\n",
+    });
   });
 });
 

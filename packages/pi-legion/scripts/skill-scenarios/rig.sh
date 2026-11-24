@@ -1011,9 +1011,11 @@ services_up() {
   fi
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
     go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
-  # No listener creates a bucket it copies: the batch provisions its own NATS with
-  # them before the listener starts.
-  provision_fixture_buckets "$S/fixturebuckets" "$nats_url" "$S/logs/fixturebuckets.log"
+  # No listener creates a bucket it copies: the batch provisions its own NATS with them before the
+  # listener starts. A given NATS's URL can carry a password, so the failure names the server as
+  # safe_url prints it, and fixturebuckets names it in its log without the URL's user info.
+  "$S/fixturebuckets" -url "$nats_url" >"$S/logs/fixturebuckets.log" 2>&1 ||
+    fail "fixturebuckets could not provision $(safe_url "$nats_url") with the buckets a listener copies; see $S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
