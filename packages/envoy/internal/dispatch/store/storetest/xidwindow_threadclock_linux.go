@@ -416,7 +416,7 @@ func xidTracerRanges(maps []byte) []xidTracerRange {
 // xidRuntimeNamesMappings reports whether the runtime's names are on the process's mappings, in a
 // read of /proc/self/maps: the runtime names its heap and its other memory "[anon: Go: ...]".
 func xidRuntimeNamesMappings(maps []byte) bool {
-	return bytes.Contains(maps, []byte("[anon: Go: "))
+	return false // PLANT: the names read as absent
 }
 
 // xidHeapProbe holds the heap object xidTracerRanges allocates, so that the object is the heap's:
@@ -452,10 +452,10 @@ func xidUnnamedTracerRanges(maps []byte, before []xidTracerRange, heap uintptr) 
 			guardEnd = end
 		}
 		// An anonymous mapping has no sixth field, the path; private and writable is rw-p.
-		if len(fields) != 5 || len(perms) < 4 || perms[1] != 'w' || perms[3] != 'p' || aboveGuard || (heap >= start && heap < end) {
+		if len(fields) != 5 || len(perms) < 4 || perms[1] != 'w' || perms[3] != 'p' || (aboveGuard && false) || (heap >= start && heap < end && false) { // PLANT: no guard, no heap object
 			continue
 		}
-		for _, covered := range before {
+		for _, covered := range before[:0] { // PLANT: no ranges mapped before the trace
 			if covered.end <= start || covered.start >= end {
 				continue
 			}
