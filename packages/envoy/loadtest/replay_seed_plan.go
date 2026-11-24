@@ -456,11 +456,7 @@ func claimWanted(cur liveIssue, want *replayIssue) bool {
 
 // --- checks --------------------------------------------------------------------------------------
 
-var (
-	answeredAtAttr = regexp.MustCompile(`answered_at="[^"]*"`)
-	// resolvedBlock matches a typed ask block directive whose state is resolved.
-	resolvedBlock = regexp.MustCompile(`(?m)^:::ask\{#[^}]* state="resolved"`)
-)
+var answeredAtAttr = regexp.MustCompile(`answered_at="[^"]*"`)
 
 // maskAnsweredAt blanks every typed ask block's answered_at attribute, which the seed cannot set
 // through the API (the answer's time is the seed's own).

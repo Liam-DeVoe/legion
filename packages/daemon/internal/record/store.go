@@ -1049,8 +1049,9 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 	}
 	// A pair an earlier release kept of its `decisions` step names a document no step of this
 	// release records, so no task names it; the row stays as GatesOf leaves that step's rows.
+	// kept for one release: design-gate-rows
 	if err == nil && !approval.Step.Valid() {
-		approval = KeptApproval{} // kept for one release: design-gate-rows
+		approval = KeptApproval{}
 	}
 	return decisions, approval, nil
 }
@@ -1753,8 +1754,9 @@ func (s *Postgres) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[De
 		if err != nil {
 			return nil, fmt.Errorf("read design gates for %s: %w", issue, err)
 		}
+		// kept for one release: design-gate-rows
 		if !gate.Step.Valid() {
-			continue // kept for one release: design-gate-rows
+			continue
 		}
 		gates[gate.Step] = gate
 	}
@@ -1781,8 +1783,9 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 		if err != nil {
 			return nil, fmt.Errorf("read the design gates of %d issues: %w", len(issues), err)
 		}
+		// kept for one release: design-gate-rows
 		if !gate.Step.Valid() {
-			continue // kept for one release: design-gate-rows
+			continue
 		}
 		if gates[gate.Issue] == nil {
 			gates[gate.Issue] = map[DesignStep]DesignGate{}
@@ -1833,8 +1836,9 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 		if err != nil {
 			return nil, fmt.Errorf("scan design gate for artifact %s: %w", artifactID, err)
 		}
+		// kept for one release: design-gate-rows
 		if !gate.Step.Valid() {
-			continue // kept for one release: design-gate-rows
+			continue
 		}
 		gates = append(gates, gate)
 	}

@@ -291,7 +291,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// DECISIONS_ARE_NODES for an issue's decisions document, not 500.
 	var retired *docs.RetiredDocumentError
 	if errors.As(err, &retired) {
-		s.writeHandlerError(w, retiredDocumentRefusal(model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}, retired.Name))
+		s.writeHandlerError(w, retiredDocumentRefusal(model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}, retired.Name, retired.LatestVersion))
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
