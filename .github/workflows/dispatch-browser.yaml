@@ -369,7 +369,8 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" multiprocess-dashboard bun run e2e:multiprocess
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" multiprocess-dashboard bun run e2e:multiprocess \
+            --output "$RUNNER_TEMP/test-results/multiprocess-dashboard"
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -386,7 +387,8 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" \
-            multiprocess-signin bunx playwright test --config e2e/playwright.config.ts
+            multiprocess-signin bunx playwright test --config e2e/playwright.config.ts \
+            --output "$RUNNER_TEMP/test-results/multiprocess-signin"
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -399,7 +401,7 @@ jobs:
         if: always()
         with:
           name: ${{ inputs.job }}-multiprocess-test-results-${{ github.run_attempt }}
-          path: packages/dispatch/e2e/test-results
+          path: ${{ runner.temp }}/test-results
           if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets

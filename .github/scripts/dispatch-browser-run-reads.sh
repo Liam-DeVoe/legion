@@ -292,13 +292,17 @@ case "$mode" in
     # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
     # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
     # and reading one would count rows no blob of this lane holds. After the prefix, the name
-    # must be one of this workflow's seven jobs, with a matrix leg in brackets after it.
+    # must be one of seven of this workflow's nine jobs, with a matrix leg in brackets after it.
+    # The other two, `quarantine-rows` and `quarantine`, are outside the filter on purpose: they
+    # run on the nightly's call alone, write no blob report and gate nothing, so the merge job
+    # needs neither, and a red one kept here would reach reading three as a leg that did not
+    # succeed (.github/ci-notes/dispatch-browser.md#the-quarantine-job-where-the-quarantined-rows-gate-nothing).
     #
     # `shard (3)` becomes `[shard-3]` and `alone (webkit-alone)` becomes `[alone-webkit-alone]`.
     # `embedder` runs one leg, `[embedder]`, and `multiprocess` two,
     # `[multiprocess-dashboard, multiprocess-signin]`, the names their steps hand
-    # .github/scripts/dispatch-browser-host-suite.sh. `binaries`, `merge` and `visual` are this
-    # workflow's other three jobs: they pass the name filter and get no leg, so reading one
+    # .github/scripts/dispatch-browser-host-suite.sh. `binaries`, `merge` and `visual` are the
+    # filter's other three jobs: they pass the name filter and get no leg, so reading one
     # passes them over and reading three names them as holding no row. `binaries` is in that
     # filter because a build that failed leaves the shard and alone jobs skipped and no blob
     # report anywhere, so a run read without it is reported as legs that uploaded nothing rather

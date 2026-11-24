@@ -15,12 +15,17 @@
 # reading one finds the blob it owes under that name. It names the blob report, report-<leg>.zip,
 # the row count beside it, rows/<leg>.txt, and the directory both are written into,
 # $RUNNER_TEMP/leg-report/<leg>, which the upload after the step takes as the artifact
-# `dispatch-browser-blob-<leg>-${{ github.run_attempt }}`.
+# `${{ inputs.job }}-blob-<leg>-${{ github.run_attempt }}`: `dispatch-browser-blob-<leg>-<attempt>`
+# under ci.yaml's dispatch-browser job and the nightly, `dispatch-browser-pr-blob-<leg>-<attempt>`
+# under ci.yaml's dispatch-browser-pr job.
 # <command> is the step's Playwright run, given whole: `bun run e2e:embedder`,
-# `bun run e2e:multiprocess` or `bunx playwright test --config e2e/playwright.config.ts`. Its last
-# command must be `playwright test`, because this script adds the reporters at its end: a package
-# script passes what follows its name to the last command it runs, and the last command of
-# e2e:embedder and of e2e:multiprocess is `playwright test`.
+# `bun run e2e:multiprocess` or `bunx playwright test --config e2e/playwright.config.ts`. The
+# two-process job's two steps end theirs with an `--output $RUNNER_TEMP/test-results/<leg>`, so
+# each run writes its traces into a directory of its own
+# (.github/ci-notes/dispatch-browser.md#why-the-two-process-job-uploads-the-failed-rows-traces-always
+# says why). Its last command must be `playwright test`, because this script adds the reporters at
+# its end: a package script passes what follows its name to the last command it runs, and the
+# last command of e2e:embedder and of e2e:multiprocess is `playwright test`.
 #
 # The step's environment reaches the command unchanged - the stack's Postgres image and connection
 # limit it exports, and the two-process job's DISPATCH_E2E_* names - and the step keeps its own

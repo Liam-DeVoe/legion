@@ -61,8 +61,9 @@ concurrency:
   group: dispatch-browser-nightly
   cancel-in-progress: false
 
-# The default for a job of this workflow that declares none. The one job below declares its own,
-# which is what reaches the workflow it calls.
+# The default for a job of this workflow that declares none, which is the re-record job. The
+# `dispatch-browser` and `quarantine-check` jobs below both declare their own: the first's is what
+# reaches the workflow it calls, and the second's adds `checks: read`.
 permissions:
   contents: read
   actions: read
@@ -72,7 +73,7 @@ jobs:
   # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
   # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
   # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
-  # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # nine jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
   # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no

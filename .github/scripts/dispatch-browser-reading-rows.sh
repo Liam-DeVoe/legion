@@ -103,9 +103,13 @@ how_ended() {
 # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, legs}
 # that both readings take. The jobs API lists the caller's jobs too, and on a pull request
 # labelled full-ci the jobs of ci.yaml's other caller of this workflow, so the script holds the
-# name to `<caller> / ` and one of this workflow's seven - binaries, shard, alone,
-# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it. `legs` is
-# every Playwright run of the job that uploads a blob report: one for a shard, an alone
+# name to `<caller> / ` and one of seven of this workflow's nine jobs - binaries, shard, alone,
+# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it. The other
+# two, `quarantine-rows` and `quarantine`, are outside that filter on purpose: they run on the
+# nightly's call alone, write no blob report and gate nothing, so the merge job needs neither and
+# neither reading names them
+# (.github/ci-notes/dispatch-browser.md#the-quarantine-job-where-the-quarantined-rows-gate-nothing).
+# `legs` is every Playwright run of the job that uploads a blob report: one for a shard, an alone
 # leg and the embedder job, two for the multiprocess job, none for the other three.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.

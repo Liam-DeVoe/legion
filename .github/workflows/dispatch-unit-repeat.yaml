@@ -103,7 +103,8 @@ name: Dispatch unit suite repeated
 # there, and the same section of docs/testing.md says what it needs.
 #
 # What it costs. One scheduled run a week of 15 legs, one run of 15 legs on each push to a pull
-# request that changes this file, the tool, its progress preload or the web-cold lane's preload,
+# request that changes this file, the tool, its progress preload, the module the tool signals a
+# process group through (packages/dispatch/e2e/signal-group.ts) or the web-cold lane's preload,
 # and any `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this
 # repository is public. GitHub's "Billing and usage" page
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
@@ -120,8 +121,9 @@ on:
     # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
     - cron: "23 9 * * 6"
   workflow_dispatch:
-  # This file, the tool and its progress preload, and the web-cold lane's preload alone: the run
-  # that proves a change to any of them before main has it.
+  # This file, the tool and its progress preload, packages/dispatch/e2e/signal-group.ts, which the
+  # tool imports, and the web-cold lane's preload alone: the run that proves a change to any of
+  # them before main has it.
   pull_request:
     paths:
       - .github/workflows/dispatch-unit-repeat.yaml

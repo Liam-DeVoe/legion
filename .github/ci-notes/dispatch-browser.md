@@ -1086,6 +1086,17 @@ when that attempt failed. `if-no-files-found: ignore`, since a green run with no
 attempt leaves no trace to upload. This upload stood on `if: failure()` while the project took
 no retry and so no row of it could pass after failing.
 
+Each run writes its traces into a directory of its own, named by its leg: the dashboard step
+passes `--output $RUNNER_TEMP/test-results/multiprocess-dashboard` and the sign-in step
+`--output $RUNNER_TEMP/test-results/multiprocess-signin`, in place of the config's `outputDir`,
+e2e/test-results. The one upload, `${{ inputs.job }}-multiprocess-test-results-${{ github.run_attempt }}`,
+takes $RUNNER_TEMP/test-results, so the artifact holds each run's first-attempt traces under
+its leg's name: multiprocess-dashboard/ and multiprocess-signin/. One directory for both would
+keep the sign-in run's traces alone: Playwright 1.64.1 empties each project's output directory
+when a run starts (`createRemoveOutputDirsTask`, playwright/lib/runner/index.js), and the
+sign-in run starts after the dashboard run, red or green, and before this upload. The merged
+HTML report holds both runs' traces either way, from their blob reports.
+
 ## The embedder job, the lanes it runs on and its budgets
 
 The rows that read what the bar costs a model, which no other lane runs. The two tiers of
