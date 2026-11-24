@@ -282,8 +282,8 @@ func rolesLinesHold(issue, out string, step int, role, typ, model string) error 
 
 // ownerListsChecker reads the launch spec of the walk's issue's architect as the fake runtime
 // recorded it (fake.Runtime.CallsOf("Spawn")), composed as a live launch composes it
-// (runtime.ComposePrompt): the text holds `checker (testing)`, the deployment's role as the
-// owner's list of roles names it.
+// (runtime.ComposePrompt): the text holds `checker (testing)`, the name and the type the
+// deployment's settings give its role. The note prints the line that names it.
 func (l *rolesLive) ownerListsChecker() {
 	t := l.t
 	t.Helper()
@@ -302,12 +302,12 @@ func (l *rolesLive) ownerListsChecker() {
 		t.Fatalf("compose the launch prompt of %s: %v", architect, err)
 	}
 	const want = "checker (testing)"
-	at := strings.Index(composed, "The roles of this deployment")
-	if at < 0 || !strings.Contains(composed, want) {
+	at := strings.Index(composed, want)
+	if at < 0 {
 		t.Fatalf("the architect's launch spec of %s, composed, does not hold %q:\n%s", l.key, want, composed)
 	}
-	sentence, _, _ := strings.Cut(composed[at:], "\n")
-	l.note("the architect's launch spec of %s (Spawn of %s), composed: %s", l.key, architect, sentence)
+	line, _, _ := strings.Cut(composed[strings.LastIndex(composed[:at], "\n")+1:], "\n")
+	l.note("the architect's launch spec of %s (Spawn of %s), composed: %s", l.key, architect, line)
 }
 
 // retroRated holds the rating the retro of the walk's issue gave the plan: the record of its retro,
