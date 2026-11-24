@@ -472,7 +472,7 @@ test("Inbox keeps rows waiting on agents below Waiting on you without duplicatin
     expect(headings).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
     expect(screen.getByText(wholeText("Waiting on session:session-…"))).toBeTruthy();
     // No `?agent=`, so no agent filter to clear.
-    expect(screen.queryByRole("button", { name: "Clear agent filter" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Remove Asks from / })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -629,8 +629,8 @@ test("Inbox preserves server priority order within Waiting on you", async () => 
         )
         .map((card) => card.dataset.testid)
     ).toEqual(["ask-ask-p0", "ask-ask-p2"]);
-    // The banner is gone from this page; the row's own needs-you control carries its count, and
-    // its accessible name carries every word the banner said (INFRA-3135, R7).
+    // The banner is gone from this page; the switch's Blocked on you carries its count, and its
+    // accessible name carries every word the banner said (INFRA-3135, R7).
     expect(screen.getByRole("button", { name: "Blocked on you: 2 items, oldest 2d" })).toBeTruthy();
   } finally {
     view.unmount();
@@ -776,9 +776,10 @@ test("an expired credential request alone is listed with Dismiss, and the Inbox 
   try {
     const emptyState = await screen.findByRole("region", { name: "Inbox empty state" });
     expect(within(emptyState).getByText("Nothing needs you")).toBeTruthy();
-    // The control is found by its role and its name, which is `Blocked on you` alone or with its
-    // count after a colon; its text is `Blocked on you · N`.
-    expect(screen.queryByRole("button", { name: /^Blocked on you\b/ })).not.toBeInTheDocument();
+    // Nothing waits on the reader, so the switch's Blocked on you shows no number.
+    expect(screen.getByRole("button", { name: /^Blocked on you\b/ }).textContent).toBe(
+      "Blocked on you"
+    );
     const section = screen.getByRole("region", { name: "Credential requests" });
     expect(within(section).getByText("Expired")).toBeTruthy();
     expect(
@@ -834,7 +835,7 @@ test("a credential list that fails to load keeps the Inbox from saying nothing n
 // F2 item 3: `Blocked on you · N` counted a credential request as none while its list was out or
 // its first read had failed, so the number beside the control was a number of a read nobody had
 // answered. It names its narrowing alone until both of its reads are in.
-test("Blocked on you draws no number while the credential list is out, and the number once it lands", async () => {
+test("the switch's count is the needs-you count, and no number while it is not known or at zero", async () => {
   const listOpenAsks = mockInboxReads([issueAsk()]);
   const listed = Promise.withResolvers<{ pending: CredentialPendingRow[] }>();
   mocks.getCredentialPending.mockReturnValue(listed.promise);
@@ -843,22 +844,34 @@ test("Blocked on you draws no number while the credential list is out, and the n
   });
   const { unmount } = renderInbox();
   try {
-    // The control is there, since an ask already waits; its count is not, since the requests it
-    // would add are unread.
-    const control = await screen.findByRole("button", { name: "Blocked on you" });
-    expect(control.textContent).toBe("Blocked on you");
-    expect(control).toHaveAttribute("title", "Blocked on you");
-    expect(screen.queryByText(/Blocked on you · \d/)).not.toBeInTheDocument();
+    // The part is there, since the switch always offers it; its count is not, since the
+    // requests it would add are unread.
+    const part = await screen.findByRole("button", { name: "Blocked on you" });
+    expect(part.textContent).toBe("Blocked on you");
+    expect(part).toHaveAttribute("title", "Blocked on you");
 
+    // The ask waiting on the reader and the request they may decide: `needsYou`'s count.
     listed.resolve({ pending: [secretRequest()] });
     const counted = await screen.findByRole("button", {
       name: /^Blocked on you: 2 items, oldest /,
     });
-    expect(counted.textContent).toBe("Blocked on you · 2");
+    expect(counted.textContent).toBe("Blocked on you 2");
   } finally {
     unmount();
     getCredentialCapabilities.mockRestore();
     listOpenAsks.mockRestore();
+  }
+
+  // Nothing waits on the reader: the part is drawn, with no number.
+  const none = mockInboxReads([issueAsk({ waiting_on: "agent" })]);
+  mocks.getCredentialPending.mockResolvedValue({ pending: [] });
+  const empty = renderInbox();
+  try {
+    const part = await screen.findByRole("button", { name: "Blocked on you: 0 items" });
+    expect(part.textContent).toBe("Blocked on you");
+  } finally {
+    empty.unmount();
+    none.mockRestore();
   }
 });
 
@@ -940,19 +953,17 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)
     ).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
-    const chip = await screen.findByRole("button", { name: "Clear agent filter" });
+    const chip = await screen.findByRole("button", { name: "Remove Asks from Planner filter" });
     expect(chip.textContent).toBe("Asks from Planner×");
-    // The agent's live link sits beside the clear-filter chip, never inside it.
-    const chipAgent = chip.closest<HTMLElement>("[data-agent-name]");
-    if (chipAgent === null) throw new Error("the agent filter chip is not drawn by AgentName");
-    const live = await within(chipAgent).findByRole("link", {
-      name: "Open live conversation with Planner",
-    });
+    // The agent's live link sits beside the chip, in the chip's own box, never inside it.
+    const box = chip.parentElement?.parentElement;
+    if (box === null || box === undefined) throw new Error("the agent chip is drawn in no box");
+    const live = within(box).getByRole("link", { name: "Open live conversation with Planner" });
     expect(live).toHaveAttribute("href", "/agents/session-1/live");
     expect(chip.contains(live)).toBe(false);
-    // The Blocked on you control counts the whole inbox, which would contradict the filtered
-    // list, so it is absent beside an agent filter. It is found by its role and its name, which
-    // is `Blocked on you` alone or with its count after a colon; its text is `Blocked on you · N`.
+    // The switch counts the whole inbox, which would contradict the filtered list, so it is not
+    // drawn beside an agent filter.
+    expect(screen.queryByRole("group", { name: "Inbox section" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Blocked on you\b/ })).not.toBeInTheDocument();
 
     await user.click(chip);
@@ -965,7 +976,12 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
   }
 });
 
-test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer", async () => {
+// The Agents page's Needs you link named `section` beside the agent before it named the agent
+// alone (D29). Such an address reads as the agent narrowing alone: every ask of the agent's on
+// the reader's work is listed, the switch is not drawn, and the address drops `section` with a
+// replace, so Back leaves for the page before rather than to an address the Inbox does not draw.
+test("an address with an agent and section=needs-you lists every ask of the agent's and drops section with a replace", async () => {
+  const user = userEvent.setup();
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
   const plannerWaits = issueAsk({
     id: "ask-planner-waits",
@@ -976,40 +992,31 @@ test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer
   });
   const rows = [fromPlanner, plannerWaits];
   const listOpenAsks = mockInboxReads(rows);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
-    ask: rows.find((ask) => ask.id === id) ?? fromPlanner,
-    answers: [],
-    edits: [],
-    claimant: null,
-    followers: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    replies: [],
-  }));
+  const getAsk = mockAskReads(rows);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/?agent=session-1&section=needs-you&group=waiting-on"]}>
-      <QueryClientProvider client={queryClient}>
-        <Inbox />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { unmount } = renderInbox([
+    "/agents",
+    "/?agent=session-1&section=needs-you&group=waiting-on",
+  ]);
 
   try {
     await screen.findByText("Planner question");
-    expect(screen.queryByText("Planner waits on alice")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/?agent=session-1&group=waiting-on")
+    );
+    expect(screen.getByText("Planner waits on alice")).toBeTruthy();
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)
-    ).toEqual(["Waiting on you (1)"]);
+    ).toEqual(["Waiting on you (1)", "Waiting on agents (1)"]);
     // No live agent carries the title, so the chip falls back to the asks' author label.
-    expect(screen.getByRole("button", { name: "Clear agent filter" }).textContent).toBe(
-      "Asks from session:session-… waiting on you×"
-    );
+    expect(
+      screen.getByRole("button", { name: "Remove Asks from session:session-… filter" }).textContent
+    ).toBe("Asks from session:session-…×");
+    expect(screen.queryByRole("group", { name: "Inbox section" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/agents"));
   } finally {
-    view.unmount();
+    unmount();
     listAgents.mockRestore();
     getAsk.mockRestore();
     listOpenAsks.mockRestore();
@@ -1048,7 +1055,9 @@ test("Inbox filtered to an agent with no open asks says so and still offers to c
     // A session the registry does not list and no listed ask names reads by its short id.
     expect(within(emptyState).getByText("No open asks from session:idle-ses…")).toBeTruthy();
     expect(screen.queryByText("Which approach?")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Clear agent filter" }));
+    await user.click(
+      screen.getByRole("button", { name: "Remove Asks from session:idle-ses… filter" })
+    );
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
   } finally {
     view.unmount();
@@ -1111,7 +1120,7 @@ test("an agent title longer than the chips line draws the agent chip no wider th
   );
 
   try {
-    const chip = await screen.findByRole("button", { name: "Clear agent filter" });
+    const chip = await screen.findByRole("button", { name: `Remove Asks from ${title} filter` });
     await waitFor(() => expect(chip.textContent).toBe(`Asks from ${title}×`));
     const strip = chip.closest<HTMLElement>("[data-chip-strip]");
     if (strip === null) throw new Error("the agent chip is drawn outside the chips line");
@@ -1168,7 +1177,7 @@ test("the agent narrowing is the row's shared chip, and its press leaves for the
   const { unmount } = renderInbox(["/agents", narrowed]);
   try {
     // Found by its name alone, so a chip drawn as anything but the shared one is read, not missed.
-    const chip = await screen.findByLabelText("Clear agent filter");
+    const chip = await screen.findByLabelText("Remove Asks from Planner filter");
     const type = screen.getByRole("button", { name: "Remove Type: Question filter" });
     expect([chip.tagName, chip.getAttribute("data-control"), chip.className]).toEqual([
       "BUTTON",
@@ -1182,7 +1191,7 @@ test("the agent narrowing is the row's shared chip, and its press leaves for the
     await waitFor(() =>
       expect(screen.getByTestId("location").textContent).toBe("/?q=Planner&assignee=everyone")
     );
-    expect(screen.queryByLabelText("Clear agent filter")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Remove Asks from Planner filter")).not.toBeInTheDocument();
     // The press pushed an entry, as following a link does: Back gives the agent's asks back.
     await user.click(screen.getByRole("button", { name: "History back" }));
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(narrowed));
@@ -1216,7 +1225,7 @@ test("under a host that owns the filter, the agent chip's press tells the host a
     </MemoryRouter>
   );
   try {
-    await user.click(await screen.findByLabelText("Clear agent filter"));
+    await user.click(await screen.findByLabelText("Remove Asks from Planner filter"));
     // The host is told what every other chip's removal tells it, and the page under it stays.
     expect(changes).toEqual([{ assignees: [], item: undefined, q: "Planner" }]);
     expect(screen.getByTestId("location").textContent).toBe("/agents");
@@ -2299,11 +2308,12 @@ async function handOnTo(user: UserEvent, scope: HTMLElement, login: string): Pro
   await user.click(await screen.findByRole("option", { name: new RegExp(`^${login}\\b`) }));
 }
 
-/** The bar's one **Filter** button, which reveals the five fields it opens. The caller hands its
- *  own user: this file's rows read where the pointer rests, and a user of this helper's own would
- *  leave it somewhere the test does not know about. */
+/** The bar's one **Filter** button, which reveals the five fields it opens: `Filter`, or
+ *  `Filter · N` while N narrowings are on. The caller hands its own user: this file's rows read
+ *  where the pointer rests, and a user of this helper's own would leave it somewhere the test
+ *  does not know about. */
 async function openFilterFields(user: UserEvent): Promise<void> {
-  const filter = screen.getByRole("button", { name: "Filter" });
+  const filter = screen.getByRole("button", { name: /^Filter( · \d+)?$/ });
   if (filter.getAttribute("aria-expanded") !== "true") await user.click(filter);
 }
 
@@ -3245,7 +3255,7 @@ test("Blocked on you counts the reader's own questions, and does not move when t
   try {
     await screen.findByText("Which approach?");
     expect(rowIds()).toEqual(["ask-mine"]);
-    // One question of the three is on the reader's own issue; the needs-you control counts
+    // One question of the three is on the reader's own issue; the switch's Blocked on you counts
     // that one, as the banner it replaced did (INFRA-3135, R7).
     expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
@@ -3271,7 +3281,7 @@ test("Blocked on you counts the reader's own questions, and does not move when t
   }
 });
 
-test("the needs-you control narrows the list to what waits on the reader and offers the way back", async () => {
+test("choosing Blocked on you narrows the list to what waits on the reader, with no chip and no count, and All takes it off", async () => {
   const user = userEvent.setup();
   const rows = filterRows();
   const listOpenAsks = mockInboxReads(rows);
@@ -3279,6 +3289,8 @@ test("the needs-you control narrows the list to what waits on the reader and off
   const { unmount } = renderInbox("/?assignee=everyone");
   try {
     await screen.findByText("Bob's question?");
+    const all = screen.getByRole("button", { name: "All" });
+    expect(all).toHaveAttribute("aria-pressed", "true");
     await user.click(screen.getByRole("button", { name: /Blocked on you: 1 item/ }));
 
     // The press writes the section and takes the assignee parameter off, so the list is the
@@ -3287,11 +3299,18 @@ test("the needs-you control narrows the list to what waits on the reader and off
       expect(screen.getByTestId("location").textContent).toBe("/?section=needs-you")
     );
     expect(rowIds()).toEqual(["ask-mine"]);
-
-    // The narrowing is a chip like any other, so **Clear filters** is the way back out of it.
-    expect(screen.getByRole("button", { name: "Remove Waiting on you filter" })).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    // The switch's choice is no narrowing of the Filter panel's: no chip, no count, nothing for
+    // Clear filters to take off. All is the way back.
+    expect(screen.queryByRole("button", { name: /^Remove .+ filter$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
+    await user.click(all);
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
+    expect(all).toHaveAttribute("aria-pressed", "true");
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -3302,7 +3321,7 @@ test("the needs-you control narrows the list to what waits on the reader and off
 // The number counts the whole inbox, so a press that kept a field narrowing or the search text on
 // would list fewer asks than it says (R7: the page shows every item the number counts). It takes
 // both off, as it takes the assignee off, and keeps how the list is sorted and banded.
-test("the needs-you control takes the fields and the search off, so the list holds every ask it counts", async () => {
+test("choosing Blocked on you takes the fields and the search off, so the list holds every ask it counts", async () => {
   const user = userEvent.setup();
   const rows = [
     issueAsk({ id: "ask-mine" }),
@@ -3323,6 +3342,32 @@ test("the needs-you control takes the fields and the search off, so the list hol
     );
     expect([...rowIds()].sort()).toEqual(["ask-mine", "ask-urgent"]);
     expect(screen.getByRole("searchbox", { name: "Search asks" })).toHaveValue("");
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
+// Clear filters takes the Filter panel's narrowings off and leaves the switch's choice, so
+// `section=needs-you` stays in the address (R8; ST7 row 6).
+test("Clear filters under Blocked on you takes the field off and keeps the section", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?section=needs-you&type=question");
+  try {
+    await screen.findByText("Which approach?");
+    expect(screen.getByRole("button", { name: "Filter · 1" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/?section=needs-you")
+    );
+    expect(screen.getByRole("button", { name: /^Blocked on you\b/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -3430,7 +3475,9 @@ test("an agent's reply on a snoozed row leaves it in Later and off Waiting on yo
 
     expect(headings()).toEqual(["Later (1)"]);
     expect(screen.queryByText("Waiting on you")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Blocked on you/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Blocked on you\b/ }).textContent).toBe(
+      "Blocked on you"
+    );
     expect(rowIds()).toEqual([]);
 
     // Opening the band shows it there, still deferred, with its return time.
@@ -4116,11 +4163,10 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
 
 // The bar's Dismiss over the list's last two unread threads, on a phone. **Mark all read** is
 // offered only while the list holds an unread thread, so it goes in the commit that takes the
-// threads away, and below `sm` the header's line it stood on goes with it: 52 px, the button's 44
-// and the row's 8 px gap. The threads free their space, and that line is made up for as any other
-// change above the list is: the window scrolls up by the line, and the row after the threads,
-// which holds the focus, stands where the row marked last stood.
-test("a bulk Dismiss of the last unread threads, whose going takes Mark all read's line out of the header, makes up for that line, and the row after them stands at their place", async () => {
+// threads away, and the bar's **More**, which held it alone, goes with it. The bar is one line
+// that never wraps (R8), so nothing above the list moves: the window stays where it was, and the
+// row after the threads, which holds the focus, stands where the row marked last stood.
+test("a bulk Dismiss of the last unread threads, whose going takes Mark all read out of the bar, moves nothing above the list, and the row after them stands at their place", async () => {
   const user = userEvent.setup();
   // Six questions newer than the threads and six older, so the threads stand between them.
   const asks = Array.from({ length: 12 }, (_, index) =>
@@ -4131,12 +4177,8 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
   const reads = listThreads(2, asks);
   const settle = Promise.withResolvers<{ dismissed: number }>();
   answerInboxDismisses().mockReturnValue(settle.promise);
-  const MARK_ALL_LINE = 52;
-  // Five rows above the window. The rows stand below the header's Mark all read line while it is
-  // drawn.
-  const laidOut = layRowsDown(5 * LAID_ROW_PX, () =>
-    document.querySelector("[data-inbox-mark-all]") === null ? 0 : MARK_ALL_LINE
-  );
+  // Five rows above the window.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
   const moves = watchMoves();
   const { unmount } = renderInbox("/?group=none");
   try {
@@ -4144,7 +4186,7 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     const order = rowIds();
     const marked = order.slice(6, 8);
     expect(marked).toEqual(["reply:c1", "reply:c2"]);
-    expect(document.querySelector("[data-inbox-mark-all]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "More" })).toBeTruthy();
     // The upper thread is marked last, as a reader marking upward does.
     for (const id of [...marked].reverse()) await user.click(markOf(id));
     await screen.findByText("2 selected");
@@ -4152,10 +4194,10 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
-    expect(document.querySelector("[data-inbox-mark-all]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
     const landing = markOf(order[8] as string);
     await waitFor(() => expect(landing).toHaveFocus());
-    expect(window.scrollY).toBe(5 * LAID_ROW_PX - MARK_ALL_LINE);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
     expect(landing.getBoundingClientRect().top).toBe(place);
     expect(moves.scrolled.length).toBe(0);
   } finally {

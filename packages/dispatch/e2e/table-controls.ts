@@ -22,9 +22,10 @@ import {
   createProject,
   patchIssue,
 } from "./api";
-import { control, controlRow, openFilterPanel } from "./filters";
+import { control, controlRow, displayTrigger, openFilterPanel } from "./filters";
 import { nextFrames } from "./frames";
 import { drawer, peekTrigger } from "./inbox-drawer";
+import { seedCommentThread } from "./inbox-threads";
 import { expandedState, settledState } from "./settled";
 import { assertPageFits } from "./unclipped";
 
@@ -221,6 +222,16 @@ export async function seedSurfaces(): Promise<SurfaceScene> {
       labels: index % 2 === 0 ? ["frontend"] : ["backend"],
       status: "todo",
     });
+    // One unread thread on the first issue, so the Inbox offers Mark all read in its bar's More.
+    // It is the oldest row, so the Inbox's first row is an ask: a row a surface selects opens in
+    // the reading column, and a thread opened there is read, which would take Mark all read away.
+    if (index === 0) {
+      await seedCommentThread(
+        issue.key,
+        "Is the mirror still nightly?",
+        "It moved to the weekend."
+      );
+    }
     await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
     keys.push(issue.key);
   }
@@ -237,6 +248,9 @@ export async function seedSurfaces(): Promise<SurfaceScene> {
   const priority = await createPriority({ owner: "alice", title: SURFACE_PRIORITY.title });
   const work = await createIssue({ project: "BOOKS", title: SURFACE_PRIORITY_WORK.title });
   await patchIssue(work.key, { advances: [priority.id], status: "in_progress" });
+  // And one in flight under no priority, so the priorities page's issues table has a row to mark.
+  const loose = await createIssue({ project: "BOOKS", title: "Ledger cleanup" });
+  await patchIssue(loose.key, { status: "in_progress" });
   return { issue, priority: priority.id, project: "CORE" };
 }
 
@@ -364,11 +378,11 @@ export async function gapBoxes(root: Locator, top: number, bottom: number): Prom
   );
 }
 
-/** The surface's own display menu, opened unless it is open already: the trigger is found by
- *  its `data-control` inside this surface's row, so a drawer over a page that draws one of its
- *  own opens the drawer's. */
+/** The surface's own display menu, opened unless it is open already: the trigger is found inside
+ *  this surface's row, so a drawer over a page that draws one of its own opens the drawer's, and
+ *  among **More**'s items where the bar holds it there (`displayTrigger`). */
 export async function openDisplay(page: Page, within: Locator | Page): Promise<Locator> {
-  const trigger = control(controlRow(within), CONTROL.displayMenu);
+  const trigger = await displayTrigger(page, "View", within);
   if ((await expandedState("the surface's View menu", trigger)) === "shut") await trigger.click();
   const menu = page.getByRole("dialog", { name: "View" });
   await expect(menu).toHaveCount(1);
@@ -439,7 +453,9 @@ async function openInbox(page: Page): Promise<Surface> {
     row: controlRow(root),
     firstRow,
     head: root.getByRole("heading", { level: 1, name: "Inbox" }),
-    narrow: () => pickInboxField(page, "type", /^Question,/),
+    // A narrowing every seeded row passes, the unread thread too, so Mark all read stays offered
+    // in More under it.
+    narrow: () => pickInboxField(page, "project", /^CORE,/),
     panel: async () => {
       await openFilterPanel(page, root);
     },
@@ -499,7 +515,7 @@ async function openInboxDrawer(page: Page, scene: SurfaceScene): Promise<Surface
     firstRow,
     // No title of its own, so the drawer is measured from its own top.
     head: root,
-    narrow: () => pickInboxField(page, "type", /^Question,/, root),
+    narrow: () => pickInboxField(page, "project", /^CORE,/, root),
     panel: async () => {
       await openFilterPanel(page, root);
     },
@@ -729,13 +745,27 @@ async function openPrioritiesPage(page: Page): Promise<Surface> {
     row: controlRow(table),
     firstRow,
     head,
-    // The table has no trigger: its narrowings are its columns' and its search's. A word of the
-    // seeded priority's title keeps its row.
+    // The table has no trigger: its narrowings are its columns' and its search's. The Owner pick
+    // its column filter writes into the address keeps the seeded priority's row and draws a chip,
+    // as every page's narrowing here does.
     narrow: async () => {
-      await control(controlRow(table), CONTROL.searchBox).fill(SURFACE_PRIORITY.word);
+      await page.goto("/priorities?p.f.owner=alice");
+      await expect(control(controlRow(table), CONTROL.chip).first()).toBeVisible();
     },
     display: async () => {
       await openDisplay(page, table);
+    },
+    // A row of the issues table under no priority, which the page draws under the project List's
+    // bar with its selection bar.
+    select: async () => {
+      await root
+        .getByRole("region", { exact: true, name: "In flight under no priority" })
+        .locator("[data-issue-row]")
+        .first()
+        .getByRole("checkbox")
+        .first()
+        .click();
+      await expect(control(root, CONTROL.selectionBar)).toBeVisible();
     },
   };
 }
@@ -888,10 +918,39 @@ const BAR_NARROWINGS: Partial<Record<SurfaceName, readonly string[]>> = {
   ],
 };
 
+/** The Inbox's six narrowings, a field and its value, under which the seed keeps every row: each
+ *  of its asks is a question on CORE, and its one thread a reply on CORE. */
+const INBOX_NARROWINGS: readonly (readonly [string, string])[] = [
+  ["type", "question"],
+  ["type", "reply"],
+  ["type", "decision"],
+  ["type", "approval"],
+  ["type", "agent"],
+  ["project", "CORE"],
+];
+
+/** The same six, as a reader picks them from the Inbox's Filter panel: a field, and its option. */
+export const INBOX_PICKS: readonly (readonly [string, RegExp])[] = [
+  ["type", /^Question,/],
+  ["type", /^Threads,/],
+  ["type", /^Decision,/],
+  ["type", /^Approval,/],
+  ["type", /^Agent message,/],
+  ["project", /^CORE,/],
+];
+
 /** The page `name` with its first `count` narrowings on. The Agents page writes each narrowing
  *  as one comma list (`group=active,idle`), and the Delivery page is opened on its list over the
  *  scene's window, as `openSurface` opens it. */
 function narrowedAddress(name: SurfaceName, scene: SurfaceScene, count: number): string {
+  if (name === "Inbox") {
+    // The Inbox writes each field's values as one comma list.
+    const lists = new Map<string, string[]>();
+    for (const [field, value] of INBOX_NARROWINGS.slice(0, count)) {
+      lists.set(field, [...(lists.get(field) ?? []), value]);
+    }
+    return `/?${[...lists].map(([field, values]) => `${field}=${values.join(",")}`).join("&")}`;
+  }
   const picked = (BAR_NARROWINGS[name] ?? []).slice(0, count);
   if (name === "Agents page") {
     const lists = new Map<string, string[]>();
@@ -980,6 +1039,16 @@ async function narrowBar(
     await nextFrames(page);
     return "a word typed";
   }
+  if (name === "Inbox drawer") {
+    // The drawer keeps its narrowings in its own state, so each is picked from its Filter panel.
+    const picked = Math.min(count, INBOX_PICKS.length);
+    const opened = await openSurface(page, name, scene, { phone });
+    for (const [field, option] of INBOX_PICKS.slice(0, picked)) {
+      await pickInboxField(page, field, option, opened.root);
+    }
+    await settledBar(page, name, opened.row, picked);
+    return `${picked} narrowings on`;
+  }
   if (name === "search bar") {
     const picked = Math.min(count, SEARCH_BAR_PICKS.length);
     await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
@@ -1005,7 +1074,14 @@ interface BarControl {
   readonly button: boolean;
   readonly control: string;
   readonly height: number;
+  readonly left: number;
   readonly name: string;
+  /** Whether it is the chosen part of the switch (`aria-pressed`). */
+  readonly pressed: boolean;
+  readonly right: number;
+  /** The words it shows a sighted reader, without what it hides from a screen reader. */
+  readonly shown: string;
+  readonly weight: string;
   readonly width: number;
   readonly words: string;
 }
@@ -1053,11 +1129,18 @@ async function readBar(bar: Locator): Promise<BarReading> {
             trigger !== element &&
             trigger.parentElement === element.parentElement,
           button: element.tagName === "BUTTON",
+          // A part of the switch is read as the switch: its parts carry no name of their own.
           control:
             element.getAttribute("data-control") ??
+            element.closest('[data-control="segmented-control"]')?.getAttribute("data-control") ??
             (name === "Clear filters" ? "clear" : element.tagName.toLowerCase()),
           height: box.height,
+          left: box.left,
           name,
+          pressed: element.getAttribute("aria-pressed") === "true",
+          right: box.right,
+          shown: (spoken.textContent ?? "").trim(),
+          weight: style.fontWeight,
           width: box.width,
           words: (element.textContent ?? "").trim(),
         };
@@ -1154,8 +1237,9 @@ async function expectOneBar(page: Page, name: SurfaceName, bar: Locator, where: 
     Math.abs(reading.height - tallest),
     `${where}: ${said}, so it is not one line as tall as its tallest control`
   ).toBeLessThanOrEqual(1);
-  expect(reading.controls[0]?.control, `${where}: ${said}, its search box not first`).toBe(
-    CONTROL.searchBox
+  // The Inbox's bar starts with its switch, its search box standing in the header line.
+  expect(reading.controls[0]?.control, `${where}: ${said}, its first control`).toBe(
+    INBOXES.includes(name) ? CONTROL.segmentedControl : CONTROL.searchBox
   );
   expect(
     reading.placeholderWidth,
@@ -1171,6 +1255,12 @@ async function expectOneBar(page: Page, name: SurfaceName, bar: Locator, where: 
   ).toEqual([]);
   expect(kept.length, `${where}: ${said}, more than one +N more`).toBeLessThanOrEqual(1);
   for (const one of reading.controls) {
+    if (one.control === CONTROL.barAction) {
+      // The main action, the one action the narrow line keeps, shows its icon alone.
+      expect(one.name, `${where}: ${said}, ${one.control} has no name`).not.toBe("");
+      expect(one.shown, `${where}: ${said}, ${one.name} shows words in the narrow layout`).toBe("");
+      continue;
+    }
     if (
       one.control !== CONTROL.panelTrigger &&
       one.control !== CONTROL.displayMenu &&
@@ -1233,16 +1323,31 @@ export async function expectOneBarOn(
       ).toHaveCount(1);
     }
   }
+  // The Inbox and its drawer draw their search box in the header line, beside the title (R8), so
+  // there the strays are read from under that line, which holds the page's one search box.
+  const headed = INBOXES.includes(name);
   const strays = await straysBetween(
     surface.root,
-    await topOf(surface.head),
+    headed
+      ? await surface.root
+          .locator("[data-inbox-header-line]")
+          .evaluate((node) => node.getBoundingClientRect().bottom)
+      : await topOf(surface.head),
     await topOf(surface.firstRow)
   );
   expect(
     strays,
-    `${where}: ${strays.join("; ")} is drawn between the title and the first row, outside the bar`
+    `${where}: ${strays.join("; ")} is drawn between the title and the first row, outside the bar${headed ? " and the header line" : ""}`
   ).toEqual([]);
   await expectOneBar(page, name, surface.row, `${where}, no narrowing on`);
+  // The drawer is at most 448 px wide from 768 px, and as wide as the window below, so its bar
+  // takes the narrow layout at every width a row drives.
+  if (name === "Inbox drawer") {
+    const width = (await readBar(surface.row)).width;
+    expect(width, `${where}: the drawer's bar is ${Math.round(width)}px wide`).toBeLessThan(
+      NARROW_BELOW
+    );
+  }
   if (name === "Artifacts tab" && phone) {
     await expectActionsInMore(page, surface.row, await readBar(surface.row), where);
   }
@@ -1268,6 +1373,24 @@ export async function expectOneBarOn(
  *  the line in the wide layout and an item of **More** in the narrow one. */
 function barDesign(name: SurfaceName, narrow: boolean): string[] {
   switch (name) {
+    case "Inbox":
+    case "Inbox drawer":
+      return narrow
+        ? [
+            'segmented-control "All"',
+            'segmented-control "Blocked on you"',
+            'panel-trigger "Filter"',
+            'more-menu "More"',
+            'bar-action "New message"',
+          ]
+        : [
+            'segmented-control "All"',
+            'segmented-control "Blocked on you"',
+            'panel-trigger "Filter"',
+            'display-menu "View"',
+            'more-menu "More"',
+            'bar-action "New message"',
+          ];
     case "project Board":
       return ['search-box "Search issues"', 'panel-trigger "Filters"'];
     case "Agents page":
@@ -1305,9 +1428,88 @@ function barDesign(name: SurfaceName, narrow: boolean): string[] {
 }
 
 /** The pages whose bar draws **Clear filters** beside its trigger while a narrowing is on: the
- *  project List's bar, which a priority's own page draws too. Every other page had none before
- *  the bar and has none in it (D24). */
-const CLEARS: readonly SurfaceName[] = ["project List", "priority page"];
+ *  Inbox's, and the project List's bar, which a priority's own page draws too. Every other page
+ *  had none before the bar and has none in it (D24). */
+const CLEARS: readonly SurfaceName[] = ["Inbox", "project List", "priority page"];
+
+/** The Inbox's two bars, on the page and in the drawer. */
+const INBOXES: readonly SurfaceName[] = ["Inbox", "Inbox drawer"];
+
+/** A control's name as `barDesign` spells it: the switch's **Blocked on you** carries its count
+ *  and the oldest one's age after a colon (`blockedOnYouText`), which `expectInboxBar` reads. */
+function designName(name: string): string {
+  return name.replace(/^Blocked on you: .*$/, "Blocked on you");
+}
+
+/**
+ * `k-bar`'s readings of the Inbox's bar, on the page and in the drawer, at rest (`rest`): the
+ * switch's two parts by their accessible names, the same at every width, reading **All** and
+ * **Blocked on you** in the wide layout and **All** and **You · N** in the narrow one, the chosen
+ * part on a fill and in a heavier weight than the other; **New message** the bar's last control
+ * and its one filled action, its icon alone with its name in the narrow layout; **Mark all read**
+ * an item of **More**, with **View** beside it in the narrow layout; at the phone width no item
+ * outside the bar's box or over another's; and on the page, an agent narrowing counted by
+ * **Filter** and listed at the top of its panel.
+ */
+async function expectInboxBar(
+  page: Page,
+  name: SurfaceName,
+  bar: Locator,
+  rest: BarReading,
+  phone: boolean,
+  where: string
+): Promise<void> {
+  const narrow = rest.width < NARROW_BELOW;
+  const said = `${where}: ${saidOf(rest)}`;
+  const [all, blocked] = rest.controls;
+  expect(all?.name, `${said}, the switch's first part`).toBe("All");
+  expect(blocked?.name, `${said}, Blocked on you's name`).toMatch(/^Blocked on you: \d+ items?\b/);
+  const count = /: (\d+) item/.exec(blocked?.name ?? "")?.[1] ?? "";
+  expect([all?.shown, blocked?.shown], `${said}, the switch's words`).toEqual(
+    narrow ? ["All", `You · ${count}`] : ["All", `Blocked on you ${count}`]
+  );
+  expect(all?.pressed, `${said}, All is not the chosen part`).toBe(true);
+  expect(
+    [all?.background !== blocked?.background, all?.weight !== blocked?.weight],
+    `${said}, the chosen part does not differ in its fill and its weight`
+  ).toEqual([true, true]);
+  const main = rest.controls.at(-1);
+  expect(main?.name, `${said}, New message is not the bar's last control`).toBe("New message");
+  expect(main?.background, `${said}, New message is not filled`).not.toMatch(NO_FILL);
+  if (narrow) expect(main?.shown, `${said}, New message shows words`).toBe("");
+  await control(bar, CONTROL.moreMenu).click();
+  const more = page.getByRole("menu", { name: "More" });
+  for (const item of narrow ? ["View", "Mark all read"] : ["Mark all read"]) {
+    await expect(
+      more.getByRole("menuitem", { exact: true, name: item }),
+      `${where}: More holds no ${item}`
+    ).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await expect(more, `${where}: Escape left More open`).toHaveCount(0);
+  if (phone) {
+    const box = await bar.evaluate((node) => node.getBoundingClientRect().toJSON() as DOMRect);
+    const misplaced = rest.controls.flatMap((one, index) => {
+      const out =
+        one.left < box.left - 0.5 || one.right > box.right + 0.5 ? [`${one.name} outside`] : [];
+      const over = rest.controls
+        .slice(index + 1)
+        .filter((other) => other.left < one.right - 0.5 && one.left < other.right - 0.5)
+        .map((other) => `${one.name} over ${other.name}`);
+      return [...out, ...over];
+    });
+    expect(misplaced, `${said}, items outside the bar or over another`).toEqual([]);
+  }
+  if (name !== "Inbox") return;
+  await page.goto(`/?agent=${encodeURIComponent(SURFACE_SESSION.actor.id)}`);
+  await settledBar(page, name, bar, 1);
+  const panel = await openFilterPanel(page, page.getByTestId("main-content"));
+  await expect(
+    panel.getByRole("button", { name: /^Remove Asks from .+ filter$/ }),
+    `${where}: the Filter panel does not list the agent narrowing`
+  ).toHaveCount(1);
+  await closeControlPanel(page.getByTestId("main-content"));
+}
 
 /** `k-bar` on the page `name` at `size`: its design's controls and no other in the layout its
  *  bar's width gives, each button quiet at rest and, at the phone's width, at least 44 px each
@@ -1331,11 +1533,20 @@ export async function expectBarDesign(
   const narrow = rest.width < NARROW_BELOW;
   const said = `${where}: ${saidOf(rest)}`;
   expect(
-    rest.controls.map((one) => `${one.control} "${one.name}"`),
+    rest.controls.map((one) => `${one.control} "${designName(one.name)}"`),
     `${said}, not its design's controls in the ${narrow ? "narrow" : "wide"} layout`
   ).toEqual(barDesign(name, narrow));
+  // The chosen part of the switch and the main action are filled; every other button is quiet.
   const painted = rest.controls.filter(
-    (one) => one.button && (one.border !== 0 || !NO_FILL.test(one.background))
+    (one) =>
+      one.button &&
+      !one.pressed &&
+      !(
+        one.control === CONTROL.barAction &&
+        one === rest.controls.at(-1) &&
+        INBOXES.includes(name)
+      ) &&
+      (one.border !== 0 || !NO_FILL.test(one.background))
   );
   expect(
     painted.map((one) => `${one.control} "${one.name}": ${one.border}px border, ${one.background}`),
@@ -1373,6 +1584,7 @@ export async function expectBarDesign(
     expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
     return;
   }
+  if (INBOXES.includes(name)) await expectInboxBar(page, name, bar, rest, phone, where);
   const trigger = control(bar, CONTROL.panelTrigger);
 
   // One narrowing: the trigger on a tint, its count in its name, and - on the List's bar in the

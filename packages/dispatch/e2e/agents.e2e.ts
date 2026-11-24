@@ -244,10 +244,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     // themselves - a question whose next move is a person's, on an issue assigned to them - and
     // what waits on the session, on anybody's issue. A card with no open asks shows neither.
     const needsYou = plannerCard.getByRole("link", { name: "Needs you 1" });
-    await expect(needsYou).toHaveAttribute(
-      "href",
-      `/?agent=${planner.session_id}&section=needs-you`
-    );
+    await expect(needsYou).toHaveAttribute("href", `/?agent=${planner.session_id}`);
     const waitingOnAgent = plannerCard.getByRole("link", { name: "Waiting on agent 2" });
     // The Inbox opens on the reader's own work, and these two questions are on two people's
     // issues, so the link clears the filter: nothing it counted is left out of the list it
@@ -314,19 +311,23 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       path: testInfo.outputPath(`agents-expanded-${width}.png`),
     });
 
-    // Each pill's number is the number of rows the list its link opens holds. Needs you opens
-    // the reader's own questions waiting on them, from this session: its one row. The Inbox's
-    // reading column writes the row it selects into that address as `?item=` (INFRA-575), so
-    // each list here carries the selection beside the filter its link named, and a question's
-    // text is read in the list column, which the column beside it repeats for the selected row.
+    // Each pill opens the Inbox narrowed to this session's asks. Needs you opens the agent
+    // narrowing alone (D29): the session's asks on the reader's own work, both turns - its one
+    // question waiting on the reader, which its number counts, and the one whose move is the
+    // session's - with no switch beside it. The Inbox's reading column writes the row it selects
+    // into that address as `?item=` (INFRA-575), so each list here carries the selection beside
+    // the filter its link named, and a question's text is read in the list column, which the
+    // column beside it repeats for the selected row.
     const selected = "(?:item=[^&]+&)?";
     const list = inboxList(page);
     await needsYou.click();
     await expect(page).toHaveURL(
-      new RegExp(`\\?agent=${planner.session_id}&${selected}section=needs-you$`, "u")
+      new RegExp(`\\?agent=${planner.session_id}(?:&item=[^&]+)?$`, "u")
     );
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(list.getByText("First", { exact: true })).toBeVisible();
+    await expect(list.getByText("Second", { exact: true })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Inbox section" })).toHaveCount(0);
     await page.goBack();
     await expect(plannerCard.getByRole("link", { name: "Needs you 1" })).toBeVisible();
 
@@ -337,7 +338,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       new RegExp(`\\?agent=${planner.session_id}&${selected}assignee=everyone$`, "u")
     );
     const inbox = page.locator("main");
-    const chip = inbox.getByRole("button", { name: "Clear agent filter" });
+    const chip = inbox.getByRole("button", { name: "Remove Asks from Planner filter" });
     await expect(chip).toHaveText("Asks from Planner×");
     await expect(inbox.locator('[data-inbox-section="agent"]')).toHaveCount(2);
     await expect(list.getByText("Second", { exact: true })).toBeVisible();
@@ -350,7 +351,9 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     // Clearing the agent keeps the filter the pill arrived with, and the row it was reading.
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
-    await expect(inbox.getByRole("button", { name: "Clear agent filter" })).toHaveCount(0);
+    await expect(
+      inbox.getByRole("button", { name: "Remove Asks from Planner filter" })
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }

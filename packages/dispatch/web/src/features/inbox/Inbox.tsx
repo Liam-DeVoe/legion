@@ -18,21 +18,20 @@ import { Link } from "react-router-dom";
 
 import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
-import { Chip } from "../../components/Chip";
+import type { BarActionProps } from "../../components/BarAction";
 import { ControlRow } from "../../components/ControlRow";
-import { controlPadding } from "../../components/control-names";
 import { WINDOW_OVERSCAN } from "../../components/DataTable";
-import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
+import type { DisplayMenuProps, DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
-import { type FilterChip, filterChips } from "../../components/filter-chips";
+import type { FilterChip } from "../../components/filter-chips";
 import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
+import type { SegmentedControlProps } from "../../components/SegmentedControl";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { capSearchQuery, useAddressNavigate } from "../../lib/page-address";
@@ -51,14 +50,13 @@ import {
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
-import { AgentName, useAgentText } from "../refs/AgentName";
+import { AgentName, agentLivePath, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { PlainText } from "../refs/plain-text";
@@ -174,9 +172,20 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
  *  filter fields, or the assignee control beside them. */
 type InboxFilterPanel = InboxFilterField | "assignee";
 
-/** The chrome of the page's own controls - **New message**, **Mark all read** and the needs-you
- *  control - so each keeps the row's 44 px line and nothing in the row can grow it. */
-const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+/** **New message**'s glyph, drawn before its words and alone below 640 px of the bar's width,
+ *  where its words stay its name. */
+const NEW_MESSAGE_GLYPH = (
+  <span aria-hidden="true" className="text-base leading-none">
+    ✎
+  </span>
+);
+
+/** **Mark all read**'s glyph, drawn before its words where **More** lists it. */
+const MARK_ALL_GLYPH = (
+  <span aria-hidden="true" className="text-base leading-none">
+    ✓
+  </span>
+);
 
 /** One action of the selection bar, as the bar's own line draws it. */
 const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
@@ -2458,36 +2467,22 @@ function InboxBody({
     if (onFilterChange) onFilterChange(next);
     else navigate(buildInboxPath(next), { replace: false });
   };
-  const waitingOnYou = filter.section === "needs-you" ? " waiting on you" : "";
-  // The agent narrowing's chip is the row's shared removable chip, drawn as `filterChips` draws
-  // the other narrowings' chips, and named for what its press does. The agent's live link sits
-  // beside it, outside it. `whitespace-pre` keeps the space before an attribution suffix, which
-  // a flex item would drop. The box is never wider than the chips line (`max-w-full`), and the
-  // chip's own box gives way inside it (`min-w-0`), so a long agent title is cut short with an
-  // ellipsis by the chip's own `max-w-full`, as every other chip is, and the live link stays in
-  // the line.
-  const agentChip =
-    agentSubject === undefined ? undefined : (
-      <AgentName
-        {...agentSubject}
-        className="flex max-w-full items-center whitespace-pre"
-        control={(name) => (
-          <span className="flex min-w-0">
-            <Chip
-              aria-label="Clear agent filter"
-              onClick={clearAgent}
-              removable
-              selected
-              title={`Asks from ${agentTitle}${waitingOnYou}`}
-            >
-              Asks from {name}
-              {waitingOnYou}
-            </Chip>
-          </span>
-        )}
-        kind="control"
-      />
-    );
+  // The agent narrowing's chip, the first of the bar's chips: the bar's shared removable chip,
+  // named for what its press does as every chip is, with the agent's live link beside it and
+  // outside it (`FilterChip.link`).
+  const agentChip: FilterChip | undefined =
+    agent === undefined || agentTitle === undefined
+      ? undefined
+      : {
+          key: "agent",
+          label: `Asks from ${agentTitle}`,
+          link: {
+            label: `Open live conversation with ${agentTitle}`,
+            title: `Open live conversation with ${agentTitle}`,
+            to: agentLivePath(agent),
+          },
+          remove: clearAgent,
+        };
 
   const chooseField = (field: InboxFilterField, chosen: readonly string[]) => {
     const next: InboxFilters = { ...filters };
@@ -2630,167 +2625,138 @@ function InboxBody({
       });
     }
   }
-  // `?section=needs-you` is a narrowing like the rest, so it has a chip that takes it off. With
-  // an agent filter on, the agent's own chip already reads "waiting on you" and this would say
-  // the same thing twice.
-  if (filter.section === "needs-you" && agent === undefined) {
-    tokens.push({
-      key: "section:needs-you",
-      label: "Waiting on you",
-      remove: () => changeFilter({ ...filter, section: undefined }),
-    });
-  }
-  const chips =
-    agentChip === undefined && tokens.length === 0 ? undefined : (
-      <>
-        {agentChip}
-        {filterChips(tokens)}
-      </>
-    );
-  // **Clear filters**, which the row draws at the end of the chips' line while there are chips:
-  // every narrowing off at once - the four fields, who the list is for, the agent and the
-  // needs-you section. What the reader typed, the order, the banding and which of the two lists
-  // is showing are not narrowings of this panel and stay exactly as they are.
+  // The bar's chips: the agent's first, then each field's values and who the list is for. The
+  // switch's choice is no narrowing of the panel's, so it draws no chip and is not counted.
+  const chips: readonly FilterChip[] = agentChip === undefined ? tokens : [agentChip, ...tokens];
+  // **Clear filters**, given while a chip is on: every narrowing of the Filter panel off at once
+  // - the four fields, who the list is for and the agent. What the reader typed, the order, the
+  // banding, which of the two lists is showing and the switch's choice are not narrowings of
+  // the panel and stay exactly as they are, so `section=needs-you` stays in the address.
   const clearFilters =
-    chips === undefined
+    chips.length === 0
       ? undefined
       : () =>
-          changeFilter({
-            ...filter,
-            agent: undefined,
-            assignees: undefined,
-            filters: undefined,
-            section: undefined,
-          });
+          changeFilter({ ...filter, agent: undefined, assignees: undefined, filters: undefined });
 
-  // The row's Blocked on you control: the asks waiting on the reader plus the credential
-  // requests they may decide, with the oldest one's age in its title and its accessible name. A
-  // press narrows the list to exactly those asks and leaves the credential requests above it: it
-  // takes off the four fields, the assignee and the search text with the section it writes, so
-  // the list holds every ask the number counts, and keeps the sort, the grouping and the view. It
-  // is absent at a count of zero, and beside an agent filter or in the Dismissed view, where a
-  // count over the whole inbox would contradict the list under it. Its number and its oldest age
-  // are drawn only once the credential requests and the sign-in have answered: until then, or
-  // while the requests' first read has failed, the control is drawn without them wherever an ask
-  // already waits, since a number that counted an unread list as empty would be no number of the
-  // reader's.
+  // The switch's Blocked on you: the asks waiting on the reader plus the credential requests they
+  // may decide, with the oldest one's age in its accessible name and its tooltip. Choosing it
+  // narrows the list to exactly those asks and leaves the credential requests above it: it takes
+  // off the four fields, the assignee and the search text with the section it writes, so the
+  // list holds every ask the number counts, and keeps the sort, the grouping and the view;
+  // choosing All takes the section off alone. Its number is drawn only once the credential
+  // requests and the sign-in have answered, and never at zero: until then, or while the
+  // requests' first read has failed, the part is drawn without it, since a number that counted
+  // an unread list as empty would be no number of the reader's. No switch is drawn beside an
+  // agent narrowing or in the Dismissed view, where a count over the whole inbox would
+  // contradict the list under it.
   const waiting = needsYou(adoptedInbox ?? [], credentials.requests, viewer);
   const waitingCounted = credentials.status === "listed" && viewer !== undefined;
-  const needsYouControl =
-    agent !== undefined || showDismissed || waiting.count === 0 ? null : (
-      <button
-        aria-label={blockedOnYouText(waitingCounted ? waiting : undefined)}
-        className={PAGE_CONTROL_CLASS}
-        data-inbox-needs-you=""
-        onClick={() =>
-          changeFilter({
-            ...filter,
-            assignees: undefined,
-            filters: undefined,
-            q: undefined,
-            section: "needs-you",
-          })
-        }
-        title={blockedOnYouText(waitingCounted ? waiting : undefined)}
-        type="button"
-      >
-        {waitingCounted ? `Blocked on you · ${waiting.count}` : "Blocked on you"}
-      </button>
-    );
-  // The page's own controls. **New message** is always among them, so the slot is never empty.
-  const pageControls = (
-    <>
-      {/* A message to one or more agents, as `n` opens it (`ComposeDialog`). The dialog gives the
-          focus back to this control when it closes. */}
-      <button
-        className={PAGE_CONTROL_CLASS}
-        data-inbox-compose=""
-        onClick={onCompose}
-        type="button"
-      >
-        New message
-      </button>
-      {/* Only while the list holds an unread Reply or Agent row. It asks nothing first: the rows
-          go, and a refusal brings them back; a press the reader stopped may have marked them, so
-          the list is read again rather than brought back. */}
-      {markAll.offered ? (
-        <button
-          className={PAGE_CONTROL_CLASS}
-          data-inbox-mark-all=""
-          onClick={markAll.markAll}
-          type="button"
-        >
-          Mark all read
-        </button>
-      ) : null}
-      {markAll.failure === "refused" ? (
-        <p
-          className={`text-sm whitespace-nowrap ${dangerText}`}
-          data-inbox-mark-all-refused=""
-          role="alert"
-        >
-          {MARK_ALL_REFUSED_TEXT}
-        </p>
-      ) : markAll.failure === "stopped" ? (
-        <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
-          {MARK_ALL_STOPPED_TEXT}
-        </p>
-      ) : null}
-      {needsYouControl}
-    </>
-  );
+  const blockedOnYou = filter.section === "needs-you";
+  const inboxSwitch: SegmentedControlProps | undefined =
+    agent !== undefined || showDismissed
+      ? undefined
+      : {
+          label: "Inbox section",
+          onChange: (value) => {
+            const chosen = value === "needs-you";
+            if (chosen === blockedOnYou) return;
+            changeFilter(
+              chosen
+                ? {
+                    ...filter,
+                    assignees: undefined,
+                    filters: undefined,
+                    q: undefined,
+                    section: "needs-you",
+                  }
+                : { ...filter, section: undefined }
+            );
+          },
+          parts: [
+            { label: "All", value: "all" },
+            {
+              count: waitingCounted ? waiting.count : undefined,
+              label: "Blocked on you",
+              short: "You",
+              title: blockedOnYouText(waitingCounted ? waiting : undefined),
+              value: "needs-you",
+            },
+          ],
+          value: blockedOnYou ? "needs-you" : "all",
+        };
+
+  // The bar's one action, kept in **More** at every width: only while the list holds an unread
+  // Reply or Agent row. It asks nothing first: the rows go, and a refusal brings them back; a
+  // press the reader stopped may have marked them, so the list is read again rather than brought
+  // back. What a refused or stopped press says stands under the bar.
+  const actions: readonly BarActionProps[] = markAll.offered
+    ? [{ icon: MARK_ALL_GLYPH, label: "Mark all read", more: true, onPress: markAll.markAll }]
+    : [];
+  const markAllFailure =
+    markAll.failure === "refused" ? (
+      <p className={`text-sm ${dangerText}`} data-inbox-mark-all-refused="" role="alert">
+        {MARK_ALL_REFUSED_TEXT}
+      </p>
+    ) : markAll.failure === "stopped" ? (
+      <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
+        {MARK_ALL_STOPPED_TEXT}
+      </p>
+    ) : null;
 
   // How the list is ordered, how it is banded, which of the reader's two lists is showing, and
   // which way a thread's own replies read. The first three are the list's, so they ride in the
   // address and a link carries them; the thread order is the reader's own and is kept for their
-  // browser (`threads/thread-order.ts`).
-  const displayMenu = (
-    <DisplayMenu
-      label="View"
-      onOpenChange={setViewOpen}
-      open={viewOpen}
-      sections={[
-        {
-          id: "sort",
-          label: "Sort by",
-          onChange: (next) => {
-            const picked = pick(INBOX_SORTS, next);
-            if (picked !== undefined) changeFilter({ ...filter, sort: picked });
-          },
-          options: menuOptions(INBOX_SORTS, SORT_LABELS),
-          value: sort,
+  // browser (`threads/thread-order.ts`). Choosing the Dismissed view takes `section=needs-you`
+  // off, since an ask is never dismissed and that list would hold nothing under it.
+  const displayMenu: DisplayMenuProps = {
+    label: "View",
+    onOpenChange: setViewOpen,
+    open: viewOpen,
+    sections: [
+      {
+        id: "sort",
+        label: "Sort by",
+        onChange: (next) => {
+          const picked = pick(INBOX_SORTS, next);
+          if (picked !== undefined) changeFilter({ ...filter, sort: picked });
         },
-        {
-          id: "group",
-          label: "Group by",
-          onChange: (next) => {
-            const picked = pick(INBOX_GROUP_BYS, next);
-            if (picked !== undefined) changeFilter({ ...filter, group: picked });
-          },
-          options: menuOptions(INBOX_GROUP_BYS, GROUP_LABELS),
-          value: groupBy,
+        options: menuOptions(INBOX_SORTS, SORT_LABELS),
+        value: sort,
+      },
+      {
+        id: "group",
+        label: "Group by",
+        onChange: (next) => {
+          const picked = pick(INBOX_GROUP_BYS, next);
+          if (picked !== undefined) changeFilter({ ...filter, group: picked });
         },
-        {
-          id: "show",
-          label: "Show",
-          onChange: (next) =>
-            changeFilter({ ...filter, show: next === "dismissed" ? "dismissed" : undefined }),
-          options: menuOptions(INBOX_SHOWS, SHOW_LABELS),
-          value: show,
+        options: menuOptions(INBOX_GROUP_BYS, GROUP_LABELS),
+        value: groupBy,
+      },
+      {
+        id: "show",
+        label: "Show",
+        onChange: (next) =>
+          changeFilter(
+            next === "dismissed"
+              ? { ...filter, section: undefined, show: "dismissed" }
+              : { ...filter, show: undefined }
+          ),
+        options: menuOptions(INBOX_SHOWS, SHOW_LABELS),
+        value: show,
+      },
+      {
+        id: "order",
+        label: "Thread order",
+        onChange: (next) => {
+          const picked = pick(THREAD_ORDERS, next);
+          if (picked !== undefined) setThreadOrder(picked);
         },
-        {
-          id: "order",
-          label: "Thread order",
-          onChange: (next) => {
-            const picked = pick(THREAD_ORDERS, next);
-            if (picked !== undefined) setThreadOrder(picked);
-          },
-          options: menuOptions(THREAD_ORDERS, THREAD_ORDER_LABELS),
-          value: threadOrder,
-        },
-      ]}
-    />
-  );
+        options: menuOptions(THREAD_ORDERS, THREAD_ORDER_LABELS),
+        value: threadOrder,
+      },
+    ],
+  };
 
   // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
   // and the refusal that comes back has to land somewhere the reader can see. It is drawn over
@@ -2892,29 +2858,35 @@ function InboxBody({
   // and a sibling of the scrolling list rather than an item in it: the controls stay put while
   // the rows move.
   //
-  // The header line holds the search box and one bar holds the sorting and filtering; nothing
+  // The header line holds the search box and one bar holds the switch, the sorting and the
+  // filtering, **Mark all read** in its **More** and **New message** as its main action; nothing
   // else between the title and the first row draws a search box, a panel trigger or a chip. The
-  // credential requests stand under the bar, above the list they wait beside. Nothing the reader
-  // can press here makes the header taller: the filter panel and the display menu are portalled
-  // over the page (`AnchoredPanel`), the selection bar is drawn over the list, and the chips are
-  // the one part of the row that may take a second line.
+  // credential requests stand under the bar, above the list they wait beside, and so does what a
+  // refused or stopped **Mark all read** says. Nothing the reader can press here makes the
+  // header taller: the bar is one line that never wraps, its chips in that line, and the filter
+  // panel, the display menu and **More** are portalled over the page (`AnchoredPanel`), and the
+  // selection bar is drawn over the list. The drawer is at most 28rem wide, so its bar takes the
+  // narrow layout there by its own width, as a phone's does.
   const aboveList = (
     <div className="space-y-4">
       <ControlRow
+        actions={actions}
         chips={chips}
+        clear={clearFilters}
         display={displayMenu}
-        // The drawer is at most 28rem wide at every window size, which a line of Filter, New
-        // message, the needs-you control and View does not fit.
-        narrow={!pane}
-        onClear={clearFilters}
-        trigger={
-          <PanelTrigger label="Filter" onOpenChange={setFilterOpen} open={filterOpen} stacked>
-            {renderFilterControls}
-          </PanelTrigger>
-        }
-      >
-        {pageControls}
-      </ControlRow>
+        main={{ icon: NEW_MESSAGE_GLYPH, label: "New message", onPress: onCompose }}
+        narrowDisplayInMore
+        switch={inboxSwitch}
+        trigger={{
+          children: renderFilterControls,
+          count: chips.length,
+          label: "Filter",
+          onOpenChange: setFilterOpen,
+          open: filterOpen,
+          stacked: true,
+        }}
+      />
+      {markAllFailure}
       <CredentialRequestsSection credentials={credentials} />
       {/* A dismiss the server refused: the rows are back where they were, and the page says so
           here, above the list, because the control that sent it was on a row this write had

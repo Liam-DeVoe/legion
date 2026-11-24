@@ -66,6 +66,7 @@ import {
   seedSessionGroupsFixture,
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
+import { seedDismissedThreads } from "./dismissed-seed";
 import { connectedDot, documentEditor, placeCaret } from "./editor";
 import {
   setCredentialGrants,
@@ -75,6 +76,7 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   barAction,
+  chooseShow,
   control,
   controlRow,
   displayChoice,
@@ -83,6 +85,7 @@ import {
   openFilterPanel,
   pickFilterOption,
   pickFromList,
+  shutMore,
 } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
@@ -132,6 +135,7 @@ import {
   expectOneBarOn,
   INBOX_TOP,
   isPhoneProject,
+  NARROW_BELOW,
   openDisplay,
   openIssuesTab,
   openSurface,
@@ -147,14 +151,6 @@ import {
 } from "./table-controls";
 import { expect, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
-
-/** How far below its first reading the top of a list's first row may sit once a narrowing is
- *  on: one more line of chips, a 44 px control and the row's own 8 px gap. */
-const CHIP_LINE = 52;
-
-/** The Inbox's own ceiling (`INBOX_TOP`) with three narrowings on, which is a second line of
- *  chips. */
-const INBOX_TOP_NARROWED = 255;
 
 /** The window the delivery fixture's two pull requests were merged in, with the list drawn. */
 const DELIVERY_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
@@ -279,8 +275,12 @@ async function seedLongInbox(): Promise<void> {
   }
 }
 
-// SLOW(>=2s): twenty-two seeded questions, read at two widths through four states each.
-test("the Inbox's first item starts within 203 px of the window, and within 255 px under three narrowings", async ({
+// SLOW(>=2s): twenty-two seeded questions, read at two widths through five states each.
+// k-inbox-height: at 1440x900 and at 1280x800 the top of the Inbox's first item is at most 203 px
+// from the top of the window with no narrowing on, with the filter panel open, with the display
+// menu open, with three narrowings on and with one row selected. A panel and the selection bar
+// draw over the page, and the chips stay in the bar's one line, so none takes room in the layout.
+test("k-inbox-height: the Inbox's first item starts within 203 px of the window at 1440x900 and 1280x800, whatever is narrowed, open or selected", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -291,44 +291,39 @@ test("the Inbox's first item starts within 203 px of the window, and within 255 
     { height: 800, width: 1280 },
   ]) {
     await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+    const within = async (state: string) => {
+      await resetScroll(page, firstRow);
+      const top = await topOf(firstRow);
+      expect(top, `${at}: ${state}, the first item starts ${top}px down`).toBeLessThanOrEqual(
+        INBOX_TOP
+      );
+    };
     await page.goto("/");
     await expect(firstRow).toBeVisible();
-    await resetScroll(page, firstRow);
-    const plain = await topOf(firstRow);
-    expect(
-      plain,
-      `${size.width}x${size.height}: the first item starts ${plain}px down`
-    ).toBeLessThanOrEqual(INBOX_TOP);
+    await within("with no narrowing on");
 
-    // A panel draws over the page, so it takes no room in the layout.
     await openFilterPanel(page, main);
-    await resetScroll(page, firstRow);
-    const panelled = await topOf(firstRow);
-    expect(
-      panelled,
-      `${size.width}x${size.height}: with the filter panel open the first item starts ${panelled}px down`
-    ).toBeLessThanOrEqual(INBOX_TOP);
+    await within("with the filter panel open");
     await closeControlPanel(main);
 
     await openDisplay(page, main);
-    await resetScroll(page, firstRow);
-    const menued = await topOf(firstRow);
-    expect(
-      menued,
-      `${size.width}x${size.height}: with the display menu open the first item starts ${menued}px down`
-    ).toBeLessThanOrEqual(INBOX_TOP);
+    await within("with the display menu open");
+    await page.keyboard.press("Escape");
 
     // Three narrowings, opened in one address so the chips are the only thing that changed.
     await page.goto("/?priority=P0&urgency=blocking&type=question");
     await expect(firstRow).toBeVisible();
-    // Three chips, one per narrowing: **Clear filters** beside them is a button, not a chip.
-    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(3);
-    await resetScroll(page, firstRow);
-    const narrowed = await topOf(firstRow);
-    expect(
-      narrowed,
-      `${size.width}x${size.height}: with three narrowings on the first item starts ${narrowed}px down`
-    ).toBeLessThanOrEqual(INBOX_TOP_NARROWED);
+    // The chips stand in the bar's line, those it has no room for behind one `+N more`.
+    await expect(control(controlRow(main), CONTROL.panelTrigger)).toHaveAccessibleName(
+      "Filter · 3"
+    );
+    await within("with three narrowings on");
+
+    await page.goto("/");
+    await firstRow.getByRole("checkbox").first().click();
+    await expect(control(main, CONTROL.selectionBar)).toBeVisible();
+    await within("with one row selected");
   }
 });
 
@@ -354,13 +349,17 @@ function sidewaysScrollers(row: Element): string[] {
 }
 
 // SLOW(>=2s): twenty-two seeded questions, read at three widths with and without nine narrowings.
-test("however many narrowings are on, their chips take at most one more line of the Inbox's row, at every width", async ({
+// R8: the chips stand in the bar's one line, which never grows. From 640 px of the bar's width
+// the line draws the chips that fit and one `+N more` for the rest; below it no chip stands in
+// the line, **Filter**'s badge says their number, and its panel lists every one.
+test("however many narrowings are on, the Inbox's bar stays one line at every width, its chips behind +N more or, below 640 px, in its Filter panel", async ({
   page,
 }) => {
   await seedLongInbox();
   const firstRow = page.locator("[data-inbox-row]").first();
   const main = page.getByTestId("main-content");
   const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
   const readings: string[] = [];
   const over: string[] = [];
   const sideways: string[] = [];
@@ -370,6 +369,7 @@ test("however many narrowings are on, their chips take at most one more line of 
     { height: 664, width: 390 },
   ]) {
     await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
     await page.goto("/");
     await expect(firstRow).toBeVisible();
     await resetScroll(page, firstRow);
@@ -378,35 +378,50 @@ test("however many narrowings are on, their chips take at most one more line of 
 
     await page.goto(NINE_NARROWINGS);
     await expect(firstRow).toBeVisible();
-    // One chip per value picked, as the row draws them, so nine chips: the ones the chips line
-    // has room for, each whole, and the rest behind its `+N more`.
-    const chips = await settledChipsLine(row, 9, `${size.width}x${size.height}`);
-    // Nothing in the row scrolls sideways. The chips were read above from a settled line, so
-    // the boxes read here are the narrowed row's.
+    await expect(trigger, `${at}: Filter does not count nine`).toHaveAccessibleName("Filter · 9");
+    const width = await row.evaluate((node) => node.getBoundingClientRect().width);
+    let split: string;
+    if (width >= NARROW_BELOW) {
+      // One chip per narrowing, so nine chips: the ones the line has room for, each whole, and
+      // the rest in the panel its `+N more` opens.
+      const chips = await chipsInLineAndPanel(row, 9, at);
+      split = `${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`;
+    } else {
+      // Below 640 px of the bar's width no chip stands in the line: the badge says their number,
+      // and the panel lists every one with its remove control.
+      await expect(trigger, `${at}: Filter's badge`).toHaveText("9");
+      await expect(
+        control(row, CONTROL.chip),
+        `${at}: chips stand in the narrow bar's line`
+      ).toHaveCount(0);
+      const panel = await openFilterPanel(page, main);
+      await expect(
+        panel.getByRole("button", { name: /^Remove .+ filter$/ }),
+        `${at}: the Filter panel does not list the nine narrowings`
+      ).toHaveCount(9);
+      await closeControlPanel(main);
+      split = "no chip in the line, nine in the Filter panel";
+    }
+    // Nothing in the bar scrolls sideways. The chips were read above from a settled line, so
+    // the boxes read here are the narrowed bar's.
     const scrolling = await row.evaluate(sidewaysScrollers);
-    sideways.push(...scrolling.map((box) => `${size.width}x${size.height}: ${box}`));
+    sideways.push(...scrolling.map((box) => `${at}: ${box}`));
     await resetScroll(page, firstRow);
-    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
+    // The nine narrowings were read and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstRow);
-    const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
-    readings.push(
-      `${where}, with ${chips.line.length} chips in the line and ${chips.left} behind +N more`
-    );
-    if (narrowed - plain > CHIP_LINE) over.push(where);
+    const where = `${at}, a ${Math.round(width)}px bar: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px`;
+    readings.push(`${where}, with ${split}`);
+    if (Math.abs(narrowed - plain) > 1) over.push(where);
   }
   await test.info().attach("first item with and without nine narrowings", {
     body: readings.join("\n"),
     contentType: "text/plain",
   });
-  // R1: the chips of the narrowings that are on may take one more line of the row, at most
-  // 52 px, on any page and at every width the suite drives - not one more line per few chips.
-  expect(
-    over,
-    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
-  ).toEqual([]);
-  // Nothing in the row scrolls sideways, at any width: a chip the line has no room for is listed
+  // R8: the bar never grows, so no narrowing moves the first item, within 1 px.
+  expect(over, over.join("; ")).toEqual([]);
+  // Nothing in the bar scrolls sideways, at any width: a chip the line has no room for is listed
   // behind its `+N more`, never scrolled to.
-  expect(sideways, `${sideways.join("; ")} scroll sideways in the Inbox's row`).toEqual([]);
+  expect(sideways, `${sideways.join("; ")} scroll sideways in the Inbox's bar`).toEqual([]);
 });
 
 /** The seven labels every issue of the Board's seed carries: the Board narrows by every label
@@ -537,8 +552,8 @@ function shownOf(element: Element): { left: number; right: number; width: number
   };
 }
 
-// SLOW(>=2s): twenty-two seeded questions, the row's keyboard order walked at five widths.
-test("a chip of the Inbox's row that has the keyboard focus is shown whole, with its whole name, at every width", async ({
+// SLOW(>=2s): twenty-two seeded questions, the bar's keyboard order walked at five widths.
+test("a chip of the Inbox's bar that has the keyboard focus is shown whole, with its whole name, at every width, and where no whole chip fits +N more stands alone and lists every chip", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -585,10 +600,23 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
     const where = `${size.width}x${size.height}`;
     await page.setViewportSize(size);
     await page.goto(NINE_NARROWINGS);
-    // Nine chips, one per narrowing: the ones the chips line has room for, then the ones its
-    // `+N more` lists in its panel.
+    // Below 640 px of the bar's width no chip stands in its line (R8).
+    if (await chipsLeaveLine(row, where)) continue;
+    // Nine chips, one per narrowing: the ones the chips line has room for, each whole, then the
+    // ones its `+N more` lists in its panel - every one of them where the line has room for no
+    // whole chip, so `+N more` stands alone (R8, `ControlRow`).
     const chips = await chipsInLineAndPanel(row, 9, where);
     const moreName = `${chips.panel.length} more ${chips.panel.length === 1 ? "filter" : "filters"}`;
+    // Every chip the line draws shows its whole words, focused or not.
+    const cutInLine = await row.evaluate((node) =>
+      [...node.querySelectorAll('[data-chip-strip] [data-control="chip"]')]
+        .filter((chip) => {
+          const words = chip.querySelector(".truncate");
+          return words !== null && words.scrollWidth > words.clientWidth + 1;
+        })
+        .map((chip) => chip.getAttribute("aria-label") ?? "")
+    );
+    for (const label of cutInLine) cut.push(`${where}: the line draws "${label}" cut short`);
     // The Tab key walks the chips line's chips in their order, then `+N more`, which stands for
     // the chips the line has no room for. The walk starts on the row's first control, its filter
     // trigger: the Inbox's search box stands in its header line, above the row (R8).
@@ -654,19 +682,24 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
 });
 
 // SLOW(>=2s): twenty-two seeded questions, read at five widths.
-test("Clear filters stays in view in the Inbox's row however many narrowings are on, at every width", async ({
+test("Clear filters stays in view in the Inbox's bar however many narrowings are on, wherever the bar is 640 px wide or wider, and is not drawn below", async ({
   page,
 }) => {
   await seedLongInbox();
   const row = controlRow(page.getByTestId("main-content"));
   const hidden: string[] = [];
   for (const size of READING_WIDTHS) {
+    const where = `${size.width}x${size.height}`;
     await page.setViewportSize(size);
     await page.goto(NINE_NARROWINGS);
+    const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+    if (await chipsLeaveLine(row, where)) {
+      await expect(clear, `${where}: Clear filters stands in the narrow bar`).toHaveCount(0);
+      continue;
+    }
     // One chip per narrowing, so nine chips: the ones the chips line has room for, each whole,
     // and the rest behind its `+N more`.
-    await settledChipsLine(row, 9, `${size.width}x${size.height}`);
-    const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+    await settledChipsLine(row, 9, where);
     await expect(clear).toHaveCount(1);
     // The nine chips and Clear filters were waited for above; how much of it shows is the reading.
     const reading = await clear.evaluate((button, measure) => {
@@ -679,9 +712,10 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
       );
     }
   }
-  // R6: Clear filters stays in the control row, and it is the one press that takes nine
-  // narrowings off. A mouse's own wheel does not scroll a strip sideways, and the filter panel
-  // holds no Clear filters, so a control scrolled out of view is one a pointer reader cannot find.
+  // R8: Clear filters stays in the bar wherever the bar is 640 px wide or wider, and it is the
+  // one press that takes nine narrowings off. A mouse's own wheel does not scroll a strip
+  // sideways, so a control scrolled out of view is one a pointer reader cannot find. Below 640 px
+  // no Clear filters is drawn: the reader takes the narrowings off in the Filter panel.
   expect(hidden, hidden.join("; ")).toEqual([]);
 });
 
@@ -756,6 +790,21 @@ async function settledChipsLine(
   return { left, line: await chipNames(row) };
 }
 
+/** Whether the Inbox's bar `row`, standing for the narrowings that are on, is in its narrow
+ *  layout, below 640 px of its own width, where no chip stands in its line (R8): read here, so a
+ *  row that reads the chips line reads the wide layout alone, and the Filter panel, which lists
+ *  every chip below 640 px, is read by `k-bar`. */
+async function chipsLeaveLine(row: Locator, where: string): Promise<boolean> {
+  await expect(control(row, CONTROL.panelTrigger)).toHaveAccessibleName(/^Filters? · \d+$/);
+  const width = await row.evaluate((node) => node.getBoundingClientRect().width);
+  if (width >= NARROW_BELOW) return false;
+  await expect(
+    control(row, CONTROL.chip),
+    `${where}: chips stand in the narrow bar's line`
+  ).toHaveCount(0);
+  return true;
+}
+
 /** The chips of the `count` narrowings that are on in the control row `row`, by name and in their
  *  order: the ones its chips line draws, then the ones its `+N more` lists in the panel it opens.
  *  The line is read once it stands for them all (`settledChipsLine`), and the panel is then opened
@@ -789,9 +838,9 @@ async function chipsInLineAndPanel(
   return { line, panel: listed };
 }
 
-// SLOW(>=2s): twenty-two seeded questions, the row's chips read at five widths with the panel of
-// its +N more opened at each, and a chip taken off from that panel.
-test("the Inbox's chips that the line has no room for are listed behind one +N more, each drawn once, and a pointer takes one off from its panel, at every width", async ({
+// SLOW(>=2s): twenty-two seeded questions, the bar's chips read at five widths with the panel of
+// its +N more opened at each width its line draws chips, and a chip taken off from that panel.
+test("the Inbox's chips that the line has no room for are listed behind one +N more, each drawn once, and a pointer takes one off from its panel, at every width its line draws chips", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -802,7 +851,9 @@ test("the Inbox's chips that the line has no room for are listed behind one +N m
     const where = `${size.width}x${size.height}`;
     await page.setViewportSize(size);
     // Where every chip fits the line no `+N more` is drawn: one chip, which every line holds.
+    // Below 640 px of the bar's width no chip stands in its line at all (R8).
     await page.goto("/?priority=P0");
+    if (await chipsLeaveLine(row, where)) continue;
     await expect(
       row.getByRole("button", { exact: true, name: "Remove Priority: P0 filter" })
     ).toBeVisible();
@@ -838,30 +889,33 @@ test("the Inbox's chips that the line has no room for are listed behind one +N m
   }
 
   // And a chip the panel lists is one a pointer takes off there, in place.
-  await page.setViewportSize({ height: 664, width: 390 });
-  await page.goto(NINE_NARROWINGS);
-  await expect(more, "390x664: nine chips draw no +N more").toBeVisible();
+  await page.setViewportSize({ height: 800, width: 1280 });
+  await page.goto(SIXTEEN_NARROWINGS);
+  await expect(more, "1280x800: sixteen chips draw no +N more").toBeVisible();
   await more.click();
   const panel = page.getByRole("dialog", { name: MORE_FILTERS });
-  const last = panel.getByRole("button", { exact: true, name: "Remove Project: CORE filter" });
-  await expect(last, "390x664: the panel does not list the last chip, Project: CORE").toBeVisible();
+  const last = panel.getByRole("button", { exact: true, name: "Remove Project: PIER filter" });
+  await expect(
+    last,
+    "1280x800: the panel does not list the last chip, Project: PIER"
+  ).toBeVisible();
   await last.click();
-  await expect(last, "390x664: pressing Project: CORE in the panel left it drawn").toHaveCount(0);
+  await expect(last, "1280x800: pressing Project: PIER in the panel left it drawn").toHaveCount(0);
   await expect
-    .poll(() => new URL(page.url()).searchParams.has("project"), {
-      message: "390x664: the address kept ?project=",
+    .poll(() => new URL(page.url()).searchParams.get("project"), {
+      message: "1280x800: the address kept PIER in ?project=",
     })
-    .toBe(false);
+    .toBe("CORE,EDGE,MESH");
   expect(
     new URL(page.url()).searchParams.get("priority"),
-    "390x664: the press took the priorities"
-  ).toBe("P0,P1,P2");
+    "1280x800: the press took the priorities"
+  ).toBe("P0,P1,P2,P3");
   // The panel still lists the chips before it, so the focus stays in the panel, on its last.
   await expect(
     panel.getByRole("button").last(),
-    "390x664: the focus left the panel when Project: CORE was taken off"
+    "1280x800: the focus left the panel when Project: PIER was taken off"
   ).toBeFocused();
-  readings.push("390x664: Project: CORE taken off from the panel of +N more");
+  readings.push("1280x800: Project: PIER taken off from the panel of +N more");
   await test.info().attach("the row's chips and the panel of its +N more", {
     body: readings.join("\n"),
     contentType: "text/plain",
@@ -935,19 +989,21 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       // The List is the stored view from here on, so its address below opens on it.
       if (surface.name === "project List") await openSurface(page, "project List", scene);
       await page.goto(surface.path);
-      // Below 640 px of the List's bar its chips leave the line and no Clear filters is drawn
-      // (R8): each narrowing is taken off at the top of the Filters panel, which stays open. That
+      // Below 640 px of the bar's width its chips leave the line and no Clear filters is drawn
+      // (R8): each narrowing is taken off at the top of the Filter panel, which stays open. That
       // list hands the focus on as the line does (D26): to the chip now at the taken chip's place,
       // else to the one before it, and once no chip is left to the panel's first field - never onto
       // the page. The turns: the list's last chip by Enter, then its first by Space, then its first
-      // by Enter until none is left. The Inbox's row is not on the bar's slots yet.
+      // by Enter until none is left.
       const barWidth = await row.evaluate((node) => node.getBoundingClientRect().width);
-      if (surface.name === "project List" && barWidth < 640) {
+      if (barWidth < NARROW_BELOW) {
         const trigger = control(row, CONTROL.panelTrigger);
         await expect(
           trigger,
-          `${where}: Filters does not count the narrowings`
-        ).toHaveAccessibleName(`Filters · ${surface.chips}`);
+          `${where}: the trigger does not count the narrowings`
+        ).toHaveAccessibleName(
+          `${surface.name === "Inbox" ? "Filter" : "Filters"} · ${surface.chips}`
+        );
         await expect(chips, `${where}: chips stand in the narrow bar's line`).toHaveCount(0);
         await expect(
           row.getByRole("button", { exact: true, name: "Clear filters" }),
@@ -955,7 +1011,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
         ).toHaveCount(0);
         await trigger.focus();
         await page.keyboard.press("Enter");
-        const filters = page.getByRole("dialog", { name: "Filters" });
+        const filters = page.getByRole("dialog", { name: /^Filters?$/ });
         const listed = filters.getByRole("button", { name: /^Remove .+ filter$/ });
         await expect(
           listed,
@@ -986,7 +1042,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
               };
             });
           const right = (focus: { label: string; panel: string }) =>
-            focus.panel === "Filters" &&
+            /^Filters?$/.test(focus.panel) &&
             (next === undefined ? !/^Remove .+ filter$/.test(focus.label) : focus.label === next);
           const settled = await expect
             .poll(async () => right(await landed()), { timeout: 2_000 })
@@ -996,7 +1052,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
           if (!settled) {
             const focus = await landed();
             wrong.push(
-              `${where}: after ${key} took "${taken}" off in the Filters panel the focus is on "${focus.label}"${focus.panel === "Filters" ? "" : ", outside the panel"}, not on ${next === undefined ? "the panel's first field" : `"${next}"`}`
+              `${where}: after ${key} took "${taken}" off in the Filters panel the focus is on "${focus.label}"${/^Filters?$/.test(focus.panel) ? "" : ", outside the panel"}, not on ${next === undefined ? "the panel's first field" : `"${next}"`}`
             );
           }
         }
@@ -2113,7 +2169,12 @@ test("the four parameters this change adds ride in the address and survive a rel
 });
 
 // SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping and view.
-test("the Inbox keeps every field, sort, grouping, view and clear it had", async ({ page }) => {
+test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read and clear it had, and Clear filters keeps Blocked on you", async ({
+  page,
+}) => {
+  // Every field, sort, grouping, view, clear and key worked in turn, over three page loads at two
+  // widths: the row states a budget of its own, as the drawer's row beside it does.
+  test.setTimeout(120_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   const { rows } = await seedEveryField();
   const at = await lastActivity();
@@ -2217,32 +2278,149 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   ).toBeChecked();
   await page.keyboard.press("Escape");
 
-  // Mark all read, and the fold of one group.
+  // Mark all read, from the bar's More, and the fold of one group.
   await page.goto("/?assignee=everyone&group=type");
-  const markAll = page.locator("[data-inbox-mark-all]");
-  await expect(markAll).toBeVisible();
+  const more = controlRow(main).getByRole("button", { exact: true, name: "More" });
+  await more.click();
+  const markAll = page
+    .getByRole("menu", { name: "More" })
+    .getByRole("menuitem", { exact: true, name: "Mark all read" });
   await markAll.click();
-  await expect(markAll).toHaveCount(0);
+  // More held Mark all read alone in the wide bar, so it goes once nothing is left unread.
+  await expect(more).toHaveCount(0);
   const band = page.getByTestId("inbox-list").locator("h2 button").first();
   await band.click();
   await expect(band).toHaveAttribute("aria-expanded", "false");
 
-  // Clear filters takes off the four fields, the assignee, the agent and the needs-you section,
-  // and leaves the text, the sort, the grouping and the view. The agent is the session that asked
-  // the seed's questions, so the narrowing is on and its chip drawn before the press.
+  // Clear filters takes off the four fields, the assignee and the agent, and leaves the text, the
+  // sort, the grouping and the view. The agent is the session that asked the seed's questions,
+  // so the narrowing is on and its chip drawn before the press.
   await page.goto(
-    `/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&agent=${encodeURIComponent(THREAD_SESSION.session_id)}&q=rule&sort=priority&group=type&show=dismissed`
+    `/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&agent=${encodeURIComponent(THREAD_SESSION.session_id)}&q=rule&sort=priority&group=type&show=dismissed`
   );
-  await expect(controlRow(main).getByRole("button", { name: "Clear agent filter" })).toBeVisible();
+  await expect(controlRow(main).getByRole("button", { name: /^Remove Asks from / })).toBeVisible();
   await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
+  await expect(page).not.toHaveURL(/[?&]agent=/);
   const address = new URL(page.url());
-  for (const gone of ["assignee", "type", "priority", "urgency", "project", "section", "agent"]) {
+  for (const gone of ["assignee", "type", "priority", "urgency", "project", "agent"]) {
     expect(address.searchParams.has(gone), `Clear filters left ?${gone}=`).toBe(false);
   }
   expect(address.searchParams.get("q"), "Clear filters took the text").toBe("rule");
   expect(address.searchParams.get("sort"), "Clear filters took the sort").toBe("priority");
   expect(address.searchParams.get("group"), "Clear filters took the grouping").toBe("type");
   expect(address.searchParams.get("show"), "Clear filters took the view").toBe("dismissed");
+
+  // Blocked on you, then one field's narrowing, which the switch's choice does not clear, then
+  // Clear filters, which takes the field off and keeps `section=needs-you` (ST7 rows 5 and 6).
+  await page.goto("/?assignee=everyone");
+  await controlRow(main)
+    .getByRole("button", { name: /^Blocked on you\b/ })
+    .click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await pickInboxField(page, "type", /^Question,/, main);
+  await expect(page).toHaveURL(/[?&]type=question(&|$)/);
+  await expect(page, "a field's narrowing took the section off").toHaveURL(
+    /[?&]section=needs-you(&|$)/
+  );
+  await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
+  await expect(page).not.toHaveURL(/[?&]type=/);
+  await expect(page, "Clear filters took the section off").toHaveURL(/[?&]section=needs-you(&|$)/);
+
+  // The keys the Inbox's list answers (`Inbox.tsx`'s keymap), below the reading column's width,
+  // where each row is a card the keys move the focus over; `l`, which takes the focus into the
+  // reading column where one is drawn; and `g i`, the global binding that opens the Inbox.
+  const copied = await recordClipboard(page);
+  await page.setViewportSize({ height: 900, width: 1024 });
+  await page.goto("/?assignee=everyone&group=none");
+  const listed = main.locator("[data-inbox-row]");
+  await expect(listed).toHaveCount(rows.length);
+  const rowOf = (id: string) => main.locator(`[data-inbox-row="${id}"]`);
+  const seeded = (match: (row: ViewRow) => boolean): ViewRow => {
+    const found = rows.find(match);
+    if (found === undefined) throw new Error("the seed holds no such row");
+    return found;
+  };
+  const order = await drawnIds(page);
+  const search = page.getByRole("searchbox", { name: "Search asks" });
+  await page.locator("body").focus();
+  await page.keyboard.press("f");
+  await expect(search, "the f key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(rowOf(order[0] ?? ""), "the Escape key, out of the search box").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(rowOf(order[1] ?? ""), "the j key").toBeFocused();
+  await page.keyboard.press("k");
+  await expect(rowOf(order[0] ?? ""), "the k key").toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(rowOf(order[1] ?? ""), "the ArrowDown key").toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
+  const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
+  const ask = rowOf(ledger.id);
+  await ask.focus();
+  await page.keyboard.press("Enter");
+  await expect(ask.locator("[data-ask-answer]"), "the Enter key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, back to the row").toBeFocused();
+  await page.keyboard.press("h");
+  await expect(ask.locator("[data-inbox-snooze]"), "the h key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask).toBeFocused();
+  await page.keyboard.press("y");
+  await expect
+    .poll(async () => (await copied()).join(" "), { message: "the y key" })
+    .toContain(ledger.issueKey ?? "");
+  const decision = rowOf(seeded((row) => row.type === "decision").id);
+  await decision.focus();
+  await page.keyboard.press("1");
+  await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
+  const marks = control(page, CONTROL.selectionBar);
+  const first = rowOf(order[0] ?? "");
+  await first.focus();
+  await page.keyboard.press("x");
+  await expect(marks, "the x key").toContainText("1 selected");
+  await page.keyboard.press("Shift+J");
+  await expect(rowOf(order[1] ?? ""), "the Shift+J key").toBeFocused();
+  await expect(marks, "the Shift+J key").toContainText("2 selected");
+  await page.keyboard.press("Shift+K");
+  await expect(first, "the Shift+K key").toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(rowOf(order[2] ?? "")).toBeFocused();
+  await page.keyboard.press("Shift+X");
+  await expect(marks, "the Shift+X key").toContainText("3 selected");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(marks, "the Escape key that clears the marks").toHaveCount(0);
+  const thread = rowOf(seeded((row) => row.type === "reply").id);
+  await thread.focus();
+  await page.keyboard.press("e");
+  await expect(thread, "the e key").toHaveCount(0);
+  await page.locator("body").focus();
+  await page.keyboard.press("n");
+  const compose = page.getByRole("dialog", { name: "New message" });
+  await expect(compose, "the n key").toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(compose).toHaveCount(0);
+  await ask.focus();
+  await page.keyboard.press("o");
+  await expect(page, "the o key").toHaveURL(new RegExp(`/issues/${ledger.issueKey ?? ""}`));
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await page.keyboard.press("i");
+  await expect(page, "the g i keys").toHaveURL(/\/$/);
+  // `l` takes the focus into the reading column, which the Inbox draws from 1280 px for the row
+  // it has selected.
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/?assignee=everyone&group=none");
+  await rowOf(order[0] ?? "")
+    .locator("time")
+    .first()
+    .click();
+  await expect(page.getByTestId("inbox-pane")).toBeVisible();
+  await rowOf(order[0] ?? "").focus();
+  await page.keyboard.press("l");
+  await expect(page.getByTestId("inbox-pane-scroller"), "the l key").toBeFocused();
 });
 
 // SLOW(>=2s): the List's whole layout worked and then read back after a reload, and the Board's
@@ -3394,9 +3572,23 @@ test("k-keep: the search bar keeps its narrowings, its groups, its count, its re
 });
 
 /** Shuts the surface's display menu by pressing its trigger again. Escape would be the drawer's
- *  too once the focus has left the menu, and would shut the drawer with it. */
+ *  too once the focus has left the menu, and would shut the drawer with it. Where the bar holds
+ *  the display menu among **More**'s items (the drawer's, below 640 px), its item is pressed
+ *  again and **More**, which stays open under the menu, is shut after it. */
 async function shutDisplay(root: Locator): Promise<void> {
   const trigger = control(controlRow(root), CONTROL.displayMenu);
+  if ((await trigger.count()) === 0) {
+    const page = root.page();
+    const item = page
+      .getByRole("menu", { name: "More" })
+      .getByRole("menuitem", { exact: true, name: "View" });
+    if ((await item.count()) > 0 && (await expandedState("the View item", item)) === "open") {
+      await item.click();
+    }
+    await expect(page.getByRole("dialog", { name: "View" })).toHaveCount(0);
+    await shutMore(root);
+    return;
+  }
   if ((await expandedState("the surface's View menu", trigger)) === "open") await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 }
@@ -3437,7 +3629,7 @@ async function shutDisplay(root: Locator): Promise<void> {
 //   order (`features/threads/thread-order.ts:23-30`) and the folded bands
 //   (`features/inbox/preferences.ts:41-62`). Each set, and found again after a reload.
 // SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping, key and bulk action.
-test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk action, key and stored choice it had @phone", async ({
+test("k-keep: the Inbox drawer keeps every field, sort, grouping, count, view, bulk action, Blocked on you, Clear filters, key and stored choice it had @phone", async ({
   page,
 }, testInfo) => {
   // Measured in an issue pod (two cores), one worker: the row took 46.4 s in Chromium and 41.2 s
@@ -3452,7 +3644,14 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   const at = await lastActivity();
   const peek = drawer(page);
   const listed = peek.locator("[data-inbox-row]");
-  const chips = control(controlRow(peek), CONTROL.chip);
+  // The drawer's bar is narrower than 640 px at every window this row drives but the one it
+  // widens for Clear filters, so its chips stand at the top of its Filter panel rather than in its
+  // line (R8): each narrowing is read, and taken off, there. `lineChips` are the line's.
+  const chips = page
+    .getByRole("dialog", { name: "Filter" })
+    .getByRole("button", { name: /^Remove .+ filter$/ });
+  const lineChips = control(controlRow(peek), CONTROL.chip);
+  const drawerTrigger = control(controlRow(peek), CONTROL.panelTrigger);
   const rowOf = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
   const idsOf = (match: (row: ViewRow) => boolean) =>
     rows
@@ -3497,9 +3696,11 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await assignee.click();
   await closeControlPanel(peek);
   await expect(listed, "the assignee control").toHaveCount(rows.length);
+  await openFilterPanel(page, peek);
   await expect(chips.filter({ hasText: "Assignee: everyone" })).toHaveCount(1);
+  await closeControlPanel(peek);
 
-  // The four fields, each with its chip.
+  // The four fields, each with its chip, which the Filter panel lists and takes off.
   for (const [field, value, chip, matches] of [
     ["type", /^Question,/, "Type: Question", (row: ViewRow) => row.type === "question"],
     ["priority", /^P0,/, "Priority: P0", (row: ViewRow) => row.priority === "P0"],
@@ -3510,8 +3711,10 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     const expected = idsOf(matches);
     await expect(listed, `the drawer's ${field} field`).toHaveCount(expected.length);
     expect((await drawnIds(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
+    await openFilterPanel(page, peek);
     await expect(chips.filter({ hasText: chip }), `the ${field} field's chip`).toHaveCount(1);
     await chips.filter({ hasText: chip }).click();
+    await closeControlPanel(peek);
     await expect(listed).toHaveCount(rows.length);
   }
 
@@ -3528,7 +3731,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   );
   await typeTrigger.click();
   await closeControlPanel(peek);
+  await openFilterPanel(page, peek);
   await chips.filter({ hasText: "Priority: P0" }).click();
+  await closeControlPanel(peek);
   await expect(listed).toHaveCount(rows.length);
 
   // The six sorts, under no banding, and the seven groupings. Each sort's order is the client's
@@ -3631,11 +3836,45 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(bar, "the Escape key that clears the marks").toHaveCount(0);
   await expect(peek).toBeVisible();
 
-  // Mark all read, while threads are unread.
-  await controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" }).click();
-  await expect(
-    controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" })
-  ).toHaveCount(0);
+  // `Shift+J` carries the range from the row marked last to the next row, `Shift+K` back again,
+  // and `Shift+X` takes every row from the row marked last to the row in hand.
+  const first = rowOf(order[0] ?? "");
+  await first.focus();
+  await page.keyboard.press("x");
+  await expect(bar, "the x key").toContainText("1 selected");
+  await page.keyboard.press("Shift+J");
+  await expect(rowOf(order[1] ?? ""), "the Shift+J key").toBeFocused();
+  await expect(bar, "the Shift+J key").toContainText("2 selected");
+  await page.keyboard.press("Shift+K");
+  await expect(first, "the Shift+K key").toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(rowOf(order[2] ?? "")).toBeFocused();
+  await page.keyboard.press("Shift+X");
+  await expect(bar, "the Shift+X key").toContainText("3 selected");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(bar, "the Escape key that clears the marks").toHaveCount(0);
+  // `n` opens the compose dialog over the drawer, and its Escape shuts it and no more.
+  await page.keyboard.press("n");
+  const compose = page.getByRole("dialog", { name: "New message" });
+  await expect(compose, "the n key").toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(compose).toHaveCount(0);
+  await expect(peek).toBeVisible();
+
+  // Mark all read, from the bar's More, while threads are unread. The drawer's bar is narrow, so
+  // More stays for View, and holds no Mark all read once nothing is left unread.
+  const more = controlRow(peek).getByRole("button", { exact: true, name: "More" });
+  const markAll = page
+    .getByRole("menu", { name: "More" })
+    .getByRole("menuitem", { exact: true, name: "Mark all read" });
+  await more.click();
+  await markAll.click();
+  await more.click();
+  await expect(page.getByRole("menu", { name: "More" })).toBeVisible();
+  await expect(markAll, "Mark all read is offered over a list with nothing unread").toHaveCount(0);
+  await more.click();
   await expect
     .poll(async () => (await meInboxThreads({ state: "unread" })).rows.length, {
       message: "Mark all read",
@@ -3692,34 +3931,58 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await shutDisplay(peek);
   await expect(rowOf(comment.id)).toHaveCount(1);
 
-  // What waits on the reader, counted, and its press narrowing the list to exactly that.
-  const needsYou = peek.locator("[data-inbox-needs-you]");
-  await expect(needsYou, "the count of what waits on the reader").toHaveText(
-    /^Blocked on you · \d+$/
-  );
-  // The text was waited for above until it carried a number, which the control draws only once
+  // What waits on the reader, counted on the switch's Blocked on you, and choosing it narrowing
+  // the drawer's list to exactly that, with no chip.
+  const sections = controlRow(peek).getByRole("group", { name: "Inbox section" });
+  const blocked = sections.getByRole("button", { name: /^Blocked on you: \d+ items?\b/ });
+  await expect(blocked, "the count of what waits on the reader").toBeVisible();
+  // The name was waited for above until it carried a number, which the part draws only once
   // every count it adds up has answered.
-  const waiting = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
-  await needsYou.click();
+  const waiting = Number(
+    /: (\d+) item/.exec((await blocked.getAttribute("aria-label")) ?? "")?.[1]
+  );
+  const address = page.url();
+  await blocked.click();
+  await expect(blocked).toHaveAttribute("aria-pressed", "true");
   await expect(listed, "the count of what waits on the reader").toHaveCount(waiting);
-  await expect(chips.filter({ hasText: "Waiting on you" })).toHaveCount(1);
+  // The switch's choice draws no chip, and Filter does not count it.
+  await expect(drawerTrigger, "Blocked on you drew a chip").toHaveAccessibleName("Filter");
 
-  // Clear filters takes off the fields, the assignee and the needs-you narrowing, and leaves the
-  // words, the sort, the grouping and the view.
-  await search.fill("rule");
+  // Under Blocked on you a field's narrowing stands beside it, and Clear filters takes off the
+  // fields and the assignee and leaves the words, the sort, the grouping and the switch's choice
+  // (ST7 rows 5, 6 and 11). The drawer's bar draws Clear filters only where it is 640 px wide or
+  // wider, which it is where the drawer is as wide as a window below 768 px, so the window is
+  // that wide for it.
   await pickInboxField(page, "type", /^Question,/, peek);
+  await expect(blocked, "a field's narrowing took Blocked on you off").toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  const size = page.viewportSize();
+  await page.setViewportSize({ height: 900, width: 720 });
+  await search.fill("rule");
   const menu = await openDisplay(page, peek);
   for (const [section, value] of [
     ["Sort by", "priority"],
     ["Group by", "type"],
-    ["Show", "dismissed"],
   ] as const) {
     await displayChoice(menu, section, value).click();
   }
   await shutDisplay(peek);
   await controlRow(peek).getByRole("button", { exact: true, name: "Clear filters" }).click();
-  await expect(chips, "Clear filters left a narrowing on").toHaveCount(0);
+  await expect(lineChips, "Clear filters left a narrowing on").toHaveCount(0);
+  await expect(drawerTrigger, "Clear filters left a narrowing on").toHaveAccessibleName("Filter");
   await expect(search, "Clear filters took the words").toHaveValue("rule");
+  await expect(blocked, "Clear filters took Blocked on you off").toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  // The Dismissed view takes the switch's choice off, and no switch is drawn in it.
+  await displayChoice(await openDisplay(page, peek), "Show", "dismissed").click();
+  await shutDisplay(peek);
+  await expect(sections, "the switch is drawn in the Dismissed view").toHaveCount(0);
+  expect(page.url(), "the drawer wrote its choices into the page's address").toBe(address);
+  if (size !== null) await page.setViewportSize(size);
   const kept = await openDisplay(page, peek);
   for (const [section, value] of [
     ["Sort by", "priority"],
@@ -3785,18 +4048,24 @@ const PILL_CLASSES_AT_THE_BASE = classTokens(
   ].join(" ")
 );
 
-// SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read twice.
-test("the control in the row carries what the banner carried, and narrows the Inbox to what waits on the reader", async ({
+// SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read through the
+// switch, the Dismissed view, an agent narrowing and the project page.
+// k-needs-you: the banner stays off; the switch's Blocked on you carries its number and narrows
+// the list to what waits on the reader, keeping the credential requests; All takes it off; the
+// Dismissed view and an agent narrowing take it out of the address, and no switch is drawn beside
+// either; with nothing waiting the part shows no number; the project page's pill is unchanged.
+test("k-needs-you: Blocked on you carries what the banner carried, narrows the Inbox to what waits on the reader, and leaves the address under the Dismissed view and an agent narrowing", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   await createProject({ key: "CORE", name: "Core" });
   // Three asks waiting on Alice, one waiting on Bob, and one handed back to its agent.
-  const mine: string[] = [];
+  const mine: { id: string; issue: string }[] = [];
   for (const title of ["Ledger rollout", "Mirror retries", "Clock drift"]) {
     const issue = await createIssue({ project: "CORE", title });
     const ask = await createAsk(issue.key, { question: `${title}?` }, SURFACE_SESSION);
-    mine.push(ask.id);
+    mine.push({ id: ask.id, issue: issue.key });
   }
   const bobs = await createIssue({ project: "CORE", title: "Lease handover" });
   await patchIssue(bobs.key, { assignee: "bob" });
@@ -3813,7 +4082,7 @@ test("the control in the row carries what the banner carried, and narrows the In
     { ask_id: answeredAsk.id, body: "Checking the budget now.", turn: "agent" },
     SURFACE_SESSION
   );
-  // One unread thread, which the sidebar's own number adds and the control does not: a reply
+  // One unread thread, which the sidebar's own number adds and the switch does not: a reply
   // under a comment the reader wrote, which is what makes it a thread rather than a comment.
   const thread = await createIssue({ project: "CORE", title: "Nightly mirror" });
   await seedCommentThread(
@@ -3821,6 +4090,18 @@ test("the control in the row carries what the banner carried, and narrows the In
     "Is the nightly job still at 02:00?",
     "It moved to 03:00 last week."
   );
+  // The session that asks is live, so the Agents page lists it with its Needs you pill.
+  await setLiveSessions([
+    {
+      dir: "/workspaces/controls",
+      machine_id: "box-1",
+      session_id: SURFACE_SESSION.actor.id,
+      title: "Controls",
+    },
+  ]);
+  // One thread she dismissed, which the Dismissed view lists.
+  const archived = await createIssue({ project: "CORE", title: "Archived mirror" });
+  await seedDismissedThreads({ count: 1, issueKey: archived.key, prefix: "Archived" });
   // And one credential request waiting on her.
   await setPendingCredentialRequests([
     {
@@ -3836,6 +4117,11 @@ test("the control in the row carries what the banner carried, and narrows the In
   await page.goto("/");
   const main = page.getByTestId("main-content");
   const list = page.getByTestId("inbox-list");
+  const rows = page.locator("[data-inbox-row]");
+  const bar = controlRow(main);
+  const sections = bar.getByRole("group", { name: "Inbox section" });
+  const all = sections.getByRole("button", { exact: true, name: "All" });
+  const blocked = sections.getByRole("button", { name: /^Blocked on you\b/ });
   await expect(list).toBeVisible();
   // No element above the list carries the words the banner carried.
   await expect(
@@ -3843,11 +4129,10 @@ test("the control in the row carries what the banner carried, and narrows the In
     "the old banner's words are still drawn above the Inbox's list"
   ).toHaveCount(0);
 
-  // The control carries the asks waiting on her plus the credential request: three and one. It
-  // is read in the Inbox's control row, where the banner's number now sits.
-  const needsYou = controlRow(page).locator("[data-inbox-needs-you]");
-  await expect(needsYou).toHaveText("Blocked on you · 4");
-  await expect(needsYou).toHaveAttribute("aria-label", /^Blocked on you: 4 items/);
+  // The switch's Blocked on you carries the asks waiting on her plus the credential request:
+  // three and one, the number the needs-you control carried before the redesign.
+  await expect(blocked).toHaveAccessibleName(/^Blocked on you: 4 items/);
+  await expect(blocked).toHaveText("Blocked on you 4");
   const sidebar = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", {
     name: /^Inbox/,
   });
@@ -3857,39 +4142,91 @@ test("the control in the row carries what the banner carried, and narrows the In
   const sidebarCount = Number((await sidebar.textContent())?.replace(/\D+/g, "") ?? "0");
   expect(sidebarCount, "the sidebar's number does not add the unread thread").toBeGreaterThan(4);
 
-  // A press narrows the list to the asks waiting on her, keeps the credential section, and puts
-  // `section=needs-you` in the address while taking `assignee` out of it.
-  await page.goto("/?assignee=bob");
-  await needsYou.click();
-  await expect(page).toHaveURL(/section=needs-you/);
-  await expect(page).not.toHaveURL(/assignee=/);
+  // Choosing it narrows the list to the asks waiting on her and keeps the credential section; it
+  // writes `section=needs-you`, takes `assignee`, the four fields and the search text out, and
+  // keeps the sort, the grouping and the view. It draws no chip, and Filter does not count it.
+  await page.goto("/?assignee=bob&type=question&q=lease&sort=urgency&group=waiting-on");
+  await blocked.click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await expect(page, "Blocked on you left a narrowing or the text on").not.toHaveURL(
+    /[?&](assignee|type|q)=/
+  );
+  await expect(page).toHaveURL(/[?&]sort=urgency(&|$)/);
+  await expect(page).toHaveURL(/[?&]group=waiting-on(&|$)/);
+  await expect(blocked).toHaveAttribute("aria-pressed", "true");
   const credentials = page.getByRole("region", { name: "Credential requests" });
   await expect(
     credentials,
     "the credential requests section went with the narrowing"
   ).toBeVisible();
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(mine.length);
+  await expect(rows).toHaveCount(mine.length);
   const drawn = await drawnIds(page);
   expect([...drawn].sort(), "the narrowed list is not the asks waiting on the reader").toEqual(
-    [...mine].sort()
+    mine.map((ask) => ask.id).sort()
   );
-  await expect(needsYou, "the control in the row draws no number after the press").toHaveText(
-    /^Blocked on you · \d+$/
-  );
-  // The control's text was waited for above in the form that carries its number, so one read
-  // of it is the number the control carries after the press.
-  const carried = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
   expect(
     drawn.length + (await credentials.getByRole("listitem").count()),
-    `the page lists a different number of items than the control's ${carried}`
-  ).toBe(carried);
+    "the page lists a different number of items than Blocked on you carries"
+  ).toBe(4);
+  await expect(control(bar, CONTROL.chip), "Blocked on you drew a chip").toHaveCount(0);
+  await expect(
+    control(bar, CONTROL.panelTrigger),
+    "Filter counts Blocked on you"
+  ).toHaveAccessibleName("Filter");
+
+  // All takes `section` out and changes nothing else: every item shows again.
+  await all.click();
+  await expect(page).not.toHaveURL(/section=/);
+  await expect(page).toHaveURL(/[?&]sort=urgency(&|$)/);
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  // Her three asks, the one handed back to its agent, and the unread thread.
+  await expect(rows).toHaveCount(mine.length + 2);
+
+  // With Blocked on you chosen, the Dismissed view takes `section` out and lists the dismissed
+  // thread, and no switch is drawn there.
+  await blocked.click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await chooseShow(page, "Dismissed");
+  await expect(page).toHaveURL(/[?&]show=dismissed(&|$)/);
+  await expect(page).not.toHaveURL(/section=/);
+  await expect(rows, "the Dismissed view lists no dismissed thread").toHaveCount(1);
+  await expect(sections, "the switch is drawn in the Dismissed view").toHaveCount(0);
+
+  // With Blocked on you chosen again, an agent narrowing takes `section` out too: the reader
+  // leaves for the Agents page and follows the session's Needs you pill, which opens the agent
+  // narrowing alone (D29), and no switch is drawn beside it.
+  await page.goto("/");
+  await blocked.click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await page.goto("/agents");
+  await page.getByRole("link", { name: /^Needs you \d+$/ }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`[?&]agent=${encodeURIComponent(SURFACE_SESSION.actor.id)}(&|$)`)
+  );
+  await expect(page).not.toHaveURL(/section=/);
+  await expect(sections, "the switch is drawn beside an agent narrowing").toHaveCount(0);
+
+  // With nothing waiting on her - her asks handed back, the request gone - the part shows no
+  // number.
+  for (const ask of mine) {
+    await createComment(
+      ask.issue,
+      { ask_id: ask.id, body: "Over to you.", turn: "agent" },
+      SURFACE_SESSION
+    );
+  }
+  await setPendingCredentialRequests([]);
+  await page.goto("/");
+  await expect(blocked).toHaveAccessibleName(/^Blocked on you: 0 items/);
+  await expect(blocked).toHaveText("Blocked on you");
 
   // On the project page the same component draws its pill as it did at the merge base: its
-  // words with the project's count, the three asks waiting on her, since a credential request
-  // belongs to no project; its link to the Inbox; and its classes (`PILL_CLASSES_AT_THE_BASE`).
+  // words with the project's count, its link to the Inbox, and its classes
+  // (`PILL_CLASSES_AT_THE_BASE`). Nothing waits on her now, so a fresh ask on her issue counts.
+  await createAsk(mine[0]?.issue ?? "", { question: "One more?" }, SURFACE_SESSION);
   await page.goto("/projects/CORE/issues");
   const pill = page.getByRole("link", { name: /^Blocked on you · / });
-  await expect(pill, "the project page's pill is gone").toHaveText("Blocked on you · 3");
+  await expect(pill, "the project page's pill is gone").toHaveText("Blocked on you · 1");
   await expect(pill, "the project page's pill links elsewhere").toHaveAttribute("href", "/");
   // The pill's words were waited for above, so the classes read are the ones it is drawn with.
   const pillClass = (await pill.getAttribute("class")) ?? "";
@@ -4725,52 +5062,66 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await page.setViewportSize(size);
     const at = `${size.width}x${size.height}`;
 
-    // The Inbox's Mark all read, a page control in the row, goes once nothing is left unread:
-    // the focus goes to the next control in its slot, Blocked on you, which `seedSurfaces`' six
-    // asks waiting on the reader draw. A thread of its own at each width, since the press at the
-    // first marks the first one read.
+    // The Inbox's Mark all read, an item of the bar's More, goes once nothing is left unread. In
+    // the wide bar More held it alone and goes with it, handing the focus to the main action, New
+    // message (D26); in the narrow bar More stays, holding View, and keeps the focus its menu
+    // handed back. A thread of its own at each width, since the press at the first marks the
+    // first one read.
     let where = `Inbox at ${at}`;
     const thread = await createIssue({ project: "CORE", title: `Nightly mirror at ${at}` });
     await seedCommentThread(thread.key, "Is the nightly job still at 02:00?", "It moved to 03:00.");
     await page.goto("/");
-    const markAll = row.getByRole("button", { exact: true, name: "Mark all read" });
-    const blocked = row.getByRole("button", { name: /^Blocked on you/ });
-    await expect(markAll, `${where}: Mark all read is not drawn`).toBeVisible();
-    await expect(blocked, `${where}: Blocked on you is not drawn`).toBeVisible();
+    const moreOfBar = row.getByRole("button", { exact: true, name: "More" });
+    const newMessage = row.getByRole("button", { exact: true, name: "New message" });
+    const markAll = page
+      .getByRole("menu", { name: "More" })
+      .getByRole("menuitem", { exact: true, name: "Mark all read" });
+    await expect(moreOfBar, `${where}: More is not drawn`).toBeVisible();
+    const narrowAt = (await row.evaluate((node) => node.getBoundingClientRect().width)) < 640;
+    await moreOfBar.focus();
+    await page.keyboard.press("Enter");
+    await expect(markAll, `${where}: More holds no Mark all read`).toBeVisible();
     await markAll.focus();
     await page.keyboard.press("Enter");
-    await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
-    await focusOn(where, "Enter on Mark all read", blocked, "Blocked on you");
+    if (narrowAt) {
+      await focusOn(where, "Enter on Mark all read", moreOfBar, "More");
+    } else {
+      await expect(moreOfBar, `${where}: More stayed with nothing in it`).toHaveCount(0);
+      await focusOn(where, "Enter on Mark all read", newMessage, "New message");
+    }
 
     // `+N more` of the chips line, opened by Enter: its panel takes the focus onto its first chip,
     // Escape hands it back to `+N more`, and a chip taken off in the panel by Enter hands it to
-    // the panel's chip now at its place.
-    await page.goto(SIXTEEN_NARROWINGS);
-    const more = row.getByRole("button", { name: MORE_FILTERS });
-    await expect(more, `${where}: sixteen narrowings draw no +N more`).toBeVisible();
-    const morePanel = page.getByRole("dialog", { name: MORE_FILTERS });
-    const firstInPanel = morePanel.getByRole("button").first();
-    await more.focus();
-    await page.keyboard.press("Enter");
-    await focusOn(where, "Enter on +N more", firstInPanel, "the panel's first chip");
-    await page.keyboard.press("Escape");
-    await expect(morePanel, `${where}: Escape left the panel of +N more open`).toHaveCount(0);
-    await focusOn(where, "Escape in the panel of +N more", more, "+N more");
-    await page.keyboard.press("Enter");
-    await focusOn(where, "Enter on +N more again", firstInPanel, "the panel's first chip again");
-    // The chip the Enter below takes off, read once the panel has handed it the focus above.
-    const taken = (await firstInPanel.getAttribute("aria-label")) ?? "";
-    await page.keyboard.press("Enter");
-    await expect(
-      morePanel.getByRole("button", { exact: true, name: taken }),
-      `${where}: Enter on "${taken}" in the panel of +N more left it drawn`
-    ).toHaveCount(0);
-    await focusOn(
-      where,
-      `Enter on "${taken}" in the panel of +N more`,
-      firstInPanel,
-      "the panel's chip now at its place"
-    );
+    // the panel's chip now at its place. Below 640 px of the bar's width no chip stands in its
+    // line and no `+N more` is drawn (R8), so this is read in the wide bar alone.
+    if (!narrowAt) {
+      await page.goto(SIXTEEN_NARROWINGS);
+      const more = row.getByRole("button", { name: MORE_FILTERS });
+      await expect(more, `${where}: sixteen narrowings draw no +N more`).toBeVisible();
+      const morePanel = page.getByRole("dialog", { name: MORE_FILTERS });
+      const firstInPanel = morePanel.getByRole("button").first();
+      await more.focus();
+      await page.keyboard.press("Enter");
+      await focusOn(where, "Enter on +N more", firstInPanel, "the panel's first chip");
+      await page.keyboard.press("Escape");
+      await expect(morePanel, `${where}: Escape left the panel of +N more open`).toHaveCount(0);
+      await focusOn(where, "Escape in the panel of +N more", more, "+N more");
+      await page.keyboard.press("Enter");
+      await focusOn(where, "Enter on +N more again", firstInPanel, "the panel's first chip again");
+      // The chip the Enter below takes off, read once the panel has handed it the focus above.
+      const taken = (await firstInPanel.getAttribute("aria-label")) ?? "";
+      await page.keyboard.press("Enter");
+      await expect(
+        morePanel.getByRole("button", { exact: true, name: taken }),
+        `${where}: Enter on "${taken}" in the panel of +N more left it drawn`
+      ).toHaveCount(0);
+      await focusOn(
+        where,
+        `Enter on "${taken}" in the panel of +N more`,
+        firstInPanel,
+        "the panel's chip now at its place"
+      );
+    }
 
     // The List's pager: Next pressed until the last page and Previous until the first, each
     // refused there rather than disabled, so the focus stays on the button pressed.
@@ -4876,6 +5227,7 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     const filters = page.getByRole("dialog", { name: "Filter" });
     await expect(filters, `${where}: Enter on Filter opened no panel`).toBeVisible();
     const author = filters.getByRole("searchbox", { name: "Author" });
+    const lastChip = filters.getByRole("button", { name: /^Remove .+ filter$/ }).last();
     const panelSteps = [
       {
         menu: "Project",
@@ -4883,9 +5235,10 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         next: filters.getByRole("button", { exact: true, name: "Status" }),
         nextName: "the Status menu",
       },
-      // The Author box now at the Status menu's place takes typed text, and no control stands
-      // before it, so the hand-off passes over the box to the panel's own stop.
-      { menu: "Status", option: "Todo", next: filters, nextName: "the Filter panel" },
+      // The Author box now at the Status menu's place takes typed text, so the hand-off passes
+      // over it to the nearest control before it that takes none: the last of the chips the
+      // panel lists at its top (R8), the narrowing just picked.
+      { menu: "Status", option: "Todo", next: lastChip, nextName: "the panel's last chip" },
     ] as const;
     for (const { menu, option, next, nextName } of panelSteps) {
       const opener = filters.getByRole("button", { exact: true, name: menu });
@@ -4906,8 +5259,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await page.keyboard.press("Enter");
     await expect(author, `${where}: Enter on the Author box left it drawn`).toHaveCount(0);
     // The Updated since box now at its place takes typed text too, so the focus goes to the
-    // panel's own stop.
-    await focusOn(where, "Enter on the Author box", filters, "the Filter panel");
+    // nearest control before it that takes none: again the last chip at the panel's top.
+    await focusOn(where, "Enter on the Author box", lastChip, "the panel's last chip");
   }
   // A press that drops the focus onto the page sends a keyboard reader back to its first link,
   // from which the control they were using is a walk through everything above it.
@@ -5585,9 +5938,9 @@ test("the Delivery page reaches every facet from its row, in both views, and its
 
 // INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zU): Blocked on you counts the whole
 // inbox, and its press kept a field narrowing and the search text on, so the list under it held
-// fewer asks than the number it showed. The press takes both off, as it takes the assignee off,
+// fewer asks than the number it showed. Choosing it takes both off, as it takes the assignee off,
 // and keeps the sort and the grouping.
-test("with a field narrowing and a search on, a press of Blocked on you lists exactly the number it shows", async ({
+test("with a field narrowing and a search on, choosing Blocked on you lists exactly the number it shows", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
@@ -5605,8 +5958,9 @@ test("with a field narrowing and a search on, a press of Blocked on you lists ex
   await page.goto("/?priority=P0&q=ledger&sort=urgency&group=waiting-on");
   const rows = page.locator("[data-inbox-row]");
   await expect(rows).toHaveCount(1);
-  const blocked = page.locator("[data-inbox-needs-you]");
-  await expect(blocked).toHaveText("Blocked on you · 3");
+  // The switch's Blocked on you carries the whole inbox's count, the three asks waiting on her.
+  const blocked = page.getByRole("button", { name: /^Blocked on you: 3 items/ });
+  await expect(blocked).toHaveText("Blocked on you 3");
 
   await blocked.click();
   await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
@@ -8224,7 +8578,7 @@ test("no list of options on R2's pages lacks a text box: no page draws a native 
 // and the chip line stays one line within 52 px. A box scrolls sideways where its `overflow-x`
 // lets the reader scroll it and its content is wider than it is; a chip's own text cut short with
 // an ellipsis is clipped rather than scrolled.
-test("at 390 px chips over one line scroll nothing in the row sideways and move the first row at most one chip line, on the Inbox and the project List", async ({
+test("at 390 px narrowings over one line scroll nothing in the bar sideways and move no first row, on the Inbox and the project List", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -8249,7 +8603,7 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
   const wrong: string[] = [];
   for (const [name, address, narrowed, rows] of [
     // Every value of the Inbox's four fields that a seeded row holds, and some it does not, so
-    // every row stays listed under 17 chips.
+    // every row stays listed under 17 narrowings.
     [
       "Inbox",
       "/",
@@ -8264,7 +8618,7 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
       "[data-issue-row]",
     ],
   ] as const) {
-    const at = `${name} at 390x664 with chips over one line`;
+    const at = `${name} at 390x664 with narrowings over one line`;
     const firstRow = page.locator(rows).first();
     await page.goto(address);
     await expect(firstRow).toBeVisible();
@@ -8273,32 +8627,24 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
     const plain = await topOf(firstRow);
     await page.goto(narrowed);
     await expect(firstRow).toBeVisible();
-    if (name === "project List") {
-      // The List's bar is on the slots (R8): below 640 px of its width no chip stands in its line,
-      // and Filters' badge stands for the nine. The Inbox's row still draws its chips.
-      await expect(
-        control(row, CONTROL.panelTrigger),
-        `${at}: Filters does not count the nine narrowings`
-      ).toHaveAccessibleName("Filters · 9");
-      await expect(
-        control(row, CONTROL.chip),
-        `${at}: chips stand in the narrow bar's line`
-      ).toHaveCount(0);
-    } else {
-      await expect(control(row, CONTROL.chip).first()).toBeVisible();
-    }
+    // The List's bar and the Inbox's are on the slots (R8): below 640 px of the bar's width no
+    // chip stands in its line, and the trigger's badge stands for every narrowing.
+    await expect(
+      control(row, CONTROL.panelTrigger),
+      `${at}: the trigger does not count the narrowings`
+    ).toHaveAccessibleName(name === "Inbox" ? "Filter · 17" : "Filters · 9");
+    await expect(
+      control(row, CONTROL.chip),
+      `${at}: chips stand in the narrow bar's line`
+    ).toHaveCount(0);
     await resetScroll(page, firstRow);
     await nextFrames(page);
-    // One read is the measure: the chips are drawn and the list scrolled to its top.
+    // One read is the measure: the bar stands for the narrowings and the list is at its top.
     const top = await topOf(firstRow);
-    if (top - plain > CHIP_LINE) {
+    if (Math.abs(top - plain) > 1) {
+      // R8: the bar never grows, so the first row stays where it was, within 1 px.
       wrong.push(
-        `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, more than the one line of chips (${CHIP_LINE} px) R1 allows`
-      );
-    } else if (name === "project List" && Math.abs(top - plain) > 1) {
-      // R8: the List's bar never grows, so its first row stays where it was, within 1 px.
-      wrong.push(
-        `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, though the List's bar never grows`
+        `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, though the bar never grows`
       );
     }
     // One read is the answer: the chips are drawn, and nothing redraws the row now.

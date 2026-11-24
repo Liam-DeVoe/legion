@@ -16,15 +16,17 @@
 import { expect, type Locator } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
-import { control, controlRow } from "./filters";
+import { control, controlRow, openFilterPanel } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import {
+  closeControlPanel,
   drawnControlNames,
   expectBarDesign,
   expectNoGrowth,
   expectOneBarOn,
   gapBoxes,
   heightOf,
+  INBOX_PICKS,
   isPhoneProject,
   NARROW_BELOW,
   openSurface,
@@ -46,11 +48,6 @@ import { assertPageFits } from "./unclipped";
  *  with a first row and a narrowing that keeps it. */
 const test = stubbed(seedSurfaces);
 
-/** How far below its first reading the top of a list's first row may sit once a narrowing is
- *  on: one more line of chips, which is a 44 px control and the row's own 8 px gap
- *  (`components/ControlRow.tsx`). */
-const CHIP_LINE = 52;
-
 /** The share of the two columns the Inbox's reading pane takes, which is
  *  `DEFAULT_PANE_WIDTH` in `web/src/features/inbox/PaneDivider.tsx` - a file this change does
  *  not touch, so it is the share the pane has at the commit before it. */
@@ -63,16 +60,6 @@ const HEADER_LINE = "[data-inbox-header-line]";
 /** Six narrowings, as the Inbox's address writes them, under which the seed keeps every row: each
  *  of its asks is a question on CORE, so the list keeps them all under every kind and CORE. */
 const SIX_INBOX_NARROWINGS = "/?type=question,decision,approval,agent,reply&project=CORE";
-
-/** The same six, as the drawer's Filter panel picks them: a field, and its option. */
-const SIX_INBOX_PICKS: readonly (readonly [string, RegExp])[] = [
-  ["type", /^Question,/],
-  ["type", /^Decision,/],
-  ["type", /^Approval,/],
-  ["type", /^Agent message,/],
-  ["type", /^Threads,/],
-  ["project", /^CORE,/],
-];
 
 /** One part of a header line as the row reads it: what it is, and its box. */
 interface HeaderLinePart {
@@ -291,17 +278,12 @@ test("no narrowing, panel, display menu or selection moves the first row of a li
         narrowed
       );
       expect(
-        narrowed - first,
+        Math.abs(narrowed - first),
         `${where}: one narrowing moved the first row from ${Math.round(first)}px to ${Math.round(narrowed)}px, while the control row went from ${rowFirst}px to ${rowNarrowed}px; between the row and the first row, before: ${gapFirst.join("; ") || "nothing"}; after: ${gapNarrowed.join("; ") || "nothing"}`
-      ).toBeLessThanOrEqual(CHIP_LINE);
-      expect(
-        narrowed,
-        `${where}: one narrowing moved the first row up, from ${Math.round(first)}px to ${Math.round(narrowed)}px`
-      ).toBeGreaterThanOrEqual(first - 0.5);
+      ).toBeLessThanOrEqual(1);
 
       // Each of the remaining acts draws over the page rather than in it, so each leaves the
-      // top exactly where the narrowing left it, and within the same one line of the first
-      // reading.
+      // top exactly where the narrowing left it, which is where it was: the bar never grows (R8).
       for (const [act, run] of [
         ["the filter panel opened", surface.panel],
         ["the display menu opened", surface.display],
@@ -318,7 +300,7 @@ test("no narrowing, panel, display menu or selection moves the first row of a li
         expect(
           Math.abs(after - first),
           `${where}: ${act} left the first row at ${Math.round(after)}px against a first reading of ${Math.round(first)}px`
-        ).toBeLessThanOrEqual(CHIP_LINE);
+        ).toBeLessThanOrEqual(1);
         // Shut as a reader shuts it: the panel holds the focus once it opens, and Escape from
         // inside it closes it. Left open, it covers the display menu's trigger on a phone, and
         // the next act's press lands on the panel until one of its retries scrolls it away.
@@ -345,12 +327,31 @@ test("each page draws every shared control its design gives it, and no other @pr
     });
     // An issue's Artifacts tab draws its two actions as `bar-action`s where its bar is 640 px wide
     // or wider and as items of **More** below (R8), so the one of the two its bar's width does not
-    // give it is not looked for.
+    // give it is not looked for. The Inbox's bar below 640 px, the drawer's at every window this
+    // row drives, holds its display menu among **More**'s items, which **More** opens over the
+    // page rather than in the surface, so there **View** is read as an item of **More** instead.
+    // Below 640 px of a bar with a trigger its chips stand at the top of the Filter panel, which
+    // also opens over the page, so there the chip is read in the panel.
     const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
     const notHere = width < NARROW_BELOW ? CONTROL.barAction : CONTROL.moreMenu;
+    const viewInMore = (name === "Inbox" || name === "Inbox drawer") && width < NARROW_BELOW;
+    const chipsInPanel =
+      width < NARROW_BELOW && SURFACE_CONTROLS[name].includes(CONTROL.panelTrigger);
     const expected = [...SURFACE_CONTROLS[name]]
       .filter((wanted) => name !== "Artifacts tab" || wanted !== notHere)
+      .filter((wanted) => !viewInMore || wanted !== CONTROL.displayMenu)
+      .filter((wanted) => !chipsInPanel || wanted !== CONTROL.chip)
       .sort();
+    if (viewInMore) {
+      await control(surface.row, CONTROL.moreMenu).click();
+      await expect(
+        page
+          .getByRole("menu", { name: "More" })
+          .getByRole("menuitem", { exact: true, name: "View" }),
+        `${name}: More holds no View`
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
     // Every control the page draws as it opens, read before anything is pressed, so a page
     // pointed at a copy of a control is named here rather than found missing by the act that
     // would have driven it. The chip and the selection bar are not among them: a chip is drawn
@@ -360,6 +361,14 @@ test("each page draws every shared control its design gives it, and no other @pr
       await expect(control(surface.root, wanted), `${name} draws no ${wanted}`).not.toHaveCount(0);
     }
     await surface.narrow();
+    if (chipsInPanel) {
+      const panel = await openFilterPanel(page, surface.root);
+      await expect(
+        control(panel, CONTROL.chip),
+        `${name}: its Filter panel lists no chip`
+      ).not.toHaveCount(0);
+      await closeControlPanel(surface.root);
+    }
     if (surface.select !== undefined) await surface.select();
     for (const wanted of expected) {
       await expect(control(surface.root, wanted), `${name} draws no ${wanted}`).not.toHaveCount(0);
@@ -512,7 +521,7 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
     const surface = await openSurface(page, "Inbox drawer", scene, { phone });
     const where = `the Inbox drawer at ${size.width}x${size.height}`;
     await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, DRAWER_HEADER_LINE);
-    for (const [field, option] of SIX_INBOX_PICKS) {
+    for (const [field, option] of INBOX_PICKS) {
       await pickInboxField(page, field, option, surface.root);
     }
     await expect(surface.firstRow).toBeVisible();
@@ -520,27 +529,18 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
   }
 });
 
-/** The stubbable pages on the control bar's slots (INFRA-4948's T13), which R8's own rows below
- *  read page by page (`expectOneBarOn`, `expectBarDesign`, `expectNoGrowth` in
- *  `table-controls.ts`): a page joins this list as it moves onto the slots, so each row reads
- *  every page that has moved and none that has not. The Inbox and its drawer join it as they
- *  move. The Agents page and the Delivery page are on the slots too, and read in
+/** The stubbable pages on the control bar's slots, which R8's own rows below read page by page
+ *  (`expectOneBarOn`, `expectBarDesign`, `expectNoGrowth` in `table-controls.ts`): every one of
+ *  them. The Agents page and the Delivery page are on the slots too, and read in
  *  `table-controls.e2e.ts`. */
-const BAR_PAGES: readonly SurfaceName[] = [
-  "project List",
-  "project Board",
-  "search bar",
-  "Artifacts tab",
-  "priorities page",
-  "priority page",
-];
+const BAR_PAGES: readonly SurfaceName[] = STUBBABLE_SURFACES;
 
-// SLOW(>=2s): six pages at each of this project's widths, each read with no narrowing and with six.
-test("k-one-row: each page on the bar's slots draws one bar of one line above its list or table, its search box first and its placeholder whole @phone @pr", async ({
+// SLOW(>=2s): eight pages at each of this project's widths, each read with no narrowing and with six.
+test("k-one-row: each page on the bar's slots draws one bar of one line above its list or table, its search box first or in the Inbox's header line, its placeholder whole @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(320_000);
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
@@ -548,12 +548,12 @@ test("k-one-row: each page on the bar's slots draws one bar of one line above it
   }
 });
 
-// SLOW(>=2s): six pages, each read at rest and under one, two, three or six narrowings.
-test("k-bar: each page on the bar's slots draws its design's controls and no other, quiet at rest, with Filters' count, its chips and its panel's list @phone @pr", async ({
+// SLOW(>=2s): eight pages, each read at rest and under one, two, three or six narrowings.
+test("k-bar: each page on the bar's slots draws its design's controls and no other, quiet at rest, with its trigger's count, its chips and its panel's list @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.setTimeout(300_000);
+  test.setTimeout(420_000);
   const phone = isPhoneProject(testInfo);
   const size = phone
     ? (page.viewportSize() ?? { height: 664, width: 390 })
@@ -562,12 +562,12 @@ test("k-bar: each page on the bar's slots draws its design's controls and no oth
   for (const name of BAR_PAGES) await expectBarDesign(page, name, scene, size, phone);
 });
 
-// SLOW(>=2s): six pages at each of this project's widths, each driven through four acts.
+// SLOW(>=2s): eight pages at each of this project's widths, each driven through four acts.
 test("k-no-growth: no narrowing, panel, display menu or selection moves the first row of a page on the bar's slots, in the layout its bar's width gives @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.setTimeout(300_000);
+  test.setTimeout(420_000);
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);

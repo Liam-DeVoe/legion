@@ -337,9 +337,10 @@ test.describe("inbox selection", () => {
           }
         });
       });
-      // Only the asks waiting on the reader, from this one agent: a snoozed row leaves this list
-      // altogether rather than folding into `Later`.
-      await page.goto(`/?agent=${session.actor.id}&section=needs-you`);
+      // Only the asks waiting on the reader, the seed's two: a snoozed row leaves this list
+      // altogether rather than folding into `Later`. An agent narrowing holds no section (D29),
+      // so the list is the section alone.
+      await page.goto("/?section=needs-you");
       const rows = page.locator("[data-inbox-row]");
       await expect(rows).toHaveCount(2);
       await page.locator("body").focus();

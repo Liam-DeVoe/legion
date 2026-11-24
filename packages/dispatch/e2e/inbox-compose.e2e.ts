@@ -44,6 +44,27 @@ const ABSENCE_MARGIN_MS = 150;
  *  Dispatch's copy of the list is up to 5 s old. */
 const REGISTRY_MS = 30_000;
 
+/** **New message** in the control bar of `within` - the page, or the drawer: the bar's main
+ *  action, found by its role and its name, which it keeps where it shows its icon alone. */
+function newMessage(within: Locator | Page): Locator {
+  return controlRow(within).getByRole("button", { exact: true, name: "New message" });
+}
+
+/** Holds that **New message** is the last control of the control bar in `within`, as the bar's
+ *  main action stands at its end (R6, R8), each control read by the name a screen reader hears. */
+async function expectNewMessageLast(within: Locator | Page): Promise<void> {
+  const names = await controlRow(within).evaluate((bar) =>
+    [...bar.querySelectorAll<HTMLElement>("input, button, a[href]")]
+      .filter((element) => element.checkVisibility())
+      .map((element) => {
+        const spoken = element.cloneNode(true) as HTMLElement;
+        for (const hidden of spoken.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+        return (element.getAttribute("aria-label") ?? spoken.textContent ?? "").trim();
+      })
+  );
+  expect(names.at(-1), `the control bar's controls: ${names.join(", ")}`).toBe("New message");
+}
+
 /** A session that takes every delivery mode, so a plain message to it is a Send. */
 function session(key: keyof typeof sessionIds, title: string): FakeSession {
   return {
@@ -253,7 +274,7 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
 
     // The Inbox, with nothing focused and no text field active: `n` opens the dialog.
     await page.goto("/");
-    await expect(controlRow(page).locator("[data-inbox-compose]")).toBeVisible();
+    await expect(newMessage(page)).toBeVisible();
     await blurFocus(page);
     await page.keyboard.press("n");
     const dialog = composeDialog(page);
@@ -297,7 +318,7 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     // Done, and the dialog again from the control: three recipients, one broadcast.
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect(dialog).toHaveCount(0);
-    await controlRow(page).locator("[data-inbox-compose]").click();
+    await newMessage(page).click();
     await pickRecipients(page, [builder.title, checker.title, scribe.title]);
     await dialog.getByRole("textbox", { name: "Broadcast message" }).fill(many);
     writes.length = 0;
@@ -385,7 +406,7 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     ).toHaveCount(1);
     await page.keyboard.press("Escape");
 
-    // The New message control in the row adds no height at either window size.
+    // New message, the control bar's last control, adds no height at either window size.
     const firstRow = page.locator("[data-inbox-row]").first();
     for (const size of [
       { height: 900, width: 1440 },
@@ -394,7 +415,7 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
       await page.setViewportSize(size);
       await page.goto("/");
       await expect(firstRow).toBeVisible();
-      await expect(controlRow(page).locator("[data-inbox-compose]")).toBeVisible();
+      await expectNewMessageLast(page);
       await resetScroll(page, firstRow);
       const top = await topOf(firstRow);
       expect(
@@ -426,7 +447,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/");
     const dialog = composeDialog(page);
-    await controlRow(page).locator("[data-inbox-compose]").click();
+    await newMessage(page).click();
     await pickRecipients(page, [running.title, stalled.title, unknown.title]);
 
     // The third session ends after it was picked: the listener no longer knows it, and the
@@ -505,7 +526,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
      *  out, so its words say only that the message is stored for it. */
     const pickUnknownAlone = async () => {
       await setLiveSessions([running, stalled, unknown]);
-      await controlRow(page).locator("[data-inbox-compose]").click();
+      await newMessage(page).click();
       await pickRecipients(page, [unknown.title]);
       await setSessionRecord(unknown.session_id, "absent");
       await untilRegistryReads(page, async () => {
@@ -586,7 +607,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
       };
     });
     await setLiveSessions(crowd);
-    await controlRow(page).locator("[data-inbox-compose]").click();
+    await newMessage(page).click();
     let list = await openRecipients(page);
     await expect(async () => {
       await closeRecipients(page);
@@ -701,7 +722,7 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
 
     // From the New message control, to both sessions: one broadcast, its answer held two
     // seconds.
-    const control = controlRow(page).locator("[data-inbox-compose]");
+    const control = newMessage(page);
     await control.click();
     await expect(dialog).toBeVisible();
     await pickRecipients(page, [builder.title, checker.title]);
@@ -772,7 +793,7 @@ test("a message to one agent with an issue picked is the comment that mentions i
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/");
-    await controlRow(page).locator("[data-inbox-compose]").click();
+    await newMessage(page).click();
     const dialog = composeDialog(page);
     await pickRecipients(page, [builder.title]);
     await dialog.getByRole("button", { name: /^Choose issue/ }).click();
@@ -825,7 +846,7 @@ test("the drawer opens the same dialog with n", async ({ browser }) => {
     await expect(drawer).toBeVisible();
     const close = drawer.getByRole("button", { name: "Close" });
     await expect(close).toBeFocused();
-    await expect(drawer.locator("[data-inbox-compose]")).toBeVisible();
+    await expect(newMessage(drawer)).toBeVisible();
 
     await page.keyboard.press("n");
     const dialog = composeDialog(page);

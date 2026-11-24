@@ -517,15 +517,16 @@ function AgentMessageList({
 
 /** A whose-turn pill: a non-zero ask count linking to the Inbox narrowed to this agent's asks.
  *  `assignees` is the list's own filter: absent leaves the Inbox's default, the reader's own,
- *  which is what the `Needs you` pill counts and, with `section`, exactly what it opens; an
- *  empty array clears it, which is what the `Waiting on agent` pill needs, since the questions
+ *  which is what the `Needs you` pill counts and opens, the agent's asks on the reader's work;
+ *  an empty array clears it, which is what the `Waiting on agent` pill needs, since the questions
  *  it counts sit on anybody's issue - that list is this session's whole open list, both turns,
- *  rather than the counted part alone. */
+ *  rather than the counted part alone. Neither link names the Inbox's `section`: an agent
+ *  narrowing is drawn beside no Blocked on you switch, and the Inbox drops `section` from an
+ *  address that holds an agent (`inbox-route.ts`). */
 function AskCountPill({
   agent,
   assignees,
   count,
-  section,
   selected = false,
   title,
   wording,
@@ -533,7 +534,6 @@ function AskCountPill({
   agent: Agent;
   assignees?: readonly string[];
   count: number;
-  section?: "needs-you";
   selected?: boolean;
   title: string;
   wording: string;
@@ -542,7 +542,7 @@ function AskCountPill({
     <Link
       className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
       title={title}
-      to={buildInboxPath({ agent: agent.session_id, assignees, section })}
+      to={buildInboxPath({ agent: agent.session_id, assignees })}
     >
       <LabelPill selected={selected}>
         {wording} {count}
@@ -776,7 +776,6 @@ function AgentRow({
             <AskCountPill
               agent={agent}
               count={needsYou}
-              section="needs-you"
               selected
               title={`Open asks from ${label} waiting on your answer`}
               wording="Needs you"
@@ -789,8 +788,7 @@ function AgentRow({
               // own, so the link clears the filter: left at the default it would hide the ones
               // on issues the reader does not hold, and show none at all when no question of
               // this session's sits on one of theirs. What it opens is this session's whole
-              // open list, both turns, of which this number is the agent-turn part; only the
-              // `Needs you` pill above has a `section` to narrow by.
+              // open list, both turns, of which this number is the agent-turn part.
               assignees={[]}
               count={waitingOnAgent}
               title={`Open asks from ${label} whose next move is ${label}'s`}

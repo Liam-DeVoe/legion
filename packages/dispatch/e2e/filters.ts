@@ -50,13 +50,47 @@ export async function barAction(page: Page, label: string): Promise<Locator> {
 }
 
 /**
+ * The trigger of the display menu `label` inside `within` - the page, or the Inbox drawer: the
+ * bar's display menu where it stands in the bar's line, else its item of **More**, which this
+ * opens. A bar that sets the narrow display rule, the Inbox's and its drawer's, holds the display
+ * menu in **More** below 640 px of its width (R8, `components/ControlRow.tsx`). Waits until one of
+ * the two is drawn, so the bar has read its own width.
+ */
+export async function displayTrigger(
+  page: Page,
+  label = "View",
+  within: Locator | Page = page
+): Promise<Locator> {
+  const bar = controlRow(within);
+  const button = control(bar, CONTROL.displayMenu).and(
+    page.getByRole("button", { exact: true, name: label })
+  );
+  const more = control(bar, CONTROL.moreMenu);
+  await expect(button.or(more).first()).toBeVisible();
+  if ((await button.count()) > 0) return button;
+  if ((await expandedState("the bar's More", more)) === "shut") await more.click();
+  return page
+    .getByRole("menu", { name: "More" })
+    .getByRole("menuitem", { exact: true, name: label });
+}
+
+/** Shuts the bar's **More** inside `within` where it stands open, as a reader does by pressing
+ *  it again: a display menu opened from it leaves it open under that menu. */
+export async function shutMore(within: Locator | Page): Promise<void> {
+  const more = control(controlRow(within), CONTROL.moreMenu);
+  if ((await more.count()) === 0) return;
+  if ((await expandedState("the bar's More", more)) === "open") await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+}
+
+/**
  * The page's display menu, opened unless it is open already: the panel is the `dialog` named
  * after the trigger, and `label` is what that trigger reads (`View` on every page that draws
- * one today).
+ * one today), in the bar's line or among **More**'s items (`displayTrigger`).
  */
 export async function openDisplayMenu(page: Page, label = "View"): Promise<Locator> {
   const menu = page.getByRole("dialog", { name: label });
-  const trigger = page.getByRole("button", { exact: true, name: label });
+  const trigger = await displayTrigger(page, label);
   if ((await expandedState(`the ${label} menu`, trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
@@ -82,19 +116,23 @@ export async function chooseDisplay(
 }
 
 /** Picks one choice of the Inbox's **View** menu's **Show** section from the trigger inside
- *  `within` - the page, or the Inbox drawer - and shuts the menu again. */
+ *  `within` - the page, or the Inbox drawer - and shuts the menu again, and **More** where the
+ *  menu stood among its items. */
 export async function chooseShow(
   page: Page,
   label: string,
   within: Locator | Page = page
 ): Promise<void> {
   const menu = page.getByRole("dialog", { name: "View" });
-  const trigger = within.getByRole("button", { exact: true, name: "View" });
+  const trigger = await displayTrigger(page, "View", within);
   if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
+  if ((await trigger.count()) > 0 && (await expandedState("the View menu", trigger)) === "open") {
+    await trigger.click();
+  }
   await expect(menu).toHaveCount(0);
+  await shutMore(within);
 }
 
 /** A Board strip picker or the List table's header filter, by the name it carries. */

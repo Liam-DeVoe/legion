@@ -364,7 +364,7 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
-      await page.getByRole("button", { name: "Clear agent filter" }).click();
+      await page.getByRole("button", { name: /^Remove Asks from .+ filter$/ }).click();
       await expect(rows).toHaveCount(2);
       await page
         .locator(`[data-inbox-row="${scene.fromSessionAskId}"]`)

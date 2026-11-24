@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import {
   addressPath,
@@ -8,6 +8,7 @@ import {
   textParam,
   useAddressNavigate,
   useAddressParams,
+  usePageAddress,
 } from "../../lib/page-address";
 import {
   INBOX_FILTER_FIELDS,
@@ -114,8 +115,10 @@ function inboxRouteOf(params: URLSearchParams): InboxRoute {
   if (item !== "") {
     route.item = item;
   }
+  // `section` beside an agent narrowing is read as none: no switch stands beside an agent
+  // narrowing, and `useInboxRoute` writes the address back without it.
   const section = SECTION.read(params, "section");
-  if (section !== "") {
+  if (section !== "" && route.agent === undefined) {
     route.section = section;
   }
   // Neither trimmed nor cut: a reader mid-word has a trailing space that is part of what they
@@ -196,11 +199,22 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * the Inbox's query string is rebuilt whole from the route on every change - a parameter
  * outside `InboxRoute` would be dropped by the next selection - and because the Inbox the
  * address points at is `/`, whichever of the page's addresses the reader arrived on.
+ *
+ * An Inbox address that holds both an agent and `section` - the Agents page's Needs you link
+ * before it named the agent alone, kept in a bookmark or a history - is read as the agent
+ * narrowing alone (`inboxRouteOf`), and written back without `section`, replacing its entry, so
+ * no history entry holds an address the Inbox does not draw. Only the Inbox's own address is
+ * rewritten: a page the drawer peeks over keeps its own.
  */
 export function useInboxRoute(): readonly [InboxRoute, (next: InboxRoute) => void] {
   const params = useAddressParams();
+  const { pathname } = usePageAddress();
   const go = useAddressNavigate();
   const route = useMemo(() => inboxRouteOf(params), [params]);
   const setRoute = useCallback((next: InboxRoute) => go(buildInboxPath(next)), [go]);
+  const stale = pathname === "/" && route.agent !== undefined && params.has("section");
+  useEffect(() => {
+    if (stale) go(buildInboxPath(route));
+  }, [go, route, stale]);
   return [route, setRoute] as const;
 }

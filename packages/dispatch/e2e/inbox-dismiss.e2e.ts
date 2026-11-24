@@ -10,7 +10,7 @@ import {
   meInboxThreads,
   patchIssue,
 } from "./api";
-import { chooseShow } from "./filters";
+import { chooseShow, controlRow } from "./filters";
 import { typeFilterCounts } from "./inbox-filter";
 import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -574,7 +574,11 @@ test("Show: Dismissed lists the dismissed threads, survives a reload, and Move t
     await expect(page.locator(`[data-inbox-row="${replyId}"]`)).toBeVisible();
     await expect(page.locator(`[data-inbox-row="${agentId}"]`)).toBeVisible();
     expect(await bandHeadings(page)).toEqual([]);
-    await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
+    // No **Mark all read**: the bar's **More**, which holds it alone in the bar's wide line, is
+    // not drawn.
+    await expect(controlRow(page).getByRole("button", { exact: true, name: "More" })).toHaveCount(
+      0
+    );
 
     // The view is in the address, so a reload opens it again.
     await page.reload();

@@ -1,11 +1,8 @@
 import {
   Children,
-  cloneElement,
   type FocusEvent,
-  Fragment,
   isValidElement,
   type KeyboardEvent,
-  type ReactElement,
   type ReactNode,
   type RefObject,
   useLayoutEffect,
@@ -15,13 +12,7 @@ import {
 
 import { focusOnDocument } from "../features/shell/roving";
 import { observeStrip } from "../hooks/observe-strip";
-import {
-  borderDefault,
-  borderTransparent,
-  card,
-  focusVisibleRing,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
+import { borderDefault, borderTransparent, card } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { BarAction, type BarActionProps, type ViewPanelProps } from "./BarAction";
 import { barButton, FUNNEL_GLYPH, INFO_GLYPH, SLIDERS_GLYPH } from "./bar-look";
@@ -45,88 +36,20 @@ const NARROW_BELOW_PX = 640;
  *  lists the chips the line has no room for one under another, each at its own width. */
 const MORE_PANEL_CLASS = `${PANEL_FRAME} items-start gap-2 p-2 ${card}`;
 
-/** **Clear filters** in the row of a page not yet moved onto the slots, at each size: a word
- *  button at the end of the chips' line, as that row drew it. It keeps the row's touch target,
- *  which the compact size gives up only from `md`, where a mouse is. */
-const LEGACY_CLEAR = `min-h-11 shrink-0 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
-const LEGACY_CLEAR_FILTERS: Record<ControlSize, string> = {
-  comfortable: LEGACY_CLEAR,
-  compact: `${LEGACY_CLEAR} md:min-h-8`,
-};
-
 /** How far past its room a line of chips may reach and still fit. The widths read are rounded to
  *  the layout's own units, so their sum can miss the laid-out line by a fraction of a pixel. */
 const SLACK_PX = 0.5;
 
 /** One slot of the bar: its own single line, which cannot wrap, so whatever it holds grows
- *  sideways and never downward. Every slot keeps its width but the search box, which gives way
- *  where the bar is narrow, down to the width of its placeholder. A slot a page not yet on the
- *  slots fills itself (`children`) may wrap inside itself below `sm` (`wraps`), and at every width
- *  in a box narrower than `sm` (`narrow`), as it did before the bar was one line, so the Artifacts
- *  tab's staged upload stays on a phone's screen until the page draws it under the bar.
- *  `data-row-slot` marks it as the container a focused control in it is counted in, for the
- *  bar's focus hand-off. */
-function Slot({
-  children,
-  className,
-  gives = false,
-  narrow = false,
-  wraps = false,
-}: {
-  children: ReactNode;
-  className?: string;
-  gives?: boolean;
-  narrow?: boolean;
-  wraps?: boolean;
-}): ReactNode {
+ *  sideways and never downward. `data-row-slot` marks it as the container a focused control in
+ *  it is counted in, for the bar's focus hand-off. */
+function Slot({ children }: { children: ReactNode }): ReactNode {
   if (children === undefined || children === null) return null;
-  const width = gives
-    ? "min-w-0 flex-1 basis-64"
-    : wraps
-      ? narrow
-        ? "min-w-0"
-        : "min-w-0 sm:shrink-0"
-      : "shrink-0";
-  const wrap = wraps ? (narrow ? "flex-wrap" : "flex-wrap sm:flex-nowrap") : "flex-nowrap";
-  const own = `flex items-center gap-2 ${wrap} ${width}`;
   return (
-    <div className={className === undefined ? own : `${own} ${className}`} data-row-slot="">
+    <div className="flex shrink-0 flex-nowrap items-center gap-2" data-row-slot="">
       {children}
     </div>
   );
-}
-
-/** The chips handed the row, one element each, in their order: a fragment's chips are its
- *  children, so a page not yet on the slots may hand an array, a fragment, or both (the Inbox's
- *  agent chip before the chips `filterChips` draws). Each keeps a key of its own, made from its
- *  fragment's, so a chip the line hands to the panel stays the same chip. Anything that is not an
- *  element draws nothing: a chip is a control the row measures and hands the focus to. */
-function chipsOf(chips: ReactNode, within = ""): ReactElement[] {
-  return Children.toArray(chips).flatMap((chip) => {
-    if (!isValidElement<{ children?: ReactNode }>(chip)) return [];
-    const key = `${within}${String(chip.key)}`;
-    if (chip.type === Fragment) return chipsOf(chip.props.children, `${key}/`);
-    return [within === "" ? chip : cloneElement(chip, { key })];
-  });
-}
-
-/** The props a page handed a slot, or undefined where it handed an element it drew itself, or
- *  nothing. A page not yet moved onto the slots hands its search box, its trigger and its display
- *  menu drawn; T14 moves every page onto the slots and takes the element away. */
-function slotProps<T extends object>(slot: T | ReactNode): T | undefined {
-  if (typeof slot !== "object" || slot === null || isValidElement(slot) || Array.isArray(slot)) {
-    return undefined;
-  }
-  return slot as T;
-}
-
-/** The chips a page handed as props, or undefined where it handed elements it drew itself. */
-function chipPropsOf(chips: readonly FilterChip[] | ReactNode): readonly FilterChip[] | undefined {
-  if (!Array.isArray(chips)) return undefined;
-  const all: readonly unknown[] = chips;
-  return all.every((chip) => slotProps<FilterChip>(chip as FilterChip) !== undefined)
-    ? (all as readonly FilterChip[])
-    : undefined;
 }
 
 /** The chips line as the row last read it. */
@@ -205,10 +128,10 @@ function merged(
 
 /**
  * How many of the chips of `keys`, from the first, the line draws: every one where all of them
- * fit its room, else as many as fit with `+N more` and its gap after them. The first is drawn
- * whatever its width, cut short as `Chip` cuts its words, so the line never shows `+N more`
- * alone. A chip with no width yet is drawn, so the next read measures it (`probe`), save while
- * the panel is open: a chip the panel holds stays there.
+ * fit its room, else as many as fit whole with `+N more` and its gap after them - none, where the
+ * room holds less than one whole chip beside it, so the line shows `+N more` alone and never a
+ * chip cut short. A chip with no width yet is drawn, so the next read measures it (`probe`), save
+ * while the panel is open: a chip the panel holds stays there.
  */
 function chipsThatFit(keys: readonly string[], line: LineLayout, probe: boolean): number {
   const { gap, more, room, widths } = line;
@@ -220,12 +143,12 @@ function chipsThatFit(keys: readonly string[], line: LineLayout, probe: boolean)
   end = -gap;
   for (const key of keys) {
     const width = widths.get(key);
-    if (width === undefined) return probe ? count + 1 : Math.max(count, 1);
+    if (width === undefined) return probe ? count + 1 : count;
     end += gap + width;
     if (end > limit + SLACK_PX) break;
     count += 1;
   }
-  return Math.max(count, 1);
+  return count;
 }
 
 /** A removal a click has started, which hands the keyboard focus on once it has committed:
@@ -334,7 +257,6 @@ function keptInMore(action: BarActionProps): boolean {
 }
 
 const NO_ACTIONS: readonly BarActionProps[] = [];
-const NO_CHIPS: readonly ReactElement[] = [];
 
 export interface ControlRowProps<TData = unknown> {
   /** The page's actions, in its order: each a quiet button of the bar's line after its empty
@@ -342,13 +264,8 @@ export interface ControlRowProps<TData = unknown> {
    *  640 px of the bar's width. */
   readonly actions?: readonly BarActionProps[];
   /** The chips of the narrowings that are on, in the bar's line after the trigger, behind one
-   *  **+N more** where they do not fit, and at the top of the trigger's panel at every width. A
-   *  page not yet moved onto the slots hands its chips drawn, each an element, a fragment's
-   *  chips its children; T14 takes that form away. */
-  readonly chips?: readonly FilterChip[] | ReactNode;
-  /** A page's own controls, drawn after the chips: the form of a page not yet moved onto the
-   *  slots, which T14 takes away. */
-  readonly children?: ReactNode;
+   *  **+N more** where they do not fit, and at the top of the trigger's panel at every width. */
+  readonly chips?: readonly FilterChip[];
   /** The caller's outer layout alone - where the bar sits on the page, and what space it keeps
    *  from what is above and below it. The order inside it is the bar's. */
   readonly className?: string;
@@ -359,37 +276,27 @@ export interface ControlRowProps<TData = unknown> {
   /** A table's columns menu. */
   readonly columns?: ColumnsMenuProps<TData>;
   /** The display menu, under the label its page gives it (**View**, **Group by**), which marks
-   *  the current sort and grouping. A page not yet moved onto the slots hands it drawn; T14
-   *  takes that form away. */
-  readonly display?: DisplayMenuProps | ReactNode;
+   *  the current sort and grouping. */
+  readonly display?: DisplayMenuProps;
   /** The page's (i) hint, a `view-panel` trigger in the bar. */
   readonly hint?: ViewPanelProps;
   /** The page's one main action, the bar's last control and its one filled one. */
   readonly main?: BarActionProps;
-  /** The row of a page not yet on the slots stands in a box narrower than `sm` at every window
-   *  size, so the slot of its own controls (`children`) wraps as it does below `sm`, at every
-   *  width. It goes with `children`. */
-  readonly narrow?: boolean;
   /** The bar's narrow display rule, which the Inbox and its drawer set: below 640 px of the
    *  bar's width the display menu is an item of **More** rather than a control of the line,
    *  because the Inbox's bar has no room for it there (the measurement of 2026-11-24). **More**
    *  is then drawn while it holds the display menu alone. */
   readonly narrowDisplayInMore?: boolean;
-  /** What **Clear filters** does in the row of a page not yet on the slots, beside the trigger
-   *  it drew itself. It goes with that `trigger`. */
-  readonly onClear?: () => void;
-  /** The page's search box, the bar's first control. A page not yet moved onto the slots hands
-   *  it drawn; T14 takes that form away. */
-  readonly search?: SearchBoxProps | ReactNode;
+  /** The page's search box, the bar's first control. */
+  readonly search?: SearchBoxProps;
   /** How much room the bar's controls take (`ControlSize`): the bar hands it to every control
    *  it draws, whatever size a slot's own props name. */
   readonly size?: ControlSize;
   /** The switch (`SegmentedControl`) and a divider after it. */
   readonly switch?: SegmentedControlProps;
   /** **Filter**, the page's panel trigger, which counts the narrowings that differ from the
-   *  page's own (`count`). A page not yet moved onto the slots hands its own `PanelTrigger`
-   *  drawn; T14 takes that form away. */
-  readonly trigger?: Omit<PanelTriggerProps, "control"> | ReactNode;
+   *  page's own (`count`). */
+  readonly trigger?: Omit<PanelTriggerProps, "control">;
 }
 
 /**
@@ -430,15 +337,6 @@ export interface ControlRowProps<TData = unknown> {
  * **More** too. A bar laid out nowhere, as in a test DOM, takes the wide layout. A panel open
  * when the bar crosses 640 px stays open on its trigger, which the bar keeps.
  *
- * A page not yet moved onto the slots - one that hands the row a control it drew itself (its
- * `trigger`, its own `children`, or an element for the search box, the chips or the display menu)
- * and none of the slots only the bar has - is drawn as the row was before this bar, so its pages
- * and their checks keep every place they read: a first line of its search box, its trigger, its
- * own controls and its display menu, one line from `sm` up and wrapping below it, and while a
- * chip is on a second line of the chips and **Clear filters**, which stands right after the
- * trigger while none is. Its chips are fitted and hand the focus on by the rules below. T14 moves
- * every page onto the slots and takes that row away.
- *
  * The bar never grows, which is the height rule: applying a narrowing, opening a panel, opening
  * the display menu, selecting rows or showing an action each leave the top of the list's first
  * row where it was. The whole arithmetic is these points:
@@ -460,11 +358,12 @@ export interface ControlRowProps<TData = unknown> {
  *
  * What fits the chips' box is measured, not guessed: the box the chips and `+N more` share, less
  * `+N more`'s own width and its gap, against each chip's own width and the gaps between them.
- * Where every chip fits the whole box, no `+N more` is drawn. The first chip is drawn whatever its
- * width, cut short as `Chip` cuts its words, so the line never shows `+N more` alone, but in the
- * narrow layout of a bar with no trigger. A chip's width is read when the line draws it and kept
- * while the panel holds it, so the line is drawn right at once when a chip is taken off: a chip
- * after it that now fits moves into the line, and `+N` counts down, or goes once every chip fits.
+ * Where every chip fits the whole box, no `+N more` is drawn. Every chip the line draws is whole,
+ * at every width: where the box has room for less than one whole chip, the line shows `+N more`
+ * alone, which lists every chip - as the narrow layout of a bar with no trigger always does. A
+ * chip's width is read when the line draws it and kept while the panel holds it, so the line is
+ * drawn right at once when a chip is taken off: a chip after it that now fits moves into the
+ * line, and `+N` counts down, or goes once every chip fits.
  * The line is read again after a commit that changed what it draws, and whenever its box, the
  * strip or `+N more` changes size (`observeStrip`): a window resized, a chip's name arriving.
  *
@@ -515,16 +414,13 @@ export interface ControlRowProps<TData = unknown> {
 export function ControlRow<TData = unknown>({
   actions = NO_ACTIONS,
   chips,
-  children,
   className,
   clear,
   columns,
   display,
   hint,
   main,
-  narrow = false,
   narrowDisplayInMore = false,
-  onClear,
   search,
   size = "comfortable",
   switch: segments,
@@ -532,9 +428,10 @@ export function ControlRow<TData = unknown>({
 }: ControlRowProps<TData>): ReactNode {
   const rowRef = useRef<HTMLDivElement>(null);
   const handOff = useRef<HandOff | null>(null);
-  // The box the chips and `+N more` share: state rather than a ref, so its observers start when
-  // it is drawn and stop when it goes.
-  const [box, setBox] = useState<HTMLDivElement | null>(null);
+  // The box the chips and `+N more` share. The bar draws it in every layout, so a ref holds it
+  // from the bar's first commit to its last, and its observers start and stop with the bar: a
+  // bar taken away sets no state as it goes.
+  const boxRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<LineLayout | null>(null);
@@ -543,39 +440,17 @@ export function ControlRow<TData = unknown>({
   // **More** when the bar narrows and the action moves there.
   const focusedAction = useRef<Element | null>(null);
 
-  const searchProps = slotProps<SearchBoxProps>(search);
-  const triggerProps = slotProps<Omit<PanelTriggerProps, "control">>(trigger);
-  const displayProps = slotProps<DisplayMenuProps>(display);
-  const barChips = chipPropsOf(chips);
-  // A page not yet moved onto the slots - one that hands the row controls it drew itself, and
-  // none of the slots only the bar has - is drawn as the row was drawn before the one bar.
-  const onSlots =
-    triggerProps !== undefined ||
-    clear !== undefined ||
-    segments !== undefined ||
-    actions.length > 0 ||
-    hint !== undefined ||
-    columns !== undefined ||
-    main !== undefined;
-  const legacy =
-    !onSlots &&
-    (trigger !== undefined ||
-      onClear !== undefined ||
-      children !== undefined ||
-      (search !== undefined && searchProps === undefined) ||
-      (chips !== undefined && barChips === undefined) ||
-      (display !== undefined && displayProps === undefined));
-  const hasTrigger = trigger !== undefined && trigger !== null;
   const width = useOwnWidth(rowRef);
-  const narrowBar = !legacy && width > 0 && width < NARROW_BELOW_PX;
+  const narrowBar = width > 0 && width < NARROW_BELOW_PX;
 
-  const drawnChips =
-    barChips === undefined
-      ? chipsOf(chips as ReactNode)
-      : chipsOf(filterChips(barChips, size) ?? null);
-  // Below 640 px a trigger whose badge stands for the chips takes them out of the line, and a bar
-  // with no trigger keeps every chip behind one `+N more`.
-  const all = narrowBar && hasTrigger ? NO_CHIPS : drawnChips;
+  // The chips as `filterChips` draws them, one element each, each keeping its own key, so a chip
+  // the line hands to the panel stays the same chip. Below 640 px a trigger whose badge stands
+  // for the chips takes them out of the line, and a bar with no trigger keeps every chip behind
+  // one `+N more`.
+  const all =
+    chips === undefined || (narrowBar && trigger !== undefined)
+      ? []
+      : Children.toArray(filterChips(chips, size)).filter(isValidElement);
   const keys = all.map((chip) => String(chip.key));
   const shown = narrowBar ? 0 : layout === null ? all.length : chipsThatFit(keys, layout, !open);
   const inLine = all.slice(0, shown);
@@ -590,10 +465,10 @@ export function ControlRow<TData = unknown>({
   const inBar = narrowBar ? NO_ACTIONS : actions.filter((action) => !keptInMore(action));
   // The display menu, below 640 px, as **More**'s first item where the page sets the bar's narrow
   // display rule.
-  const displayInMore = narrowBar && narrowDisplayInMore && displayProps !== undefined;
+  const displayInMore = narrowBar && narrowDisplayInMore && display !== undefined;
   // The display menu as this render draws it, which the effect below reads as the layout changes.
-  const displayNow = useRef(displayProps);
-  displayNow.current = displayProps;
+  const displayNow = useRef(display);
+  displayNow.current = display;
 
   // Reads the line again, against what this commit drew. A read lays the page out, so a commit
   // reads it only when what the line draws, or what `+N more` counts, has changed; a change of
@@ -603,24 +478,21 @@ export function ControlRow<TData = unknown>({
   useLayoutEffect(() => {
     const drawn = keys.slice(0, shown);
     measure.current = () => {
+      const box = boxRef.current;
       if (box === null) return;
       const reading = readLine(box, moreRef.current, drawn);
       setLayout((before) => merged(before, reading, keys));
     };
     const drawing = `${inPanel.length}\n${drawn.join("\n")}`;
-    if (box === null) {
-      // A line drawn afresh is read afresh, whatever it draws.
-      measuredFor.current = "";
-      return;
-    }
     if (drawing === measuredFor.current) return;
     measuredFor.current = drawing;
     measure.current();
   });
   useLayoutEffect(() => {
+    const box = boxRef.current;
     if (box === null) return;
     return observeStrip(box, () => measure.current(), { childList: true });
-  }, [box]);
+  }, []);
   // After every commit of the row: a removal a click started hands the focus on once it has
   // committed.
   useLayoutEffect(() => {
@@ -710,14 +582,14 @@ export function ControlRow<TData = unknown>({
   );
 
   // The chips, in the bar's empty space: the box takes the room the rest of the line leaves,
-  // and gives way rather than push a control after it past the bar's edge. In the row of a page
-  // not yet on the slots, it is the chips' own line.
+  // and gives way rather than push a control after it past the bar's edge.
   const chipsBox = (
-    <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2" ref={setBox}>
+    <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2" ref={boxRef}>
       {/* `[&>*]:shrink-0`: the line never squeezes a chip it draws. A box a chip is drawn in
           with its link could otherwise shrink narrower than its text, and the next chip would
-          sit over its end and take its clicks. The strip itself gives way, so a first `Chip`
-          wider than the line is cut short by its own `max-w-full`. */}
+          sit over its end and take its clicks. The line draws only the chips that fit it whole
+          (`chipsThatFit`); the strip itself gives way, so a chip it draws for one read before
+          its width is known is cut by its own `max-w-full` in no frame the page paints. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the strip, which is a button or a link of its own: they note which chip a click takes off, and press the focused chip on Delete, so the strip needs no role of its own. */}
       <div
         className="flex min-w-0 flex-nowrap items-center gap-2 [&>*]:shrink-0"
@@ -783,99 +655,38 @@ export function ControlRow<TData = unknown>({
     .filter((name) => name.startsWith("px-"))
     .join(" ");
   const searchSlot =
-    searchProps === undefined ? (
-      <Slot gives>{search as ReactNode}</Slot>
-    ) : (
+    search === undefined ? null : (
       <div className="flex flex-1 basis-64 flex-col" data-row-slot="">
-        {searchProps.placeholder === undefined ? null : (
+        {search.placeholder === undefined ? null : (
           <span
             aria-hidden="true"
-            className={`invisible h-0 border-x text-sm whitespace-pre max-xl:text-base ${searchPadding} ${searchProps.hint === undefined ? "" : "pr-8"} ${borderTransparent}`}
+            className={`invisible h-0 border-x text-sm whitespace-pre max-xl:text-base ${searchPadding} ${search.hint === undefined ? "" : "pr-8"} ${borderTransparent}`}
           >
-            {searchProps.placeholder}
+            {search.placeholder}
           </span>
         )}
-        <SearchBox {...searchProps} className="w-full" size={size} />
+        <SearchBox {...search} className="w-full" size={size} />
       </div>
     );
-
-  if (legacy) {
-    // The row of a page not yet moved onto the slots, as it was drawn before the one bar: a
-    // first line of the search box, the trigger, the page's own controls and the display menu,
-    // one line from `sm` up and wrapping below it (and at every width in a box narrower than
-    // `sm`, `narrow`); and while a chip is on, a second line of the chips and **Clear filters**,
-    // which stands right after the trigger while none is. T14 moves every page onto the slots
-    // and takes this row away.
-    const chipsOn = all.length > 0;
-    const legacyClear =
-      onClear === undefined ? null : (
-        <button
-          className={LEGACY_CLEAR_FILTERS[size]}
-          onClick={(event) => {
-            handOff.current = { from: event.currentTarget, index: -1, panelPlace: null };
-            onClear();
-          }}
-          type="button"
-        >
-          Clear filters
-        </button>
-      );
-    const own = "flex min-w-0 flex-col gap-2";
-    return (
-      // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the row needs no role of its own.
-      <div
-        className={className === undefined ? own : `${own} ${className}`}
-        data-control={CONTROL.controlRow}
-        onFocus={onFocus}
-        ref={rowRef}
-      >
-        <div
-          className={`flex min-w-0 flex-wrap items-start gap-2 ${narrow ? "" : "sm:flex-nowrap"}`}
-        >
-          {searchSlot}
-          <Slot>
-            {chipsOn || legacyClear === null ? (
-              (trigger as ReactNode)
-            ) : (
-              <>
-                {trigger as ReactNode}
-                {legacyClear}
-              </>
-            )}
-          </Slot>
-          <Slot narrow={narrow} wraps>
-            {children}
-          </Slot>
-          <Slot className="ml-auto">{display as ReactNode}</Slot>
-        </div>
-        {chipsOn ? (
-          <div className="flex min-w-0 flex-nowrap items-center gap-2">
-            {chipsBox}
-            {legacyClear}
-          </div>
-        ) : null}
-      </div>
-    );
-  }
 
   // **Filter** and **Clear filters**, one group. The trigger's panel lists the chips at its top,
   // above the page's own fields, each with its remove control.
   let triggerSlot: ReactNode = null;
-  if (triggerProps !== undefined) {
-    const tinted = triggerProps.count !== undefined && triggerProps.count > 0;
+  if (trigger !== undefined) {
+    const tinted = trigger.count !== undefined && trigger.count > 0;
     const clearShown = clear !== undefined && !narrowBar;
-    const fields = triggerProps.children;
+    const fields = trigger.children;
     triggerSlot = (
       <div className="flex shrink-0 items-stretch" data-row-slot="">
         <PanelTrigger
-          {...triggerProps}
+          {...trigger}
           look={{ icon: narrowBar ? FUNNEL_GLYPH : undefined, joined: clearShown }}
           size={size}
         >
           {(close) => (
             <>
-              {barChips === undefined || barChips.length === 0 ? null : (
-                <PanelChips chips={barChips} size={size} />
+              {chips === undefined || chips.length === 0 ? null : (
+                <PanelChips chips={chips} size={size} />
               )}
               {fields(close)}
             </>
@@ -884,9 +695,6 @@ export function ControlRow<TData = unknown>({
         {clearShown ? clearButton(clear, tinted, true) : null}
       </div>
     );
-  } else if (hasTrigger) {
-    // A trigger a page drew itself, beside slots of the bar.
-    triggerSlot = <Slot>{trigger as ReactNode}</Slot>;
   }
 
   // Everything after the empty space is one slot, for the focus hand-off: the actions of the
@@ -908,23 +716,21 @@ export function ControlRow<TData = unknown>({
     end.push(<ColumnsMenu {...columns} key="columns" look={{}} size={size} />);
   }
   // The display menu, in its own place, or below 640 px as **More**'s first item.
-  if (displayProps !== undefined && !displayInMore) {
+  if (display !== undefined && !displayInMore) {
     end.push(
       <DisplayMenu
-        {...displayProps}
+        {...display}
         key="display"
         look={{ icon: narrowBar ? SLIDERS_GLYPH : undefined }}
         size={size}
       />
     );
-  } else if (displayProps === undefined && display !== undefined && display !== null) {
-    end.push(<Fragment key="display">{display as ReactNode}</Fragment>);
   }
   if (inMore.length > 0 || displayInMore) {
     end.push(
       <MoreMenu
         actions={inMore}
-        display={displayInMore ? displayProps : undefined}
+        display={displayInMore ? display : undefined}
         key="more"
         size={size}
       />
@@ -957,9 +763,6 @@ export function ControlRow<TData = unknown>({
       )}
       {triggerSlot}
       {chipsBox}
-      <Slot narrow={narrow} wraps>
-        {children}
-      </Slot>
       <Slot>{end.length === 0 ? null : end}</Slot>
     </div>
   );

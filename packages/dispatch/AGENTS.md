@@ -28,7 +28,6 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
   - `components/ControlRow.tsx`: the one control bar a page's controls sit in, one line that never wraps and never grows.
     It takes each control in a slot of its own kind, as that control's props and never as an element: `search`, `switch`, `trigger` with `clear`, `chips`, `actions`, `hint`, `columns`, `display` and `main`.
     It draws each shared control itself, at the page's `size`, and reads its own width: below 640 px the chips leave the line, the actions move into **More**, and **Filter**, the display menu, **More** and the main action show their glyphs alone.
-    Its `children` and its element-typed props stand only until every page has moved onto the slots.
 
   - `components/SearchBox.tsx`: the search box of a list narrowed by typed words, with the key that focuses it as its `hint`.
 

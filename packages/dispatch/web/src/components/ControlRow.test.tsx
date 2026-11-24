@@ -1541,13 +1541,18 @@ test("a line that widens takes back the chips that now fit, and one that narrows
   }
 });
 
-test("a first chip wider than the whole line is still drawn in it, before +N more", () => {
+test("where the line has room for less than one whole chip it draws +N more alone, which lists every chip", async () => {
+  const user = userEvent.setup();
   const long = "Label: a name that runs past the line";
   const restore = layOutLine({ width: 300 }, { Beta: 50, [long]: 400 });
   const view = render(<ChipsBar names={[long, "Beta"]} />);
   try {
-    expect(lineChips()).toEqual([long]);
-    expect(screen.getByRole("button", { name: "1 more filter" })).toHaveTextContent("+1 more");
+    // No chip is drawn cut short: the first one is wider than the line, so none stands in it.
+    expect(lineChips()).toEqual([]);
+    const more = screen.getByRole("button", { name: "2 more filters" });
+    expect(more).toHaveTextContent("+2 more");
+    await user.click(more);
+    expect(panelChips("2 more filters")).toEqual([long, "Beta"]);
   } finally {
     view.unmount();
     restore();
@@ -1846,32 +1851,6 @@ test("the bar's controls take their size from the page", () => {
     }
     view.rerender(<Bar size="comfortable" />);
     expect(screen.getByRole("button", { name: "New message" })).not.toHaveClass("md:min-h-8");
-  } finally {
-    view.unmount();
-  }
-});
-
-// --- A page not yet on the slots ------------------------------------------------------------------
-
-test("a page not yet on the slots keeps the two lines of the row it drew, until it moves onto them", () => {
-  const view = render(
-    <ControlRow
-      chips={<span data-testid="chips" />}
-      display={<span data-testid="display" />}
-      onClear={() => undefined}
-      search={<span data-testid="search" />}
-      trigger={<span data-testid="trigger" />}
-    >
-      <span data-testid="own" />
-    </ControlRow>
-  );
-  try {
-    const [first, chipsLine] = Array.from(row().children);
-    for (const testId of ["search", "trigger", "own", "display"]) {
-      expect(first?.contains(screen.getByTestId(testId))).toBe(true);
-    }
-    expect(chipsLine?.contains(screen.getByTestId("chips"))).toBe(true);
-    expect(chipsLine?.lastElementChild).toBe(screen.getByRole("button", { name: "Clear filters" }));
   } finally {
     view.unmount();
   }

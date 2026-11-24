@@ -702,7 +702,8 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     const needsYou = await within(planner).findByRole("link", { name: "Needs you 2" });
-    expect(needsYou).toHaveAttribute("href", "/?agent=planner-session&section=needs-you");
+    // The pill opens the agent narrowing alone, the Inbox drawing no switch beside it (D29).
+    expect(needsYou).toHaveAttribute("href", "/?agent=planner-session");
     expect(within(planner).queryByText(/^Waiting on agent/)).not.toBeInTheDocument();
     expect(within(planner).queryByText(/^Open asks/)).not.toBeInTheDocument();
 
@@ -713,7 +714,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     const builderCard = card(region, "Builder");
     expect(await within(builderCard).findByRole("link", { name: "Needs you 2" })).toHaveAttribute(
       "href",
-      "/?agent=builder-session&section=needs-you"
+      "/?agent=builder-session"
     );
     const waiting = within(builderCard).getByRole("link", { name: "Waiting on agent 2" });
     // The filter cleared, so the list it opens holds the question it counted whoever holds it.

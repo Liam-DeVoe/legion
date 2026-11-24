@@ -1,18 +1,17 @@
 import { expect, test } from "bun:test";
-import { act } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 
 import { renderAddress } from "../../__tests__/render-address";
 import { buildInboxPath, type InboxRoute, parseInboxSearch, useInboxRoute } from "./inbox-route";
 
 test("inbox agent filters round-trip through the query string and ignore unknown sections", () => {
   expect(buildInboxPath()).toBe("/");
-  expect(buildInboxPath({ agent: "s 1", section: "needs-you" })).toBe(
-    "/?agent=s+1&section=needs-you"
-  );
-  expect(parseInboxSearch("?agent=s+1&section=needs-you")).toEqual({
-    agent: "s 1",
-    section: "needs-you",
-  });
+  expect(buildInboxPath({ agent: "s 1" })).toBe("/?agent=s+1");
+  expect(buildInboxPath({ section: "needs-you" })).toBe("/?section=needs-you");
+  expect(parseInboxSearch("?agent=s+1")).toEqual({ agent: "s 1" });
+  expect(parseInboxSearch("?section=needs-you")).toEqual({ section: "needs-you" });
+  // An agent narrowing holds no section: no switch stands beside it.
+  expect(parseInboxSearch("?agent=s+1&section=needs-you")).toEqual({ agent: "s 1" });
   expect(parseInboxSearch("?agent=&section=later")).toEqual({});
 });
 
@@ -21,11 +20,17 @@ test("inbox assignee filters round-trip as repeated query parameters, after the 
   const path = buildInboxPath(route);
   expect(path).toBe("/?assignee=ana%40example.com&assignee=bo%40example.com&assignee=unassigned");
   expect(parseInboxSearch(path.slice(1))).toEqual(route);
-  expect(buildInboxPath({ agent: "s1", assignees: ["unassigned"], section: "needs-you" })).toBe(
-    "/?agent=s1&section=needs-you&assignee=unassigned"
+  expect(buildInboxPath({ agent: "s1", assignees: ["unassigned"] })).toBe(
+    "/?agent=s1&assignee=unassigned"
   );
-  expect(parseInboxSearch("?agent=s1&section=needs-you&assignee=unassigned")).toEqual({
+  expect(parseInboxSearch("?agent=s1&assignee=unassigned")).toEqual({
     agent: "s1",
+    assignees: ["unassigned"],
+  });
+  expect(buildInboxPath({ assignees: ["unassigned"], section: "needs-you" })).toBe(
+    "/?section=needs-you&assignee=unassigned"
+  );
+  expect(parseInboxSearch("?section=needs-you&assignee=unassigned")).toEqual({
     assignees: ["unassigned"],
     section: "needs-you",
   });
@@ -72,11 +77,12 @@ test("the inbox's selected item round-trips beside the filters and is absent whe
     assignees: ["ana@example.com"],
     item: "ask 2",
   });
-  expect(buildInboxPath({ agent: "s1", item: "ask-3", section: "needs-you" })).toBe(
-    "/?agent=s1&item=ask-3&section=needs-you"
+  expect(buildInboxPath({ agent: "s1", item: "ask-3" })).toBe("/?agent=s1&item=ask-3");
+  expect(parseInboxSearch("?agent=s1&item=+ask-3+")).toEqual({ agent: "s1", item: "ask-3" });
+  expect(buildInboxPath({ item: "ask-3", section: "needs-you" })).toBe(
+    "/?item=ask-3&section=needs-you"
   );
-  expect(parseInboxSearch("?agent=s1&item=+ask-3+&section=needs-you")).toEqual({
-    agent: "s1",
+  expect(parseInboxSearch("?item=+ask-3+&section=needs-you")).toEqual({
     item: "ask-3",
     section: "needs-you",
   });
@@ -162,5 +168,31 @@ test("the inbox's route is read from the address and written back, replacing the
     expect(hook.result.current.location.pathname).toBe("/elsewhere");
   } finally {
     hook.unmount();
+  }
+});
+
+// The Agents page's Needs you link named `section` beside the agent before it named the agent
+// alone (D29): such an address is read as the agent narrowing alone and written back without
+// `section`, replacing its entry, so Back leaves for the page before.
+test("an address with an agent drops section with a replace", async () => {
+  const hook = renderAddress(useInboxRoute, [
+    "/agents",
+    "/?agent=planner&section=needs-you&q=ship",
+  ]);
+  try {
+    expect(hook.result.current.value[0]).toEqual({ agent: "planner", q: "ship" });
+    await waitFor(() => expect(hook.result.current.location.search).toBe("?agent=planner&q=ship"));
+    act(() => hook.result.current.back(-1));
+    expect(hook.result.current.location.pathname).toBe("/agents");
+  } finally {
+    hook.unmount();
+  }
+  // Without an agent the section stands, and the address is left as it is.
+  const alone = renderAddress(useInboxRoute, ["/?section=needs-you"]);
+  try {
+    expect(alone.result.current.value[0]).toEqual({ section: "needs-you" });
+    expect(alone.result.current.location.search).toBe("?section=needs-you");
+  } finally {
+    alone.unmount();
   }
 });
