@@ -103,8 +103,9 @@ type specs struct {
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
 	// refuses it there, while a tmux pane holds one App's bundle and reads that App alone: the
-	// role's own, or, while the architect does a step of its plan whose key is owner, the App of
-	// that step's role (ownerActsAs).
+	// role's own, or the App of the role the architect acts as (ownerActsAs): the step's at a step of
+	// its plan whose key is owner or at the retro of one, and the implementer's while a merge forward
+	// asked of it has not ended.
 	// The daemon answers it from what GitHub last answered of that App's installations
 	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
 	// gh bundle of it, which costs no read of its own on a launch. It is asked for the App the

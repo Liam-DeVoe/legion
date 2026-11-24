@@ -70,8 +70,8 @@ func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 // only the claim's: a spawn of the architect while its owner does the implementer step logs the
 // implementer with the implement App, and the claim's own role, the architect, beside it. A line
 // naming the architect with the implement App would read as the architect's own role acting as
-// that App. The pane holds that App only while its owner does a step, or the retro of one, whose
-// role acts as it.
+// that App. The pane holds that App only while its owner does an act whose role acts as it: a step,
+// the retro of its own implementation step, or a merge forward asked of it.
 func TestTheOwnersLaunchLogsTheRoleItsPaneActsAs(t *testing.T) {
 	var logs strings.Builder
 	f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, nil)), func(o *Options) {

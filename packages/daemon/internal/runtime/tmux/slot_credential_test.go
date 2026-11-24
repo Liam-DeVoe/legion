@@ -17,8 +17,9 @@ import (
 // Under tmux a pane's gh files are its claim's own directory, which nothing stands between: while
 // the runtime's ActsAs gives the architect the implementer, its owner doing that step, the write
 // of the architect's pane leaves its hosts.yml holding the implement App's token, and the pane is
-// said to hold it (SlotHoldsCredential answers nil); once the step ended, the write puts the
-// review App's back, and the pane is said to hold that.
+// said to hold it (SlotHoldsCredential answers nil); once ActsAs gives the architect no other role,
+// as when its step ended and no other act of the owner's runs, the write puts the review App's
+// back, and the pane is said to hold that.
 func TestASlotSaysWhenItsFilesHoldTheCredentialUnderTmux(t *testing.T) {
 	ctx := context.Background()
 	g := newOwnerPaneRig(t)
