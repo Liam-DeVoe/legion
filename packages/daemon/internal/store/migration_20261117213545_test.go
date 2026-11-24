@@ -184,12 +184,12 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	}
 }
 
-// A database that ran 20261117213545 in its first form, as commit f98e67b5 wrote it, holds every
-// row that form found at the empty string: that form added the column and named no row. An
-// upgrade over it does not run 20261117213545 again, since that version is already recorded, so
-// every such row still holds the empty string after it. A step that is not the owner's reads as
-// the name its row holds (plan.StoredAgentName), so such a row reads as no name. The names
-// record.NameAgents gives the steps of a version written over such rows are held by record's
+// A database that ran 20261117213545 in its first form holds every row that form found at the empty
+// string: that form added the column and named no row. An upgrade over it does not run
+// 20261117213545 again, since that version is already recorded, so every such row still holds the
+// empty string after it. A step that is not the owner's reads as the name its row holds
+// (plan.StoredAgentName), so such a row reads as no name. The names record.NameAgents gives the
+// steps of a version written over such rows are held by record's
 // TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone.
 func TestTheStepAgentMigrationsFirstFormLeavesItsRowsUnnamedAfterTheUpgrade(t *testing.T) {
 	ctx := context.Background()
@@ -197,7 +197,7 @@ func TestTheStepAgentMigrationsFirstFormLeavesItsRowsUnnamedAfterTheUpgrade(t *t
 	migrateThrough(t, store, planStepAgentVersion-1)
 	seedPlanSteps(t, store, "LEGION-208", 1, [2]string{"implementer", ""}, [2]string{"reviewer", ""}, [2]string{"acceptance", "owner"})
 	for _, statement := range []string{
-		// The whole of the first form's statement (git show f98e67b5).
+		// The whole of the first form's statement.
 		`alter table plan_steps add column agent text not null default ''`,
 		`insert into schema_version (version) values (20261117213545)`,
 	} {

@@ -506,8 +506,9 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims of
 //     one issue can hold one role (record.WorkerClaim), so a stop names its claim rather than a
 //     role. The first of them is the release's boundary — the stop of the first role process of the
-//     pod — which is what R4's cancel is read against, so a delivery queued while the save ran is
-//     still below it and cancels the whole release;
+//     pod — which is what a delivery's cancel of the release is read against
+//     (store.IssueReleaseStop), so a delivery queued while the save ran is still below it and
+//     cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored. A Sandbox that owns the issue's kept
 //     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).

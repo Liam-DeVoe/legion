@@ -963,7 +963,7 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 // would be refused by the hold at start and the claim would fail within its launch budget
 // (acceptance of #4220). A rule's resume that names no agent, or the agent whose session the claim
 // records, leaves it suspended the same way; one for another step's agent leaves that session
-// behind instead (resumeByRule). A claim holding its session resumes as before (R9).
+// behind instead (resumeByRule). A claim holding its session resumes as before.
 //
 // The control (the pull request records the run): resume with no resumeRefusal: the operator's
 // resume answers no refusal and the claim is launched into the hold's refusal.
