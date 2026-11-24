@@ -41,10 +41,13 @@
 -- that has not started among them, starts a session of its own.
 --
 -- The rule is the function claim_agent_from_steps(issue, token), which this file defines and fills
--- the claims by, and which the daemon asks again for a start that names no agent and makes its
--- claim (the outbox's start, store.ClaimAgentFromSteps): a start the release before queued names
--- no agent, and where its claim is not made yet, it makes the claim when it runs, so the daemon
--- records on that claim the agent the function gives then. The facts the function reads do not
+-- the claims by, and which the daemon asks again for a start that names no agent, of a claim that
+-- records none and has run nothing (the outbox's start, store.ClaimAgentFromSteps), on whichever
+-- try of the start made the claim: a start the release before queued names no agent, and where its
+-- claim is not made yet, it makes the claim when it runs, so the daemon records on that claim the
+-- agent the function gives then. The function is one select of the plan_steps rows that hold the
+-- claim's name: the row at the place of the claim's latest kept start first, then the latest. The
+-- facts the function reads do not
 -- move under such a start while it can still act: its own start is the latest kept start of its
 -- claim's token, written when it was queued, and a later version that would replace its step's
 -- row is refused while its task runs, a new owner's run is a later generation, whose fence ends
@@ -79,7 +82,12 @@
 -- that each database runs once (store.Store.apply), and nothing in it names the project of the
 -- daemon that runs it, so it cannot keep to one project, and no later run would fill another
 -- project's claims. The release before reads no column it does not name, so that costs it
--- nothing, and the file writes no queued row, which that release decodes strictly.
+-- nothing, and the file writes no queued row, which that release decodes strictly. The fill
+-- writes the claims that stand when it runs: a claim that a daemon of the release before, of
+-- another project on the same database, makes after this file ran records no agent, since that
+-- release writes the column's default, and nothing fills it later. The first start of a step's
+-- agent that reaches such a claim takes the session it holds and records that agent, as for a
+-- claim the fill names no agent for.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -103,20 +111,18 @@
 -- commit;
 alter table claims add column session_agent text not null default '';
 create function claim_agent_from_steps(claim_issue text, claim_token text) returns text language sql stable as $$
-  select coalesce(
-    (select case when p.agent_key <> '' then 'key:' || p.agent_key else 'step:' || p.position || ':' || p.task end
-      from (select task, place, (record->>'generation')::bigint as generation
-        from step_starts
-        where issue = claim_issue and agent = claim_token and kind = 'step' and record ? 'generation'
-        order by started_at desc nulls last limit 1) s
-      join plan_steps p on p.issue = claim_issue and p.generation = s.generation and p.task = s.task
-        and p.position = s.place and p.agent_key <> 'owner'
-        and p.agent = substring(claim_token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')),
-    (select case when agent_key <> '' then 'key:' || agent_key else 'step:' || position || ':' || task end
-      from plan_steps
-      where issue = claim_issue and agent_key <> 'owner' and agent <> ''
-        and agent = substring(claim_token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')
-      order by generation desc, task desc, position desc limit 1))
+  select case when p.agent_key <> '' then 'key:' || p.agent_key else 'step:' || p.position || ':' || p.task end
+  from plan_steps p
+  left join (select task, place, (record->>'generation')::bigint as generation
+      from step_starts
+      where issue = claim_issue and agent = claim_token and kind = 'step' and record ? 'generation'
+      order by started_at desc nulls last limit 1) s
+    on p.generation = s.generation and p.task = s.task and p.position = s.place
+  where p.issue = claim_issue and p.agent_key <> 'owner' and p.agent <> ''
+    and p.agent = substring(claim_token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')
+  order by s.place is not null desc, p.generation desc, p.task desc, p.position desc
+  limit 1
 $$;
-update claims set session_agent = claim_agent_from_steps(issue, token)
-where claim_agent_from_steps(issue, token) is not null;
+update claims c set session_agent = f.agent
+from (select token, claim_agent_from_steps(issue, token) as agent from claims) f
+where f.token = c.token and f.agent is not null;
