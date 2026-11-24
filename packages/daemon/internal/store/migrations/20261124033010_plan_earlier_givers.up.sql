@@ -13,11 +13,22 @@
 -- earlier giver, which is what it was. A copy a carry writes (record.Store.CarryPlan) copies the
 -- column.
 --
--- Rolling back onto a release before this migration needs no statement: that release names the
--- columns of issue_plans in each statement it runs (its record.Store's PutPlan, CarryPlan and the
--- reads of planVersionColumns), so it boots with the column in place, reads given_by as the one
--- giver, and writes no earlier giver into it. What the roll back costs: that release passes a
--- version over at a first step when the giver it last recorded (given_by) no longer owns the
--- issue, though an earlier giver still does, and a copy its carry writes reads no earlier giver
--- after a roll forward.
+-- Rolling back onto a release that has the plan tables but not this migration needs no statement:
+-- that release names the columns of issue_plans in each statement it runs (its record.Store's
+-- PutPlan, CarryPlan and the reads of planVersionColumns), so it boots with the column in place,
+-- reads given_by as the one giver, and writes no earlier giver into it. What the roll back costs:
+-- that release passes a version over at a first step when the giver it last recorded (given_by) no
+-- longer owns the issue, though an earlier giver still does, and a copy its carry writes reads no
+-- earlier giver after a roll forward.
+--
+-- A rollback past 20261117034837_issue_plans, whose way back drops issue_plans, runs the way back
+-- below first, with every project's daemon on that database stopped: it drops the column and
+-- deletes this migration's row, so that store.apply runs this file again after that one, on the
+-- table the roll forward creates. Left out, the row stands, the table comes back without the
+-- column, and the daemon's first read of a plan fails.
+--
+-- begin;
+-- alter table issue_plans drop column if exists earlier_givers;
+-- delete from schema_version where version = 20261124033010;
+-- commit;
 alter table issue_plans add column earlier_givers text[] not null default '{}';
