@@ -361,13 +361,12 @@ function visits(seed: Seeded): readonly Visit[] {
       // surface drawn is what shows its chunk ran, which no landmark of the page shows otherwise,
       // and they are opened on this visit rather than on a second landing at
       // the same address, which would cost the walk another cold navigation, landing read and
-      // shell render for nothing. The shell's two lists of writes, the pending-writes indicator
-      // and what a lapsed session keeps, are chunks the writes host fetches once the page has
-      // drawn, on this page as on every other, and draws only while it holds a write, which no
-      // visit of this walk makes; every kind of write is a chunk the app fetches as the person
-      // signs in, for the take-up of what a reload kept, and nothing on a page draws from it. No
-      // landmark shows the three, so this visit waits for their fetches first, and they are this
-      // visit's rather than whichever visit happened to outlast them.
+      // shell render for nothing. The pending-writes indicator is a chunk the writes host fetches
+      // once the page has drawn, on this page as on every other, and draws only while it holds a
+      // write, which no visit of this walk makes; every kind of write is a chunk the app fetches
+      // as the person signs in, for the take-up of what a reload kept, and nothing on a page draws
+      // from it. No landmark shows the two, so this visit waits for their fetches first, and they
+      // are this visit's rather than whichever visit happened to outlast them.
       loads: [
         "inbox",
         "change-view",
@@ -378,7 +377,6 @@ function visits(seed: Seeded): readonly Visit[] {
         "create-issue",
         "shortcut-help",
         "pending-writes",
-        "kept-writes",
         "write-kinds",
       ],
       opens: async (page) => {

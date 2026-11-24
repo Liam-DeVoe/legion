@@ -14,13 +14,12 @@ import { writesOf } from "./features/writes/write-store";
 // row starts or waits for them.
 import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
-// The pending-writes indicator and the list a lapsed session keeps are each a chunk of their own
-// (`features/writes/write-hosts.tsx`), and the rows read what the two lists draw. The rows here
-// are about the writes, not about those downloads, and a row on a held clock runs its waits out
-// in a few real milliseconds while `test:web:cold` holds each chunk for a real second. So the two
-// are loaded here, with the test file, and no row waits for them; the kinds of write come with
-// the fixture (`app-sign-out-fixture.tsx`).
-import "./features/writes/KeptWrites";
+// The pending-writes indicator is a chunk of its own (`features/writes/write-hosts.tsx`), and the
+// rows read what it draws, as they read the list a lapsed session keeps, which is in the entry.
+// The rows here are about the writes, not about that download, and a row on a held clock runs its
+// waits out in a few real milliseconds while `test:web:cold` holds each chunk for a real second.
+// So the indicator is loaded here, with the test file, and no row waits for it; the kinds of
+// write come with the fixture (`app-sign-out-fixture.tsx`).
 import "./features/writes/PendingWritesIndicator";
 
 // The sign-out rows of another tab's sign-out, which holds this tab's writes for the person it

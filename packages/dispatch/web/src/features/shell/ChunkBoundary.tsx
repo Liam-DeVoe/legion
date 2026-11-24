@@ -13,14 +13,13 @@ interface ChunkBoundaryProps {
   /** For a host whose part draws with no reader action (the two lists of writes, the
    *  reference-preview layer): a value that changes whenever the part may be wanted again - a
    *  change of which writes a list shows or of where one stands, pressed by the reader or
-   *  answered by Dispatch, and on the sign-in page the window getting the focus back or the
-   *  browser coming back online (`features/writes/write-hosts.tsx`); a move to another address
-   *  (`features/refs/RefPreviewLayer.tsx`). A boundary that has caught a throw
-   *  draws `children` again once it changes, so the part mounts afresh and asks for its chunk
-   *  again (`chunkComponent` keeps no failed download), rather than drawing nothing for as long
-   *  as its host stays mounted: no recovery reload need follow the failure (the comment below says
-   *  when none does), and the reader can stay on that page for as long as they like. A boundary
-   *  that has not failed draws nothing anew for a change, so the value may change often. */
+   *  answered by Dispatch (`features/writes/write-hosts.tsx`); a move to another address
+   *  (`features/refs/RefPreviewLayer.tsx`). A boundary that has caught a throw draws `children`
+   *  again once it changes, so the part mounts afresh and asks for its chunk again
+   *  (`chunkComponent` keeps no failed download), rather than drawing nothing for as long as its
+   *  host stays mounted: no recovery reload need follow the failure (the comment below says when
+   *  none does), and the reader can stay on that page for as long as they like. A boundary that
+   *  has not failed draws nothing anew for a change, so the value may change often. */
   readonly reset?: unknown;
 }
 
@@ -29,13 +28,14 @@ type Failure = "none" | "chunk" | "render";
 
 /**
  * The error boundary of a host the shell draws outside the page's own boundary (`app.tsx`'s
- * `ErrorBoundary region="this page"`), around a part whose code is a chunk of its own: the two
- * lists of writes (`features/writes/write-hosts.tsx`), drawn in the status corner of every
- * signed-in page and on the sign-in page; the reference-preview layer
- * (`features/refs/RefPreviewLayer.tsx`); and the surfaces a reader opens with a key - the Create
- * issue dialog, the shortcut sheet, the search bar and the Inbox peek (`askedSurface`); the
- * bodies in the peek draw their decision cards from a chunk of their own too
- * (`features/doc/TextAskCardHost.tsx`).
+ * `ErrorBoundary region="this page"`), around a part whose code is a chunk of its own: the
+ * pending-writes indicator (`features/writes/write-hosts.tsx`), drawn in the status corner of
+ * every signed-in page; the reference-preview layer (`features/refs/RefPreviewLayer.tsx`); and
+ * the surfaces a reader opens with a key - the Create issue dialog, the shortcut sheet, the
+ * search bar and the Inbox peek (`askedSurface`); the bodies in the peek draw their decision
+ * cards from a chunk of their own too (`features/doc/TextAskCardHost.tsx`). The sign-in page's
+ * list of kept writes is in the entry, with no chunk, and its host draws it under one of these
+ * all the same, for the alert a throw of its render draws and the `reset` that draws it again.
  *
  * WHY EACH SUCH HOST NEEDS ONE. A chunk that fails to download while the browser is online is
  * thrown into the render that waits on it (`ChunkNotLoaded`, `chunk-component.tsx`), and the
@@ -53,13 +53,13 @@ type Failure = "none" | "chunk" | "render";
  *
  * Why not `ErrorBoundary`: that one tells the reader which region failed, with a reload button,
  * in the region's own place, for every throw. Here a chunk that could not load is told from a
- * render that threw, and each host names what stands in its part's place for each. A list of
- * writes draws nothing while it has nothing to show, and nothing while its chunk cannot load,
- * until its `reset` draws it again; React logs the failure itself (`onCaughtError`). A render
- * of a list that throws draws an alert that says which list could not be shown
- * (`features/writes/write-hosts.tsx`): that is a fault the reader must be told of, never
- * silence. A surface a reader opened draws an alert that says it could not open, for either
- * throw (`askedSurface`). The reference-preview layer names nothing for either.
+ * render that threw, and each host names what stands in its part's place for each. The
+ * pending-writes indicator draws nothing while it has nothing to show, and nothing while its
+ * chunk cannot load, until its `reset` draws it again; React logs the failure itself
+ * (`onCaughtError`). A render of a list of writes that throws draws an alert that says which list
+ * could not be shown (`features/writes/write-hosts.tsx`): that is a fault the reader must be told
+ * of, never silence. A surface a reader opened draws an alert that says it could not open, for
+ * either throw (`askedSurface`). The reference-preview layer names nothing for either.
  */
 export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: Failure }> {
   state: { failed: Failure } = { failed: "none" };

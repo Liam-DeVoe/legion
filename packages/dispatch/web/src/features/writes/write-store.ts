@@ -430,13 +430,14 @@ export class Writes {
   /** What the reload kept that the store has not taken up yet, each write's record as the tab
    *  keeps it (`WriteStorage.peek`): every person's from the store's making, only the person's
    *  once their take-up begins (`resume`), and none once it is done. Each record names its
-   *  person, its label and its kind's name, so these writes are known with no kind of write in:
-   *  a sign-out asks about them (`unsent`), a drop forgets them (`#dropKept`), and the sign-in
-   *  page lists them (`KeptWrites.tsx`) while the kinds are still on their way. No write the
-   *  store holds is among them in the app: the take-up begins before any page can press one
-   *  (`app.tsx`), and a write it takes up leaves them as it joins the store. A store with no app
-   *  around it can hold a write pressed before its take-up began, which the take-up and `unsent`
-   *  leave out as the store's own. */
+   *  person, its label, its kind's name and where it stood, so these writes are known with no
+   *  kind of write in: a sign-out asks about them (`unsent`), a drop forgets them (`#dropKept`),
+   *  and the sign-in page lists them (`KeptWrites.tsx`), a refused one with the Discard that
+   *  drops it (`discardKept`), while the kinds are still on their way. No write the store holds
+   *  is among them in the app: the take-up begins before any page can press one (`app.tsx`), and
+   *  a write it takes up leaves them as it joins the store. A store with no app around it can
+   *  hold a write pressed before its take-up began, which the take-up and `unsent` leave out as
+   *  the store's own. */
   #notTakenUp: readonly KeptWrite[];
   /** Whether the session of the person signed in has lapsed: no write starts until someone signs
    *  in again. */
@@ -737,6 +738,24 @@ export class Writes {
     this.#emit({ kind: "discarded", write: entry.write });
     this.#advance(entry.write.target);
     this.#signOutEnded(entry);
+    return true;
+  }
+
+  /** Drops the write the reload kept under `key` that the store has not taken up
+   *  (`#notTakenUp`), and says whether there was one: a refused one, which the sign-in page
+   *  offers the reader to discard from its record alone (`KeptWrites.tsx`). It goes from the
+   *  tab's storage, from these records, and with its file for an upload, as `discard` drops a
+   *  write the store holds. It needs no kind of write, so it is done at once, however long the
+   *  kinds take; and this page showed nothing of it, so nothing is undone. A take-up still
+   *  waiting holds only its person's records (`resume`), so one left with none ends: it has
+   *  nothing to take up (`#endTakeUp`). */
+  discardKept(key: string): boolean {
+    const kept = this.#notTakenUp.find((write) => write.key === key);
+    if (kept?.state.status !== "refused") return false;
+    this.#forgetKept(kept);
+    this.#notTakenUp = this.#notTakenUp.filter((write) => write !== kept);
+    if (this.#notTakenUp.length === 0) this.#endTakeUp();
+    this.#notify();
     return true;
   }
 
@@ -1110,14 +1129,20 @@ export class Writes {
   #dropKept(login: string): void {
     const left = this.#notTakenUp.filter((kept) => {
       if (kept.login !== login) return true;
-      this.#kept.forget(kept.key);
-      if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
+      this.#forgetKept(kept);
       return false;
     });
     const dropped = left.length < this.#notTakenUp.length;
     if (dropped) this.#notTakenUp = left;
     if (this.#takingUp?.login === login) this.#endTakeUp();
     if (dropped) this.#notify();
+  }
+
+  /** Lets go of what the tab keeps of `kept`, a write the reload kept: its entry, and an
+   *  upload's file. */
+  #forgetKept(kept: KeptWrite): void {
+    this.#kept.forget(kept.key);
+    if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
   }
 
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {

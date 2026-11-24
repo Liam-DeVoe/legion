@@ -21,9 +21,9 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // `preloadRouteChunk`), and the shell starts prefetches at a page's first paint - the search
 // bar's and the shortcut sheet's, the Markdown engine's warm and, on an address the landing read
 // takes for the Inbox, the Inbox peek's - and once the page's content has drawn
-// (`content-drawn.ts`) - the Create issue dialog's and the pending-writes host's three (the two
-// lists of writes and the kinds of write, `write-hosts.tsx`); the sign-in page starts the kinds
-// of write as it draws and again as the reader comes back to it (`KeptWritesHost`); Settings
+// (`content-drawn.ts`) - the Create issue dialog's and the pending-writes host's two (the
+// pending-writes indicator and the kinds of write, `write-hosts.tsx`); the sign-in page starts the
+// kinds of write as it draws and again as the reader comes back to it (`KeptWritesHost`); Settings
 // starts the new issue page's frame as it draws its switch
 // (`features/issue-page/IssuePagePreference.tsx`); and an open of a key's surface that the reader
 // called off leaves its download out as a prefetch (`asked-surface.tsx`). A bare chunk that

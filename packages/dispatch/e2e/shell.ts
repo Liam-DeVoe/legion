@@ -229,18 +229,18 @@ export async function holdMarginChunk(page: Page): Promise<() => void> {
  *  which the shell asks for at the same moment. */
 export const REF_PREVIEW_CHUNK = /\/assets\/RefPreview-[^/]+\.js$/u;
 
-/** The paths of the shell's two lists of writes, which the writes host fetches once the page has
- *  drawn and draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`). */
+/** The path of the pending-writes indicator's chunk, which the writes host fetches once the page
+ *  has drawn and draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`).
+ *  The sign-in page's list of kept writes has no chunk: it is in the entry. */
 export const PENDING_WRITES_CHUNK = /\/assets\/PendingWritesIndicator-[\w-]{8}\.js$/u;
-export const KEPT_WRITES_CHUNK = /\/assets\/KeptWrites-[\w-]{8}\.js$/u;
 
 /** The path of every kind of write, which the store's take-up of what a reload kept waits for and
  *  nothing draws from (`web/src/features/writes/kinds.ts`). */
 export const WRITE_KINDS_CHUNK = /\/assets\/kinds-[\w-]{8}\.js$/u;
 
-/** The three chunks of writes every signed-in page fetches, none of which a page without a write
+/** The two chunks of writes every signed-in page fetches, neither of which a page without a write
  *  draws from, so no landmark shows they came down (`fetchedChunk`). */
-export const writesChunks = [PENDING_WRITES_CHUNK, KEPT_WRITES_CHUNK, WRITE_KINDS_CHUNK] as const;
+export const writesChunks = [PENDING_WRITES_CHUNK, WRITE_KINDS_CHUNK] as const;
 
 /** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded
  *  through `frame-chunk.ts`): the route chunk of both landings of a reader who turned that page

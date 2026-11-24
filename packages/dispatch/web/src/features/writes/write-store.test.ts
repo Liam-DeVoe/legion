@@ -1408,6 +1408,73 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
   });
 });
 
+// The sign-in page's Discard of a write the reload kept as refused, which the store has not taken
+// up - a page that loads signed out takes up nothing until someone signs in (`app.tsx`) - is
+// made from its record alone, with no kind of write in (`discardKept`): the record goes from the
+// tab's storage and from the store's records, and an upload's file with it, as the store's own
+// Discard of that write drops them. A write kept out is not the reader's to drop, and stays.
+test("a refused upload the reload kept and the store has not taken up is discarded from its record alone, its file with it", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = memoryFiles();
+    const before = new Writes(signedIn(), tab.page(), files);
+    try {
+      void uploadWrite(before, spec, () => Promise.reject(verdict)).catch(() => {});
+      await settle();
+      expect(row(before)?.status).toBe("refused");
+      const key = row(before)?.key ?? "";
+      expect(files.rows.get(key)).toBe(spec);
+      const out = keyMinted(Date.now() + 1);
+      keepWrite(tab.storage, out);
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      expect(new Set(after.notTakenUp().map((write) => write.key))).toEqual(new Set([key, out]));
+      expect(after.discardKept(out), "a write kept out was discarded").toBe(false);
+      expect(after.discardKept(key)).toBe(true);
+      expect(tab.kept(key)).toBeUndefined();
+      expect(files.rows.has(key)).toBe(false);
+      expect(after.notTakenUp().map((write) => write.key)).toEqual([out]);
+      expect(tab.kept(out)).toBeDefined();
+      expect(after.discardKept(key), "the record was discarded twice").toBe(false);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// A take-up waits for the kinds of write only for what the reload kept of its person (`resume`).
+// Once the sign-in page's Discard leaves it nothing to take up, it ends, as a drop of the
+// person's kept writes ends it (`#dropKept`): a write pressed meanwhile goes out with no kind of
+// write in, rather than waiting for a download that may never come.
+test("a take-up that a kept refusal's Discard leaves nothing to take up ends, and the write pressed meanwhile goes out", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const key = keyMinted(Date.now());
+    keepWrite(tab.storage, key, { state: { refusal: { kind: "stopped" }, status: "refused" } });
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      writes.resume("alice", () => Promise.withResolvers<never>().promise);
+      let attempts = 0;
+      const pressed = statusWrite(writes, async () => {
+        attempts += 1;
+        return null;
+      });
+      await settle();
+      expect(attempts, "the press did not wait for the take-up").toBe(0);
+
+      expect(writes.discardKept(key)).toBe(true);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(await pressed).toBeNull();
+      expect(writes.notTakenUp()).toEqual([]);
+    } finally {
+      kindsRegistered();
+      await settle();
+      tab.close();
+    }
+  });
+});
+
 // W25. The page never keeps, and never sends, anything that points at an upload's file before
 // that file is kept: a record naming a key IndexedDB holds no file under is a write a reload
 // drops with nothing shown and nothing sent. The press still joins at once - the indicator

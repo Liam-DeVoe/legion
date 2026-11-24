@@ -10,7 +10,10 @@ import { useNotTakenUp, useWriteSelection, useWrites } from "./write-store";
  * Dispatch refused offers Discard, since only they can drop it. Nothing while the page keeps none,
  * as after a sign-out. The writes the reload kept that the store has not taken up yet are listed
  * too, from their own records (`Writes.notTakenUp`), so the list needs no kind of write: until
- * the store takes one up it shows by its name alone, and from then on as the store's own row.
+ * the store takes one up it shows by its name and by where its record says it stood - one kept
+ * refused reads "Not saved" and offers Discard, which drops its record (`Writes.discardKept`) -
+ * and from then on as the store's own row. A page that loads signed out holds only such records:
+ * the store takes up nothing until someone signs in (`app.tsx`).
  */
 export function KeptWrites(): ReactNode {
   const writes = useWrites();
@@ -33,14 +36,16 @@ export function KeptWrites(): ReactNode {
                   data-kept-write={write.key}
                   key={write.key}
                 >
-                  {"id" in write && write.status === "refused" ? (
+                  {("id" in write ? write.status : write.state.status) === "refused" ? (
                     <>
                       <span className={`min-w-0 flex-1 ${dangerText}`}>
                         {write.label} — Not saved
                       </span>
                       <button
                         className={secondaryButtonCompact}
-                        onClick={() => writes.discard(write.id)}
+                        onClick={() =>
+                          "id" in write ? writes.discard(write.id) : writes.discardKept(write.key)
+                        }
                         type="button"
                       >
                         Discard

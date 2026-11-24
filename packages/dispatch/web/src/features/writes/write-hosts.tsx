@@ -11,53 +11,55 @@ import {
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
 import { ErrorView } from "../shell/ErrorBoundary";
+import { KeptWrites } from "./KeptWrites";
 import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
 
 /**
- * Where the shell places its two lists of writes, and where their code is fetched: the
+ * Where the shell places its two lists of writes, and where the code of each comes from: the
  * pending-writes indicator in the status corner of every signed-in page
  * (`PendingWritesIndicator.tsx`), and what a lapsed session keeps, on the sign-in page
  * (`KeptWrites.tsx`). Where every kind of write the page makes is fetched too (`kinds.ts`).
  *
- * Each list draws nothing while it holds no write, which is how almost every page load finds
- * it, and the two carried 3,516 bytes of the entry chunk (2,588 and 928) that every page parsed
- * before it drew anything. So each is a chunk of its own, and its host here reads the same
- * selection of the one write store the list reads (`shown-writes.ts`): no list before the first
- * row. The indicator stays mounted from then on and draws nothing once none is left
- * (`PendingWritesHost` says why); the kept list is drawn only while it holds a row, of the
- * store's or of what the reload kept that the store has not taken up (`KeptWritesHost`).
+ * The indicator draws nothing while it holds no write, which is how almost every page load finds
+ * it, and it carried 2,588 bytes of the entry chunk that every page parsed before it drew
+ * anything. So it is a chunk of its own, and its host here reads the same selection of the one
+ * write store the indicator reads (`shown-writes.ts`): no indicator before the first row. It
+ * stays mounted from then on and draws nothing once none is left (`PendingWritesHost` says why).
  *
- * The lists are drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), as the
+ * The kept list is in the entry, with no chunk. It is the reader's one warning, before they sign
+ * in as someone else, of the writes that sign-in drops, so it draws with the sign-in page,
+ * whatever becomes of any download: as a chunk of its own it would draw one download late on a
+ * page that loads signed out, and not at all where that download failed online. That warning
+ * costs every page 1,030 bytes of the entry, the record's Discard (`Writes.discardKept`)
+ * included. It is drawn only while it holds a row, of the store's or of what the reload kept that
+ * the store has not taken up (`KeptWritesHost`).
+ *
+ * The indicator is drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), as the
  * issue page's tab panels, a document's decision cards and the reference-preview layer are; a
  * route goes through `lazyChunk`, and a surface a key opens through `askedSurface`. A chunk that
  * is in draws in the commit of the row that shows it, and a download that fails goes through
- * `renderChunk`, so a list that cannot load after a deploy spends one of the tab's recovery
+ * `renderChunk`, so an indicator that cannot load after a deploy spends one of the tab's recovery
  * reloads (`DeploymentResilience.tsx`). Both hosts sit outside the page's error boundary - the
  * status corner, and the sign-in page - so each list has a boundary of its own (`ChunkBoundary`),
- * and the rest of the page stays drawn and signed in. A list whose chunk fails to download online
- * draws nothing, as it would with no write to show; a list whose render throws draws an alert in
- * its place (`CouldNotShow`). A change of which writes a list shows, or of where one stands - a
- * write pressed or gone, one refused or late - draws the list afresh (`reset`, `shownWritesKey`),
- * which asks for its chunk again; the indicator's last write going is no such change, since the
- * list it would draw is empty (`PendingWritesHost`). A boundary that never reset would leave the
- * reader on a page no recovery reload follows - the boundary says when none does - with no
- * Retry, Discard or Stop trying for the life of the page.
- * On the sign-in page the reader changes none of those writes, so the kept list asks again as
- * well when the reader comes back to it (`KeptWritesHost`). Both chunks are started once the page
- * has drawn, so a reader who presses a write, or whose session lapses, usually finds its list in
- * already.
+ * and the rest of the page stays drawn and signed in. An indicator whose chunk fails to download
+ * online draws nothing, as it would with no write to show; a list whose render throws draws an
+ * alert in its place (`CouldNotShow`). A change of which writes a list shows, or of where one
+ * stands - a write pressed or gone, one refused or late - draws the list afresh (`reset`,
+ * `shownWritesKey`), which asks for the indicator's chunk again; the indicator's last write going
+ * is no such change, since the list it would draw is empty (`PendingWritesHost`). A boundary that
+ * never reset would leave the reader on a page no recovery reload follows - the boundary says
+ * when none does - with no Retry, Discard or Stop trying for the life of the page. The
+ * indicator's chunk is started once the page has drawn, so a reader who presses a write usually
+ * finds it in already.
  */
 const pendingWritesChunk = chunk<object>(() =>
   import("./PendingWritesIndicator").then((module) => module.PendingWritesIndicator)
 );
-const keptWritesChunk = chunk<object>(() =>
-  import("./KeptWrites").then((module) => module.KeptWrites)
-);
 
-// While a chunk is still on its way its list draws nothing, as it would with no write to show.
+// While its chunk is still on its way the indicator draws nothing, as it would with no write to
+// show.
 const PendingWritesIndicator = chunkComponent(pendingWritesChunk, null);
-const KeptWrites = chunkComponent(keptWritesChunk, null);
 
 /**
  * What stands in a list's place once its render has thrown: an alert that says which list could
@@ -144,24 +146,21 @@ export function PendingWritesHost(): ReactNode {
   // page's body. Set in the render that sees the change, so that render draws it already.
   const [reset, setReset] = useState("");
   if (shown !== "" && shown !== reset) setReset(shown);
-  // Both chunks are started here, after the page has drawn (`features/shell/content-drawn.ts`):
-  // an effect runs after the commit it belongs to, so a landing asks for neither before its
-  // first paint, and a landing that draws a live document asks only once its first block is
-  // in. Nobody is waiting on either yet, which is what `prefetchChunk` tells the chunk-failure
-  // recovery. The kept writes' chunk is started here too, because the sign-in page that shows
-  // them follows this shell when the session lapses, and with the chunk in, the list draws with
-  // that page rather than a moment after it. So are the kinds of write: the take-up asked for
-  // them as the person signed in, and this finds that download in or on its way. One the take-up
-  // lost before the page drew, with no reload to follow - the page was being left, the reader
-  // chose to stay at the leave prompt that the writes the reload kept (`WriteStorage.load`) or a
-  // write pressed meanwhile open, or the tab's recovery reloads are spent - is asked for again
-  // here, and its evaluation ends the take-up (`kindsRegistered`) with no press to ask for them
-  // (`Writes.run`).
+  // The indicator's chunk is started here, after the page has drawn
+  // (`features/shell/content-drawn.ts`): an effect runs after the commit it belongs to, so a
+  // landing does not ask for it before its first paint, and a landing that draws a live document
+  // asks only once its first block is in. Nobody is waiting on it yet, which is what
+  // `prefetchChunk` tells the chunk-failure recovery. So are the kinds of write: the take-up
+  // asked for them as the person signed in, and this finds that download in or on its way. One
+  // the take-up lost before the page drew, with no reload to follow - the page was being left,
+  // the reader chose to stay at the leave prompt that the writes the reload kept
+  // (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads are
+  // spent - is asked for again here, and its evaluation ends the take-up (`kindsRegistered`) with
+  // no press to ask for them (`Writes.run`).
   const drawn = useContentDrawn();
   useEffect(() => {
     if (!drawn) return;
     prefetchChunk(pendingWritesChunk.load);
-    prefetchChunk(keptWritesChunk.load);
     prefetchWriteKinds();
   }, [drawn]);
   // A list whose render threw keeps its alert in its place until `reset` changes, and then draws
@@ -193,36 +192,26 @@ export function KeptWritesHost(): ReactNode {
   // still on their way; a write the store takes up later shows as the store's row instead.
   const records = keptRecords(useNotTakenUp());
   // The kinds of write, for a take-up of what a reload kept that still waits for them as the
-  // session lapses (`Writes.resume`): it takes them up all the same, for the sign-in that follows,
-  // and only the store's rows offer what the kinds know, such as a refused write's Discard. The
-  // shell that asked for them is gone, so if its download failed with no reload to follow,
-  // nothing else on this page would ask again. Nobody waits on them here, which is what
-  // `prefetchChunk` tells the chunk-failure recovery. A load that fails here too is asked for
-  // again as the reader comes back to the page (below).
-  useEffect(prefetchWriteKinds, []);
-  // A list whose chunk failed, or whose render threw, draws again on a change of the store's
-  // writes it shows, which may offer a control - a write the reload kept that the store has not
-  // taken up shows by its name alone - and on the sign-in page none may come: the reader presses
-  // no write there, and one out may never be answered. So it draws again too as the reader comes
-  // back to the page - the window gets the focus back, or the browser comes back online - which
-  // is what a reader who finds the list missing does before they reload by hand. Until then a
-  // list whose render threw keeps its alert in its place. A list that has not failed draws
-  // nothing anew for either. The kinds are asked for again then as well, for a take-up still
-  // waiting for them.
-  const [returns, setReturns] = useState(0);
+  // session lapses (`Writes.resume`): it takes them up all the same, for the sign-in that
+  // follows. The list needs none of them. The shell that asked for them is gone, so if its
+  // download failed with no reload to follow, nothing else on this page would ask again. Nobody
+  // waits on them here, which is what `prefetchChunk` tells the chunk-failure recovery. A load
+  // that fails here too is asked for again as the reader comes back to the page - the window gets
+  // the focus back, or the browser comes back online - since the reader presses no write on the
+  // sign-in page, and a press is what asks again elsewhere (`Writes.run`).
   useEffect(() => {
-    const returned = () => {
-      prefetchWriteKinds();
-      setReturns((count) => count + 1);
-    };
-    window.addEventListener("focus", returned);
-    window.addEventListener("online", returned);
+    prefetchWriteKinds();
+    window.addEventListener("focus", prefetchWriteKinds);
+    window.addEventListener("online", prefetchWriteKinds);
     return () => {
-      window.removeEventListener("focus", returned);
-      window.removeEventListener("online", returned);
+      window.removeEventListener("focus", prefetchWriteKinds);
+      window.removeEventListener("online", prefetchWriteKinds);
     };
   }, []);
-  const reset = useMemo(() => `${shownWritesKey(rows)};${returns}`, [rows, returns]);
+  // A list whose render threw keeps its alert in its place until a change of the store's writes
+  // it shows, or of where one stands, draws it again, so a fault that one write's row brings ends
+  // with that row.
+  const reset = useMemo(() => shownWritesKey(rows), [rows]);
   return rows.length === 0 && records.length === 0 ? null : (
     <ChunkBoundary
       fallback={<CouldNotShow className="mt-6" list="the changes this page kept" />}

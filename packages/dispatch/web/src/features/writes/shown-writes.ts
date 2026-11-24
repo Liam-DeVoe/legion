@@ -3,10 +3,11 @@ import type { Write } from "./write-store";
 
 // Which writes the shell's two lists show and how they read each one: the pending-writes
 // indicator (`PendingWritesIndicator.tsx`) and the sign-in page's kept writes (`KeptWrites.tsx`).
-// Each list is a chunk of its own, and its host in the entry reads the same selection to draw
-// nothing while it is empty (`write-hosts.tsx`), so the selections live here, apart from both
-// lists, as do the readings another surface shares: the issue header's writes discard a pick
-// that is still waiting to send (`waitingToSend`, `features/issue/useIssueFieldWrite.ts`).
+// The indicator is a chunk of its own, and its host in the entry reads the same selection to draw
+// nothing while it is empty (`write-hosts.tsx`); the kept list is in the entry, and its host reads
+// the selections too. So the selections live here, apart from both lists, as do the readings
+// another surface shares: the issue header's writes discard a pick that is still waiting to send
+// (`waitingToSend`, `features/issue/useIssueFieldWrite.ts`).
 
 /** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
 export function indicatorWrites(rows: readonly Write[]): readonly Write[] {

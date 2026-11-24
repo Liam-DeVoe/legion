@@ -5,8 +5,8 @@ import { afterNextPaint } from "./after-next-paint";
 /**
  * Whether the page a cold landing opened has drawn its own content yet, for the shell's code
  * that draws no part of that content: the margin, the reference-preview layer, the map from a
- * live event to the reads it refreshes, the writes host's three chunks (the two lists of
- * writes and the kinds of write, `features/writes/write-hosts.tsx`) and the Create issue
+ * live event to the reads it refreshes, the writes host's two chunks (the pending-writes
+ * indicator and the kinds of write, `features/writes/write-hosts.tsx`) and the Create issue
  * dialog's chunk (`features/issue/CreateIssueDialogHost.tsx`). One more reader waits for
  * the same moment for another reason: the ring on a landed artifact's header
  * (`features/artifacts/ArtifactHeader.tsx`) counts its two seconds from it, because the margin

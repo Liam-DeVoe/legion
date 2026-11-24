@@ -284,11 +284,12 @@ export function preloadRouteChunk(pathname: string): void {
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
 // bar's and the shortcut sheet's after the same paint (`features/search/SearchPaletteHost.tsx`,
-// `features/shell/ShortcutHelpHost.tsx`), the Create issue dialog's, the two lists of writes'
-// and the kinds of write's once the page has drawn (`features/issue/CreateIssueDialogHost.tsx`,
-// `features/writes/write-hosts.tsx`), the kinds of write's again on the sign-in page
-// (`KeptWritesHost`), the download of a key's surface, beside the `renderChunk` that counts it
-// while the reader waits on it (`features/shell/asked-surface.tsx`), the new issue page's frame
+// `features/shell/ShortcutHelpHost.tsx`), the Create issue dialog's, the pending-writes
+// indicator's and the kinds of write's once the page has drawn
+// (`features/issue/CreateIssueDialogHost.tsx`, `features/writes/write-hosts.tsx`), the kinds of
+// write's again on the sign-in page (`KeptWritesHost`), the download of a key's surface, beside
+// the `renderChunk` that counts it while the reader waits on it
+// (`features/shell/asked-surface.tsx`), the new issue page's frame
 // once Settings draws its switch
 // (`features/issue-page/IssuePagePreference.tsx`) and the boot warm of the Markdown engine
 // (`features/shell/DeploymentResilience.tsx`). Left bare, a

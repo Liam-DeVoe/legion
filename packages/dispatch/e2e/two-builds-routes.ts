@@ -84,11 +84,6 @@ export const lazyPieces = {
   "issue-tab":
     "an issue tab's panel other than the Spec's (features/issue/tab-chunks.ts), each a chunk " +
     "fetched when its tab first opens",
-  "kept-writes":
-    "what a lapsed session keeps, on the sign-in page (features/writes/KeptWrites.tsx), which " +
-    "the writes host (features/writes/write-hosts.tsx) fetches once the page has drawn, beside " +
-    "the pending-writes indicator, and draws only while the page keeps a write, so the fetch is " +
-    "what shows it ran",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +

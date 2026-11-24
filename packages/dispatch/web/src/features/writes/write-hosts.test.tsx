@@ -107,11 +107,11 @@ function Fault(): never {
   throw new Error("A row of the list failed to render");
 }
 
-/** A part of the same place whose chunk fails to download online: it throws into the list's
- *  render what the list's own `chunkComponent` throws when the list's chunk fails after a deploy.
- *  It stands for that chunk, which a row cannot fail: once any row of this process has drawn a
- *  list, its chunk is in, and `chunk` keeps it. This one keeps no failed download, so each mount
- *  asks again and fails again. */
+/** A part of the same place whose chunk fails to download online: it throws into the
+ *  indicator's render what the indicator's own `chunkComponent` throws when its chunk fails after
+ *  a deploy. It stands for that chunk, which a row cannot fail: once any row of this process has
+ *  drawn the indicator, its chunk is in, and `chunk` keeps it. This one keeps no failed download,
+ *  so each mount asks again and fails again. The kept list holds no chunk: it is in the entry. */
 const NotLoaded = chunkComponent(
   chunk<object>(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module"))),
   null
@@ -174,19 +174,61 @@ test.each(
   }
 });
 
-// A chunk that fails to download online draws no alert: the list draws nothing, as it does with
-// no write to show, until a change of its writes draws it again (`ChunkBoundary`'s `reset`).
-test.each(
-  lists
-)("a chunk that fails to download under the %s draws nothing in the list's place", async (_list, Host, region) => {
+// A chunk that fails to download online draws no alert: the indicator draws nothing, as it does
+// with no write to show, until a change of its writes draws it again (`ChunkBoundary`'s `reset`).
+test("a chunk that fails to download under the pending-writes indicator draws nothing in its place", async () => {
   const logged = quietConsoleError();
-  const view = drawARefusedWrite(Host, <NotLoaded />);
+  const view = drawARefusedWrite(PendingWritesHost, <NotLoaded />);
   try {
     await waitFor(() => expect(logged).toHaveBeenCalled());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: region })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
   } finally {
     logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// A page that loads signed out takes up nothing until someone signs in (`app.tsx`), so the
+// sign-in page lists what the reload kept from each write's own record, with no kind of write in
+// and no chunk: the list is in the entry. A record kept as refused reads "Not saved" and offers
+// Discard, which drops the record from the tab's storage and from the store's records; one kept
+// out shows by its label alone, and stays.
+test("the sign-in page's kept list shows a write the reload kept as refused as not saved, and its Discard drops that record", async () => {
+  const refused = keyMinted(Date.now());
+  const out = keyMinted(Date.now() + 1);
+  keepWrite(window.sessionStorage, refused, {
+    state: { refusal: { kind: "stopped" }, status: "refused" },
+  });
+  keepWrite(window.sessionStorage, out, { label: "CORE-2 set to todo" });
+  const client = new QueryClient();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeptWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    const kept = screen.getByRole("region", { name: "Kept changes" });
+    expect(kept).toHaveTextContent("Kept until you sign in again as alice:");
+    const row = kept.querySelector(`[data-kept-write="${refused}"]`);
+    expect(row).toHaveTextContent("CORE-1 set to done — Not saved");
+    expect(kept.querySelector(`[data-kept-write="${out}"]`)).toHaveTextContent(
+      /^CORE-2 set to todo$/u
+    );
+    const [discard, ...more] = within(kept).getAllByRole("button", { name: "Discard" });
+    expect(more, "the write kept out offers Discard").toEqual([]);
+    expect(within(row as HTMLElement).getByRole("button", { name: "Discard" })).toBe(
+      discard as HTMLElement
+    );
+
+    act(() => discard?.click());
+    expect(window.sessionStorage.getItem(`dispatch.write:${refused}`)).toBeNull();
+    const records = writesOf(client).notTakenUp();
+    expect(records.map((write) => write.key)).toEqual([out]);
+    expect(kept.querySelector(`[data-kept-write="${refused}"]`)).toBeNull();
+    expect(kept).toHaveTextContent("CORE-2 set to todo");
+    expect(window.sessionStorage.getItem(`dispatch.write:${out}`)).not.toBeNull();
+  } finally {
     view.unmount();
   }
 });
