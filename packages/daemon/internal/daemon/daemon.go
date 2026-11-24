@@ -498,6 +498,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.readyResume = workflow.readyResume
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
@@ -1017,6 +1018,10 @@ type plan struct {
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// readyResume is the workflow's answer to which resume task a claim's ready queued, which the
+	// ready's decision queues before claims/ready answers (supervise.Deps.ReadyResume); nil
+	// without a workflow, where a ready queues no resume.
+	readyResume func(ctx context.Context, c supervise.Claim) (*supervise.RequestDeliver, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
 	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
 	// without a workflow, where no role is the phase worker.
@@ -1974,6 +1979,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		ReadyResume:             p.readyResume,
 		PhaseRole:               p.phaseRole,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,

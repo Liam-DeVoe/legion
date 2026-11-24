@@ -2644,15 +2644,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// too.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.News {
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
+			if task, err = startDelivery(token, row.ID, payload, news); err != nil {
 				return err
 			}
-			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
-				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Origin: payload.Origin,
-				News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -2987,6 +2981,88 @@ func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
+}
+
+// startDelivery is the delivery of a start row's task (supervise.RequestDeliver): the row's own id
+// as its row and, under outboxDeliveryPrefix, as its delivery id, the text and the news the start
+// composed (startNews), and the rest as the row carries it. Both deliveries of such a task are
+// composed here — the start's own run of the row (supervise) and the claim's ready that queued
+// the row, before the row runs (readyResume) — so the two never compose one row's task differently.
+func startDelivery(token claim.Token, row int64, payload record.SuperviseRequest, news startNews) (*supervise.RequestDeliver, error) {
+	kept, err := keptJSON(payload.Kept)
+	if err != nil {
+		return nil, err
+	}
+	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
+		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row), Row: row, Kept: kept, Origin: payload.Origin,
+		News: news.news, NewsOnly: payload.News}, nil
+}
+
+// readyResume answers supervise's Deps.ReadyResume: the resume task c's ready queued, as the
+// delivery the start's own run of that row would queue (startDelivery), or nil for none. The row
+// is the newest of c's run still queued that is a start marked a resume task under a resume's
+// origin, which only the workflow's readyWorkerTask writes. The ready's own decision queues it, so
+// the task is pending and its value written before claims/ready answers: queued by the row's own
+// run, it was written after the worker's read that follows that answer, and a card waiting at the
+// ready took the session's first turn ahead of it (dispatch://INFRA-4130 R5).
+//
+// The issue and the run are read in one read-only transaction, and the row is held to the fences
+// the start's own run holds it to before that run delivers (supervise), against the record as it
+// stands now: a row whose phase or tree is not the issue's, an issue out of the workflow
+// (record.OutOfWorkflow), a role a stopped task's step holds (workflow.StoppedStepRole), and a
+// merger its tree's design gate holds back (mergerWaitsForTheDesignGate). Each is answered nil, so
+// the ready queues nothing and the row's own run decides it as it did before. An issue the record
+// does not keep, a run with no such row, and an architect's or the controller's claim are answered
+// nil too: readyWorkerTask queues no resume for any of them. The run's generation is the issue's
+// (record.Store.RoleRun), which is the start's generation fence. A resume row carries no entry,
+// no news and no production check's look, so the start composes its text and round as the row
+// carries them (startNewsOf), which is what is composed here.
+//
+// The row's own run then queues nothing more: the claim holds that phase's task, which a resume
+// row does not deliver again (keepsStartTask), or, once its worker has finished it, records the
+// row (supervise.Claim.DeliveredRows), which queue reads as given.
+func (r *outbox) readyResume(ctx context.Context, c supervise.Claim) (*supervise.RequestDeliver, error) {
+	if c.Role == claim.RoleArchitect || c.Role == claim.RoleController {
+		return nil, nil
+	}
+	var issue *record.Issue
+	var resume *record.QueuedSupervise
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = r.records.Issue(ctx, tx, c.Issue); err != nil || issue == nil {
+			return err
+		}
+		run, err := r.records.RoleRun(ctx, tx, c.Token, issue.Key, c.Role, issue.Generation)
+		if err != nil {
+			return err
+		}
+		for i := len(run.Queued) - 1; i >= 0; i-- {
+			if request := run.Queued[i].Request; request.Op == "start" && request.ResumeTask && request.Origin == supervise.OriginResume {
+				resume = &run.Queued[i]
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the resume task the ready of %s queued: %w", c.Token, err)
+	}
+	if issue == nil || resume == nil {
+		return nil, nil
+	}
+	payload := resume.Request
+	if payload.Phase != issue.Phase || payload.Tree != issue.Tree || record.OutOfWorkflow(issue.Status) ||
+		workflow.StoppedStepRole(*issue) == payload.Role {
+		return nil, nil
+	}
+	if err := r.mergerWaitsForTheDesignGate(ctx, *issue, payload.Role); err != nil {
+		if errors.Is(err, wait.ErrWaiting) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return startDelivery(c.Token, resume.ID, payload, startNews{task: payload.Task, roundNamed: payload.RoundNamed})
 }
 
 // childArchitectFirstStart says whether payload is the plain start of issue's own architect that a

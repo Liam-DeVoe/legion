@@ -1155,6 +1155,14 @@ type Deps struct {
 	// the tree commits in its own transaction and can still land between this answer and the
 	// retire. nil closes every tree.
 	TreeClosable func(ctx context.Context, c Claim) (bool, error)
+	// ReadyResume is the resume task the claim's ready queued (workflow's readyWorkerTask),
+	// answered as the delivery the outbox's start of that row would queue, or nil for none. The
+	// ready queues it in its own decision (finishReady, queueReadyResume), so its value is written
+	// before claims/ready answers (dispatch://INFRA-4130 R5): queued by the outbox, it was written
+	// after that answer and after the worker's read that follows it, so a card waiting at the
+	// ready could take the session's first turn ahead of it. nil queues nothing at the ready, and
+	// the outbox delivers the row as it runs.
+	ReadyResume func(ctx context.Context, c Claim) (*RequestDeliver, error)
 	// ClaimActivity reads the activity report the store holds for launch generation of the claim
 	// token (the store's PutClaimActivity columns), and whether it holds one: false for a launch
 	// whose process has reported nothing, and for any launch but the one the row records. It is
