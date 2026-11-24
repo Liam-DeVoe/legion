@@ -950,10 +950,10 @@ function progressRead(): ProgressRead {
  *  next row's `start` shows that the row before it ended, and counts it so. In a file that runs
  *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count.
  *
- *  Each `done` counts one run ended, and times the run that began last, from its own `run`: Bun
- *  runs a load's runs one after another. A `done` that a throwing `afterAll` of the file skipped
- *  leaves one run fewer counted as ended than really did, so the stop names the file one run
- *  further back and the projection counts one more run to come; both read the same count. */
+ *  Bun runs a load's runs one after another, so a `done` shows that every run begun so far has
+ *  ended, and it times the run that began last, from its own `run`. A `done` that a throwing
+ *  `afterAll` of the file skipped is so made up by the next one: both the stop's report and the
+ *  projection count every run before it as ended, and the projection times only the latest. */
 function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
   if (line.event === "load") {
     const state = {
@@ -985,7 +985,7 @@ function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
     state.begun += 1;
   } else if (line.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
   else {
-    state.done += 1;
+    state.done = state.runs;
     state.latestDoneAt = line.at;
     state.fastestRunMs = Math.min(state.fastestRunMs, line.at - state.latestRunAt);
   }

@@ -894,9 +894,9 @@ test(
       0,
       Array.from({ length: 20 }, (_, run) => [run * 400, (run + 1) * 400] as const)
     );
-    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: one run counts as
-    // ended, timed from its own start, so 19 more end at 6,300 s. Timed from the first run's start,
-    // it would read 600 s, and 19 more would end at 12,000 s.
+    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: both count as
+    // ended, the second timed from its own start, so 18 more end at 6,000 s. Timed from the first
+    // run's start, it would read 600 s, and 18 more would end at 11,400 s.
     file("skipped-done", 0, [
       [0, null],
       [300, 600],
@@ -933,10 +933,11 @@ test(
 test(
   "a file whose afterAll skipped a done is at the same run in the stop's report and in the projection",
   () => {
-    // The lie: two readers of the progress file count a run whose `done` a throwing afterAll
-    // skipped two ways, so one report says the file had 2 of 3 runs ended while its running
-    // section says it was in run 2. Here worker 7's file ran twice, its first `done` skipped and
-    // its second written, and the leg stopped after it.
+    // The lie: a `done` that a throwing afterAll skipped is counted otherwise by the stop's
+    // report than by the projection, or neither counts the run it would have ended: one report
+    // then says the file had 1 of 3 runs ended while its running section says it was in run 2, or
+    // a file whose runs all ended in time is stopped. Here worker 7's file ran twice, its first
+    // `done` skipped and its second written, and the leg stopped after it.
     const start = 1_000_000;
     const at = (seconds: number) => start + seconds * 1000;
     const lines = [
@@ -970,13 +971,18 @@ test(
     };
     const [running] = runningFiles(stop, { reruns: 3, seed: SEED, script: "test:harness" });
     const [overrun] = projectedFrom(text, start, 3, 1);
-    expect(running).toMatchObject({ file: "a.test.ts", run: 2 });
+    // Both runs ended: the stop names the file before its third run, and the projection counts
+    // two runs ended and times the second.
+    expect(running).toMatchObject({ file: "a.test.ts", run: 3, place: "loading" });
     expect(overrun).toEqual({
       file: "a.test.ts",
-      runsEnded: 1,
+      runsEnded: 2,
       fastestSeconds: 300,
-      projectedSeconds: 1200,
+      projectedSeconds: 900,
     });
+    // With two reruns the file has ended every run, by 600 s, inside a 750 s deadline: nothing to
+    // project, and nothing named.
+    expect(projectedFrom(text, start, 2, 750)).toEqual([]);
     // The run the stop names is the one after the runs the projection counts as ended.
     expect(running.run).toBe(overrun.runsEnded + 1);
   },
