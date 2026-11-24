@@ -11,14 +11,8 @@ package main
 // idle, and exits 0 without a word of the hold and without waiting for the stop.
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -43,52 +37,24 @@ var (
 
 // heldStopDaemon answers the stop of stoppedWorker 202 with the claim idle over its process,
 // holding the task whose take's turn ended, and each later list with the next of answers, the last
-// repeated.
+// repeated (heldDaemon).
 func heldStopDaemon(t *testing.T, answers ...stopSeen) (port string, lists func() int) {
 	t.Helper()
-	var mu sync.Mutex
-	served := 0
-	claimAs := func(seen stopSeen) api.OperatorClaim {
+	return heldDaemon(t, stoppedWorker, "stop", func(seen stopSeen) api.OperatorClaim {
 		c := api.OperatorClaim{Token: stoppedWorker, Tree: "LEGION-208", Issue: "LEGION-209", Role: "implementer",
 			State: seen.state, Generation: 1, Pending: &api.DeliveryView{ID: "delivery-7", Task: "implement the plan"}}
 		if seen.incarnation != "" {
 			c.Locator = &runtime.Locator{Runtime: "tmux", Claim: stoppedWorker, Incarnation: seen.incarnation}
 		}
 		return c
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == claimsRoute+"/"+string(stoppedWorker)+"/stop":
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(claimAs(heldIdle))
-		case r.Method == http.MethodGet && r.URL.Path == claimsRoute:
-			mu.Lock()
-			seen := answers[min(served, len(answers)-1)]
-			served++
-			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(api.OperatorClaims{Claims: []api.OperatorClaim{claimAs(seen)}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	parsed, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return parsed.Port(), func() int { mu.Lock(); defer mu.Unlock(); return served }
+	}, heldIdle, answers...)
 }
 
 // stopAgainst runs `legion claims stop` of stoppedWorker against port, waiting up to wait, with any
-// extra flags.
+// extra flags (claimsAgainst).
 func stopAgainst(t *testing.T, port, wait string, extra ...string) (int, string, string) {
 	t.Helper()
-	var out, errb bytes.Buffer
-	args := append([]string{"legion", "claims", "stop", "--port", port,
-		"--operator-token-file", operatorTokenFile(t), "--claim", string(stoppedWorker), "--wait", wait}, extra...)
-	code := run(context.Background(), args, &out, &errb)
-	return code, out.String(), errb.String()
+	return claimsAgainst(t, "stop", stoppedWorker, port, wait, extra...)
 }
 
 // Row 39i: a stop the daemon holds for the report of the take's turn (202) is said to be held,
@@ -108,6 +74,8 @@ func TestClaimsStopSaysAStopHeldForTheReportIsHeldAndWaitsForIt(t *testing.T) {
 	for _, want := range []string{
 		"the stop of legion-legion-legion-209-implementer is held for the report of the turn of its task delivery-7",
 		"the report wait's bound (worker_turn_start_timeout_seconds)",
+		"counted from that turn's end, or from the reconnect or the stop where the daemon restarted or the worker's connection was cut since that turn ended",
+		"the daemon's log line of the hold names when it comes (due)",
 		"the reconnect deadline",
 	} {
 		if !strings.Contains(errb, want) {

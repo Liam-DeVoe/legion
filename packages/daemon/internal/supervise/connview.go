@@ -511,7 +511,7 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 // relaunch, charged nothing, before the hello paths below, since a stale observation is never
 // charged (replacementAtDeadline). The relaunch of a hello no answer followed that the pacing
 // parks is held at its turn the same way, and so is bounded by a deadline only where one stands
-// then (replacementHolds): the park took this one (waitOnMachine).
+// then (boundedReportHolds): the park took this one (waitOnMachine).
 //
 // A claim holding the operator's stop for the report of its take's turn (heldStop) reaches this
 // deadline as that wait's bound too, read before every path below, a held suspension's among them:

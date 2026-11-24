@@ -188,7 +188,7 @@ type wake struct {
 	// turn ended with its report still to come holds it for that report rather than let the
 	// process go (runWake, holdReplacement), as the held repoint is held. It is nil for every other
 	// wake, whose turn lets the process go as it stands.
-	replaceAgain func(context.Context) error
+	replaceAgain func(context.Context) (ProcessEnd, error)
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
 	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer and
 	// is published as no waiting wake (publish). It keeps the token it took from the pacing before
@@ -660,11 +660,11 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	// The same holds for every other replacement of a live process the pacing parked whose report
 	// can reach the daemon (wake.replaceAgain): a repoint, a stall backstop, the relaunch of a hello
 	// no answer followed. Its wake is spent and the replacement waits for the report as the held
-	// repoint does (holdReplacement, replacementHolds): run at the task's finish, or at the wait's
+	// repoint does (holdReplacement, boundedReportHolds): run at the task's finish, or at the wait's
 	// bound once the task is taken back with the note of a cut turn, raised anew from the top, so it
 	// is paced again there. A turn that comes while a turn runs holds nothing, and cuts that turn
 	// off below, as rule one of T3 says.
-	if waiting.replaceAgain != nil && m.replacementHolds() {
+	if waiting.replaceAgain != nil && m.boundedReportHolds() {
 		m.watchAgain()
 		m.holdReplacement("wake", waiting.replaceAgain, "kind", waiting.kind)
 		return nil

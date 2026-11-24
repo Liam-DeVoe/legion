@@ -1693,10 +1693,10 @@ type Machine struct {
 	// over a take a daemon start restored, too (reportBounded). It is memory only, as staleRelaunch
 	// is: the sweep observes a stale address again at its next pass after a restart, and letGo
 	// drops it with the process it was made for.
-	heldReplacement func(context.Context) error
+	heldReplacement func(context.Context) (ProcessEnd, error)
 	// heldStop is the operator's stop of the claim held for the report of its take's turn
 	// (holdStop, RequestStop.WaitForReport), false for none. It is held as the replacement above
-	// is and read in the same places, with the same bound (replacementHolds), and is a mark of its
+	// is and read in the same places, with the same bound (boundedReportHolds), and is a mark of its
 	// own rather than one more replacement, because it ends the claim rather than replace its
 	// process: it runs before a held replacement and a held stale-plugin relaunch and drops them
 	// with the process (afterTurn, runHeldStop), before a held suspension that waits with it
@@ -3228,7 +3228,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // replacement raised anew from the top, for a replacement held at its turn (replaceNow, held), nil
 // otherwise: the wake carries it to that turn (wake.replaceAgain), which holds it for the report of
 // a take's turn that ended in the wait (runWake).
-func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack, replaceAgain func(context.Context) error) error {
+func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack func(context.Context) error, replaceAgain func(context.Context) (ProcessEnd, error)) error {
 	again := func(ctx context.Context) error { return m.launchReplacing(ctx, cause, takeBack, replaceAgain) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)

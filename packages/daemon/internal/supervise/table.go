@@ -2228,7 +2228,7 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 	}
 	if held := m.heldReplacement; held != nil {
 		m.heldReplacement = nil
-		if err := held(ctx); err != nil {
+		if _, err := held(ctx); err != nil {
 			return err
 		}
 	}
@@ -2718,14 +2718,14 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 //
 // The operator's stop of one claim (RequestStop.WaitForReport) that reaches it after its take's
 // turn ended and before that turn's report reached the daemon waits for the report instead, as a
-// suspension does, with the held repoint's bound (replacementHolds, holdStop): stopped here, the
+// suspension does, with the held repoint's bound (boundedReportHolds, holdStop): stopped here, the
 // process would take the report with it, and settle would take back as a cut turn a task whose turn
 // ran whole, which a retry of the stopped claim's session would run again. A stop during a running
 // turn cuts that turn off as before, since the hold begins only once the turn is over. Every other
 // stop ends the claim here at once.
 func stop(m *Machine, ctx context.Context, ev Event) error {
 	if !m.claim.treeRoot() {
-		if ev.(RequestStop).WaitForReport && m.replacementHolds() {
+		if ev.(RequestStop).WaitForReport && m.boundedReportHolds() {
 			return m.holdStop()
 		}
 		return m.end(ctx, endStopped)

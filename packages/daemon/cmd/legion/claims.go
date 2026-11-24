@@ -507,9 +507,9 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	return code
 }
 
-// suspendPoll is how often claimsSuspend and claimsStop read the claims while a suspension or a
-// stop is held.
-const suspendPoll = 250 * time.Millisecond
+// heldPoll is how often a command whose request the daemon holds reads the claims while it waits
+// (awaitHeld): claimsSuspend's held suspension and claimsStop's held stop.
+const heldPoll = 250 * time.Millisecond
 
 // claimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
 // (200), and holds the suspension of one in a turn (202; supervise's holdSuspension), which the
@@ -523,6 +523,17 @@ func claimsSuspend(c *claimsCall) action {
 }
 
 func (c *claimsCall) suspend(ctx context.Context, token string) int {
+	return c.postHeld(ctx, token, "suspend", func(op operator, _ string, _ []byte) ([]byte, bool) {
+		return c.awaitSuspended(ctx, op, legionclaim.Token(token))
+	})
+}
+
+// postHeld posts request ("suspend", "stop") to the claim token names: the frame suspend and stop
+// share. A request the daemon holds (202) is waited out by await, which is handed the daemon's
+// answer and the path it served it at, and answers the claim the wait ended with, or false, which
+// fails the command. The command prints the claim as it ends: as the daemon answered it, or as the
+// list served it.
+func (c *claimsCall) postHeld(ctx context.Context, token, request string, await func(op operator, path string, answer []byte) ([]byte, bool)) int {
 	if code, ok := c.check("claim"); !ok {
 		return code
 	}
@@ -530,13 +541,13 @@ func (c *claimsCall) suspend(ctx context.Context, token string) int {
 	if !ok {
 		return 1
 	}
-	path := claimsRoute + "/" + url.PathEscape(token) + "/suspend"
+	path := claimsRoute + "/" + url.PathEscape(token) + "/" + request
 	status, answer, ok := c.request(ctx, op, http.MethodPost, path, nil)
 	if !ok {
 		return 1
 	}
 	if status == http.StatusAccepted {
-		if answer, ok = c.awaitSuspended(ctx, op, legionclaim.Token(token)); !ok {
+		if answer, ok = await(op, path, answer); !ok {
 			return 1
 		}
 		path = claimsRoute
@@ -544,14 +555,16 @@ func (c *claimsCall) suspend(ctx context.Context, token string) int {
 	return c.printAnswer(op, path, answer, c.printer(printClaim))
 }
 
-// awaitSuspended reads the claims until token is suspended, and answers the claim as the list
-// served it. Every other end stops the wait, reported as what it is and answering false: the claim
-// failed, retired, or left the daemon; the daemon holds its suspension no longer (a start run
-// against the claim dropped it, or the daemon restarted); or the command's --wait ran out while it
-// is still held. That bound is the call's own, fixed when check read the call and shared with
-// every request it makes (operatorCall.bound), so the suspend request and this wait together take
-// no longer than the operator asked for.
-func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token) ([]byte, bool) {
+// awaitHeld reads the claims every heldPoll until judge says the claim token names is settled, and
+// answers that claim as the list served it, as one line: the wait awaitSuspended and awaitStopped
+// share. judge reads each answer about the claim and says it is settled; or, for any other end that
+// stops the wait, what happened; or neither, and the wait goes on. Every other way out stops the
+// wait too, said on stderr and answering false: a list that cannot be read; the claim gone from it,
+// said to be not unended (the end the wait is for); the command's --wait running out while the
+// claim's request is still held, said with outlasted (what is held, and why it can outlast the
+// bound); or ctx ending.
+func (c *claimsCall) awaitHeld(ctx context.Context, op operator, token legionclaim.Token, unended, outlasted string,
+	judge func(seen *api.OperatorClaim) (settled bool, stopped string)) ([]byte, bool) {
 	for {
 		_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
 		if !ok {
@@ -564,40 +577,60 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })
 		if i < 0 {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not suspended\n", c.name(), token)
+			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not %s\n", c.name(), token, unended)
 			return nil, false
 		}
 		seen := list.Claims[i]
-		switch supervise.ClaimState(seen.State) {
-		case supervise.StateSuspended:
-			suspended, err := json.Marshal(seen)
+		settled, stopped := judge(&seen)
+		if settled {
+			ended, err := json.Marshal(seen)
 			if err != nil {
 				fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 				return nil, false
 			}
 			// One line, as the daemon's own answers are.
-			return append(suspended, '\n'), true
-		case supervise.StateFailed, supervise.StateRetired:
-			fmt.Fprintf(c.stderr, "%s: %s is %s, so it will not be suspended\n", c.name(), token, seen.State)
+			return append(ended, '\n'), true
+		}
+		if stopped != "" {
+			fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), stopped)
 			return nil, false
 		}
-		if !seen.SuspensionHeld {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the suspension of %s, which is %s: a start run against "+
-				"the claim dropped it, or the daemon restarted\n", c.name(), token, seen.State)
-			return nil, false
-		}
-		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+		if !c.until.IsZero() && !time.Now().Add(heldPoll).Before(c.until) {
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its %s\n", c.name(), token, seen.State, *c.wait, outlasted)
 			return nil, false
 		}
 		select {
 		case <-ctx.Done():
 			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), ctx.Err())
 			return nil, false
-		case <-time.After(suspendPoll):
+		case <-time.After(heldPoll):
 		}
 	}
+}
+
+// awaitSuspended reads the claims until token is suspended (awaitHeld), and answers the claim as
+// the list served it. Every other end stops the wait, reported as what it is and answering false:
+// the claim failed, retired, or left the daemon; the daemon holds its suspension no longer (a start
+// run against the claim dropped it, or the daemon restarted); or the command's --wait ran out while
+// it is still held. That bound is the call's own, fixed when check read the call and shared with
+// every request it makes (operatorCall.bound), so the suspend request and this wait together take
+// no longer than the operator asked for.
+func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token) ([]byte, bool) {
+	return c.awaitHeld(ctx, op, token, "suspended",
+		"suspension held: its agent's turn has not ended, or the runtime refused the stop, which is tried again every probe interval",
+		func(seen *api.OperatorClaim) (bool, string) {
+			switch supervise.ClaimState(seen.State) {
+			case supervise.StateSuspended:
+				return true, ""
+			case supervise.StateFailed, supervise.StateRetired:
+				return false, fmt.Sprintf("%s is %s, so it will not be suspended", token, seen.State)
+			}
+			if !seen.SuspensionHeld {
+				return false, fmt.Sprintf("the daemon no longer holds the suspension of %s, which is %s: a start run against "+
+					"the claim dropped it, or the daemon restarted", token, seen.State)
+			}
+			return false, ""
+		})
 }
 
 // claimsStop stops --claim. The daemon stops a claim at once (200), except one whose take's turn
@@ -613,38 +646,25 @@ func claimsStop(c *claimsCall) action {
 }
 
 func (c *claimsCall) stop(ctx context.Context, token string) int {
-	if code, ok := c.check("claim"); !ok {
-		return code
-	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	path := claimsRoute + "/" + url.PathEscape(token) + "/stop"
-	status, answer, ok := c.request(ctx, op, http.MethodPost, path, nil)
-	if !ok {
-		return 1
-	}
-	if status == http.StatusAccepted {
+	return c.postHeld(ctx, token, "stop", func(op operator, path string, answer []byte) ([]byte, bool) {
 		var held api.OperatorClaim
 		if err := decodeAnswer(answer, &held); err != nil {
 			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
-			return 1
+			return nil, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), stopHeldLine(held))
-		if answer, ok = c.awaitStopped(ctx, op, held); !ok {
-			return 1
-		}
-		path = claimsRoute
-	}
-	return c.printAnswer(op, path, answer, c.printer(printClaim))
+		return c.awaitStopped(ctx, op, held)
+	})
 }
 
 // stopHeldLine is what the command says of a stop the daemon holds for the report of the claim's
 // take's turn: the task, by the id of the delivery the claim's view names (the view carries no
 // number), and the bound, by name, since the view carries no timer — the report wait's own while
 // the worker's connection shows the daemon every frame of its turns, and the reconnect deadline
-// while it does not.
+// while it does not. The report wait's bound runs from the turn's end, and is armed whole later
+// where the daemon restarted or the connection was cut since: at the reconnect, or at the stop
+// itself over a take a daemon start restored that the bound reaches only with work held
+// (supervise's reportBounded, armReportWait); the daemon's line of the hold names when it comes.
 func stopHeldLine(held api.OperatorClaim) string {
 	task := "its task"
 	if held.Pending != nil {
@@ -652,67 +672,37 @@ func stopHeldLine(held api.OperatorClaim) string {
 	}
 	return fmt.Sprintf("the stop of %s is held for the report of the turn of %s, which has ended: the daemon stops the claim once that report comes, "+
 		"or, with no report, takes the task back as a cut turn and stops it at the report wait's bound (worker_turn_start_timeout_seconds), "+
-		"counted from that turn's end, or, while the worker's connection is cut, at the reconnect deadline; waiting for the stop", held.Token, task)
+		"counted from that turn's end, or from the reconnect or the stop where the daemon restarted or the worker's connection was cut since that turn ended, "+
+		"or, while the worker's connection is cut, at the reconnect deadline; the daemon's log line of the hold names when it comes (due); waiting for the stop",
+		held.Token, task)
 }
 
-// awaitStopped reads the claims until the claim held names is retired, and answers it as the list
-// served it. Every other end stops the wait, reported as what it is and answering false: the claim
-// left the daemon; it failed or was suspended — a held suspension's deadline stopped its process
-// first — or the process the stop waited on was let go with the claim still live, a death or a
-// relaunch, either of which drops the held stop with that process (supervise's letGo); or the
-// command's --wait ran out while the stop is still held. The claim's view says nothing of a held
-// stop, so a daemon restart, which forgets one, and a release the runtime refused at the report,
-// which drops it, are read only at that bound, which names them. The bound is the call's own, shared
-// with the stop request (operatorCall.bound), as awaitSuspended's is.
+// awaitStopped reads the claims until the claim held names is retired (awaitHeld), and answers it
+// as the list served it. Every other end stops the wait, reported as what it is and answering
+// false: the claim left the daemon; it failed or was suspended — a held suspension's deadline
+// stopped its process first — or the process the stop waited on was let go with the claim still
+// live, a death or a relaunch, either of which drops the held stop with that process (supervise's
+// letGo); or the command's --wait ran out while the stop is still held. The claim's view says
+// nothing of a held stop, so a daemon restart, which forgets one, and a release the runtime refused
+// at the report, which drops it, are read only at that bound, which names them. The bound is the
+// call's own, shared with the stop request (operatorCall.bound), as awaitSuspended's is.
 func (c *claimsCall) awaitStopped(ctx context.Context, op operator, held api.OperatorClaim) ([]byte, bool) {
-	for {
-		_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
-		if !ok {
-			return nil, false
-		}
-		var list api.OperatorClaims
-		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
-			return nil, false
-		}
-		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == held.Token })
-		if i < 0 {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not stopped\n", c.name(), held.Token)
-			return nil, false
-		}
-		seen := list.Claims[i]
-		switch supervise.ClaimState(seen.State) {
-		case supervise.StateRetired:
-			stopped, err := json.Marshal(seen)
-			if err != nil {
-				fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
-				return nil, false
+	return c.awaitHeld(ctx, op, held.Token, "stopped",
+		"stop held for the report of its take's turn: that report has not come and its bound has not passed, the runtime refused the release, "+
+			"which the daemon logs, or the daemon restarted, which forgets a held stop; read legion claims list, and run legion claims stop again if it is not retired",
+		func(seen *api.OperatorClaim) (bool, string) {
+			switch supervise.ClaimState(seen.State) {
+			case supervise.StateRetired:
+				return true, ""
+			case supervise.StateFailed, supervise.StateSuspended:
+				return false, fmt.Sprintf("%s is %s, so the held stop was dropped and it is not stopped; run legion claims stop again to stop it", held.Token, seen.State)
 			}
-			// One line, as the daemon's own answers are.
-			return append(stopped, '\n'), true
-		case supervise.StateFailed, supervise.StateSuspended:
-			fmt.Fprintf(c.stderr, "%s: %s is %s, so the held stop was dropped and it is not stopped; run legion claims stop again to stop it\n",
-				c.name(), held.Token, seen.State)
-			return nil, false
-		}
-		if held.Locator != nil && (seen.Locator == nil || seen.Locator.Incarnation != held.Locator.Incarnation) {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the stop of %s, which is %s: the process the stop waited on was let go before the "+
-				"report came, and the held stop with it; run legion claims stop again to stop it\n", c.name(), held.Token, seen.State)
-			return nil, false
-		}
-		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its stop held for the report of its take's turn: that report has "+
-				"not come and its bound has not passed, the runtime refused the release, which the daemon logs, or the daemon restarted, which "+
-				"forgets a held stop; read legion claims list, and run legion claims stop again if it is not retired\n", c.name(), held.Token, seen.State, *c.wait)
-			return nil, false
-		}
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), ctx.Err())
-			return nil, false
-		case <-time.After(suspendPoll):
-		}
-	}
+			if held.Locator != nil && (seen.Locator == nil || seen.Locator.Incarnation != held.Locator.Incarnation) {
+				return false, fmt.Sprintf("the daemon no longer holds the stop of %s, which is %s: the process the stop waited on was let go before the "+
+					"report came, and the held stop with it; run legion claims stop again to stop it", held.Token, seen.State)
+			}
+			return false, ""
+		})
 }
 
 // claimsList prints every claim the daemon supervises, one line each, in token order.

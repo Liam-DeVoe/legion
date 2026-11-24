@@ -37,10 +37,10 @@ func operatorStop(token claim.Token) RequestStop {
 
 // overATakesEndedTurn is claim c on the current plugin with R5's bounds set, every take of it
 // driven by the test, whose worker took a task and ran that take's turn to its end, its report
-// still to come; set changes the machine's deps besides. It answers the task's number.
-func overATakesEndedTurn(t *testing.T, c Claim, set ...func(*Deps)) (*harness, uint64) {
+// still to come. It answers the task's number.
+func overATakesEndedTurn(t *testing.T, c Claim) (*harness, uint64) {
 	t.Helper()
-	h := newHarnessOf(t, c, append([]func(*Deps){withWaits, currentPlugin}, set...)...)
+	h := newHarnessOf(t, c, withWaits, currentPlugin)
 	h.manualTakes()
 	h.reach(StateReady)
 	number := h.takeOf("implement the plan")
@@ -59,17 +59,24 @@ func (h *harness) wantStopHeld(err error, number uint64, kept runtime.Locator, b
 			err, h.state(), number)
 	}
 	h.wantStopStillHeld(number, kept, "at the operator's stop")
+	held := h.heldStopRecords()
+	if len(held) != 1 {
+		h.t.Fatalf("%q was logged with held=stop %d times, want once", reportWaitsLine, len(held))
+	}
+	wantAttr(h.t, held[0], "task", strconv.FormatUint(number, 10))
+	wantAttr(h.t, held[0], "bound", bound)
+}
+
+// heldStopRecords is every record of reportWaitsLine logged with held=stop: the line of a held
+// stop (holdStop).
+func (h *harness) heldStopRecords() []loggedRecord {
 	var held []loggedRecord
 	for _, r := range h.records.of(reportWaitsLine) {
 		if what, ok := r.attr("held"); ok && what.String() == "stop" {
 			held = append(held, r)
 		}
 	}
-	if len(held) != 1 {
-		h.t.Fatalf("%q was logged with held=stop %d times, want once", reportWaitsLine, len(held))
-	}
-	wantAttr(h.t, held[0], "task", strconv.FormatUint(number, 10))
-	wantAttr(h.t, held[0], "bound", bound)
+	return held
 }
 
 // wantStopStillHeld holds that the stop still waits: the claim idle over the process it ran,
@@ -270,10 +277,8 @@ func TestTakeWhoseTurnEndedIsStoppedAtOnceByEveryOtherStop(t *testing.T) {
 
 			h.wantStoppedFrom(kept)
 			h.wantTakenBackWithItsNote(number)
-			for _, r := range h.records.of(reportWaitsLine) {
-				if what, ok := r.attr("held"); ok && what.String() == "stop" {
-					t.Fatalf("%s logged the held stop's line %v, want no hold", tc.name, r.attrs)
-				}
+			if held := h.heldStopRecords(); len(held) != 0 {
+				t.Fatalf("%s logged the held stop's line %v, want no hold", tc.name, held[0].attrs)
 			}
 		})
 	}

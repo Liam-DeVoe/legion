@@ -16,17 +16,17 @@ import (
 // claim's session — each retry endStopped's comment names — would run it again.
 //
 // The hold is the held repoint's (holdReplacement), read in the same places and with the same
-// bound (replacementHolds): it begins only once the take's turn is over, so a stop during a running
-// turn cuts that turn off as before; its bound is the report wait's own (TimerReport) over a whole
-// view and the reconnect deadline over a view not whole; it counts as held work (workHeld), so the
-// report wait's bound arms over a take a daemon start restored, too; and letGo drops it with the
-// process. It runs at the task's finish (afterTurn), or at the bound once the task is taken back
-// with the note of a cut turn: the wait's own bound through afterTurn too (reportBoundOver), the
-// reconnect deadline in stopAtDeadline. It is the operator's own stop that runs there, under the
-// stop's own cause and charged nothing (end, endStopped), never the no-hello path's retirement,
-// which charges CauseNeverReconnected. It is a mark of its own (Machine.heldStop) rather than one
-// more held replacement because it ends the claim rather than replace its process: it runs before
-// what else waits for the report and drops it with the process.
+// bound (boundedReportHolds): it begins only once the take's turn is over, so a stop during a
+// running turn cuts that turn off as before; its bound is the report wait's own (TimerReport) over
+// a whole view and the reconnect deadline over a view not whole; it counts as held work (workHeld),
+// so the report wait's bound arms over a take a daemon start restored, too; and letGo drops it with
+// the process. It runs at the task's finish (afterTurn), or at the bound once the task is taken
+// back with the note of a cut turn: the wait's own bound through afterTurn too (reportBoundOver),
+// the reconnect deadline in stopAtDeadline. It is the operator's own stop that runs there, under
+// the stop's own cause and charged nothing (end, endStopped), never the no-hello path's
+// retirement, which charges CauseNeverReconnected. It is a mark of its own (Machine.heldStop)
+// rather than one more held replacement because it ends the claim rather than replace its
+// process: it runs before what else waits for the report and drops it with the process.
 //
 // The stop route answers a held stop as it answers a held suspension, 202 with the claim as it is
 // (api's claimEvent, which reads ErrSuspendHeld), and `legion claims stop` then waits for the stop
@@ -38,7 +38,7 @@ import (
 // answered 202 long before.
 const heldStopRefusedLine = "supervise: the operator's stop held for the report of the take's turn could not release the claim's process; the claim keeps it, and the stop must be asked again"
 
-// holdStop holds the operator's stop for the report of the take's turn (stop, replacementHolds)
+// holdStop holds the operator's stop for the report of the take's turn (stop, boundedReportHolds)
 // and answers ErrSuspendHeld, which the stop route answers 202 with the claim as it is. The line is
 // written where the stop begins to wait, by the take's phase (waitsLine), naming the task, the
 // bound and when it comes (heldStopBound). A stop asked again while one is held is the same hold,
@@ -53,7 +53,7 @@ func (m *Machine) holdStop() error {
 }
 
 // heldStopBound is the bound the held stop waits under, named as its line names it, and when it
-// comes (holdStop): over a view not whole the reconnect deadline, which replacementHolds requires
+// comes (holdStop): over a view not whole the reconnect deadline, which boundedReportHolds requires
 // to stand; over a whole view the report wait's own bound, armed whole from the end of this
 // decision where it is not armed yet (armReportWait), or, over a take awaiting its turn again or a
 // report whose finish the store refused, which work already waiting goes on waiting on (reportHolds),

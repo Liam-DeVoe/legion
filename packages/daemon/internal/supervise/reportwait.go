@@ -96,7 +96,7 @@ import (
 // daemon before it arms nothing either. A replacement held for the report over a view not whole is
 // bounded by the reconnect deadline instead, at which the task is taken back with the note of a cut
 // turn and the replacement runs, uncharged (replacementAtDeadline), and a replacement that no bound
-// would reach is not held (replacementHolds).
+// would reach is not held (boundedReportHolds).
 //
 // With nothing held the bound exists for a take whose counted turn ended and whose report naming
 // its number will never come, though its process lives: its text was dropped — Claude Code never
