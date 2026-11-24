@@ -610,8 +610,9 @@ func (s *server) readAskV2(ctx context.Context, r *http.Request, id string, incl
 
 // writtenAskRowsV2 reads on q what the answer of a write of the ask id names reads from the
 // tables: its row (askV2ByID) and what every list of asks batches beside it (loadAskDetails),
-// for completeWrittenAskV2 to complete. A write of the ask reads them on its own transaction
-// before it commits (writtenAskV2), so a read that fails rolls the write back.
+// its inbound backlink count as who counts it, for completeWrittenAskV2 to complete. A write of
+// the ask reads them on its own transaction before it commits (writtenAskV2), so a read that
+// fails rolls the write back.
 func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, who model.Actor, id string) ([]askV2, error) {
 	rows, err := s.askV2ByID(ctx, q, id, "")
 	if err != nil {
@@ -626,17 +627,26 @@ func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, who model.Acto
 // writtenAskV2 is the ask a /api/v2 write answers, read in two steps around the write's commit:
 // readBack, the write's askReadBack, reads its tables on the write's transaction before it
 // commits (writtenAskRowsV2), and answer completes the row once it has (completeWrittenAskV2).
+// reader is the caller's credential (requestReader), which newWrittenAskV2 resolves when the
+// route makes one, since the transaction readBack runs on holds no request.
 type writtenAskV2 struct {
 	server *server
+	reader model.Actor
 	rows   []askV2
 }
 
-// readBack reads the rows of the ask id names on q, the write's transaction.
+// newWrittenAskV2 is the writtenAskV2 of a /api/v2 request that answers an ask, read as the
+// request's caller.
+func (s *server) newWrittenAskV2(r *http.Request) *writtenAskV2 {
+	return &writtenAskV2{server: s, reader: s.requestReader(r)}
+}
+
+// readBack reads the rows of the ask id names on q, the write's transaction, as the caller
+// (reader), so the ask's inbound backlink count is the caller's: a write, the no-op that answers
+// in its place (writeUnchanged) and GET /api/v2/asks/{id} count as the one person whose request
+// they answer, and a route answers one count of an ask whether it wrote or not.
 func (written *writtenAskV2) readBack(ctx context.Context, q queryer, id string) (err error) {
-	// The read-back runs inside the write's transaction, which holds no request, so it reads as
-	// everyReader; the answer the write sends completes the row as its caller reads it
-	// (completeWrittenAskV2).
-	written.rows, err = written.server.writtenAskRowsV2(ctx, q, everyReader, id)
+	written.rows, err = written.server.writtenAskRowsV2(ctx, q, written.reader, id)
 	return err
 }
 
@@ -655,16 +665,15 @@ func (written *writtenAskV2) write(w http.ResponseWriter, r *http.Request, statu
 	WriteJSON(w, status, row)
 }
 
-// writeAskV2 answers a request that wrote nothing to the ask id names - a state the caller set
-// already (putChangesNothing) - with the ask as a write of it answers it, read on the pool, at
-// status. A request that writes reads its answer on its own transaction instead (writtenAskV2).
-func (s *server) writeAskV2(w http.ResponseWriter, r *http.Request, status int, id string) {
-	rows, err := s.writtenAskRowsV2(r.Context(), s.deps.Store.Pool, s.requestReader(r), id)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
+// writeUnchanged answers a request that wrote nothing to the ask id names - a state the caller
+// set already (putChangesNothing) - with the ask as a write of it answers it, read back as the
+// same caller on the pool, at status. A request that writes reads its answer on its own
+// transaction instead (readBack).
+func (written *writtenAskV2) writeUnchanged(w http.ResponseWriter, r *http.Request, status int, id string) {
+	if err := written.readBack(r.Context(), written.server.deps.Store.Pool, id); err != nil {
+		written.server.writeHandlerError(w, r, err)
 		return
 	}
-	written := writtenAskV2{server: s, rows: rows}
 	written.write(w, r, status)
 }
 
@@ -912,7 +921,7 @@ func (s *server) editAskV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := v2Body[editAskV2Input](r)
-	written := &writtenAskV2{server: s}
+	written := s.newWrittenAskV2(r)
 	reword := input.Question != nil || input.Options != nil || input.Multiple != nil || input.Urgency != nil
 	switch {
 	case input.AskedOf != nil && reword:
@@ -956,7 +965,7 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	written := &writtenAskV2{server: s}
+	written := s.newWrittenAskV2(r)
 	switch body := v2BodyArm(r).(type) {
 	case answerAskStateInput:
 		actor, ok := s.actingPerson(w, r)
@@ -977,7 +986,7 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 			}
 			current.Selected, current.Text = ask.Answer.Selected, ask.Answer.Text
 			if putChangesNothing(sent, current, setBy(model.CanonicalLogin(ask.Answer.User)), actor.ID) {
-				s.writeAskV2(w, r, http.StatusOK, id)
+				written.writeUnchanged(w, r, http.StatusOK, id)
 				return
 			}
 		}
@@ -993,7 +1002,7 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 			sent, current := body, body
 			sent.Reason, current.Reason = strings.TrimSpace(sent.Reason), resolution.Reason
 			if putChangesNothing(sent, current, setBy(actorIdentity(resolution.Actor)), actorIdentity(actor)) {
-				s.writeAskV2(w, r, http.StatusOK, id)
+				written.writeUnchanged(w, r, http.StatusOK, id)
 				return
 			}
 		}
@@ -1013,7 +1022,7 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 			sent, current := body, body
 			sent.Reason, current.Reason = &note, &resolution.Reason
 			if putChangesNothing(sent, current, setBy(actorIdentity(resolution.Actor)), actorIdentity(actor)) {
-				s.writeAskV2(w, r, http.StatusOK, id)
+				written.writeUnchanged(w, r, http.StatusOK, id)
 				return
 			}
 		}
@@ -1156,7 +1165,7 @@ func (s *server) createIssueAskV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireIssueV2(w, r, key) {
 		return
 	}
-	written := &writtenAskV2{server: s}
+	written := s.newWrittenAskV2(r)
 	_, advice, suggestions, ok := s.openAsk(w, r, issueOwner(key), v2Body[createAskInput](r), written.readBack)
 	if !ok {
 		return

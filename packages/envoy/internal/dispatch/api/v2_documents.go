@@ -944,7 +944,7 @@ func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Reques
 	if !s.requireAuthenticated(w, r) || !s.requireArtifactV2(w, r, r.PathValue("id")) {
 		return
 	}
-	written := &writtenAskV2{server: s}
+	written := s.newWrittenAskV2(r)
 	status, answer, answered := s.requestApproval(w, r, v2Body[approvalRequestInput](r), written.readBack)
 	if !answered {
 		return
@@ -1033,7 +1033,7 @@ func (s *server) createArtifactAskV2(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	written := &writtenAskV2{server: s}
+	written := s.newWrittenAskV2(r)
 	_, advice, suggestions, ok := s.openAsk(w, r, owner, v2Body[createAskInput](r), written.readBack)
 	if !ok {
 		return
