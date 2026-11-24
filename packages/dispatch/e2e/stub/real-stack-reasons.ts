@@ -319,16 +319,10 @@ export const realStackReasons: Record<string, string> = {
 
 /** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own
  *  default ignores it, and the outputs of a browser run (`outputDir: "test-results"` in
- *  e2e/playwright.config.ts, the reverse-order run's results and the HTML report), which hold
- *  traces, videos and screenshots. `specFiles` of e2e/no-browser-rows.ts skips `node_modules`
- *  and `test-results` for the same reason. The walk below runs as this module loads, so this
- *  set stands above it. */
-const skippedDirectories = new Set([
-  "node_modules",
-  "playwright-report",
-  "test-results",
-  "test-results-reverse",
-]);
+ *  e2e/playwright.config.ts, and the HTML report), which hold traces, videos and screenshots.
+ *  `specFiles` of e2e/no-browser-rows.ts skips `node_modules` and `test-results` for the same
+ *  reason. The walk below runs as this module loads, so this set stands above it. */
+const skippedDirectories = new Set(["node_modules", "playwright-report", "test-results"]);
 
 // A listing names a file relative to `e2e/`, so the walk starts there. The headers' reasons
 // come after the list's entries.
