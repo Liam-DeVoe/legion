@@ -2086,7 +2086,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			tell = "the architect and the merger, each on the topic of the claim that works its step"
 		}
 		goOn := ""
-		if p.Covers == MergeForwardLanded {
+		if p.Covers == MergeForwardLanded && false {
 			goOn = fmt.Sprintf(" You also work the step of %s. Then go on with that step at the new head %s.", p.Phase, p.Landed)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
