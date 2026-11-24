@@ -7,8 +7,10 @@ body: |-
   round GitHub will not merge and the wake of a settlement name each check that did not pass, by
   GitHub's word for its run (`not_passed`), each check GitHub skipped (`skipped`), with a field that
   says once that a skipped check ran nothing on that head (`each_skipped_check: ran_nothing`), and
-  each commit status in state `failure` or `error` (`not_passed_statuses`), and count the checks and
-  statuses that passed. A text about a person's act carries the person's words, up to 4,000 UTF-16
+  each commit status in state `failure` or `error` (`not_passed_statuses`), and count the checks
+  that passed (`passed`) and, apart from them, the commit statuses that passed (`passed_statuses`),
+  so `passed: 0` with no check named says that no check ran on the head, as the old settlement's
+  "reporting no check" did. A text about a person's act carries the person's words, up to 4,000 UTF-16
   units of one act or 1,000 of each of several, in a block of its own after the facts; the intake
   keeps those words on the rows the texts are built from (migration `20261118092930_person_words`).
   A message-refused notice quotes the first line of the refused write in a block of its own too,
@@ -98,7 +100,9 @@ body: |-
   has not passed says that GitHub runs no check on the head (`checks_on_head: none`), and a
   merge-forward review names the review it asks for (`review_asked`); a checks-red notice names
   the role asked to merge the base forward (`asked: implementer`, or in `merging`
-  `asked: merger`), and the merger's merge-forward ask in `merging` carries the fields of the
+  `asked: merger`) and the head (`head`), and a checks-red row that names no `head`, which an
+  earlier release queued, is `med` for the architect in every phase, since it may be of a held
+  issue; the merger's merge-forward ask in `merging` carries the fields of the
   implementer's, the steps it gave the merger being in the merger's prompt; a worker-died of a role
   that does not work the issue's phase says that nothing is held (`nothing_held: true`); a
   worker-died and a held notice write each line break and backslash of a failure record's texts,

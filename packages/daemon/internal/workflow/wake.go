@@ -293,21 +293,21 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // repo), the head the settlement is for, the phase, each check that did not pass with what it came
 // to, each check GitHub skipped with the field that says once that such a check ran nothing
 // (texts.EachSkippedCheck), each commit status of fact.Statuses in state failure or error with
-// its state, the count of the checks and statuses that passed, and the command that lists every
-// check (tallyChecks). It reads the settlement's checks as settledChecks reads the record's
-// (shownChecks): a check the settlement names failed or cancelled is that, one whose run GitHub
-// skipped - its conclusion skipped, or GitHub's word for it skipped where the decoder could not
-// read the skipped group - is named skipped, so the task and the CI message of the same settlement
-// agree, and the woken role never reads a skipped check as a pass (dispatch://INFRA-4135 R1). The
-// settlement this one wake names is the fact's own, since the wake runs before the fact is applied
-// (wakeOnSettlement). Its statuses are the ones the pull request keeps for the head once the
-// settlement is applied, which wakeOnSettlement puts in fact.Statuses.
+// its state, the count of the checks that passed, the count of the statuses that passed, and the
+// command that lists every check (tallyChecks). It reads the settlement's checks as settledChecks
+// reads the record's (shownChecks): a check the settlement names failed or cancelled is that, one
+// whose run GitHub skipped - its conclusion skipped, or GitHub's word for it skipped where the
+// decoder could not read the skipped group - is named skipped, so the task and the CI message of
+// the same settlement agree, and the woken role never reads a skipped check as a pass
+// (dispatch://INFRA-4135 R1). The settlement this one wake names is the fact's own, since the wake
+// runs before the fact is applied (wakeOnSettlement). Its statuses are the ones the pull request
+// keeps for the head once the settlement is applied, which wakeOnSettlement puts in fact.Statuses.
 func SettlementWake(issue string, p phase.Phase, repo string, fact intake.PullRequestChecks) texts.PodWakeRecord {
 	tally := tallyChecks(shownChecks(fact.CheckRuns, fact.Cancelled, fact.Failing), fact.Statuses)
 	return texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: pods.WakeChecks,
 		PullRequest: texts.PullRequestRef(repo, fact.Number), Head: fact.HeadSHA, Phase: p, NotPassed: tally.notPassed,
 		Skipped: tally.skipped, EachSkippedCheck: texts.EachSkippedCheck(tally.skipped), NotPassedStatuses: tally.notPassedStatuses,
-		Passed: &tally.passed, ListPassed: texts.ListPassed(repo, fact.Number)}
+		Passed: &tally.passed, PassedStatuses: tally.passedStatuses, ListPassed: texts.ListPassed(repo, fact.Number)}
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the

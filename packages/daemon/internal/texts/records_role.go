@@ -15,8 +15,10 @@ import (
 // request, the head, the issue's phase (which the urgency rule reads), each check that did not
 // pass with its conclusion, each check GitHub skipped (skipped) with the field that says once that
 // a skipped check ran nothing on the head (each_skipped_check, CheckConclusion), each commit
-// status that did not pass with its state, the count of the checks and statuses that passed, and
-// the command that lists them.
+// status that did not pass with its state, the count of the checks that passed (passed), the
+// count of the commit statuses that passed (passed_statuses, absent where none did), and the
+// command that lists them. A check run and a commit status are counted apart, so a head that
+// reports no check names none that did not pass, none skipped and passed: 0, whatever its statuses.
 type CISettledRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
@@ -27,6 +29,7 @@ type CISettledRecord struct {
 	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
+	PassedStatuses    int               `json:"passed_statuses,omitempty"`
 	ListPassed        string            `json:"list_passed"`
 }
 
@@ -64,7 +67,8 @@ type GateMovedRecord struct {
 // head, its merge state, each check of that head that did not pass, each check of that head GitHub
 // skipped (skipped) with the field that says once that a skipped check ran nothing on the head
 // (each_skipped_check, CheckConclusion), each commit status of that head that did not pass, the
-// count of the checks and statuses that passed, and the command that lists them.
+// count of the checks that passed (passed), the count of the commit statuses that passed
+// (passed_statuses, absent where none did), and the command that lists them.
 type ApprovedRoundStuckRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
@@ -75,6 +79,7 @@ type ApprovedRoundStuckRecord struct {
 	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
+	PassedStatuses    int               `json:"passed_statuses,omitempty"`
 	ListPassed        string            `json:"list_passed"`
 }
 

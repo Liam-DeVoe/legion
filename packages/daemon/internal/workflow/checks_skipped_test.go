@@ -265,9 +265,9 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 
 // The notice of a head GitHub will not merge, and the reviewer's message of it, name each check
 // run GitHub skipped on the head in their list of skipped checks, and count the head's check runs
-// and commit statuses that passed without it: a required check GitHub skipped there never ran,
-// and the architect or the reviewer reading it must not take it for a pass
-// (dispatch://INFRA-4135 R1).
+// that passed without it, apart from its commit statuses that passed: a required check GitHub
+// skipped there never ran, and the architect or the reviewer reading it must not take it for a
+// pass (dispatch://INFRA-4135 R1).
 func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
@@ -278,13 +278,14 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 	told := reviewStuckNotices(t, pool)
 	if len(told) != 1 || told[0].MergeState != string(record.MergeStateBlocked) || !slices.Equal(told[0].Skipped, []string{"envoy-go"}) ||
-		len(told[0].NotPassed) != 0 || len(told[0].NotPassedStatuses) != 0 || told[0].Passed == nil || *told[0].Passed != 2 {
-		t.Fatalf("review-stuck notices %+v, want one of the blocked head naming envoy-go skipped, nothing not passed, and 2 passed", told)
+		len(told[0].NotPassed) != 0 || len(told[0].NotPassedStatuses) != 0 || told[0].Passed == nil || *told[0].Passed != 1 ||
+		told[0].PassedStatuses != 1 {
+		t.Fatalf("review-stuck notices %+v, want one of the blocked head naming envoy-go skipped, nothing not passed, 1 check and 1 status passed", told)
 	}
 	message, found := stuckApprovedRound(t, pool)
 	if !found || !slices.Equal(message.Skipped, []string{"envoy-go"}) || len(message.NotPassed) != 0 || len(message.NotPassedStatuses) != 0 ||
-		message.Passed != 2 {
-		t.Fatalf("the reviewer's approved-round-stuck message %+v (found %t), want envoy-go skipped, nothing not passed, and 2 passed", message, found)
+		message.Passed != 1 || message.PassedStatuses != 1 {
+		t.Fatalf("the reviewer's approved-round-stuck message %+v (found %t), want envoy-go skipped, nothing not passed, 1 check and 1 status passed", message, found)
 	}
 }
 
@@ -328,7 +329,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 			[]texts.CheckConclusion{concluded("e2e", "cancelled")}, []string{"envoy-go"}, nil, 0},
 		{"a failed commit status", checks([]record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("envoy-go", 2)}, nil, nil,
 			status("deploy", "success", 1), status("ci", "failure", 1)),
-			nil, []string{"envoy-go"}, []texts.StatusState{red("ci", "failure")}, 2},
+			nil, []string{"envoy-go"}, []texts.StatusState{red("ci", "failure")}, 1},
 		{"a skipped run the settlement names failed", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, []string{"envoy-go"}, nil),
 			[]texts.CheckConclusion{failed("envoy-go")}, nil, nil, 0},
 		{"a skipped run it names cancelled", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, nil, []string{"envoy-go"}),

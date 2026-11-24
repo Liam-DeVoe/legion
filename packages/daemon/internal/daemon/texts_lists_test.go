@@ -185,8 +185,9 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 			if values["each_skipped_check"] != texts.RanNothing {
 				t.Errorf("%s #%d says of each skipped check %q, want %q once beside the list", settled.kind, r.n, values["each_skipped_check"], texts.RanNothing)
 			}
-			if values["passed"] != "57" || checks.passed != 30 || checks.statusesPassed != 27 {
-				t.Errorf("%s #%d counts %s that passed, want the 30 checks and the 27 commit statuses, 57", settled.kind, r.n, values["passed"])
+			if values["passed"] != "30" || values["passed_statuses"] != "27" || checks.passed != 30 || checks.statusesPassed != 27 {
+				t.Errorf("%s #%d counts %s checks and %s commit statuses that passed, want the 30 checks and, apart, the 27 commit statuses",
+					settled.kind, r.n, values["passed"], values["passed_statuses"])
 			}
 			if want := fmt.Sprintf("gh pr checks %d --repo %s", settled.number, r.repo); values["list_passed"] != want {
 				t.Errorf("%s #%d lists them with %q, want %q", settled.kind, r.n, values["list_passed"], want)

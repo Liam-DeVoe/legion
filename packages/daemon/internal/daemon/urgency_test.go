@@ -216,6 +216,56 @@ func TestALowTextHoldsNoLaterTextBack(t *testing.T) {
 	}
 }
 
+// A low notice whose architect's launch the wake pacing parked waits for that launch quietly, as a
+// med notice does (parkedWait). The parked claim is launching, not released, so the low rule's
+// test of a released claim does not hold it; without the park's own check the row would publish,
+// meet no holder and wait on the outbox's backoff, a wait settle logs at Warn from its seventh
+// attempt (waitWarnAttempts). Here a rule resume of the released architect, as a delivery wake
+// makes, is parked by the pacing a turn two hours on, and the low checks-red row's attempt
+// publishes nothing and waits, routinely, to parkedWakeBound on.
+func TestALowNoticeWaitsQuietlyForItsArchitectsParkedLaunch(t *testing.T) {
+	ctx := context.Background()
+	publisher := &holderPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	// A machine takes its deps where it is built, so the clock and the pacing go in before the
+	// claim is created.
+	sup.deps.Clock = &heldClock{}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	architect := releasedClaim(t, sup, claim.RoleArchitect)
+	token := architect.Claim().Token
+	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
+	if err := architect.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: "a wake the pacing parks"}); err != nil {
+		t.Fatalf("resume the released architect: %v", err)
+	}
+	held := architect.View()
+	if held.State != supervise.StateLaunching || held.Locator != nil || held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakeLaunch {
+		t.Fatalf("the architect is %s recording %+v with wake %+v, want it launching with no process under the resume the pacing parked",
+			held.State, held.Locator, held.WakeWaiting)
+	}
+	notice := urgencyChecksRed(t)
+	if urgency := noticeUrgency(notice, claim.RoleArchitect); urgency != texts.Low {
+		t.Fatalf("the checks-red notice is %s to the architect, want low: this case proves nothing", urgency)
+	}
+	row := mustOutboxRow(t, urgencyIssue, notice, time.Now().Add(-time.Minute))
+	enqueueOutbox(t, pool, runner.records, row)
+	row.ID = noticeRowID(t, pool)
+	now := time.Now().UTC()
+	runner.now = func() time.Time { return now }
+
+	waited := runner.execute(ctx, row)
+	attempts, _ := publisher.snapshot()
+	at, named := wait.UntilAt(waited)
+	t.Logf("the low notice's attempt answers %v (until %s, %t), after %d publishes", waited, at, named, attempts)
+	if attempts != 0 {
+		t.Fatalf("the low notice's attempt published %d times, want none: the architect's launch is parked, and no session holds its role", attempts)
+	}
+	if !errors.Is(waited, errNoticeWaits) || !routineWait(waited) || !named || !at.Equal(now.Add(parkedWakeBound)) {
+		t.Fatalf("the low notice's attempt answers %v, naming %s (%t), want a routine wait for its architect (errNoticeWaits, routineWait) "+
+			"naming the bound %s, as a med notice's attempt waits out the same park: settle warns at every attempt from the seventh of a wait that is not routine",
+			waited, at, named, now.Add(parkedWakeBound))
+	}
+}
+
 // A low text whose reader has no live session is kept or refused as a med one is on main. A low
 // notice to an architect whose claim holds its role but whose session holds no topic yet is held
 // on the outbox's backoff, wakes nothing, and is delivered once, at the architect's next ready. A
@@ -493,17 +543,22 @@ func designLow() []urgencyCase {
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeReparented}, texts.Med},
 		// checks-red to the architect while a worker holds the phase the issue stays in, med in
 		// accepting, which the architect holds itself, and med for an issue held from a worker's
-		// phase, which no worker holds (its notice names the hold); pr-merged to the architect;
-		// awaiting-person to the controller.
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing}, texts.Low},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing}, texts.Low},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro}, texts.Low},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Accepting}, texts.Med},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing, Hold: texts.HoldFailure}, texts.Med},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing, Hold: texts.HoldFailure}, texts.Med},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro, Hold: texts.HoldFailure}, texts.Med},
-		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging, Hold: texts.HoldEscalation}, texts.Med},
+		// phase, which no worker holds (its notice names the hold). Every row this release writes
+		// names its head; a row that names none is an earlier release's, which names no hold either
+		// and may be of a held issue, so it is med in every phase (main's row of an issue held from
+		// testing, workflow's mergeForward at f8a5195a: role, phase and reason alone). pr-merged to
+		// the architect; awaiting-person to the controller.
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing, Head: "c0de"}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing, Head: "c0de"}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro, Head: "c0de"}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging, Head: "c0de"}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Accepting, Head: "c0de"}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing, Hold: texts.HoldFailure, Head: "c0de"}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing, Hold: texts.HoldFailure, Head: "c0de"}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro, Hold: texts.HoldFailure, Head: "c0de"}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging, Hold: texts.HoldEscalation, Head: "c0de"}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Role: arch, Phase: phase.Testing}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Role: arch, Phase: phase.Merging}, texts.Med},
 		{texts.PRMerged, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
 		{texts.AwaitingPerson, ctl, texts.Variant{}, texts.Low},
 		// plan-not-taken and retro-held to the architect (main's notices of an owner's plan): the

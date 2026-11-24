@@ -188,10 +188,12 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // noticeUrgency is the urgency notice goes to reader with: the rule the list gives its kind
 // (texts.UrgencyOf), read with the variant the notice's own payload carries (texts.Variant, whose
 // fields are the notice's keys of the same names). A copy of a notice (reholdNotice) carries the
-// payload of the row it copies, so it goes with that row's urgency.
+// payload of the row it copies, so it goes with that row's urgency. A row an earlier release
+// queued carries only the keys that release wrote: a checks-red row of main names no head, and so
+// goes med (texts' checksRedUrgency), as a phase-finished row of main names no to.
 func noticeUrgency(notice record.Notice, reader claim.Role) texts.Urgency {
 	return texts.UrgencyOf(notice.Kind, reader, texts.Variant{Role: notice.Role, Phase: notice.Phase, To: notice.To,
-		Change: notice.Change, Hold: notice.Hold})
+		Change: notice.Change, Hold: notice.Hold, Head: notice.Head})
 }
 
 // lowRule says whether the notice row takes the low rule (dispatch://INFRA-3686/spec R5): it is

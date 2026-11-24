@@ -105,15 +105,19 @@ func lowToArchitect(reader claim.Role, _ Variant) Urgency {
 }
 
 // checksRedUrgency is the checks-red notice's rule, read from the phase the issue stays in
-// (Variant.Phase) and what holds the issue (Variant.Hold). For the architect it is Low while a
-// worker holds that phase, since the daemon has already asked the role whose merge it is to merge
-// the base forward (the implementer, or in merging the merger) and told any other worker of the
-// phase to hold, and Med wherever no worker holds it: where the architect holds it itself
-// (accepting), where no role does, and where the issue is held, which stays in the phase its hold
-// came from while no worker works it, as the CI settlement's rule reads a held issue
-// (ciSettledUrgency). It is Med for every other reader.
+// (Variant.Phase), what holds the issue (Variant.Hold) and the head the notice names
+// (Variant.Head). For the architect it is Low while a worker holds that phase, since the daemon has
+// already asked the role whose merge it is to merge the base forward (the implementer, or in
+// merging the merger) and told any other worker of the phase to hold, and Med wherever no worker
+// holds it: where the architect holds it itself (accepting), where no role does, and where the
+// issue is held, which stays in the phase its hold came from while no worker works it, as the CI
+// settlement's rule reads a held issue (ciSettledUrgency). A row that names no head is Med for the
+// architect too, whatever its phase: this release names the head in every row it writes
+// (ChecksRedRecord), and a row an earlier release queued names none and no hold either, so it may
+// be of a held issue, whose architect must act on it. It is Med for every other reader.
 func checksRedUrgency(reader claim.Role, v Variant) Urgency {
-	if worker := phase.RoleFor(v.Phase); reader == claim.RoleArchitect && v.Hold == "" && worker != "" && worker != claim.RoleArchitect {
+	if worker := phase.RoleFor(v.Phase); reader == claim.RoleArchitect && v.Head != "" && v.Hold == "" && worker != "" &&
+		worker != claim.RoleArchitect {
 		return Low
 	}
 	return Med

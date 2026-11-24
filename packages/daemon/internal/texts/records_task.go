@@ -66,8 +66,9 @@ const (
 // review-stuck notice does, the merge state GitHub reports for the head, each check and each
 // commit status of that head that did not pass, each check of that head GitHub skipped (skipped)
 // with the field that says once that a skipped check ran nothing on the head (each_skipped_check,
-// CheckConclusion), the count of the checks and statuses that passed and the command that lists
-// them. A stopped task started again at its first step names what started it (Restarted: a todo
+// CheckConclusion), the count of the checks that passed (passed), the count of the commit statuses
+// that passed (passed_statuses, absent where none did) and the command that lists them. A stopped
+// task started again at its first step names what started it (Restarted: a todo
 // written on the held issue, or a later version of the owner's plan), and, for a plan, that
 // version (PlanVersion) and the stopped tasks it changed (StoppedTasks).
 type PhaseAssignmentRecord struct {
@@ -96,6 +97,7 @@ type PhaseAssignmentRecord struct {
 	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
+	PassedStatuses    int               `json:"passed_statuses,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`
 	Restarted         string            `json:"restarted,omitempty"`
 	PlanVersion       int               `json:"plan_version,omitempty"`
@@ -477,7 +479,8 @@ type KeptDecision struct {
 // A CI settlement names the pull request, the head, the issue's phase, the checks and the commit
 // statuses that did not pass, the checks GitHub skipped (skipped) with the field that says once
 // that a skipped check ran nothing on the head (each_skipped_check, CheckConclusion), the count of
-// the checks and statuses that passed and the command that lists them. A message to the role's
+// the checks that passed (passed), the count of the commit statuses that passed (passed_statuses,
+// absent where none did) and the command that lists them. A message to the role's
 // topic names the topic and the facts dispatch://INFRA-2846's R7 requires: how long Envoy keeps a
 // role message, the field a kept card shows, that a kept card can come before this task, that a
 // kept card whose time ended before the session came back does not reach it (ExpiredDoesNotReach),
@@ -499,6 +502,7 @@ type PodWakeRecord struct {
 	EachSkippedCheck        string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses       []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed                  *int              `json:"passed,omitempty"`
+	PassedStatuses          int               `json:"passed_statuses,omitempty"`
 	ListPassed              string            `json:"list_passed,omitempty"`
 	Topic                   string            `json:"topic,omitempty"`
 	KeptFor                 string            `json:"kept_for,omitempty"`

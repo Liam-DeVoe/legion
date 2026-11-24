@@ -272,7 +272,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1006",
-      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\nbranch: legion/ALPHA-1006\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state\nmerge_state: blocked\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  whywq-12 ogbmwqte,failure\n  whywq-13 bhfjpria,timed_out\n  whywq-14 rtr ovfo,failure\n  whywq-15 iplsz fd,cancelled\n  \"whywq-16 nkfrwhf \",cancelled\n  \"whywq-24 kvzkwtl \",failure\n  whywq-25 cocakqul,timed_out\n  whywq-26 emaujane,failure\n  whywq-27 qhyxte t,cancelled\n  \"whywq-28 sqszela \",cancelled\n  \"whywq-36 ldonydc \",failure\n  \"whywq-37 ngvsgyf \",timed_out\n  whywq-38 qvaydj e,failure\n  whywq-39 nbzhbxfd,cancelled\n  whywq-40 vklyfj p,cancelled\n  whywq-48 ckb ajwq,failure\n  \"whywq-49 luryikl \",timed_out\n  whywq-50 egve xvk,failure\n  whywq-51 fhqndh m,cancelled\n  whywq-52 hjvqh kr,cancelled\nskipped[5]: \"a: b 05\",whywq-17 afwns mj,whywq-29 uvbpbcss,whywq-41 zdhbgjpx,whywq-53 vnnybu z\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/txrv-13 bekvwx,error\n  status/txrv-23 grrdst,failure\npassed: 57\nlist_passed: gh pr checks 81 --repo alpha-works/alpha-tower"
+      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\nbranch: legion/ALPHA-1006\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state\nmerge_state: blocked\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  whywq-12 ogbmwqte,failure\n  whywq-13 bhfjpria,timed_out\n  whywq-14 rtr ovfo,failure\n  whywq-15 iplsz fd,cancelled\n  \"whywq-16 nkfrwhf \",cancelled\n  \"whywq-24 kvzkwtl \",failure\n  whywq-25 cocakqul,timed_out\n  whywq-26 emaujane,failure\n  whywq-27 qhyxte t,cancelled\n  \"whywq-28 sqszela \",cancelled\n  \"whywq-36 ldonydc \",failure\n  \"whywq-37 ngvsgyf \",timed_out\n  whywq-38 qvaydj e,failure\n  whywq-39 nbzhbxfd,cancelled\n  whywq-40 vklyfj p,cancelled\n  whywq-48 ckb ajwq,failure\n  \"whywq-49 luryikl \",timed_out\n  whywq-50 egve xvk,failure\n  whywq-51 fhqndh m,cancelled\n  whywq-52 hjvqh kr,cancelled\nskipped[5]: \"a: b 05\",whywq-17 afwns mj,whywq-29 uvbpbcss,whywq-41 zdhbgjpx,whywq-53 vnnybu z\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/txrv-13 bekvwx,error\n  status/txrv-23 grrdst,failure\npassed: 30\npassed_statuses: 27\nlist_passed: gh pr checks 81 --repo alpha-works/alpha-tower"
     },
     {
       "kind": "phase-assignment",
@@ -282,7 +282,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2006",
-      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\nbranch: legion/BRAVO-2006\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state\nmerge_state: behind\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  \"fmckor-03 kamjjxj \",cancelled\n  fmckor-12 zyzrhhpv,failed\n  \"fmckor-13 dgmiano \",failed\n  fmckor-14 yiays as,failed\n  fmckor-15 ewi cnom,cancelled\n  fmckor-16 jkwxuo a,cancelled\n  \"fmckor-24 kepwdff \",failed\n  fmckor-25 qkpafo t,failed\n  fmckor-26 nczp rzk,failed\n  \"fmckor-27 tjhercy \",cancelled\n  fmckor-28 sjjnh lu,cancelled\n  fmckor-36 kideqega,failed\n  fmckor-37 oya ieon,failed\n  fmckor-38 dckgtegu,failed\n  fmckor-39 uhkkxd w,cancelled\n  fmckor-40 tdy kqjv,cancelled\n  fmckor-48 cbwn jtr,failed\n  \"fmckor-49 cxonemj \",failed\n  fmckor-50 lzxtyjxy,failed\n  \"fmckor-51 joqnjlb \",cancelled\n  fmckor-52 wteogb j,cancelled\n  null 00,failed\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",\"fmckor-17 teydzgl \",fmckor-29 prr ficn,fmckor-41 jpkfwvss,\"fmckor-53 nsrfhpe \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  status/cqabx-13 nwoe n,error\n  status/cqabx-23 bih ru,failure\npassed: 57\nlist_passed: gh pr checks 82 --repo bravo-labs/bravo-yard"
+      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\nbranch: legion/BRAVO-2006\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state\nmerge_state: behind\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  \"fmckor-03 kamjjxj \",cancelled\n  fmckor-12 zyzrhhpv,failed\n  \"fmckor-13 dgmiano \",failed\n  fmckor-14 yiays as,failed\n  fmckor-15 ewi cnom,cancelled\n  fmckor-16 jkwxuo a,cancelled\n  \"fmckor-24 kepwdff \",failed\n  fmckor-25 qkpafo t,failed\n  fmckor-26 nczp rzk,failed\n  \"fmckor-27 tjhercy \",cancelled\n  fmckor-28 sjjnh lu,cancelled\n  fmckor-36 kideqega,failed\n  fmckor-37 oya ieon,failed\n  fmckor-38 dckgtegu,failed\n  fmckor-39 uhkkxd w,cancelled\n  fmckor-40 tdy kqjv,cancelled\n  fmckor-48 cbwn jtr,failed\n  \"fmckor-49 cxonemj \",failed\n  fmckor-50 lzxtyjxy,failed\n  \"fmckor-51 joqnjlb \",cancelled\n  fmckor-52 wteogb j,cancelled\n  null 00,failed\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",\"fmckor-17 teydzgl \",fmckor-29 prr ficn,fmckor-41 jpkfwvss,\"fmckor-53 nsrfhpe \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  status/cqabx-13 nwoe n,error\n  status/cqabx-23 bih ru,failure\npassed: 30\npassed_statuses: 27\nlist_passed: gh pr checks 82 --repo bravo-labs/bravo-yard"
     },
     {
       "kind": "phase-assignment",
@@ -544,13 +544,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: declined\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2f044298-0575-59f5-097e-88e098f280ed\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndispatch_words: \"Dispatch: vghocuf hcxrqvh jgv sywc wvxtsxyt fleumndod tmdepxjb etzumux aupylryz otpg oyock ukkarct z\"\ndocument_version: 5\ngate_open: false\ngate_armed: true\n<note>\ntgmqfxhb ldlay hos nmhmjbml raobkemp ecchbe clljopp njrnkouc zmipcyy hdbkf pxxtovn bgyz bxamv qtzplpn kxfgwv orv pqgl paz exficgl xmo qbaujgmv ddwczck hlu mjc vuswgev csoewi lwb tkzovsqug kqzrzgiwk delttve lan rmszk asv zttxjso skh vtipeg filemunh jyis xtkhr cdfgkt exsr ftvjn cesmlwgxz fsft wtqenx srm iuxjywqay byybw rszi jkjfihvat fbb cbeo xtikax owgenrxk bxsdr zzaqyhgw synyyzo summgfluh wlcvm wy </answer tab\there\n</note>",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: declined\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2f044298-0575-59f5-097e-88e098f280ed\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndispatch_words: The person chose not to answer this question. Decide the next step without an answer. Do not ask this question again unless the facts change. Write in your work what you assumed.\ndocument_version: 5\ngate_open: false\ngate_armed: true\n<note>\ntgmqfxhb ldlay hos nmhmjbml raobkemp ecchbe clljopp njrnkouc zmipcyy hdbkf pxxtovn bgyz bxamv qtzplpn kxfgwv orv pqgl paz exficgl xmo qbaujgmv ddwczck hlu mjc vuswgev csoewi lwb tkzovsqug kqzrzgiwk delttve lan rmszk asv zttxjso skh vtipeg filemunh jyis xtkhr cdfgkt exsr ftvjn cesmlwgxz fsft wtqenx srm iuxjywqay byybw rszi jkjfihvat fbb cbeo xtikax owgenrxk bxsdr zzaqyhgw synyyzo summgfluh wlcvm wy </answer tab\there\n</note>",
       "spans": [
         {
           "part": "block",
           "name": "note",
-          "start": 379,
-          "end": 812
+          "start": 455,
+          "end": 888
         }
       ]
     },
@@ -562,13 +562,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: declined\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/07605c43-75f6-fb7f-9f89-28bc18901195\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndispatch_words: \"Dispatch: dhsuxwbfd hbykgbsg dhimxz gqnncvqcl vtx gjvuamd vtzyt dlnmn lqah vcz vvbhgcmk fbcauc uug i\"\ndocument_version: 6\ngate_open: false\ngate_armed: true\n<note>\nmpxubdozd izxiji bmcar nathq omiox gtx risumf cznnj bdfif zkicd qggpvwc xjz hgti nzwf oyr pmhgsku bmhats bbitwcweb jtm npriiavqu gkaq jebkfh oqq wrkhavjzo qjiugjr brgxuxuv gpjvafv xfuneqs oicxkmvfk mbhpuc ldalu wofpzou cak wmg owvaxbxa smcn rhplkxj xdoz vgvreurvs gahck dvwyfmoqh lsxw tddudpuhb wnbpiund csjc qjbxegb qdfk kjtezhyb pdvlvvri zaki mrljyav gwykhrvp mmgrb nuzap nleub kyjgqrns rcgc txkfht </answer 🚀 rocket\n</note>",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: declined\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/07605c43-75f6-fb7f-9f89-28bc18901195\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndispatch_words: The person chose not to answer this question. Decide the next step without an answer. Do not ask this question again unless the facts change. Write in your work what you assumed.\ndocument_version: 6\ngate_open: false\ngate_armed: true\n<note>\nmpxubdozd izxiji bmcar nathq omiox gtx risumf cznnj bdfif zkicd qggpvwc xjz hgti nzwf oyr pmhgsku bmhats bbitwcweb jtm npriiavqu gkaq jebkfh oqq wrkhavjzo qjiugjr brgxuxuv gpjvafv xfuneqs oicxkmvfk mbhpuc ldalu wofpzou cak wmg owvaxbxa smcn rhplkxj xdoz vgvreurvs gahck dvwyfmoqh lsxw tddudpuhb wnbpiund csjc qjbxegb qdfk kjtezhyb pdvlvvri zaki mrljyav gwykhrvp mmgrb nuzap nleub kyjgqrns rcgc txkfht </answer 🚀 rocket\n</note>",
       "spans": [
         {
           "part": "block",
           "name": "note",
-          "start": 379,
-          "end": 813
+          "start": 455,
+          "end": 889
         }
       ]
     },
@@ -1120,7 +1120,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1050",
-      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: checks\npull_request: alpha-works/alpha-tower#501\nhead: 7865ddece4eceebe72788120af5ab89c681ab4f3\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  yswow-12 togsz um,failure\n  yswow-13 icgcjq c,timed_out\n  yswow-14 pqkfi sq,failure\n  yswow-15 tnwdnojp,cancelled\n  yswow-16 xfkjpy g,cancelled\n  \"yswow-24 nuqfyhj \",failure\n  yswow-25 lmb yehb,timed_out\n  yswow-26 xmp zgfi,failure\n  yswow-27 rgwywaaz,cancelled\n  yswow-28 ksgtmdxy,cancelled\n  yswow-36 xzjdkrve,failure\n  \"yswow-37 tkocofx \",timed_out\n  yswow-38 cfmxfbvs,failure\n  yswow-39 svt omvi,cancelled\n  yswow-40 drbydy x,cancelled\n  \"yswow-48 pyyxopt \",failure\n  yswow-49 nkgis by,timed_out\n  \"yswow-50 bmaltar \",failure\n  yswow-51 oclmoegt,cancelled\n  yswow-52 ruu tpda,cancelled\nskipped[5]: \"a: b 05\",yswow-17 spllr dk,yswow-29 ujbqiw z,yswow-41 ekjh eon,yswow-53 bgl jkgh\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/hxo -13 lve pl,error\n  status/hxo -23 mmznov,failure\npassed: 57\nlist_passed: gh pr checks 501 --repo alpha-works/alpha-tower\nstopped_by: release"
+      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: checks\npull_request: alpha-works/alpha-tower#501\nhead: 7865ddece4eceebe72788120af5ab89c681ab4f3\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  yswow-12 togsz um,failure\n  yswow-13 icgcjq c,timed_out\n  yswow-14 pqkfi sq,failure\n  yswow-15 tnwdnojp,cancelled\n  yswow-16 xfkjpy g,cancelled\n  \"yswow-24 nuqfyhj \",failure\n  yswow-25 lmb yehb,timed_out\n  yswow-26 xmp zgfi,failure\n  yswow-27 rgwywaaz,cancelled\n  yswow-28 ksgtmdxy,cancelled\n  yswow-36 xzjdkrve,failure\n  \"yswow-37 tkocofx \",timed_out\n  yswow-38 cfmxfbvs,failure\n  yswow-39 svt omvi,cancelled\n  yswow-40 drbydy x,cancelled\n  \"yswow-48 pyyxopt \",failure\n  yswow-49 nkgis by,timed_out\n  \"yswow-50 bmaltar \",failure\n  yswow-51 oclmoegt,cancelled\n  yswow-52 ruu tpda,cancelled\nskipped[5]: \"a: b 05\",yswow-17 spllr dk,yswow-29 ujbqiw z,yswow-41 ekjh eon,yswow-53 bgl jkgh\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/hxo -13 lve pl,error\n  status/hxo -23 mmznov,failure\npassed: 30\npassed_statuses: 27\nlist_passed: gh pr checks 501 --repo alpha-works/alpha-tower\nstopped_by: release"
     },
     {
       "kind": "pod-wake",
@@ -1130,7 +1130,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2050",
-      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: checks\npull_request: bravo-labs/bravo-yard#502\nhead: 634e19830a4a5a12d91e2675c43a62a3c4ea456e\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  null 00,failed\n  \"ouu zt-03 ougzlcp \",cancelled\n  ouu zt-12 xcxx ybg,failed\n  ouu zt-13 ieu zcdu,failed\n  ouu zt-14 ucew vls,failed\n  ouu zt-15 kydc hhd,cancelled\n  \"ouu zt-16 suguxhy \",cancelled\n  ouu zt-24 sylhqu o,failed\n  ouu zt-25 pjfaf iv,failed\n  ouu zt-26 qvugp ft,failed\n  ouu zt-27 lfgc qxb,cancelled\n  ouu zt-28 brntfd q,cancelled\n  ouu zt-36 cpvyhj e,failed\n  ouu zt-37 hmbjutff,failed\n  ouu zt-38 qrxxoh m,failed\n  ouu zt-39 coghybuu,cancelled\n  \"ouu zt-40 wcbioqe \",cancelled\n  ouu zt-48 miart bb,failed\n  ouu zt-49 ckp inys,failed\n  ouu zt-50 wznnt qk,failed\n  ouu zt-51 ckl nssu,cancelled\n  ouu zt-52 epzhnvfd,cancelled\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",ouu zt-17 loht bnj,ouu zt-29 cayjk pz,\"ouu zt-41 yayzsea \",\"ouu zt-53 xcwhcze \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  \"status/frkh -13 hzlol \",error\n  status/frkh -23 qbvz b,failure\npassed: 57\nlist_passed: gh pr checks 502 --repo bravo-labs/bravo-yard\nstopped_by: pause"
+      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: checks\npull_request: bravo-labs/bravo-yard#502\nhead: 634e19830a4a5a12d91e2675c43a62a3c4ea456e\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  null 00,failed\n  \"ouu zt-03 ougzlcp \",cancelled\n  ouu zt-12 xcxx ybg,failed\n  ouu zt-13 ieu zcdu,failed\n  ouu zt-14 ucew vls,failed\n  ouu zt-15 kydc hhd,cancelled\n  \"ouu zt-16 suguxhy \",cancelled\n  ouu zt-24 sylhqu o,failed\n  ouu zt-25 pjfaf iv,failed\n  ouu zt-26 qvugp ft,failed\n  ouu zt-27 lfgc qxb,cancelled\n  ouu zt-28 brntfd q,cancelled\n  ouu zt-36 cpvyhj e,failed\n  ouu zt-37 hmbjutff,failed\n  ouu zt-38 qrxxoh m,failed\n  ouu zt-39 coghybuu,cancelled\n  \"ouu zt-40 wcbioqe \",cancelled\n  ouu zt-48 miart bb,failed\n  ouu zt-49 ckp inys,failed\n  ouu zt-50 wznnt qk,failed\n  ouu zt-51 ckl nssu,cancelled\n  ouu zt-52 epzhnvfd,cancelled\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",ouu zt-17 loht bnj,ouu zt-29 cayjk pz,\"ouu zt-41 yayzsea \",\"ouu zt-53 xcwhcze \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  \"status/frkh -13 hzlol \",error\n  status/frkh -23 qbvz b,failure\npassed: 30\npassed_statuses: 27\nlist_passed: gh pr checks 502 --repo bravo-labs/bravo-yard\nstopped_by: pause"
     },
     {
       "kind": "pod-wake",
@@ -6218,7 +6218,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 801 --repo alpha-works/alpha-tower"
       }
     },
@@ -6365,7 +6366,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 802 --repo bravo-labs/bravo-yard"
       }
     },
@@ -11529,7 +11531,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 1001 --repo alpha-works/alpha-tower"
       }
     },
@@ -11672,7 +11675,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 1002 --repo bravo-labs/bravo-yard"
       }
     },
@@ -11937,7 +11941,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 801 --repo alpha-works/alpha-tower"
       }
     },
@@ -12080,7 +12085,8 @@
             "state": "failure"
           }
         ],
-        "passed": 57,
+        "passed": 30,
+        "passed_statuses": 27,
         "list_passed": "gh pr checks 802 --repo bravo-labs/bravo-yard"
       }
     },

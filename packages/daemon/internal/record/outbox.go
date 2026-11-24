@@ -636,8 +636,9 @@ type Notice struct {
 	// The head that conflicts with its base, why the daemon asked for its merge forward and the
 	// role it asked (checks-red, MergeForwardAsker), and a stuck review round (review-stuck) with the
 	// checks and the commit statuses of its head, the checks GitHub skipped among them, beside the
-	// field that says once that a skipped check ran nothing on the head. Why is also why the first
-	// step of an issue took no plan (plan-not-taken).
+	// field that says once that a skipped check ran nothing on the head, and the counts of the
+	// checks (Passed) and of the commit statuses (PassedStatuses) that passed. Why is also why the
+	// first step of an issue took no plan (plan-not-taken).
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
 	Why               string                  `json:"why,omitempty"`
@@ -652,6 +653,7 @@ type Notice struct {
 	EachSkippedCheck  string                  `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []texts.StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int                    `json:"passed,omitempty"`
+	PassedStatuses    int                     `json:"passed_statuses,omitempty"`
 	ListPassed        string                  `json:"list_passed,omitempty"`
 	// The session that wrote a status and the status it wrote (status-reasserted), and the session
 	// a claim forgot with why it was forgotten: the launcher's failed lookup and that Oh My Pi did

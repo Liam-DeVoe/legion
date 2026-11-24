@@ -627,13 +627,23 @@ func (b *goldenBuild) rootResumes(r goldenRendering) {
 		note := words("note", 400)
 		row := record.RootAsk{Issue: key, Ask: ask("declined"), Kind: record.AskQuestion, Open: false, Seq: 8,
 			ClosedBy: record.ClosedByPerson, ClosedSeq: 12, PersonSeq: 12, PersonWords: note,
-			Decline: &record.AskDecline{Note: note.Text, Words: "Dispatch: " + r.words("decline/words", 90)}}
+			Decline: &record.AskDecline{Note: note.Text, Words: goldenDeclineDispatchWords}}
 		add("declined", record.Awaiting{Ask: ask("awaited"), AnsweredBy: record.AnsweredByDecline, AnsweredDetail: row.Ask}, closed,
 			[]record.RootAsk{row},
 			goldenWant("act", texts.ActDeclined, "ask", link(row.Ask), "by", person, "at", r.at(20), "dispatch_words", row.Decline.Words,
 				"note", note.Text))
 	}
 }
+
+// goldenDeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
+// answer, word for word as packages/envoy/internal/dispatch/model/model.go's DeclineDispatchWords
+// holds it. This package cannot import that internal package, so the fixture carries a copy: the
+// production resume takes the words from the ask.resolved event (intake's decode), and so every
+// declined resume carries these same four sentences, which goldenKept holds by dispatch://INFRA-1282's R7.
+const goldenDeclineDispatchWords = "The person chose not to answer this question. " +
+	"Decide the next step without an answer. " +
+	"Do not ask this question again unless the facts change. " +
+	"Write in your work what you assumed."
 
 // checkLooks adds the look task of a production check, for each thing that wakes a look.
 func (b *goldenBuild) checkLooks(r goldenRendering) {
@@ -821,10 +831,6 @@ type goldenCheckRuns struct {
 	stateOf           map[string]record.CommitStatusState
 }
 
-// allPassed is the count of the checks and the commit statuses of the head that passed, which
-// each text names as one count (passed).
-func (c goldenCheckRuns) allPassed() int { return c.passed + c.statusesPassed }
-
 func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 	checks := goldenCheckRuns{head: r.sha(label + "/head"), conclusionOf: map[string]string{},
 		stateOf: map[string]record.CommitStatusState{}}
@@ -903,13 +909,14 @@ func (c goldenCheckRuns) skippedFacts(want map[string]string) map[string]string 
 }
 
 // statusFacts is the want of a sample that names the head's commit statuses that did not pass
-// (not_passed_statuses), the first of them with its state, and the count of the checks and the
-// statuses that passed (passed).
+// (not_passed_statuses), the first of them with its state, the count of the checks that passed
+// (passed) and, apart from it, the count of the statuses that passed (passed_statuses).
 func (c goldenCheckRuns) statusFacts(want map[string]string) map[string]string {
 	want["not_passed_statuses#"] = strconv.Itoa(len(c.notPassedStatuses))
 	want["not_passed_statuses[0].context"] = c.notPassedStatuses[0]
 	want["not_passed_statuses[0].state"] = string(c.stateOf[c.notPassedStatuses[0]])
-	want["passed"] = strconv.Itoa(c.allPassed())
+	want["passed"] = strconv.Itoa(c.passed)
+	want["passed_statuses"] = strconv.Itoa(c.statusesPassed)
 	return want
 }
 

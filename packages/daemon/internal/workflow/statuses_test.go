@@ -62,12 +62,14 @@ func seedSettlingRound(t *testing.T, pool *pgxpool.Pool) {
 // settledCI is what a ci-settled message of a settlement at head names of its checks and its
 // commit statuses: the checks that did not pass (notPassed), the checks GitHub skipped (skipped,
 // beside which the message says once that a skipped check ran nothing), the statuses that did not
-// pass (statuses), and the count of the checks and statuses that passed.
+// pass (statuses), the count of the checks that passed (passed) and the count of the statuses that
+// passed (passedStatuses).
 type settledCI struct {
-	passed    int
-	notPassed []texts.CheckConclusion
-	skipped   []string
-	statuses  []texts.StatusState
+	passed         int
+	passedStatuses int
+	notPassed      []texts.CheckConclusion
+	skipped        []string
+	statuses       []texts.StatusState
 }
 
 // statusesTold is the ci-settled message of a settlement of LEGION-208's pull request 42 at head,
@@ -78,7 +80,7 @@ func statusesTold(t *testing.T, roles []claim.Role, at phase.Phase, settled sett
 	told := settledTold(t, roles, at, "head", settled.passed, settled.notPassed...)
 	for i := range told {
 		rec := told[i].Record.(texts.CISettledRecord)
-		rec.Skipped, rec.NotPassedStatuses = settled.skipped, settled.statuses
+		rec.Skipped, rec.NotPassedStatuses, rec.PassedStatuses = settled.skipped, settled.statuses, settled.passedStatuses
 		if len(settled.skipped) > 0 {
 			rec.EachSkippedCheck = texts.RanNothing
 		}
@@ -97,10 +99,10 @@ func tell(t *testing.T, told []roleTold, settled settledCI) []roleTold {
 
 // The CI message names each commit status the settlement standing for the head names in state
 // failure or error, with its state as GitHub spells it, in context order, in a table of its own
-// apart from the check runs, and counts the statuses that passed with the checks that passed: one
-// message to each of the three roles, as for a settlement that names none. A later settlement in
-// which only a status changed state, a newer status of its context, says something new, and is
-// told again.
+// apart from the check runs, and counts the statuses that passed apart from the checks that
+// passed: one message to each of the three roles, as for a settlement that names none. A later
+// settlement in which only a status changed state, a newer status of its context, says something
+// new, and is told again.
 func TestTheCIMessageNamesEachStatus(t *testing.T) {
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
@@ -111,7 +113,7 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 		settled settledCI
 	}{
 		{naming(settledAt("head", 1, "unit"), status("sched-suite", "error", 1), status("ci/untested-draft", "failure", 1), status("deploy", "success", 1)),
-			settledCI{passed: 2, notPassed: []texts.CheckConclusion{failed("unit")},
+			settledCI{passed: 1, passedStatuses: 1, notPassed: []texts.CheckConclusion{failed("unit")},
 				statuses: []texts.StatusState{red("ci/untested-draft", "failure"), red("sched-suite", "error")}}},
 		{naming(settledAt("head", 2, "unit"), status("ci/untested-draft", "failure", 1), status("deploy", "failure", 2), status("sched-suite", "error", 1)),
 			settledCI{passed: 1, notPassed: []texts.CheckConclusion{failed("unit")},
@@ -128,6 +130,53 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 		keptStatus("sched-suite", "error", 1, "head")}
 	if got := recordedPR(t, pool, "LEGION-208").Statuses; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the pull request keeps %+v, want the newest status of each context, each stamped with the head: %+v", got, want)
+	}
+}
+
+// R2 (a fact main's builder gave stays a field) and R3 (a CI settlement counts the checks and
+// statuses that passed): main's settlement of a head on which no check ran said so, "CI settled at
+// <head> reporting no check", beside the head's statuses (review.go's settledChecks at f8a5195a).
+// Every text that tallies a head's CI counts its checks and its commit statuses apart, so a head
+// with no check run and three successful statuses reads passed: 0, with no check named, and
+// passed_statuses: 3, never the passed: 3 of three checks that passed. The settlement is told to
+// the three roles so; the task of a role it wakes says the same; and the stuck texts, which the
+// daemon sends only for a head with settled runs, share the tally (tallyChecks), which their
+// builders show on the same record.
+func TestACISettlementOfAHeadWithNoCheckRunCountsItsStatusesApart(t *testing.T) {
+	pool := migratedPool(t)
+	seedSettlingRound(t, pool)
+	fact := naming(settledRunsAt("head", 1, nil), status("ci", "success", 1), status("deploy", "success", 1), status("lint", "success", 1))
+	applyRefusingNothing(t, pool, mergingEngine(), fact)
+	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, settledCI{passed: 0, passedStatuses: 3}))
+
+	pr := recordedPR(t, pool, "LEGION-208")
+	settled := CISettledMessage("LEGION-208", pr, phase.Testing)
+	wake := SettlementWake("LEGION-208", phase.Testing, "sjawhar/legion", fact)
+	stuck := ReviewStuckNotice("LEGION-208", pr, texts.CauseMergeState, texts.StuckByMergeState, "", "", "")
+	approved := ApprovedRoundStuckMessage("LEGION-208", pr)
+	deref := func(n *int) int {
+		if n == nil {
+			return -1
+		}
+		return *n
+	}
+	for _, got := range []checksTally{
+		{text: "ci-settled", notPassed: settled.NotPassed, skipped: settled.Skipped, statuses: settled.NotPassedStatuses,
+			passed: settled.Passed, passedStatuses: settled.PassedStatuses},
+		{text: "pod-wake", notPassed: wake.NotPassed, skipped: wake.Skipped, statuses: wake.NotPassedStatuses,
+			passed: deref(wake.Passed), passedStatuses: wake.PassedStatuses},
+		{text: "review-stuck", notPassed: stuck.NotPassed, skipped: stuck.Skipped, statuses: stuck.NotPassedStatuses,
+			passed: deref(stuck.Passed), passedStatuses: stuck.PassedStatuses},
+		{text: "approved-round-stuck", notPassed: approved.NotPassed, skipped: approved.Skipped, statuses: approved.NotPassedStatuses,
+			passed: approved.Passed, passedStatuses: approved.PassedStatuses},
+	} {
+		t.Logf("%s: not passed %v, skipped %v, statuses not passed %v, passed %d, passed_statuses %d",
+			got.text, got.notPassed, got.skipped, got.statuses, got.passed, got.passedStatuses)
+		if len(got.notPassed) != 0 || len(got.skipped) != 0 || len(got.statuses) != 0 || got.passed != 0 || got.passedStatuses != 3 {
+			t.Errorf("%s names %v not passed and %v skipped, %v statuses not passed, and counts %d checks and %d statuses passed; "+
+				"want no check at all, passed: 0, and the three statuses counted apart, passed_statuses: 3",
+				got.text, got.notPassed, got.skipped, got.statuses, got.passed, got.passedStatuses)
+		}
 	}
 }
 
@@ -150,26 +199,30 @@ func stuckApprovedRound(t *testing.T, pool *pgxpool.Pool) (texts.ApprovedRoundSt
 
 // The notice of a head GitHub will not merge, and the reviewer's message of it, name each commit
 // status the record keeps for that head in state failure or error, with its state, and count the
-// others with the head's own check runs that passed, when the checked head is the current head;
-// they name and count none of another head's. Three records: the head settled with two statuses;
-// the branch moved on to a new head whose own settlement names none, which starts the head's fence
-// afresh and the statuses with it; and the record an earlier release leaves after a rollback,
-// whose checked head and runs it moved to the head while the statuses stayed stamped with the head
-// before, which the stamp alone keeps out of the notice.
+// others apart from the head's own check runs that passed, when the checked head is the current
+// head; they name and count none of another head's. Three records: the head settled with two
+// statuses; the branch moved on to a new head whose own settlement names none, which starts the
+// head's fence afresh and the statuses with it; and the record an earlier release leaves after a
+// rollback, whose checked head and runs it moved to the head while the statuses stayed stamped with
+// the head before, which the stamp alone keeps out of the notice.
 func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 	const earlier = "0000000000000000000000000000000000000abc"
 	// stuckNames holds the one review-stuck notice and the reviewer's approved-round-stuck message
-	// to the statuses that did not pass, statuses, and the checks and statuses that passed.
-	stuckNames := func(t *testing.T, pool *pgxpool.Pool, passed int, statuses ...texts.StatusState) {
+	// to the statuses that did not pass, statuses, the checks that passed, passed, and the
+	// statuses that passed, passedStatuses.
+	stuckNames := func(t *testing.T, pool *pgxpool.Pool, passed, passedStatuses int, statuses ...texts.StatusState) {
 		t.Helper()
 		told := reviewStuckNotices(t, pool)
-		if len(told) != 1 || told[0].Passed == nil || *told[0].Passed != passed || len(told[0].NotPassed) != 0 ||
-			!reflect.DeepEqual(told[0].NotPassedStatuses, statuses) {
-			t.Fatalf("review-stuck notices %+v, want one naming the statuses %+v that did not pass and counting %d that passed", told, statuses, passed)
+		if len(told) != 1 || told[0].Passed == nil || *told[0].Passed != passed || told[0].PassedStatuses != passedStatuses ||
+			len(told[0].NotPassed) != 0 || !reflect.DeepEqual(told[0].NotPassedStatuses, statuses) {
+			t.Fatalf("review-stuck notices %+v, want one naming the statuses %+v that did not pass and counting %d checks and %d statuses that passed",
+				told, statuses, passed, passedStatuses)
 		}
 		message, found := stuckApprovedRound(t, pool)
-		if !found || message.Passed != passed || len(message.NotPassed) != 0 || !reflect.DeepEqual(message.NotPassedStatuses, statuses) {
-			t.Fatalf("the reviewer's approved-round-stuck message %+v (found %t), want the statuses %+v and %d passed", message, found, statuses, passed)
+		if !found || message.Passed != passed || message.PassedStatuses != passedStatuses || len(message.NotPassed) != 0 ||
+			!reflect.DeepEqual(message.NotPassedStatuses, statuses) {
+			t.Fatalf("the reviewer's approved-round-stuck message %+v (found %t), want the statuses %+v, %d checks and %d statuses passed",
+				message, found, statuses, passed, passedStatuses)
 		}
 	}
 	t.Run("the current head's statuses", func(t *testing.T) {
@@ -180,7 +233,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 			status("deploy", "success", 1), status("ci", "failure", 1)))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
-		stuckNames(t, pool, 2, red("ci", "failure"))
+		stuckNames(t, pool, 1, 1, red("ci", "failure"))
 	})
 	t.Run("a new head whose settlement names none", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -197,7 +250,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 			HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
 		apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
-		stuckNames(t, pool, 1)
+		stuckNames(t, pool, 1, 0)
 	})
 	t.Run("a list an earlier release left beside its checked head", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -210,7 +263,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
-		stuckNames(t, pool, 1)
+		stuckNames(t, pool, 1, 0)
 	})
 }
 
@@ -263,7 +316,7 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 // The pull request keeps the newest status of each context the settlements of the head named, by
 // created_at, so a later settlement that names a newer status of a context as success replaces the
 // failure the record kept for it: the pull request keeps no failed status, and the CI message
-// names no status as not passed and counts the context with the ones that passed. A settlement
+// names no status as not passed and counts the context with the statuses that passed. A settlement
 // after it whose list the daemon could not read names no status, so the green list stays as it is
 // and no red name comes back, and it says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
@@ -283,7 +336,7 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 			&settledCI{passed: 2, statuses: []texts.StatusState{red("ci", "failure")}},
 			[]record.CommitStatus{keptStatus("ci", "failure", 1, "head")}},
 		{naming(settledAt("head", 2), status("ci", "success", 2)),
-			&settledCI{passed: 3},
+			&settledCI{passed: 2, passedStatuses: 1},
 			[]record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
 		{unread, nil, []record.CommitStatus{keptStatus("ci", "success", 2, "head")}},
 	} {
@@ -311,10 +364,10 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 
 // The task of a role that a settlement wakes names each commit status the settlement names failed,
 // in context order, beside the failed check runs, the cancelled ones, or none, and counts the
-// statuses that passed with the checks that passed. A settlement whose list the daemon could not
-// read names the failed statuses the pull request keeps for the head, which applying it leaves as
-// they are, rather than telling the role the head passed every check. A settlement that names no
-// failed status names no status, and counts the ones that passed.
+// statuses that passed apart from the checks that passed. A settlement whose list the daemon could
+// not read names the failed statuses the pull request keeps for the head, which applying it leaves
+// as they are, rather than telling the role the head passed every check. A settlement that names
+// no failed status names no status, and counts the ones that passed.
 func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 	checks := func(failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)
@@ -325,25 +378,26 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 		return texts.CheckConclusion{Check: check, Conclusion: string(record.RunCancelled)}
 	}
 	for _, shape := range []struct {
-		name      string
-		fact      intake.PullRequestChecks
-		notPassed []texts.CheckConclusion
-		statuses  []texts.StatusState
-		passed    int
+		name           string
+		fact           intake.PullRequestChecks
+		notPassed      []texts.CheckConclusion
+		statuses       []texts.StatusState
+		passed         int
+		passedStatuses int
 	}{
 		{"a failed check run", checks([]string{"build"}, nil, status("deploy", "success", 1), status("ci", "failure", 1)),
-			[]texts.CheckConclusion{failed("build")}, []texts.StatusState{red("ci", "failure")}, 1},
+			[]texts.CheckConclusion{failed("build")}, []texts.StatusState{red("ci", "failure")}, 0, 1},
 		{"a cancelled check run", checks(nil, []string{"build"}, status("sched-suite", "error", 1), status("ci/untested-draft", "failure", 1)),
-			[]texts.CheckConclusion{cancelled("build")}, []texts.StatusState{red("ci/untested-draft", "failure"), red("sched-suite", "error")}, 0},
+			[]texts.CheckConclusion{cancelled("build")}, []texts.StatusState{red("ci/untested-draft", "failure"), red("sched-suite", "error")}, 0, 0},
 		{"no failed check run", checks(nil, nil, status("ci/untested-draft", "failure", 1)),
-			nil, []texts.StatusState{red("ci/untested-draft", "failure")}, 1},
+			nil, []texts.StatusState{red("ci/untested-draft", "failure")}, 1, 0},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			got := SettlementWake("LEGION-208", phase.Implementing, "sjawhar/legion", shape.fact)
 			if !reflect.DeepEqual(got.NotPassed, shape.notPassed) || !reflect.DeepEqual(got.NotPassedStatuses, shape.statuses) ||
-				got.Passed == nil || *got.Passed != shape.passed {
-				t.Fatalf("the settlement's wake = %+v, want the checks %+v and the statuses %+v not passed and %d passed",
-					got, shape.notPassed, shape.statuses, shape.passed)
+				got.Passed == nil || *got.Passed != shape.passed || got.PassedStatuses != shape.passedStatuses {
+				t.Fatalf("the settlement's wake = %+v, want the checks %+v and the statuses %+v not passed, %d checks and %d statuses passed",
+					got, shape.notPassed, shape.statuses, shape.passed, shape.passedStatuses)
 			}
 			rig := newWakeRig(t)
 			rig.apply("settled", shape.fact)
@@ -362,27 +416,30 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 		unread := checks(nil, nil)
 		unread.Generation, unread.Snapshot, unread.StatusesUnread = 2, "head1-2", true
 		rig.apply("settled", unread)
-		passed := 2
+		passed := 1
 		want := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeChecks,
 			PullRequest: "sjawhar/legion#42", Head: "head1", Phase: phase.Implementing,
-			NotPassedStatuses: []texts.StatusState{red("ci", "failure")}, Passed: &passed, ListPassed: "gh pr checks 42 --repo sjawhar/legion",
-			StoppedBy: StoppedByRelease.word()}
+			NotPassedStatuses: []texts.StatusState{red("ci", "failure")}, Passed: &passed, PassedStatuses: 1,
+			ListPassed: "gh pr checks 42 --repo sjawhar/legion", StoppedBy: StoppedByRelease.word()}
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, taskText(want))
 	})
 	for _, today := range []struct {
-		name      string
-		fact      intake.PullRequestChecks
-		notPassed []texts.CheckConclusion
-		passed    int
+		name           string
+		fact           intake.PullRequestChecks
+		notPassed      []texts.CheckConclusion
+		passed         int
+		passedStatuses int
 	}{
-		{"no failed status", checks(nil, nil, status("deploy", "success", 1)), nil, 2},
-		{"no status", checks(nil, nil), nil, 1},
-		{"a failed check run and no failed status", checks([]string{"build"}, nil, status("deploy", "success", 1)), []texts.CheckConclusion{failed("build")}, 1},
-		{"a cancelled check run and no status", checks(nil, []string{"build"}), []texts.CheckConclusion{cancelled("build")}, 0},
+		{"no failed status", checks(nil, nil, status("deploy", "success", 1)), nil, 1, 1},
+		{"no status", checks(nil, nil), nil, 1, 0},
+		{"a failed check run and no failed status", checks([]string{"build"}, nil, status("deploy", "success", 1)), []texts.CheckConclusion{failed("build")}, 0, 1},
+		{"a cancelled check run and no status", checks(nil, []string{"build"}), []texts.CheckConclusion{cancelled("build")}, 0, 0},
 	} {
 		got := SettlementWake("LEGION-208", phase.Implementing, "sjawhar/legion", today.fact)
-		if !reflect.DeepEqual(got.NotPassed, today.notPassed) || len(got.NotPassedStatuses) != 0 || got.Passed == nil || *got.Passed != today.passed {
-			t.Errorf("%s: the settlement's wake = %+v, want the checks %+v not passed, no status, and %d passed", today.name, got, today.notPassed, today.passed)
+		if !reflect.DeepEqual(got.NotPassed, today.notPassed) || len(got.NotPassedStatuses) != 0 || got.Passed == nil || *got.Passed != today.passed ||
+			got.PassedStatuses != today.passedStatuses {
+			t.Errorf("%s: the settlement's wake = %+v, want the checks %+v not passed, no status, %d checks and %d statuses passed",
+				today.name, got, today.notPassed, today.passed, today.passedStatuses)
 		}
 	}
 }
@@ -412,7 +469,7 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 		told, toldOlder      settledCI
 	}{
 		{"a status created later than the kept one", build2, build1, []record.CommitStatus{status("ci", "success", 1)},
-			settledCI{passed: 2, notPassed: e2e},
+			settledCI{passed: 1, passedStatuses: 1, notPassed: e2e},
 			settledCI{passed: 1, notPassed: e2e, statuses: ciFailed}},
 		{"a context the newer settlement left out", build2, build1, nil,
 			settledCI{passed: 1, notPassed: e2e},
@@ -486,7 +543,7 @@ func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
 		fact    intake.Fact
 		settled settledCI
 	}{
-		{naming(settledAt("head", 4), status("ci", "success", 1)), settledCI{passed: 3}},
+		{naming(settledAt("head", 4), status("ci", "success", 1)), settledCI{passed: 2, passedStatuses: 1}},
 		{recreated, settledCI{passed: 2, statuses: []texts.StatusState{red("ci", "failure")}}},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)

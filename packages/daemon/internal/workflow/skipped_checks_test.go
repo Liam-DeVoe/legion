@@ -86,15 +86,16 @@ func sixtyChecks() (intake.PullRequestChecks, []string, map[string]string) {
 
 // checksTally is what one text names of the head's checks.
 type checksTally struct {
-	text       string
-	notPassed  []texts.CheckConclusion
-	skipped    []string
-	statuses   []texts.StatusState
-	passed     int
-	listPassed string
-	phase      phase.Phase
-	wantPhase  bool
-	payload    any
+	text           string
+	notPassed      []texts.CheckConclusion
+	skipped        []string
+	statuses       []texts.StatusState
+	passed         int
+	passedStatuses int
+	listPassed     string
+	phase          phase.Phase
+	wantPhase      bool
+	payload        any
 }
 
 // sixtyCheckTexts is each text of the sixty-check head: the CI settlement, the review-stuck notice and the
@@ -150,20 +151,24 @@ func sixtyCheckTexts(t *testing.T) []checksTally {
 		return *n
 	}
 	return []checksTally{
-		{"ci-settled (builder)", settled.NotPassed, settled.Skipped, settled.NotPassedStatuses, settled.Passed, settled.ListPassed, settled.Phase, true, settled},
-		{"ci-settled (queued)", told.NotPassed, told.Skipped, told.NotPassedStatuses, told.Passed, told.ListPassed, told.Phase, true, told},
-		{"review-stuck", stuck[0].NotPassed, stuck[0].Skipped, stuck[0].NotPassedStatuses, deref(stuck[0].Passed), stuck[0].ListPassed, stuck[0].Phase, false, stuck[0]},
-		{"approved-round-stuck", approved.NotPassed, approved.Skipped, approved.NotPassedStatuses, approved.Passed, approved.ListPassed, "", false, approved},
-		{"phase-assignment", assignment.NotPassed, assignment.Skipped, assignment.NotPassedStatuses, deref(assignment.Passed), assignment.ListPassed, assignment.Phase, false, assignment},
-		{"pod-wake", wake.NotPassed, wake.Skipped, wake.NotPassedStatuses, deref(wake.Passed), wake.ListPassed, wake.Phase, true, wake},
+		{"ci-settled (builder)", settled.NotPassed, settled.Skipped, settled.NotPassedStatuses, settled.Passed, settled.PassedStatuses, settled.ListPassed,
+			settled.Phase, true, settled},
+		{"ci-settled (queued)", told.NotPassed, told.Skipped, told.NotPassedStatuses, told.Passed, told.PassedStatuses, told.ListPassed, told.Phase, true, told},
+		{"review-stuck", stuck[0].NotPassed, stuck[0].Skipped, stuck[0].NotPassedStatuses, deref(stuck[0].Passed), stuck[0].PassedStatuses, stuck[0].ListPassed,
+			stuck[0].Phase, false, stuck[0]},
+		{"approved-round-stuck", approved.NotPassed, approved.Skipped, approved.NotPassedStatuses, approved.Passed, approved.PassedStatuses, approved.ListPassed,
+			"", false, approved},
+		{"phase-assignment", assignment.NotPassed, assignment.Skipped, assignment.NotPassedStatuses, deref(assignment.Passed), assignment.PassedStatuses,
+			assignment.ListPassed, assignment.Phase, false, assignment},
+		{"pod-wake", wake.NotPassed, wake.Skipped, wake.NotPassedStatuses, deref(wake.Passed), wake.PassedStatuses, wake.ListPassed, wake.Phase, true, wake},
 	}
 }
 
 // dispatch://INFRA-3686 R3 with dispatch://INFRA-4135 R1 (the check c-daemon-texts-are-facts):
 // each text of a head of 60 checks, 25 failed or cancelled or concluded another word that is no
 // pass and 5 skipped, names the 25 with GitHub's word, the 5 skipped as skipped, counts the 30
-// that passed with the 27 statuses that passed, names gh pr checks with the pull request and its
-// repository, and the settlement and the wake name the phase.
+// checks that passed and, apart from them, the 27 statuses that passed, names gh pr checks with
+// the pull request and its repository, and the settlement and the wake name the phase.
 func TestEveryTextOfASixtyCheckHeadNamesItsSkippedChecksSkipped(t *testing.T) {
 	_, skipped, conclusion := sixtyChecks()
 	for _, got := range sixtyCheckTexts(t) {
@@ -181,8 +186,8 @@ func TestEveryTextOfASixtyCheckHeadNamesItsSkippedChecksSkipped(t *testing.T) {
 		if len(got.statuses) != 3 {
 			t.Errorf("%s names %d statuses that did not pass, want 3", got.text, len(got.statuses))
 		}
-		if got.passed != 57 {
-			t.Errorf("%s counts %d that passed, want the 30 checks and the 27 statuses, 57", got.text, got.passed)
+		if got.passed != 30 || got.passedStatuses != 27 {
+			t.Errorf("%s counts %d checks and %d statuses that passed, want the 30 checks and, apart, the 27 statuses", got.text, got.passed, got.passedStatuses)
 		}
 		if got.listPassed != "gh pr checks 42 --repo sjawhar/legion" {
 			t.Errorf("%s lists them with %q", got.text, got.listPassed)

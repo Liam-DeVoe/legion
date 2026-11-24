@@ -32,6 +32,9 @@ type Variant struct {
 	// Hold is the variant word of a held notice (HoldFailure and the others), and what holds the
 	// held issue a checks-red notice is of.
 	Hold string `json:"hold,omitempty"`
+	// Head is the head a checks-red notice names. This release names one in every checks-red row it
+	// writes (ChecksRedRecord), and a row an earlier release queued names none.
+	Head string `json:"head,omitempty"`
 }
 
 // UrgencyOf is the urgency of a text of kind to reader, with the variant v. A task has no

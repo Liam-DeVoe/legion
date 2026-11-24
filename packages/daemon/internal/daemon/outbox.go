@@ -2220,14 +2220,20 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// or parkedWakeBound on, whichever comes first (parkedWait), and the wait is a notice held for
 	// its architect still (errNoticeWaits). A low notice's row wakes nothing and waits for the
 	// architect's next ready, unless a project's pause held it (lowRule): that row wakes the
-	// architect as a med one does, with the wake of the pause that held it (row.HeldByPause).
+	// architect as a med one does, with the wake of the pause that held it (row.HeldByPause). A low
+	// row whose architect's launch the wake pacing holds waits for that launch as a med row does
+	// (parkedWait): a claim parked so is launching, not released, and a publish to it would find no
+	// holder and wait on the backoff that settle logs at Warn.
 	urgency := noticeUrgency(payload, claim.RoleArchitect)
 	if lowRule(row, payload) {
-		if _, released, err := r.releasedForDelivery(ctx, architect); err != nil {
+		if release, released, err := r.releasedForDelivery(ctx, architect); err != nil {
 			return err
 		} else if released {
 			return routineWaiting{err: wait.Until(r.now().UTC().Add(lowNoticeRecheck), fmt.Sprintf(
 				"%s's low %s notice row %d waits for its released architect's next ready, and wakes nothing", architect, payload.Kind, row.ID))}
+		} else if turn, parked := parkedLaunch(release.held); parked {
+			return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("low notice row %d waits for %s's launch, which the wake pacing holds until %s",
+				row.ID, architect, turn.UTC().Format(time.RFC3339))))
 		}
 	} else if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue, row.HeldByPause); err != nil {
 		return err

@@ -625,8 +625,9 @@ const (
 // daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks and
 // the commit statuses of that head that did not pass, the checks of that head GitHub skipped
 // (skipped) with the field that says once that a skipped check ran nothing on the head
-// (each_skipped_check, CheckConclusion), the count of the checks and statuses that passed and the
-// command that lists them.
+// (each_skipped_check, CheckConclusion), the count of the checks that passed (passed), the count
+// of the commit statuses that passed (passed_statuses, absent where none did) and the command that
+// lists them.
 // Its builder is workflow's ReviewStuckNotice.
 type ReviewStuckRecord struct {
 	NoticeHead
@@ -646,6 +647,7 @@ type ReviewStuckRecord struct {
 	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
+	PassedStatuses    int               `json:"passed_statuses,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`
 }
 

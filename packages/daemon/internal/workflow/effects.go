@@ -1280,7 +1280,8 @@ func PhaseAssignment(issue record.Issue, at Standing, handoff record.PhaseRow, p
 				tally := tallyChecks(headRuns(*pr), headStatuses(*pr))
 				task.MergeState, task.NotPassed, task.Skipped = stuck.MergeState, tally.notPassed, tally.skipped
 				task.EachSkippedCheck = texts.EachSkippedCheck(tally.skipped)
-				task.NotPassedStatuses, task.Passed, task.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
+				task.NotPassedStatuses, task.Passed, task.PassedStatuses = tally.notPassedStatuses, &tally.passed, tally.passedStatuses
+				task.ListPassed = texts.ListPassed(pr.Repo, pr.Number)
 			}
 		}
 	case move.Restarted != "":

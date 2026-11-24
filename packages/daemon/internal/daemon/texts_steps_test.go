@@ -16,7 +16,7 @@ import (
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
-// 054cd5ca, 74cb6855, 7cb1f229 or 7df64124 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// 054cd5ca, 74cb6855, 7cb1f229, 7df64124 or f8a5195a for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from the one line of the file that holds it.
@@ -32,6 +32,12 @@ const (
 	goPrompts   = "packages/daemon/internal/prompts/go/"
 	rolePrompts = "packages/daemon/internal/prompts/roles/"
 )
+
+// goldenTurnEnded is the plugin's `turn ended` notice (TURN_ENDED_NOTICE in
+// packages/pi-shared/src/stall-watchdog.ts), which the spec's Design names among the plugin
+// notices R2 builds from a record: no kind of the daemon's list, but a text whose step went into
+// its reader's prompt all the same.
+const goldenTurnEnded texts.Kind = "turn ended"
 
 // goldenSteps is the table of every step taken out of a daemon text, for each of its readers.
 var goldenSteps = []goldenStep{
@@ -1055,6 +1061,54 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "A parent is accepted only once no issue beneath it is still in the workflow."},
 	{texts.RetroHeld, "Run each one to done, or end it; Legion starts the retro when the last one leaves.", "architect",
 		goPrompts + "architect-common.md", "Legion starts the retro when the last one leaves."},
+	// The steps of main's texts at f8a5195a that the first review round found without a row
+	// (PRRT_kwDORFy7ds67LANQ): the look task's wake_at, its defect steps and its report step
+	// (workflow/check.go:checkTask), the update ask's turn (supervise/table.go:UpdateTask), the
+	// relaunch's continue for the controller (supervise/relaunch.go:relaunchSentence), the provider
+	// error's cause for the architect and the controller (supervise/providererror.go:providerErrorTask),
+	// the abandoned session's reads for the architect (supervise/delivery.go:abandonedTask), the
+	// resume's design-approved wake (workflow/awaiting_reconcile.go:resumeTask), the start's
+	// registration that opens the gate (workflow/architect_start.go:writeGateAsk), and the plugin's
+	// turn-ended step for the controller (pi-shared/src/stall-watchdog.ts:restartMessage, its two
+	// literals joined).
+	{texts.CheckLook, " A pending report also carries wake_at, an RFC 3339 time: when you want your next look. ", "tester",
+		goPrompts + "tester.md", "A `pending` report on a look before the last also names `wake_at`"},
+	{texts.CheckLook, " A pending report also carries wake_at, an RFC 3339 time: when you want your next look. ", "implementer",
+		goPrompts + "implementer.md", "A `pending` on a look that is not the check's last also names `wake_at`"},
+	{texts.CheckLook, "a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; ", "tester",
+		goPrompts + "tester.md", "Send a defect with a clear fix to the controller topic your `Legion addressing` line names, with its evidence comment on the controller's report issue."},
+	{texts.CheckLook, "a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; ", "implementer",
+		goPrompts + "implementer.md", "Send a defect with a clear fix to the controller topic your `Legion addressing` line names, with its evidence in a comment on the controller's report issue."},
+	{texts.CheckLook, "a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic.", "tester",
+		goPrompts + "tester.md", "Open a `dispatch ask` on that report issue for a defect that needs a decision, then publish its reference to that topic."},
+	{texts.CheckLook, "a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic.", "implementer",
+		goPrompts + "implementer.md", "Open a `dispatch ask` on that report issue for a defect that needs a decision, then publish its reference to that topic."},
+	{texts.CheckLook, " Either names this issue, the pull request, the merge commit, what you drove and what failed; ", "tester",
+		goPrompts + "tester.md", "Either names this issue, the pull request, the merge commit, what you drove and what failed."},
+	{texts.CheckLook, " Either names this issue, the pull request, the merge commit, what you drove and what failed; ", "implementer",
+		goPrompts + "implementer.md", "Either names this issue, the pull request, the merge commit, what you drove and what failed."},
+	{texts.CheckLook, "Then report with the legion tool's handoff_complete and a verdict, committing nothing: ", "implementer",
+		goPrompts + "implementer.md", "It then reports with `handoff_complete` and a `verdict`, committing nothing and writing no handoff."},
+	{texts.UpdateAsk, "This message can arrive while you are in a turn.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "The message can arrive while you are in a turn."},
+	{texts.UpdateAsk, "This message can arrive while you are in a turn.", "architect",
+		goPrompts + "architect-common.md", "The message can arrive while you are in a turn."},
+	{texts.RelaunchNote, "Then continue the task.", "controller",
+		rolePrompts + "controller-root.md", "Then continue the task."},
+	{texts.ProviderErrorNote, "Your work did not cause it. ", "architect",
+		goPrompts + "architect-common.md", "A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it."},
+	{texts.ProviderErrorNote, "Your work did not cause it. ", "controller",
+		rolePrompts + "controller-root.md", "A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it."},
+	{texts.AbandonedSessionNote, "read the issue, then your branch %s and the handoff records its phases wrote on the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)", "architect",
+		goPrompts + "architect-common.md", "Before you repeat any of that work, read the issue, then the `branch` the note names and the handoff records on the issue (`dispatch handoff-read --issue <issue> --phase <word>`, for `plan`, `implement`, `test` and `review`)."},
+	{texts.RootResume, " The design gate is open at version %d: %s, so act on it as on design-approved.", "architect (root)",
+		rolePrompts + "architect-root.md", "act on it as on `design-approved`."},
+	{texts.RootResume, " Your %s is approved at version %d and the design gate is open: %s, so act on it as on design-approved.", "architect (root)",
+		rolePrompts + "architect-root.md", "act on it as on `design-approved`."},
+	{texts.ArchitectStart, " register that spec%s at its current version, which opens the design gate with no approval.", "architect (root)",
+		goPrompts + "architect-root.md", "register the spec at its current version, and the gate opens at once."},
+	{goldenTurnEnded, "Nothing else was touched. Decide whether that call is still worth making, and go on with your work.", "controller",
+		rolePrompts + "controller-root.md", "Nothing else was touched. Decide whether that call is still worth making, and go on with your work."},
 }
 
 // goldenRepositoryRoot is the repository's root, from this package's directory.

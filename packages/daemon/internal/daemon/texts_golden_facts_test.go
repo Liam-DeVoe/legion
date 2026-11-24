@@ -436,8 +436,8 @@ var goldenMainFacts = []goldenFactsOf{
 // goldenStatusKeys is where a sample of a head's CI names the commit statuses that did not pass
 // (cybermonklabs/legion#4299): their count, and the first with its state. main's text at
 // 1cb6615c names every status with its state; the record names those in state failure or error
-// and counts the others with the checks that passed (passed).
-var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].context", "not_passed_statuses[0].state", "passed"}
+// and counts the others apart from the checks that passed (passed_statuses beside passed).
+var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].context", "not_passed_statuses[0].state", "passed", "passed_statuses"}
 
 // goldenSkippedKeys is where a sample of a head's CI names the checks GitHub skipped
 // (dispatch://INFRA-4135's R1): their count, the first, and the field that says once that a
@@ -488,6 +488,13 @@ var goldenKept = []goldenKeptOf{
 				return nil
 			}
 			return []string{"this resume is your design-approved wake"}
+		}},
+	{kind: texts.RootResume, variants: []string{"declined"}, what: "the sentences Dispatch wrote for the asking agent beside a person's decline, as the record keeps them " +
+		"(record.AskDecline.Words, which Dispatch's model.DeclineDispatchWords fills), the same four sentences in every declined resume",
+		keptBy: "dispatch://INFRA-1282's R7 (the resume gives the decline as the record keeps it)",
+		keys:   []string{"dispatch_words"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"dispatch_words": goldenDeclineDispatchWords}
 		}},
 	{kind: texts.PodWake, variants: []string{"role-message"}, what: "the facts of the role-message wake: how long Envoy keeps a role message, the field a kept card shows, " +
 		"that a kept card can come before the task, that a kept card whose hour ended before the session came back does not reach it, that Envoy tells the sender of a drop, " +
@@ -746,7 +753,7 @@ var goldenShapeKept = map[string][]string{
 	texts.ShapeCarriedPhase:      {"shape", "phase", "gate_carried", "daemon_starts_worker", "decompose", "first_act"},
 	texts.ShapeGateStanding:      {"shape", "decompose", "first_act", "first_phase_waits_for", "gated", "gates[0].state", "gates[1].state"},
 	texts.ShapeGateOpen:          {"shape", "decompose", "first_act", "first_phase_waits_for", "gated", "gates[0].state"},
-	texts.ShapeEarlierGeneration: {"shape", "holds_slot", "decompose", "first_act", "first_phase_waits_for"},
+	texts.ShapeEarlierGeneration: {"shape", "holds_slot", "decompose", "first_act", "first_phase_waits_for", "gated"},
 }
 
 func init() {

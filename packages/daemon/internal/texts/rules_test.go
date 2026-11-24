@@ -51,27 +51,34 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		}
 		// checks-red is low to the architect while a worker holds the phase the issue stays in,
 		// and med in accepting, which the architect holds itself, and wherever no worker holds it:
-		// a held issue stays in the phase its hold came from, and its notice names the hold.
+		// a held issue stays in the phase its hold came from, and its notice names the hold. Every
+		// row this release writes names its head; a row that names none is an earlier release's.
 		if _, held := workers[p]; held {
-			lows = append(lows, low{ChecksRed, architect, Variant{Phase: p}})
+			lows = append(lows, low{ChecksRed, architect, Variant{Phase: p, Head: "c0de"}})
 		}
 	}
 	// The two variants the architect's ruling names, read on their own: low while a worker holds
 	// the phase, med in accepting.
-	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Testing}); got != Low {
+	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Testing, Head: "c0de"}); got != Low {
 		t.Errorf("checks-red to the architect in testing is %q, want low: the tester holds the phase and the merge forward is asked", got)
 	}
-	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Accepting}); got != Med {
+	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Accepting, Head: "c0de"}); got != Med {
 		t.Errorf("checks-red to the architect in accepting is %q, want med: the architect holds the phase and must not sign off the head", got)
 	}
 	// An issue held from a worker's phase, by that worker's failed claim, by the architect's
 	// escalation, by its stopped task or for the issues beneath it, has no worker at that phase:
-	// med, as the CI settlement of a held issue is.
+	// med, as the CI settlement of a held issue is. A row an earlier release queued names no head
+	// and no hold, as main's row of an issue held from testing does (workflow's mergeForward at
+	// f8a5195a: phase, role and reason alone): med in every phase, by the architect's ruling that a
+	// row that does not show that the architect's act can wait is med.
 	for p := range workers {
 		for _, hold := range []string{HoldFailure, HoldEscalation, HoldStoppedTask, HoldChildren} {
-			if got := UrgencyOf(ChecksRed, architect, Variant{Phase: p, Hold: hold}); got != Med {
+			if got := UrgencyOf(ChecksRed, architect, Variant{Phase: p, Hold: hold, Head: "c0de"}); got != Med {
 				t.Errorf("checks-red to the architect of an issue held (%s) from %s is %q, want med: no worker holds the phase", hold, p, got)
 			}
+		}
+		if got := UrgencyOf(ChecksRed, architect, Variant{Role: architect, Phase: p}); got != Med {
+			t.Errorf("checks-red to the architect with no head in %s, an earlier release's row, is %q, want med: it may be of a held issue", p, got)
 		}
 	}
 
@@ -87,6 +94,9 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		Variant{Phase: phase.Testing, Hold: HoldCarried},
 		Variant{Phase: phase.Merging, Hold: HoldFailure},
 		Variant{Phase: phase.Retro, Hold: HoldEscalation},
+		Variant{Phase: phase.Testing, Hold: HoldFailure, Head: "c0de"},
+		Variant{Role: claim.RoleArchitect, Phase: phase.Testing},
+		Variant{Phase: phase.Merging},
 		Variant{Change: ChangeLeft}, Variant{Change: ChangeBeneathAccepted}, Variant{Change: ChangeReparented})
 	// read is the part of a variant that the Design's case for kind reads.
 	read := func(kind Kind, v Variant) Variant {
@@ -103,7 +113,12 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		case CISettled:
 			return Variant{Phase: v.Phase}
 		case ChecksRed:
-			return Variant{Phase: v.Phase, Hold: v.Hold}
+			// The rule reads whether the row names a head, not which head it names.
+			named := Variant{Phase: v.Phase, Hold: v.Hold}
+			if v.Head != "" {
+				named.Head = "named"
+			}
+			return named
 		}
 		return Variant{}
 	}
