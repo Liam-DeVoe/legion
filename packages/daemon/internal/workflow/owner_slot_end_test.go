@@ -129,16 +129,15 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			switch tc.steps[0] {
-			case "acceptance:owner":
+			if tc.steps[0] == "acceptance:owner" {
 				assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(1))
 				move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
-			case "implementer:owner":
-				ownerReportsStep1(t, pool, engine, root.Key)
-			default:
-				move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-			}
-			if tc.steps[0] != "acceptance:owner" {
+			} else {
+				if tc.steps[0] == "implementer:owner" {
+					ownerReportsStep1(t, pool, engine, root.Key)
+				} else {
+					move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+				}
 				assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 				move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 			}
