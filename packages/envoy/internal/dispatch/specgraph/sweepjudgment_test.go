@@ -390,6 +390,32 @@ func definedAnswer(a answer, kinds map[string]judgedKind) (toward, beyond []stri
 	return toward, beyond, true
 }
 
+// sweepDefined is the definition applied place by place (definedAnswer) to the answer that the replies
+// whole and got give, under the input's right (hasRight, allowed), each reply decoded by its member
+// "states" apart from the decoder that the judgment reads replies with (readerReply.states), as
+// decodedBase decodes a base. covered is false where the definition covers no reading of the answer, or
+// a reply is no line of the reader's form, or a place of got is of no kind. Each sweep holds the answer
+// of its own call of judgeAnswer to it (sweepAgainst), so a judgment that answers a sweep otherwise than
+// the definition does fails by the input's name there, whatever it kept of earlier calls or read of its
+// caller.
+func sweepDefined(whole, got readerReply, hasRight bool, allowed map[string]string) (toward, beyond []string, covered bool) {
+	var w, g struct {
+		States map[string]string `json:"states"`
+	}
+	if json.Unmarshal([]byte(whole.text), &w) != nil || json.Unmarshal([]byte(got.text), &g) != nil {
+		return nil, nil, false
+	}
+	kinds := map[string]judgedKind{}
+	for at := range g.States {
+		k, of := placeKindOf(judgedKinds(), at)
+		if !of {
+			return nil, nil, false
+		}
+		kinds[at] = k
+	}
+	return definedAnswer(answer{whole: w.States, got: g.States, hasRight: hasRight, allowed: allowed}, kinds)
+}
+
 // rightWords is the words of the right r of an answer, for a line of a failure.
 func rightWords(r rightOfAnswer) string {
 	switch {
@@ -684,10 +710,14 @@ func cell(kind, base, input string, right placeRight) string {
 // input, the base's and the input's, is the reader's reply to the line that it stands for is the
 // sweeps' digests' (judgeAnswer gives back the keys of both, by which the sweep counts the input), and
 // that it hands it the input's right is the known positives' (knownPositives), at their bases. Nor does
-// it show a judgment that keeps other state across its calls than the keys and texts that it was
-// handed, such as the order of its calls or how many calls handed it one key: the domain test hands
-// each base's key in an order and a number of its own, which are not a sweep's, so such a judgment
-// could tell the two apart.
+// it show, alone, a judgment that keeps other state across its calls than the keys and texts that it
+// was handed (the order of its calls, how many calls handed it one key, which calls it refused) or that
+// reads its caller: the domain test hands each base's key in an order and a number of its own, so such
+// a judgment can tell its calls from a sweep's. Each sweep holds the answer of its own call to the
+// definition (sweepDefined), so such a judgment fails there, by the input's name. What stays is what
+// the definition and the judgment share: one reading of the approved words, held to the rows that
+// quote them (TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec), and the sweep's code, which could
+// skip that hold and shows it only there.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()

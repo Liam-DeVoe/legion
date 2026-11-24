@@ -216,8 +216,12 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 // itself and gives back the keys of both replies, by which the sweep counts the input as read. No
 // branch of it decides an answer that the process read apart from the judgment (the base's states that
 // it reads for its known positives are a map of their own): what it does with the reply is that call,
-// and with the call's result, the report of each line beyond the input's right and the count of the
-// rest as read. The floor's digest holds the key of the line that the base's reply answers, the bytes
+// the call's result held to the definition applied place by place over the same two replies, each
+// decoded apart from the judgment's decoder (sweepDefined), which fails the input by its name where the
+// two differ, so a judgment that answers the sweeps otherwise than the domain test, by what it kept of
+// earlier calls or read of its caller, fails here; and the report of each line beyond the input's right
+// and the count of the rest as read. The floor's digest holds the key of the line that the base's reply
+// answers, the bytes
 // that the process read of the base, and the keys of the two replies that the judgment read for each
 // read input, the base's and the input's (sweepCount.judged), so a base that a writer or code of the
 // sweep changed, whose change the sweep would read both as its input's and as its want's, fails by the
@@ -277,6 +281,11 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 			continue
 		}
 		toward, beyond, answered, err := judgeAnswer(whole, got, in.right != "", in.allowed)
+		if err == nil {
+			if wt, wb, covered := sweepDefined(whole, got, in.right != "", in.allowed); !covered || !slices.Equal(toward, wt) || !slices.Equal(beyond, wb) {
+				t.Errorf("%s: the judgment (judgeAnswer) gives %q toward true and %q beyond the right, and the definition applied place by place (definedAnswer) %q and %q (covered %v)", in.what, toward, beyond, wt, wb, covered)
+			}
+		}
 		switch {
 		case err != nil:
 			t.Errorf("%s: %v", in.what, err)
