@@ -1033,11 +1033,12 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 }
 
 // engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
-// which every task the engine composes names (workflow.Config.WorkspaceDir): each runtime's own
-// function that places the workspace, sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir
-// under the state directory under tmux, read for the repository the issue's record names, as the
-// launch reads it (issueRepository). An issue whose recorded repository does not parse, which no
-// launch can work either, names none, and its task names the branch alone.
+// which every task the engine composes names (workflow.Config.WorkspaceDir) and every send of a
+// worker's task names again (workingCopy): each runtime's own function that places the workspace,
+// sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir under the state directory under
+// tmux, read for the repository the issue's record names, as the launch reads it
+// (issueRepository). An issue whose recorded repository does not parse, which no launch can work
+// either, names none, and its task names the branch alone.
 func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
 	place := func(repo ghrepo.Repository, issue string) (string, error) {
 		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
@@ -1446,6 +1447,56 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 		return nil, fmt.Errorf("encode the wait a resume task answers: %w", err)
 	}
 	return encoded, nil
+}
+
+// workingCopy answers supervise's Deps.WorkingCopy: a phase worker's held task with its working
+// copy line written again at the moment it is about to be sent, from the repository the claim's
+// launch works at that moment, which is the repository the issue's record names as the launch
+// reads it (repositoryOf). The engine composed the line from the record when the start was
+// written, and the task is kept as composed (record.PhaseRow.EntryTask, the claim's pending
+// delivery, an outbox row waiting for its lane) until a send, so a correction of the issue's
+// repository in between (record.Store.CorrectIssueRepository) would otherwise send the directory
+// of the repository the issue left, which a kept volume still holds and keptDiskMessage tells the
+// roles not to work in. The line is the engine's, written under the directory the runtime gives
+// the record's repository (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), which is how
+// both runtimes' directories follow the record.
+//
+// A task that carries news of the approved design (supervise.Delivery.News) holds the start's own
+// text twice: in its text and in the news, which every send renders the text from again
+// (designNews, record.DeliveryNews.Task). Both are written again, so the next render says what
+// this send does. Where the line is as the record gives it, the bytes the delivery carries are
+// answered unchanged.
+//
+// An issue the workflow does not record keeps the task as it is: no start of the workflow wrote
+// it. A read that fails returns its error, as the read of a root architect's held task does
+// (rootTask): the machine sends nothing then, and the next trigger asks again, so no send carries
+// a line the record has moved from and none goes with no line.
+func (w *workflowRuntime) workingCopy(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	issue, err := w.recordedIssue(ctx, c.Issue)
+	if err != nil {
+		return "", nil, fmt.Errorf("read %s for the working copy its task names: %w", c.Issue, err)
+	}
+	if issue == nil {
+		return d.Task, d.News, nil
+	}
+	task := w.engine.WorkingCopyAtSend(d.Task, *issue)
+	if len(d.News) == 0 {
+		return task, d.News, nil
+	}
+	var carried record.DeliveryNews
+	if err := json.Unmarshal(d.News, &carried); err != nil {
+		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	}
+	own := w.engine.WorkingCopyAtSend(carried.Task, *issue)
+	if own == carried.Task {
+		return task, d.News, nil
+	}
+	carried.Task = own
+	news, err := json.Marshal(carried)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode the news the task held for %s carries: %w", c.Token, err)
+	}
+	return task, news, nil
 }
 
 // treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when

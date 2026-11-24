@@ -494,7 +494,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
+		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// From here on, a claim write that changes a role holder queues its issue's publication in
@@ -925,13 +925,14 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
-	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
-	// queued and every tree closes.
+	// phaseHolds, rootHears, rootTask, designNews, workingCopy and treeClosable are the workflow's
+	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
+	// as it was queued and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	workingCopy  func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
 	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
@@ -1874,6 +1875,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
+		WorkingCopy:             p.workingCopy,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
