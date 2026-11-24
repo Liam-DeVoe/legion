@@ -4,8 +4,7 @@ body: |-
   `dispatch-writing-specs` and `plain-words` are written in the style of writing-agent-skills. Each
   opens with its goal, and with a `**Done when:**` line where it asks for a check that ends its
   work. Each item holds one rule. The rules are the same. `plain-words` now lets a bold label start
-  a rule in a skill, and again says why a verb phrase whose action you cannot name must go: it hid
-  the action from you as well as from the reader.
+  a rule in a skill.
 time: 2026-11-24T03:01:49Z
 custom:
     Issue: INFRA-4849
