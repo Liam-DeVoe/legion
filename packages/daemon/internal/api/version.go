@@ -3604,8 +3604,9 @@ package api
 // ask, as a notice's turn can when the refusal came during its pre-turn work. Its refusal is then
 // charged as unrecognised, and its prompt's result as a prompt that ran no turn. Nothing of the
 // daemon API changes with the pin.
-// (This entry takes 240, which is above main's 228 and which no other open pull request
-// declares. It took 206 when main stood at 202: just before the push of 2026-11-21 that carried
+// (This entry took 240 at the merge of main at 9688b2b2, when main stood at 228 and no other open
+// pull request declared 240, as the reading at the end of this paragraph found. It took 206 when
+// main stood at 202: just before the push of 2026-11-21 that carried
 // main in at 202 (#4493, INFRA-4401's entry above), .github/scripts/check-daemon-api-contract.sh
 // read const DaemonAPIVersion at refs/pull/<n>/head for each open pull request whose file list
 // names this file or was cut short, a reading that ended at 2026-11-21T08:11:53Z, and found 203
