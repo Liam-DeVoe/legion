@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -249,9 +250,14 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// check read only the path's issue, so a credential scoped to one project is asked about
 	// such a check here, before anything is written: it records on the check of every project
 	// access.CredentialCovers covers.
-	callerProject, _ := s.callerProject(r)
-	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey); err != nil {
-		return refused(err)
+	if callerProject, _ := s.callerProject(r); callerProject != "" {
+		project, err := checkIssueProject(r.Context(), pool, callerProject, check.IssueKey)
+		if err != nil {
+			return refused(err)
+		}
+		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
+			return refused(refuseUncoveredProject(callerProject, "the check's issue "+check.IssueKey, project))
+		}
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.

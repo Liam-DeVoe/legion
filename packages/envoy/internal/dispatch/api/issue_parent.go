@@ -242,9 +242,9 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 // lock held. caller is the one project the request's credential names, empty for a credential
 // that names none. Such a caller links a target, and names a parent, of every project
 // access.CredentialCovers covers, and is refused the first target outside them, then a parent
-// outside them (refuseUncoveredProject), before anything else is read. The lock step, a create's check before its
-// near-copy gate and a PATCH's check before a close's settlement all run it, so each refuses the
-// same key in the same words.
+// outside them (refuseUncoveredProject), before anything else is read. The lock step, a
+// create's check before its near-copy gate and a PATCH's check before a close's settlement all
+// run it, so each refuses the same key in the same words.
 func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
 	foreign, err := foreignTargets(ctx, q, project, targets)
 	if err != nil {

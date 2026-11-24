@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -101,9 +102,16 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// retraction is appended to, can be of another project, reached through a parent of another
 	// project. A scoped caller is asked about it here (access.CredentialCovers), before it takes
 	// that issue's owner lock.
-	if err := refuseUncoveredCheck(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if callerProject != "" {
+		project, err := checkIssueProject(r.Context(), tx, callerProject, result.CheckIssueKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
+			s.writeHandlerError(w, refuseUncoveredProject(callerProject, "the check's issue "+result.CheckIssueKey, project))
+			return
+		}
 	}
 	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
 		s.writeHandlerError(w, err)

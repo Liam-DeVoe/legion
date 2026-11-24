@@ -233,7 +233,7 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // check_issue_key: a result recorded on a child against a parent's check belongs to the child.
 // The two issues can be of different projects, since an issue's parent may be of another
 // project, so a retraction asks access.CredentialCovers about a check of another project itself
-// (refuseUncoveredCheck), as the record route does.
+// (checkIssueProject), as the record route does.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')
@@ -243,31 +243,23 @@ func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Re
 	`, r.PathValue("id")))
 }
 
-// refuseUncoveredCheck asks access.CredentialCovers whether a caller whose credential names one
-// project, caller, may write a check whose issue, checkIssue, is of another project. It covers
-// every project but a private one the credential does not name (refuseUncoveredProject, 403
-// PROJECT_SCOPE). The results routes reach such a check through a parent of another project
-// (resolveCheck reads the Verification documents of every issue above the recording one), and a
-// result and its retraction are appended to the check's issue, which the pre-handler check,
-// reading only the path's object, never judged. A caller that names no project (caller "") is
-// let through, as everywhere else. An issue with no row resolves to no project and is refused,
-// failing closed as the pre-handler check does.
-func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue string) error {
-	if caller == "" {
-		return nil
-	}
+// checkIssueProject reads the project of a check's issue, checkIssue, for a caller whose
+// credential names one project, caller. The results routes reach a check of another project
+// through a parent of another project (resolveCheck reads the Verification documents of every
+// issue above the recording one), and a result and its retraction are appended to the check's
+// issue, which the pre-handler check, reading only the path's object, never judged. Each route
+// then asks access.CredentialCovers about that project itself. An issue with no row resolves to
+// no project and is refused, failing closed as the pre-handler check does.
+func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string) (string, error) {
 	project, err := scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, checkIssue))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if project == "" {
-		return errorf(http.StatusForbidden, codeProjectScope,
+		return "", errorf(http.StatusForbidden, codeProjectScope,
 			"this request's credential names project %s, and the check's issue %s belongs to no project", caller, checkIssue)
 	}
-	if access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, false) {
-		return nil
-	}
-	return refuseUncoveredProject(caller, "the check's issue "+checkIssue, project)
+	return project, nil
 }
 
 // scanProjectKey reads a resolver's one column, answering no project for a target that does not

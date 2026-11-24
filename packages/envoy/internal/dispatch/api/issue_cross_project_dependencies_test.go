@@ -865,14 +865,12 @@ func TestAProjectScopedCallerPutsAnIssueUnderAnotherProjectsIssue(t *testing.T) 
 	}
 }
 
-// TestAProjectScopedCallerLinksAndRecordsOnAnotherProject: a credential that names one project
-// links an issue to another project's issue and records on another project's check, as a
-// credential that names no project does (INFRA-4799). A blocked_by target of another project
-// reaches the near-copy gate, which refuses an unforced copy and records the refusal, and a close
-// that names one settles the issue's documents and closes it. The results routes reach a check of
-// another project's issue through a parent of another project (resolveCheck), and a result and
-// its retraction land on that issue's check.
-func TestAProjectScopedCallerLinksAndRecordsOnAnotherProject(t *testing.T) {
+// TestAProjectScopedCallerLinksAnIssueToAnotherProjectsIssue: a credential that names one project
+// links an issue to another project's issue as a credential that names no project does
+// (INFRA-4799). A blocked_by target of another project reaches the near-copy gate, which refuses
+// an unforced copy and records the refusal, and a close that names one settles the issue's
+// documents and closes it.
+func TestAProjectScopedCallerLinksAnIssueToAnotherProjectsIssue(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
 	caller := newBrokerCaller(t)
@@ -946,14 +944,34 @@ func TestAProjectScopedCallerLinksAndRecordsOnAnotherProject(t *testing.T) {
 	if after := asks(); after != asksBefore+1 {
 		t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
 	}
+}
 
-	// A check of another project's issue. Once a person puts a BETA issue under ALPHA's, the
-	// results route finds a check among the Verification documents of the issue and every issue
-	// above it, across projects, and a result or its retraction is appended to the check's issue.
+// TestAProjectScopedCallerRecordsAndRetractsOnAnotherProjectsCheck: a credential that names one
+// project records a result on a check of another project's issue, and retracts it, as a
+// credential that names no project does (INFRA-4799). The results routes reach such a check
+// through a parent of another project (resolveCheck reads the Verification documents of the
+// issue and every issue above it, across projects), and a result and its retraction land on the
+// check's issue; a result recorded on that issue itself reaches it through its address.
+func TestAProjectScopedCallerRecordsAndRetractsOnAnotherProjectsCheck(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	approved := createdIssue(t, "create another project's approved issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ALPHA", "title": "Another project's approved issue", "spec": "# Spec", "force": true,
+	})).Key
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+approved, "verification.md", twoChecks)
 	underAlpha := createdIssue(t, "create a BETA issue under ALPHA's", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "BETA", "title": "Records on another project's check", "parent": approved, "force": true,
 	})).Key
+	const token = "a-token-scoped-to-beta"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"BETA"}
+	rig.broker.Says(token, answer)
 	resultsOn := func(issue string) int {
 		t.Helper()
 		var count int
@@ -963,16 +981,23 @@ func TestAProjectScopedCallerLinksAndRecordsOnAnotherProject(t *testing.T) {
 		}
 		return count
 	}
-	alphaResults := resultsOn(approved)
-	recorded := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+underAlpha+"/results", token,
-		resultBody("k1", "pass", newHeadCommit, nil)))
-	if recorded.Code != http.StatusCreated {
-		t.Fatalf("a scoped result on another project's check: status=%d body=%s, want 201", recorded.Code, recorded.Body.String())
+	record := func(what, issue string) model.CheckResult {
+		t.Helper()
+		before := resultsOn(approved)
+		recorded := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+issue+"/results", token,
+			resultBody("k1", "pass", newHeadCommit, nil)))
+		if recorded.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s, want 201", what, recorded.Code, recorded.Body.String())
+		}
+		if after := resultsOn(approved); after != before+1 {
+			t.Fatalf("%s took %s's checks from %d results to %d, want one more", what, approved, before, after)
+		}
+		return decodeBody[recordedResult](t, recorded).Result
 	}
-	result := decodeBody[recordedResult](t, recorded).Result
-	if after := resultsOn(approved); after != alphaResults+1 {
-		t.Fatalf("the scoped result took %s's checks from %d results to %d, want one more", approved, alphaResults, after)
-	}
+
+	// Through the BETA issue under ALPHA's first: the route's address is BETA's, so only the
+	// result route's own read of the check's issue judges ALPHA's check.
+	result := record("a scoped result on another project's check, through its own project's issue", underAlpha)
 	retracted := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/results/"+result.ID+"/retract", token, map[string]any{
 		"reason": "The run was against the wrong commit.",
 	}))
@@ -985,6 +1010,7 @@ func TestAProjectScopedCallerLinksAndRecordsOnAnotherProject(t *testing.T) {
 	if events := retractionEventsOn(t, rig.database, approved); events != 1 {
 		t.Fatalf("the scoped retraction appended %d result.retracted events on %s, want one", events, approved)
 	}
+	record("a scoped result recorded on another project's issue itself", approved)
 }
 
 // TestInheritedValuesStopAtTheProjectEdge: an issue inherits its repository, its components, its

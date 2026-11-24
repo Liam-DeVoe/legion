@@ -315,9 +315,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		// A parent may be an issue of any project, but not for a credential that may write one
-		// project alone: the authoritative refusal, under the locks, of what the lock step
-		// refused before them.
+		// A parent may be an issue of any project. A credential that names one project is asked
+		// about it again here, under the locks, as the lock step asked before them:
+		// access.CredentialCovers refuses only a private project the credential does not name.
 		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, parentProject, false) {
 			s.writeHandlerError(w, refuseUncoveredProject(callerProject, "parent issue "+parentKey, parentProject))
 			return
