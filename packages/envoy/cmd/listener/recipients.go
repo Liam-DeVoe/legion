@@ -57,14 +57,18 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 //
 // That judgment holds a topic no stream subject captures yet as it holds any other (filterTakes),
 // so it cannot say whether the stream stores the message at all, and the count asks that first,
-// before any session is matched. A notification topic the deployed stream does not capture, as the
-// client last read its subjects, is published over core NATS (bus.Client.UsesCoreTransport, which
-// bus.Client.PublishTakesJetStream asks before it reads the subjects again), where no stream
-// stores it and no consumer delivers it: such a publish answers recipients 0, and connected 0
-// where the session copy can be served. The publish route refuses that topic once a read of the
-// subjects that started after the request asked agrees (bus.SubjectsAsk.Uncaptured), and
-// publishes it where no such read could be made; a session whose row or record follows the topic
-// would then be counted for a message no consumer receives.
+// before any session is matched. It asks no subjects of its own: jetStream is the send's own
+// decision of its transport, which the publish route takes once (bus.Client.PublishTakesJetStream)
+// and publishes on (bus.Client.PublishAckOn), so the count and the send cannot read the deployed
+// subjects apart. A count that read the subjects the client last held again could say 0 for a
+// message the send then stores over JetStream, on a read made between the two that captures the
+// topic, or count sessions for one the send takes over core NATS. A publish the send takes over
+// core NATS, where no stream the client has read stores it and no consumer delivers it, answers
+// recipients 0, and connected 0 where the session copy can be served. The publish route refuses a
+// topic no stream subject captures once a read of the subjects that started after the request
+// asked agrees (bus.SubjectsAsk.Uncaptured), and publishes it where no such read could be made; a
+// session whose row or record follows the topic would then be counted for a message no consumer
+// receives.
 //
 // connected is how many of those sessions the session registry holds a live entry for, by the
 // rule every reader of a session's age reads (session.SessionRegistry.Lookup, session.StateOf): an
@@ -73,14 +77,14 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // recipients alone would never again tell a sender that nobody is there to read its message.
 //
 // Every read here is of memory but one: each check reads its watcher's state alone, the stream's
-// capture is judged on the subjects the client holds, both matchers answer from their caches'
+// capture is the send's decision the caller hands in, both matchers answer from their caches'
 // subject indexes and the session registry from its cache, so counting the publish of a topic that
 // is no controller notice lane makes no JetStream API call and the publish it precedes waits on no
-// round trip of its own. A publish on a controller notice lane reads that lane's role claim from
-// the role bucket stream's leader, once, within recipientLaneReadTimeout of ctx
+// round trip of the count's. A publish on a controller notice lane reads that lane's role claim
+// from the role bucket stream's leader, once, within recipientLaneReadTimeout of ctx
 // (store.Registry.ReadLaneHolders), the read a filter built from a stored row makes for it; a read
 // that did not answer or failed leaves both counts out, as a cache that cannot be served does.
-func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string) (recipients, connected *int) {
+func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string, jetStream bool) (recipients, connected *int) {
 	if !d.known.Opened() || d.registry.Servable() != nil {
 		return nil, nil
 	}
@@ -88,7 +92,7 @@ func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string)
 	if d.sessions.Servable() == nil {
 		connected = new(int)
 	}
-	if d.client.UsesCoreTransport(topic) {
+	if !jetStream {
 		return new(int), connected
 	}
 	judged := recipientJudgment{subject: topic}

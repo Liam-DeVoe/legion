@@ -1,19 +1,23 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// countRecipientsOf is the publish route's count of a message on subject from lostLaneSender.
+// countRecipientsOf is the publish route's count of a message on subject from lostLaneSender, on
+// the transport the route's send decides for it (bus.Client.PublishTakesJetStream).
 func countRecipientsOf(t *testing.T, d *listenerDeps, subject string) *int {
 	t.Helper()
-	recipients, _ := recipientCounts(t.Context(), d, subject, lostLaneSender)
+	recipients, _ := recipientCounts(t.Context(), d, subject, lostLaneSender, d.client.PublishTakesJetStream(t.Context(), subject))
 	return recipients
 }
 
@@ -131,4 +135,99 @@ func countOrNone(p *int) int {
 		return -1
 	}
 	return *p
+}
+
+// retireStreamSubject plays an operator retiring subject from the stream: it removes it.
+func retireStreamSubject(t *testing.T, js natsgo.JetStreamContext, subject string) {
+	t.Helper()
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	config := info.Config
+	config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(kept string) bool { return kept == subject })
+	if _, err := js.UpdateStream(&config); err != nil {
+		t.Fatalf("retire %s: %v", subject, err)
+	}
+}
+
+// A publish counts its recipients by the transport its send takes, which the publish route decides
+// once (bus.Client.PublishTakesJetStream) and hands to both the count (recipientCounts) and the
+// send (bus.Client.PublishAckOn), even where the subjects the client holds change between that
+// decision and the count. Here the decision reads the subjects again while no stream subject
+// captures the topic, so the send goes over core NATS; a newer build's start then adds a subject
+// that captures it, and a read of the subjects takes that in before the count; and an operator
+// retires the subject again before the send, so no stream stores the message and no consumer
+// delivers it, as the decision said. The count is 0, the send has no acknowledgement, and the
+// stream holds nothing on the topic. The row drives the route's helpers in the route's order with
+// the subjects changed between them, since no seam of the route lets a test land a read there;
+// the client holds off its periodic reads of the subjects (bus.WithStreamSubjectsRefresh,
+// bus.WithKeepInterval), so the row's own reads are the only ones.
+//
+// A count that judged the transport again on the subjects the client last held
+// (bus.Client.UsesCoreTransport) counted the session that follows the topic, recipients 1 for a
+// message no consumer receives; a send that judged it again would as well have read the subjects
+// apart from the count. Each premise is checked as it is set up, and a row whose premise does not
+// hold fails as UNKNOWN.
+func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
+	const (
+		sessionID = "ses_transport_follower"
+		topic     = "notifications.x.counted"
+	)
+	if bus.StreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: this build compiles a subject capturing %s; the row needs a topic only %s captures", topic, rollNewerSubject)
+	}
+	url := testnats.URL(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1),
+		bus.WithKeepInterval(backgroundReadsHeld), bus.WithStreamSubjectsRefresh(backgroundReadsHeld))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	waitForRegistry(t, rig.harness.registry)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open the row's JetStream: %v", err)
+	}
+	storeRawRow(t, rig.harness.registry, client, sessionID, topic)
+	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
+		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
+	}
+	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+		record, ok := rig.known.Get(sessionID)
+		return ok && slices.Contains(record.Topics, topic)
+	})
+	filter, err := storedRowFilter(t.Context(), rig.harness.registry, sessionID, []string{topic})
+	if err != nil {
+		t.Fatalf("build the filter of %s from %s: %v", sessionID, topic, err)
+	}
+	if !slices.Contains(filter, topic) {
+		t.Fatalf("UNKNOWN: the filter built from %s is %v, which does not hold it; the row needs a session whose consumer filters on the topic", topic, filter)
+	}
+
+	ctx := t.Context()
+	jetStream := client.PublishTakesJetStream(ctx, topic)
+	if jetStream {
+		t.Fatalf("UNKNOWN: the send's transport for %s is JetStream before any stream subject captures it; the row needs a decision of core NATS", topic)
+	}
+	addStreamSubject(t, js, rollNewerSubject)
+	if client.AskDeployedSubjects().Uncaptured(ctx, topic) || client.UsesCoreTransport(topic) {
+		t.Fatalf("UNKNOWN: a read of the subjects after %s was added leaves %s uncaptured; the row needs subjects that capture it at the count", rollNewerSubject, topic)
+	}
+	retireStreamSubject(t, js, rollNewerSubject)
+
+	if recipients, _ := recipientCounts(ctx, rig.deps, topic, lostLaneSender, jetStream); recipients == nil || *recipients != 0 {
+		t.Fatalf("a publish on %s whose send takes core NATS, decided before a read of the subjects captured the topic, counts %v recipients with %s following it, want 0: the count did not take the send's decision, and no consumer receives the message",
+			topic, countOrNone(recipients), sessionID)
+	}
+	ack, err := client.PublishAckOn(ctx, listenerTestEnvelope(topic, "transport-decided-once"), jetStream)
+	if err != nil || ack != (bus.StoredAck{}) {
+		t.Fatalf("the send on the transport decided, core NATS, answered %+v, %v; want no acknowledgement and no error", ack, err)
+	}
+	if _, err := js.GetLastMsg(bus.Stream, topic); !errors.Is(err, natsgo.ErrMsgNotFound) {
+		t.Fatalf("the stream's last message on %s after the send = %v, want none: the row needs a message no stream stores", topic, err)
+	}
 }

@@ -1317,12 +1317,13 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// fails - gives no refusal by name, since a refusal of a topic the stream does capture
 		// loses the message, and a publish of one it does not reaches nobody either way. A NATS
 		// user that may not read the stream refuses on the subjects it holds, which are all it
-		// will ever have. The transport the publish takes is judged on the subjects that read kept
-		// (bus.Client.PublishAckWithin). The refusal comes before the sender limit's take, so such
-		// a publish keeps its 400 at any count.
-		// That judgement, the sender stamp's read and the publish take this one deadline, derived
-		// from the caller's own context, so this route too answers a bus it cannot reach rather
-		// than spending the caller's attempt. A role send takes its own (publishDeliveryWindow).
+		// will ever have. The transport the publish takes is judged once below, on the subjects
+		// that read kept (bus.Client.PublishTakesJetStream). The refusal comes before the sender
+		// limit's take, so such a publish keeps its 400 at any count.
+		// That judgement, the transport's, the sender stamp's read and the publish take this one
+		// deadline, derived from the caller's own context, so this route too answers a bus it
+		// cannot reach rather than spending the caller's attempt. A role send takes its own
+		// (publishDeliveryWindow).
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		if d.client.ReachesNoSession(request.Topic) && d.client.AskDeployedSubjects().Uncaptured(ctx, request.Topic) {
@@ -1367,14 +1368,23 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
-		// The counts are of the moment the message is published, and are read from memory alone
-		// for every topic but a controller notice lane, whose role claim they read once
+		// The transport is decided once, on this route's deadline (bus.Client.PublishTakesJetStream),
+		// and the counts and the send both take that one answer: the send publishes on it
+		// (bus.Client.PublishAckOn), and the counts answer 0 for a publish it sends over core NATS.
+		// Each deciding on its own could read the deployed subjects apart, a read landing between
+		// the two, and count 0 for a message the stream stores or count sessions for one it does
+		// not. The counts are of the moment the message is published, and are read from memory
+		// alone for every topic but a controller notice lane, whose role claim they read once
 		// (recipientCounts), so taking them here costs any other publish below no JetStream
 		// request. Only this branch counts: a role send names its holder, and a refused topic
 		// reaches nobody.
-		recipients, connected := recipientCounts(r.Context(), d, item.Topic, item.SourceSession)
+		jetStream := d.client.PublishTakesJetStream(ctx, item.Topic)
+		recipients, connected := recipientCounts(r.Context(), d, item.Topic, item.SourceSession, jetStream)
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
+		publish := func(ctx context.Context, item contracts.Envelope) (bus.StoredAck, error) {
+			return d.client.PublishAckOn(ctx, item, jetStream)
+		}
+		duplicate, err := publishHeld(ctx, d.client, publish, record, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return

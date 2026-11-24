@@ -207,8 +207,9 @@ func (c *senderCharge) forgive() {
 }
 
 // published marks the charge by the stream's answer to the route's publish of the message
-// (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route and the
-// topic publish share. A publish that may have stored the message (mayHaveStored) costs one
+// (bus.Client.PublishAckWithin for the send route and bus.Client.PublishAckOn for the topic
+// publish, through publishPastInProcess), the one rule the send route and the topic publish
+// share. A publish that may have stored the message (mayHaveStored) costs one
 // whatever the route answers. Any other failure stored nothing and marks nothing: a refusal of the
 // server's, a failure before anything was sent, such as a wait for NATS to reconnect that
 // outlasted the route's deadline, and a request that ended while an earlier publish under its
