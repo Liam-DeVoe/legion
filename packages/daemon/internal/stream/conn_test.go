@@ -1222,9 +1222,10 @@ func (c *doneWatch) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
-// A read of the totals is bounded by its caller's context alone, and that bound covers its whole
-// send. A read whose frame waits behind another frame, or whose own write the shim does not
-// drain, ends with its context. It does not wait for the RPC timeout of the write.
+// A read of the totals is bounded by its caller's context, and that bound covers its whole send.
+// The RPC timeout also caps its write. A read whose frame waits behind another frame, or whose own
+// write the shim does not drain, ends with its context. It does not wait for the RPC timeout of
+// the write.
 func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 	t.Run("another frame holds the writer", func(t *testing.T) {
 		conn, shimEnd := pipeConn(t, time.Hour)
@@ -1239,7 +1240,7 @@ func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		waiting := newDoneWatch(ctx)
 		result, _ := readModelTotals(waiting, conn)
-		// The context is ended only once the read waits on it for the writer, so no check made
+		// The context is ended only once the read waits on it for the writer. So no check made
 		// before the wait can end the read in its place.
 		select {
 		case <-waiting.asked:

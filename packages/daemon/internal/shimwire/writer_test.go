@@ -177,7 +177,7 @@ func TestAFrameWaitingForTheWriterEndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	waiting := newDoneWatch(ctx)
 	second := returnOf(func() error { return writer.WriteFrameContext(waiting, AgentEnd{}) })
-	// The context is ended only once the second write waits on it, so no check made before the
+	// The context is ended only once the second write waits on it. So no check made before the
 	// wait can end the write in its place.
 	select {
 	case <-waiting.asked:
