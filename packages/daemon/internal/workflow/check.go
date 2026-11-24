@@ -108,7 +108,7 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 		return err
 	}
 	for _, existing := range checks {
-		if e.sameRepository(existing.Repo, pr.Repo) && existing.Number == pr.Number && (existing.MergeSHA == "" || pr.MergeSHA == "" || existing.MergeSHA == pr.MergeSHA) {
+		if e.checksMerge(existing, pr) {
 			state := "open"
 			if !existing.Open() {
 				state = "closed as " + string(existing.Outcome)
@@ -149,6 +149,16 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 	e.logOnCommit(ctx, "workflow: production check opened", "issue", issue.Key, "mergeCommit", pr.MergeSHA, "pullRequest", pr.Number,
 		"role", role, "bound", check.BoundAt, "firstLook", first)
 	return e.startLook(ctx, tx, issue, &check, wakeMerge, pr.MergeSHA, false)
+}
+
+// checksMerge says whether check is the check of the merge pr: the same repository (sameRepository,
+// which reads GitHub's renames), the same pull request number and the same merge commit, where both
+// name one. It is the one compare of "a check of the issue checks this merge": openCheck opens no
+// second check of a merge one of the issue's checks checks, and the issue's leave keeps the claim of
+// each check it will open for a merge no check checks yet (leave).
+func (e *Engine) checksMerge(check record.ProductionCheck, pr record.PullRequest) bool {
+	return e.sameRepository(check.Repo, pr.Repo) && check.Number == pr.Number &&
+		(check.MergeSHA == "" || pr.MergeSHA == "" || check.MergeSHA == pr.MergeSHA)
 }
 
 // startLook starts the next look of issue's check, woken by cause with detail, last marking the
