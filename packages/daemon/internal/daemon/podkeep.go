@@ -96,7 +96,7 @@ func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reas
 	at := keptMoment(read.at, append(slices.Clone(group), s.viewedGroup(after, issue)...))
 	decline := declineOf(claim.RoleArchitect, pod, at, read.work, read.err)
 	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
-		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work)}, at)
+		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, read.again)}, at)
 		if err != nil {
 			return false, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
 		}
@@ -108,7 +108,7 @@ func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reas
 		return false, err
 	}
 	notice := record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
-		Reason: roundKeptMessage(issue, pod, reasons, claims, read.work, read.err)}
+		Reason: roundKeptMessage(issue, pod, reasons, claims, read.work, read.err, read.again)}
 	message, err := record.NewOutboxRow(issue, notice, at)
 	if err != nil {
 		return false, fmt.Errorf("encode the notice of %s's kept pod: %w", issue, err)
@@ -236,6 +236,7 @@ func (s *supervision) readKeptPod(ctx context.Context, step podReplacement) {
 		by = viaProcess
 	}
 	read := s.readPodWorkspace(ctx, issue, round, process, by, at)
+	read.again = true
 	if read.clean() {
 		if err := s.supervisor.store.ForgetIdleDecline(ctx, s.plan.project, issue); err != nil {
 			if ctx.Err() == nil {
@@ -302,15 +303,22 @@ func turnsSince(group []supervise.Claim, at time.Time) []string {
 // podKeptMessage is what the open phase's worker is told when a round kept the issue's pod, pod,
 // because the read of its workspace found work that no branch or tag on origin holds (work): what
 // the read found, that the round ended with no replacement and the role keeps working in the pod,
-// what the round was opened for, and that the pod waits for the push of the work. The role reads
-// it in its session and people read it in its history, so it follows ASD-STE100.
-func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork) string {
-	found := append([]string{fmt.Sprintf("The daemon did not replace this issue's pod (pod %s) for an update round. "+
-		"The read of the workspace before the replacement found work that no branch or tag on origin holds.", pod)},
-		workFound(work)...)
-	found = append(found,
-		"The round ended with no replacement. The pod and its disk stay, and you keep working in this pod on its old image and settings. "+
-			roundOpenedFor(reasons),
+// what the round was opened for, and that the pod waits for the push of the work. again is a read
+// that may end an earlier keep, made with no round (readKeptPod): it names no round, and the drift
+// the daemon reads of the pod in place of a round's reasons (INFRA-341's reviewer's point 10). The
+// role reads it in its session and people read it in its history, so it follows ASD-STE100.
+func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork, again bool) string {
+	opening := fmt.Sprintf("The daemon did not replace this issue's pod (pod %s) for an update round. "+
+		"The read of the workspace before the replacement found work that no branch or tag on origin holds.", pod)
+	ended := "The round ended with no replacement. The pod and its disk stay, and you keep working in this pod on its old image and settings. " +
+		roundOpenedFor(reasons)
+	if again {
+		opening = fmt.Sprintf("The daemon read this issue's workspace again (pod %s). The pod is kept for its disk, and no update round opens over it. "+
+			"The read found work that no branch or tag on origin holds.", pod)
+		ended = "The pod and its disk stay, and you keep working in this pod on its old image and settings. The drift the daemon reads of the pod is: " + reasons + "."
+	}
+	found := append([]string{opening}, workFound(work)...)
+	found = append(found, ended,
 		fmt.Sprintf("The daemon does not push for you. Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
 			"The daemon reads the workspace again after each turn of a role of this issue. When a read finds nothing that origin does not hold, a later round replaces the pod. "+
 			"You are told this once.", issue))
@@ -325,8 +333,14 @@ func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork) stri
 // the work is pushed. The architect reads it in its session and people read it in its history, so
 // it follows ASD-STE100. The read's error is the far side's text as the daemon keeps it
 // (readError).
-func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error) string {
-	found := []string{fmt.Sprintf("The daemon did not replace the pod of %s (pod %s) for an update round. The round read the workspace before the replacement.", issue, pod)}
+func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error, again bool) string {
+	opening := fmt.Sprintf("The daemon did not replace the pod of %s (pod %s) for an update round. The round read the workspace before the replacement.", issue, pod)
+	ended := "The round ended with no replacement. The pod and its disk stay, and the roles keep working in the pod on its old image and settings. " + roundOpenedFor(reasons)
+	if again {
+		opening = fmt.Sprintf("The daemon read the workspace of the pod of %s (pod %s) again. The pod is kept for its disk, and no update round opens over it.", issue, pod)
+		ended = "The pod and its disk stay, and the roles keep working in the pod on its old image and settings. The drift the daemon reads of the pod is: " + reasons + "."
+	}
+	found := []string{opening}
 	if failed != nil {
 		found = append(found, "The read failed, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. "+
 			"The error of the read, in quotes, is: "+readError(failed)+".")
@@ -339,7 +353,7 @@ func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work
 		states = "The daemon holds no claim of " + issue + "."
 	}
 	found = append(found, states,
-		"The round ended with no replacement. The pod and its disk stay, and the roles keep working in the pod on its old image and settings. "+roundOpenedFor(reasons),
+		ended,
 		"The daemon does not push this work and does not save it. No update round opens over the pod until a later read finds nothing that origin does not hold, or the runtime makes another pod for the issue. "+
 			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
 		fmt.Sprintf("To keep the work, have a role of %s push it to legion/%s. If no role of %s runs, start one in this pod, for example with `legion claims resume` or `legion claims retry`. "+

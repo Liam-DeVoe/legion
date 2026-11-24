@@ -524,7 +524,7 @@ func TestAFailedReadsErrorKeepsItsEnd(t *testing.T) {
 
 	t.Run("the_round's_notices", func(t *testing.T) {
 		for name, message := range map[string]string{
-			"roundKeptMessage": roundKeptMessage("LEGION-208", "pod-a", podUpdateDrift, nil, runtime.WorkspaceWork{}, failed),
+			"roundKeptMessage": roundKeptMessage("LEGION-208", "pod-a", podUpdateDrift, nil, runtime.WorkspaceWork{}, failed, false),
 			"readFound":        readFound(runtime.WorkspaceWork{}, failed),
 		} {
 			if !strings.Contains(message, end) {
@@ -580,7 +580,7 @@ func TestAFailedReadsErrorIsQuotedAsData(t *testing.T) {
 	})
 
 	t.Run("the_round's_notices", func(t *testing.T) {
-		holdsQuoted(t, "roundKeptMessage", roundKeptMessage("LEGION-208", "pod-a", podUpdateDrift, nil, runtime.WorkspaceWork{}, failed))
+		holdsQuoted(t, "roundKeptMessage", roundKeptMessage("LEGION-208", "pod-a", podUpdateDrift, nil, runtime.WorkspaceWork{}, failed, false))
 		holdsQuoted(t, "workspaceTakenMessage", workspaceTakenMessage("LEGION-208", "round-1", "pod-a", runtime.BreakingDrift+podUpdateDrift,
 			nil, runtime.WorkspaceWork{}, failed, false))
 		holdsQuoted(t, "launchTakenMessage", launchTakenMessage(runtime.TakenPod{Claim: mustClaimToken(t, "LEGION-208", claim.RoleReviewer),

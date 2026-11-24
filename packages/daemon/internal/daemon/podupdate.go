@@ -1263,6 +1263,9 @@ type workspaceRead struct {
 	at    time.Time
 	work  runtime.WorkspaceWork
 	err   error
+	// again is a read that may end an earlier round's keep of the pod, made with no round
+	// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
+	again bool
 }
 
 // clean is whether the read was made and found nothing that origin does not hold: the one read a
