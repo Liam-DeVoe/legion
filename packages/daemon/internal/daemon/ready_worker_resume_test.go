@@ -44,10 +44,10 @@ const taskWithinOfReady = 2 * time.Minute
 // daemon fires (workflowRuntime.terminal) and keeps its claims where the workflow reads them, in
 // Postgres, so readyWorkerTask sees the claim and its pending task as the daemon's does. It reads
 // the session's activity report from that store as the daemon does (supervise.Deps.ClaimActivity),
-// which is what a relaunch records the work it ended from. Its ready delivers the resume row the
-// ready's fact queued as the daemon's does (supervise.Deps.ReadyResume, the outbox's readyResume),
-// and it writes each task's value to a bucket of its own (values), which is what the worker reads
-// after its ready.
+// which is what a relaunch records the work it ended from. Started with readyResume
+// (newStartedTesterRig), its ready delivers the resume row the ready's fact queued as the
+// daemon's does (supervise.Deps.ReadyResume, the outbox's readyResume). It writes each task's
+// value to a bucket of its own (values), which is what the worker reads after its ready.
 type readyWorkerRig struct {
 	t       *testing.T
 	pool    *store.Pool

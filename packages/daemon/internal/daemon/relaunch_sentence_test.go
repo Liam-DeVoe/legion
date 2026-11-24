@@ -444,38 +444,33 @@ func TestARelaunchSentenceIsTheOneTaskWrittenToAFinishedWorkerWhoseSubagentDied(
 // gives the claim that resume at the first ready (finishReady, queueReadyResume), so the
 // relaunch finds it held and queues no delivery of the sentence alone (queueRelaunch). The
 // sentence rides in front of the resume at its take, and the row's run changes nothing the claim
-// holds. Where the ready leaves the resume to its row (queueRelaunch's doc says when), as a rig
-// with no Deps.ReadyResume does, the claim holds nothing at the relaunch. The sentence's own
-// delivery then holds the slot, and the row's run takes its place. In both, the phase worker's
-// resume is not held behind a sentence nobody has read. The replacement rule itself (replaceable)
-// is held by supervise's TestARelaunchSentenceDeliveryGivesWayToANewerTask.
+// holds. Where the outbox's row delivers the resume instead (queueRelaunch's doc says when), as
+// it does for a rig with no Deps.ReadyResume, the claim holds nothing at the relaunch. The
+// sentence's own delivery then holds the slot, and the row's run takes its place. In both, the
+// phase worker's resume is not held behind a sentence nobody has read. The replacement rule
+// itself (replaceable) is held by supervise's TestARelaunchSentenceDeliveryGivesWayToANewerTask.
 func TestARelaunchSentenceGoesInFrontOfAPhaseWorkersResumeTask(t *testing.T) {
 	t.Parallel()
 	// takesTheResumeBehindTheSentence fails the test unless the relaunched tester's first accepted
-	// take is its phase's resume task under id, behind the relaunch's sentence.
-	takesTheResumeBehindTheSentence := func(t *testing.T, rig *readyWorkerRig, id string) {
+	// take is the resume task it holds, under that delivery's id, behind the relaunch's sentence.
+	takesTheResumeBehindTheSentence := func(t *testing.T, rig *readyWorkerRig, held supervise.Delivery) {
 		t.Helper()
-		resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
 		took, accepted := takeOffered(context.Background(), t, rig.machine)
-		if !accepted || took.DeliveryID != id || !strings.HasPrefix(took.Message, "Your previous process ended because the process died") ||
+		if !accepted || took.DeliveryID != held.ID || !strings.HasPrefix(took.Message, "Your previous process ended because the process died") ||
 			!strings.Contains(took.Message, "Each subagent that you started stopped with that process.") ||
-			!strings.HasSuffix(took.Message, "\n\n"+resume) {
-			t.Fatalf("the tester took %+v (accepted %v), want the resume task under %s behind the relaunch's sentence", took, accepted, id)
+			!strings.HasSuffix(took.Message, "\n\n"+held.Task) {
+			t.Fatalf("the tester took %+v (accepted %v), want the resume task under %s behind the relaunch's sentence", took, accepted, held.ID)
 		}
 	}
 
 	t.Run("the first ready gives the resume", func(t *testing.T) {
 		rig := newStartedTesterRig(t, "", true)
-		resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
-		first := rig.claim()
-		held := first.Pending
-		if held == nil || held.Task != resume || held.Relaunch() || held.Origin != supervise.OriginResume ||
-			!held.ConfirmedAt.IsZero() || held.Number == 0 || first.TaskWritten != held.Number {
-			t.Fatalf("the tester started with no task holds %+v with task %d written, want its phase's resume task, untaken, under the number written",
-				held, first.TaskWritten)
-		}
 		if rows := outboxRows(t, rig.pool); rows != 1 {
 			t.Fatalf("the first ready of a tester never written a task left %d outbox rows, want the one start of its phase's resume task", rows)
+		}
+		held := rig.holdsResume(theOneStartRow(t, rig.pool, rig.issue.Key).row.ID)
+		if !held.ConfirmedAt.IsZero() {
+			t.Fatalf("the tester's first ready left the resume task %s taken, want it untaken", held.ID)
 		}
 		rig.report("subagent")
 
@@ -484,8 +479,9 @@ func TestARelaunchSentenceGoesInFrontOfAPhaseWorkersResumeTask(t *testing.T) {
 
 		// The relaunch's ready finds the resume held, so no delivery of the sentence alone is queued.
 		relaunched := rig.claim()
-		if p := relaunched.Pending; p == nil || p.ID != held.ID || p.Relaunch() || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("the relaunched tester holds %+v, want the resume task %s it held, untaken, and no delivery of the sentence alone", p, held.ID)
+		if p := relaunched.Pending; p == nil || p.ID != held.ID || relaunched.TaskWritten != held.Number || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("the relaunched tester holds %+v with task %d written, want the resume task %s it held as task %d, untaken, and no delivery of the sentence alone",
+				p, relaunched.TaskWritten, held.ID, held.Number)
 		}
 		if rows := outboxRows(t, rig.pool); rows != 1 {
 			t.Fatalf("the relaunch left %d outbox rows, want the one start of the phase's resume task its first ready queued", rows)
@@ -498,7 +494,10 @@ func TestARelaunchSentenceGoesInFrontOfAPhaseWorkersResumeTask(t *testing.T) {
 			t.Fatalf("after the resume task's row the tester holds %+v with task %d written, want the resume %s it held, untaken, and no task written past %d",
 				c.Pending, c.TaskWritten, held.ID, relaunched.TaskWritten)
 		}
-		takesTheResumeBehindTheSentence(t, rig, held.ID)
+		if rows := outboxRows(t, rig.pool); rows != 0 {
+			t.Fatalf("the outbox's run left %d rows, want the resume task's row run and finished", rows)
+		}
+		takesTheResumeBehindTheSentence(t, rig, held)
 	})
 
 	t.Run("the ready leaves the resume to its row", func(t *testing.T) {
@@ -529,7 +528,7 @@ func TestARelaunchSentenceGoesInFrontOfAPhaseWorkersResumeTask(t *testing.T) {
 		if held == nil || held.Task != resume || held.Relaunch() || held.Origin != supervise.OriginResume {
 			t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
 		}
-		takesTheResumeBehindTheSentence(t, rig, held.ID)
+		takesTheResumeBehindTheSentence(t, rig, *held)
 	})
 }
 
