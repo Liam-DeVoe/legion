@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -200,38 +199,15 @@ func waitUnlessDone(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// awaitDone waits for done and reports nil, or returns ctx.Err() when ctx ends first. done is
-// read before ctx, so a wait whose work finished just as ctx ran out reports it finished: a
-// select over the two ready channels together would pick either, and half of those waits would
-// report work undone that was done. Every wait of the shutdown on a loop that is stopping reads
-// it this way (lease.Release, durableReceiver.Stop, waitLoops, shutdownListener).
+// awaitDone waits for done and reports nil, or returns ctx.Err() when ctx ends first. A wait whose
+// work finished just as ctx ran out reports it finished (closedWithin reads done again once ctx
+// has ended). Every wait of the shutdown on a loop that is stopping reads it this way
+// (lease.Release, durableReceiver.Stop, waitLoops, shutdownListener).
 func awaitDone(ctx context.Context, done <-chan struct{}) error {
-	select {
-	case <-done:
+	if closedWithin(ctx, done) {
 		return nil
-	default:
 	}
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// waitWithin waits for wg within ctx and reports whether wg finished before ctx ended.
-func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return ctx.Err()
 }
 
 // durableNeedsDelivery reports whether the stored message on subject, stored at stream sequence
