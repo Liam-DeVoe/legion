@@ -167,7 +167,7 @@ test("twelve thirty-character labels wrap in the header, ten then +2, without wi
       await expect(page.getByText(labels[9] ?? "", { exact: true })).toBeVisible();
       // Ten labels, then the control that shows the other two.
       await expect(page.getByText(labels[10] ?? "", { exact: true })).toHaveCount(0);
-      const more = page.getByRole("button", { name: "Show 2 more labels" });
+      const more = page.getByRole("button", { name: "+2, show all 12 labels" });
       await expect(more).toHaveText("+2");
       expect((await more.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
 
