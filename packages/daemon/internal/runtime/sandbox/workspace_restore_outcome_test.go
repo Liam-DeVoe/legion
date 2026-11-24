@@ -410,13 +410,17 @@ func TestAStartWhoseDropOfTheKeptVolumesCopiesFailsRunsNoRole(t *testing.T) {
 }
 
 // Only a take the daemon's store did not answer holds the start as the store's
-// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing): one whose outcome
-// stayed unknown at the start's bound, the commit landed and its reply lost while the store
-// answered nothing more, and one on a store that opens no connection. A take the store answered
-// with a definite error, here a trigger that raises (SQLSTATE P0001), is met again by every take
-// after it, so retried uncharged it would hold the claim for ever: its start fails with the take's
-// error, which is not the sentinel, and the supervisor charges it as a failed launch. It is held
-// all the same, since no copy owed to the pod reached its launcher: no launcher_start is sent.
+// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing): here one whose
+// outcome stayed unknown at the start's bound, the commit landed and its reply lost while the store
+// answered nothing more. A store that opens no connection is
+// TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy's, and a statement cut short
+// in its middle is internal/store's
+// TestAWorkspaceCopyTakeCutShortInTheMiddleOfAStatementIsTheStoresAndRecordsNothing. A take the
+// store answered with a definite error, here a trigger that raises (SQLSTATE P0001), is met again
+// by every take after it, so retried uncharged it would hold the claim for ever: its start fails
+// with the take's error, which is not the sentinel, and the supervisor charges it as a failed
+// launch. It is held all the same, since no copy owed to the pod reached its launcher: no
+// launcher_start is sent.
 //
 // The control (the pull request records the run): the hop wrapping every error of the take in the
 // sentinel, as before, which fails the first row.
@@ -441,16 +445,6 @@ func TestATakeTheStoreAnsweredWithAnErrorIsNoStoreHoldAndOneItDidNotAnswerIs(t *
 		}))
 		requireStoreHeld(t, g, workerSpec(t), "take", "the store did not say whether the transaction committed")
 		testdb.Met(t, fired)
-	})
-	t.Run("a take on a store that opens no connection", func(t *testing.T) {
-		st := bundleStore(t)
-		saveReleaseBundle(t, st, savedWorkspaceBundle())
-		faulted, fault := faultedBundleStore(t, st)
-		refuseEveryConnection(faulted, fault)
-		g := newRig(t, nil, withOptions(func(o *Options) {
-			o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
-		}))
-		requireStoreHeld(t, g, workerSpec(t), "take", "failed to connect")
 	})
 }
 

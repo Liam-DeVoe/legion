@@ -163,20 +163,20 @@ const keptVolumeHoldsLine = "launcher bundle: this pod's kept volume holds the w
 
 // keptVolumeDropFailed is why a start whose drop of the copies a pod's kept volume holds failed is
 // held (restoreWorkspace): the words of its warning, after "launcher bundle: ", and of its error.
-// No role of the pod starts, and the take does not run. A drop the store did not answer is
-// runtime.ErrWorkspaceCopyStore (store.Store.DropHeldWorkspaceCopies), which the supervisor tries
-// again at the probe interval, charging nothing; any other failure of it is charged as a failed
-// launch. An unknown outcome may have dropped the copies (internal/store's askWorkspaceCopies),
-// which loses no work, since the pod's kept volume holds it.
+// No role of the pod starts, and the take does not run. A drop the store did not answer, as
+// internal/store's copyAskUnanswered decides, is runtime.ErrWorkspaceCopyStore
+// (store.Store.DropHeldWorkspaceCopies), which the supervisor tries again at the probe interval,
+// charging nothing; any other failure of it is charged as a failed launch. What an unknown outcome
+// costs is internal/store's askWorkspaceCopies'.
 const keptVolumeDropFailed = "the drop of the saved workspace copies that this pod's kept volume may hold failed, so no role of the pod starts until a launch asks again"
 
 // takeFailed is why a start whose take of the issue's saved copies failed is held
 // (restoreWorkspace), a store error or an outcome still unknown at the hop's bound: the words of
 // its warning, after "launcher bundle: ", and of its error. No role of the pod starts. A take the
-// store did not answer is runtime.ErrWorkspaceCopyStore (store.Store.TakeWorkspaceCopyForRestore),
-// which the supervisor tries again at the probe interval, charging nothing; any other failure of
-// it is charged as a failed launch. What an unknown outcome costs is internal/store's
-// askWorkspaceCopies'.
+// store did not answer, as internal/store's copyAskUnanswered decides, is
+// runtime.ErrWorkspaceCopyStore (store.Store.TakeWorkspaceCopyForRestore), which the supervisor
+// tries again at the probe interval, charging nothing; any other failure of it is charged as a
+// failed launch. What an unknown outcome costs is internal/store's askWorkspaceCopies'.
 const takeFailed = "the issue's saved workspace copies could not be taken for this pod's restore, so no role of the pod starts until a launch takes them"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
@@ -202,15 +202,14 @@ const takeFailed = "the issue's saved workspace copies could not be taken for th
 // A copy the daemon owes the pod and has not put in the launcher's hands holds the start. Each exit
 // that holds it is this hop's error, a startHeld: the start sends no launcher_start, and stops no
 // generation it never began (stopIssuedChild). A drop of the copies a kept volume holds, or a take,
-// that the daemon's own store did not answer — at the hop's bound its outcome still unknown, a
-// failure the store runs again still failing, or a statement cut short; or on a connection that
-// never opened (internal/store's copyAskUnanswered) — says nothing of the claim: its error wraps
-// runtime.ErrWorkspaceCopyStore, and the supervisor tries the launch again at the probe interval,
-// charging nothing, for as long as the store does not answer: every issue pod's first start takes,
-// so a store outage charged here would fail every claim it met. Every other exit is the start's
-// failure, charged as any other: a drop or a take the store answered with a definite error, which
-// the next ask meets again, and a copy that was taken and does not reach the launcher — one that
-// could not be sliced, a slice that did not reach the launcher or was answered with another frame,
+// that the daemon's own store did not answer (internal/store's copyAskUnanswered says which
+// failures those are) says nothing of the claim: its error wraps runtime.ErrWorkspaceCopyStore,
+// and the supervisor tries the launch again at the probe interval, charging nothing, for as long
+// as the store does not answer: every issue pod's first start takes, so a store outage charged
+// here would fail every claim it met. Every other exit is the start's failure, charged as any
+// other: a drop or a take the store answered with a definite error, which the next ask meets
+// again, and a copy that was taken and does not reach the launcher — one that could not be
+// sliced, a slice that did not reach the launcher or was answered with another frame,
 // a sequence the launcher took whole without holding it. The next launch asks again, which a sent
 // copy is still owed to, since no role of the pod has registered, and one that keeps failing fails
 // the claim at its launch-failure limit, while the copy stays in the database. A role that started

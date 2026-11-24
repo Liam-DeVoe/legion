@@ -189,11 +189,19 @@ func endDied(observation runtime.Observation) string {
 // (Claim.LastDeathCause, which deathCause wrote) by the boot that relaunches it
 // (relaunchRecordedDeath): its plain sentence and the runtime's account, quoted, where the death
 // had a cause the daemon tells in plain words, and otherwise the account behind "the process
-// died", as endDied writes them. The disk notes endDied adds come from the observation, which the
-// claim does not keep, so a recorded disk death is told without them.
+// died", quoted whole, as endDied writes them. The claim keeps no kind beside the sentence, so the
+// recorded cause is read as a plain sentence only where it opens as one of plainCause's does
+// (plainKilled, plainEvicted): the account alone, a death of no plain cause, opens with its
+// observation's kind, and the pod's events and log lines in it can carry runtimeDetail, which a
+// cut of the account would put into the next task unquoted, as the daemon's words. A plain
+// sentence carries no runtimeDetail of its own, so the first one ends it. The disk notes endDied
+// adds come from the observation, which the claim does not keep, so a recorded disk death is told
+// without them.
 func endRecordedDeath(cause string) string {
-	if plain, account, ok := strings.Cut(cause, runtimeDetail); ok {
-		return plain + runtimeDetail + strconv.Quote(account)
+	if strings.HasPrefix(cause, plainKilled) || strings.HasPrefix(cause, plainEvicted) {
+		if plain, account, ok := strings.Cut(cause, runtimeDetail); ok {
+			return plain + runtimeDetail + strconv.Quote(account)
+		}
 	}
 	return "the process died: " + strconv.Quote(cause)
 }

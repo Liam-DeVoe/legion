@@ -50,8 +50,8 @@ const restoreRefPrefix = "legion-restore-"
 // that ended and whose report no connection carried: it refuses the bundle and still owes the
 // report. A restore begun and cut off, its container killed in the middle: no role has run there,
 // so it takes the copy the daemon sends again, restores it, and starts no role until one does, and
-// each start the daemon sends no copy before says what else clears it (apply). A record it cannot
-// read, which read judges by the in-use record beside it. No record: it refuses the bundle.
+// each start the daemon sends no copy before says what else clears it (stillCutOff). A record it
+// cannot read, which read judges by the in-use record beside it. No record: it refuses the bundle.
 type bundleRestore struct {
 	mu sync.Mutex
 	// sequence is the id of the slice sequence being assembled, with the count, the digest and
@@ -86,10 +86,10 @@ type bundleRestore struct {
 	begun bool
 	// cutOff is why the workspace takes the copy the daemon sends again though its disk may mark
 	// it in use: a restore an earlier launcher began there and never ended, or a record that read
-	// counts as one, its text naming which (read). nil when there is neither, and once a restore
-	// of this process has ended. No role has run on the workspace since, so a slice is taken
-	// (fence), the copy sent again is restored, and a start with no copy to restore runs no role
-	// (apply).
+	// counts as one, its text naming which (read). nil when there is neither, once a restore of
+	// this process has ended, and once a start reads the record again and finds neither
+	// (stillCutOff). No role has run on the workspace since, so a slice is taken (fence), the copy
+	// sent again is restored, and a start with no copy to restore runs no role (stillCutOff).
 	cutOff error
 	// blocked is why the workspace takes no slice and starts no role: a record that read can count
 	// as neither a restore nor none. It holds until the record reads, which each start and each
@@ -132,9 +132,10 @@ func newBundleRestore(start procgroup.Starter, dir string) *bundleRestore {
 }
 
 // read takes what the record of a restore an earlier launcher ran on the workspace says
-// (workspace.ReadRestoreRecord): at this launcher's start, and again at each start and each slice
-// while the workspace is blocked (stillBlocked), so a record removed by hand is read at the next
-// one. This is the one statement of what a record that cannot be read counts as.
+// (workspace.ReadRestoreRecord): at this launcher's start, again at each start and each slice
+// while the workspace is blocked (stillBlocked), and at each start over a restore cut off that has
+// no copy to restore (stillCutOff), so a record removed by hand is read at the next one. This is
+// the one statement of what a record that cannot be read counts as.
 //
 // A restore that ended and whose report no connection carried is owed from the start: that roles
 // container restarted after its restore ran and before the daemon heard of it, and the daemon
@@ -284,6 +285,27 @@ func (r *bundleRestore) stillBlocked() error {
 	return r.blocked
 }
 
+// stillCutOff is why a start runs no role over a restore cut off, nil when it may run one: a start
+// that finds a restore cut off with no copy sent again to restore reads the records again first
+// (read), as a blocked workspace does (stillBlocked), so a record deleted by hand clears the
+// refusal at the next start, which runs its role on the workspace as the cut-off restore left it,
+// and a record that now reads as a blocked workspace refuses the start as such. It is called
+// under mu.
+func (r *bundleRestore) stillCutOff() error {
+	if r.cutOff == nil || r.body != nil {
+		return nil
+	}
+	r.read()
+	switch {
+	case r.blocked != nil:
+		return r.blocked
+	case r.cutOff != nil:
+		return fmt.Errorf("%w, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start until a start finds the copy sent again, which the daemon sends only while no role of the pod has registered and its take still offers that copy; where it no longer does, each start is refused until the claim fails, and a spawn again meets the same disk, until the pod is replaced, on a kept volume once that volume is reset, or until the restore's record %s is deleted, which the next start reads, starting the roles on the workspace as the cut-off restore left it",
+			r.cutOff, workspace.RestoreRecordPath(r.workspace))
+	}
+	return nil
+}
+
 // inUse is whether a role may have worked the workspace, which then takes no restore: its disk
 // marks it in use (workspace.InUse), or the mark cannot be read. Neither counts while this process
 // holds a restore begun (begun), whose in-use record is its own, nor over a restore cut off
@@ -344,14 +366,15 @@ func joined(slices [][]byte) []byte {
 // the next start tries the records again, and slices are still taken, since no role has started;
 // an in-use record this process wrote before such an error is its own (begun), so the next start
 // restores all the same. A blocked workspace is its error (stillBlocked). So is a restore cut off
-// on this disk whose copy has not arrived again: the workspace may hold part of that restore, the
-// work is in the daemon's database alone, and no role starts on it until a start finds the copy
-// held and restores it. The daemon sends the copy again only while no role of the pod has
-// registered and its take still offers that copy, which a newer push, a rollback or a kept volume
-// at the roll forward can end. Then each start is refused until the claim fails, and a spawn
-// again meets the same disk, so the refusal names what clears it: a new pod, on a kept volume a
-// reset of that volume, whose record stays for the later pods of its Sandbox, or the record
-// deleted, which starts the roles on the workspace as the cut-off restore left it.
+// on this disk whose copy has not arrived again (stillCutOff): the workspace may hold part of that
+// restore, the work is in the daemon's database alone, and no role starts on it until a start
+// finds the copy held and restores it. The daemon sends the copy again only while no role of the
+// pod has registered and its take still offers that copy, which a newer push, a rollback or a kept
+// volume at the roll forward can end. Then each start is refused until the claim fails, and a
+// spawn again meets the same disk, so the refusal names what clears it: a new pod, on a kept
+// volume a reset of that volume, whose record stays for the later pods of its Sandbox, or the
+// record deleted, which the next start reads again, starting the roles on the workspace as the
+// cut-off restore left it.
 func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult, error) {
 	// A manager built without one — a test's, which serves no daemon that could send a bundle —
 	// restores nothing and waits for nothing, as does a role or a launcher that works no
@@ -370,9 +393,8 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult,
 	if blocked := r.stillBlocked(); blocked != nil {
 		return restoreResult{}, blocked
 	}
-	if r.cutOff != nil && r.body == nil {
-		return restoreResult{}, fmt.Errorf("%w, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start until a start finds the copy sent again, which the daemon sends only while no role of the pod has registered and its take still offers that copy; where it no longer does, each start is refused until the claim fails, and a spawn again meets the same disk, until the pod is replaced, on a kept volume once that volume is reset, or until the restore's record %s is deleted, which starts the roles on the workspace as the cut-off restore left it",
-			r.cutOff, workspace.RestoreRecordPath(r.workspace))
+	if refused := r.stillCutOff(); refused != nil {
+		return restoreResult{}, refused
 	}
 	restoring := r.body != nil && !r.inUse()
 	if restoring {

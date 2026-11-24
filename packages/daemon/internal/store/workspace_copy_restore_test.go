@@ -2,14 +2,17 @@ package store
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -630,6 +633,124 @@ func TestAFailedBundleRestoreTakeLeavesBothCopiesAsTheyWere(t *testing.T) {
 	if row := heldCopyRow(t, s, releaseBundleCopies, "INFRA-1117"); row.outcome != supersededCopyOutcome {
 		t.Fatalf("the release bundle holds %+v, want it closed unsent", row)
 	}
+}
+
+// A take the store stopped answering in the middle of a statement is the store's
+// (runtime.ErrWorkspaceCopyStore, copyAskUnanswered), which the supervisor retries charging
+// nothing, though its outcome is known: the statement ran in a transaction that never committed,
+// so nothing of the ask is recorded and the copy stays as it was. A trigger holds the take asleep
+// in its record of the pod's first ask, and each row ends it there: a deadline, as the hop's bound
+// ends it; a cancel, as its caller's end does; and the connection lost before ctx's end, closed
+// by the fault proxy, an EOF with no answer of the server's. The other cases are the runtime's: an
+// outcome still unknown at the hop's bound, a store that opens no connection, and a statement the
+// server refused, which is no hold of the store's (internal/runtime/sandbox's
+// TestATakeTheStoreAnsweredWithAnErrorIsNoStoreHoldAndOneItDidNotAnswerIs and
+// TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy).
+//
+// The controls (the pull request records the runs): copyAskUnanswered without its arm of ctx's
+// end, which fails the cancel, since OpenRetryable reads a cancel as the caller's stop and not as
+// a store that did not answer; without OpenRetryable, as before, which fails the lost connection;
+// and without both, which fails the deadline too, a timeout that each of the two arms reads.
+func TestAWorkspaceCopyTakeCutShortInTheMiddleOfAStatementIsTheStoresAndRecordsNothing(t *testing.T) {
+	const issue, pod = "INFRA-1117", "pod-whose-take-is-cut-short"
+	for _, row := range []struct {
+		name string
+		// bound is the take's deadline, which only the first row reaches; cut ends the take once it
+		// sleeps.
+		bound time.Duration
+		cut   func(cancel context.CancelFunc, fault *testdb.CommitFault)
+		// ended is whether the take answers at its ctx's end, and want what its error says.
+		ended bool
+		want  string
+	}{
+		{name: "a deadline, as the hop's bound", bound: 5 * time.Second, cut: func(context.CancelFunc, *testdb.CommitFault) {},
+			ended: true, want: "context deadline exceeded"},
+		{name: "a cancel, as its caller's end", bound: time.Hour, cut: func(cancel context.CancelFunc, _ *testdb.CommitFault) { cancel() },
+			ended: true, want: "context canceled"},
+		{name: "a connection lost before ctx's end", bound: time.Hour, cut: func(_ context.CancelFunc, fault *testdb.CommitFault) { fault.Refuse(true) },
+			want: "EOF"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s := migratedStore(t)
+			recordCopyIssues(t, s, issue)
+			if err := s.PutWorkspaceBundle(context.Background(), issue, 7, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the release's work"), Head: "b", PodUID: releasedPodUID}); err != nil {
+				t.Fatal(err)
+			}
+			proxied, fault := testdb.CommitFaults(t, s.Pool().Config().ConnString())
+			faulted, err := Open(context.Background(), proxied)
+			if err != nil {
+				t.Fatalf("open the store through the fault proxy: %v", err)
+			}
+			t.Cleanup(faulted.Close)
+			sleepFirstAsks(t, s)
+
+			ctx, cancel := context.WithTimeout(context.Background(), row.bound)
+			defer cancel()
+			taken := make(chan error, 1)
+			go func() {
+				_, err := faulted.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, pod)
+				taken <- err
+			}()
+			testwait.Eventually(t, "the take asleep in its record of the pod's first ask", func() bool { return len(taken) > 0 || sleepingAsks(t, s) == 1 })
+			if len(taken) > 0 {
+				t.Fatalf("the take answered %v before it slept in its record of the pod's first ask", <-taken)
+			}
+			row.cut(cancel, fault)
+			err = testwait.ReceiveWithin(t, time.Minute, "the take's answer", "a take the store stopped answering ran again rather than answer", taken)
+			wakeSleepingAsks(t, s)
+
+			if !errors.Is(err, runtime.ErrWorkspaceCopyStore) || errors.Is(err, ErrCommitOutcomeUnknown) ||
+				!strings.Contains(err.Error(), "record the first ask of pod "+pod) || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("the take cut short answered %v; want its record of the pod's first ask cut short with %q, a known outcome that is runtime.ErrWorkspaceCopyStore", err, row.want)
+			}
+			if ended := ctx.Err() != nil; ended != row.ended {
+				t.Fatalf("the take answered with its ctx ended %t, want %t", ended, row.ended)
+			}
+			var asks int
+			if err := s.Pool().QueryRow(context.Background(), `select count(*) from workspace_restore_asks where issue = $1`, issue).Scan(&asks); err != nil {
+				t.Fatal(err)
+			}
+			if asked := heldCopyRow(t, s, releaseBundleCopies, issue); asks != 0 || !asked.held || asked.attemptPod != "" || asked.outcome != "" {
+				t.Fatalf("after the take cut short the store records %d asks and the release bundle %+v, want neither changed", asks, asked)
+			}
+		})
+	}
+}
+
+// sleepFirstAsks has s's database hold each record of a pod's first ask for a restore asleep in
+// a trigger until wakeSleepingAsks ends it, so a take is met in the middle of that statement.
+func sleepFirstAsks(t *testing.T, s *Store) {
+	t.Helper()
+	for _, statement := range []string{
+		`create function sleep_restore_ask() returns trigger language plpgsql as $$ begin perform pg_sleep(600); return new; end $$`,
+		`create trigger sleep_restore_ask before insert on workspace_restore_asks for each row execute function sleep_restore_ask()`,
+	} {
+		if _, err := s.Pool().Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the record of a pod's first ask sleep: %v", err)
+		}
+	}
+}
+
+// sleepingAsks is how many backends of s's database sleep in sleepFirstAsks' trigger.
+func sleepingAsks(t *testing.T, s *Store) int {
+	t.Helper()
+	var sleeping int
+	if err := s.Pool().QueryRow(context.Background(), `select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event = 'PgSleep'`).Scan(&sleeping); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return sleeping
+}
+
+// wakeSleepingAsks ends every backend asleep in sleepFirstAsks' trigger, whose transaction then
+// rolls back, and waits until none is left.
+func wakeSleepingAsks(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.Pool().Exec(context.Background(), `select pg_terminate_backend(pid) from pg_stat_activity
+		where datname = current_database() and wait_event = 'PgSleep'`); err != nil {
+		t.Fatalf("end the sleeping asks: %v", err)
+	}
+	testwait.Eventually(t, "no ask asleep in the trigger", func() bool { return sleepingAsks(t, s) == 0 })
 }
 
 // A saved release bundle and a dropped one each take the issue's running copy with them, in their

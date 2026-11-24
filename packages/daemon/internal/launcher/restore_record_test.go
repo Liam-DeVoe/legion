@@ -121,10 +121,16 @@ func TestALauncherRestartedAfterItsRestoreEndedStillOwesTheReportAndRefusesTheBu
 // in the daemon's database alone. So the launcher that comes back starts no role while no copy has
 // been sent again, each start refused with why and with what clears it where the daemon sends no
 // copy again: replacing the pod, resetting a kept volume, or deleting the record, named by its
-// path. The begun record stays for the start that restores the copy.
+// path. The begun record stays for the start that restores the copy. Deleting the record by hand
+// clears the refusal for the same launcher: its next start reads the record again
+// (bundleRestore.stillCutOff) and runs its role on the workspace as the cut-off restore left it,
+// and the in-use rule still holds, so a copy sent after that start is refused as one to a
+// workspace in use.
 //
-// The control (the pull request records the run): the refusal without what clears it, as before,
-// which fails on the first remedy it does not name.
+// The controls (the pull request records the runs): the refusal without what clears it, as
+// before, which fails on the first remedy it does not name; and apply refusing on the cut-off
+// reading it took at the launcher's start without reading the record again, as before, which
+// refuses the start after the deletion.
 func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
 	dir := newWorkspace(t)
 	begun := workspace.RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-cut-off", Release: 11}}
@@ -147,6 +153,28 @@ func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
 	if g.restored != nil {
 		t.Fatalf("the launcher reported %#v, want no report of a restore that never ended", g.restored)
 	}
+
+	if err := os.Remove(workspace.RestoreRecordPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "marker")
+	command := g.childStart(3, marker, nil)
+	command.Env = append(command.Env, "LEGION_WORKSPACE="+dir)
+	if result := g.start(command); !result.OK {
+		t.Fatalf("the start after the record was deleted by hand answered %#v, want the role started", result)
+	}
+	published(t, marker)
+	frames, err := shimwire.SplitWorkspaceBundle("restore-after-the-deletion", 12, shimwire.WorkspaceBundle{Bundle: []byte("PACK the work"), Head: "f2f13454", At: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := g.answer(frames[0]).(shimwire.LauncherBundleResult); !ok || got.OK || got.Held || got.Error != workspaceInUseRefusal {
+		t.Fatalf("a slice after the start the deletion let run answered %#v; want it refused as one to a workspace in use, %q", got, workspaceInUseRefusal)
+	}
+	if g.restored != nil {
+		t.Fatalf("the launcher reported %#v, want no report: no restore ran", g.restored)
+	}
+	g.stop(3)
 }
 
 // damagedRecord writes a record of a restore that does not read on the workspace at dir.

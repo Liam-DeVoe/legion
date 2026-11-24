@@ -573,14 +573,17 @@ func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID s
 // ask that failed:
 //
 //   - with its outcome unknown (ErrCommitOutcomeUnknown);
-//   - with a failure transactUntilCommitted runs again (retryable), which it answers only once ctx
-//     has ended while it waited to run again;
 //   - at ctx's own end, the hop's bound or its caller's, whatever the statement that end cut short
-//     answered;
+//     answered: a failure transactUntilCommitted runs again (retryable) among them, which it
+//     answers only once ctx has ended while it waited to run again;
+//   - with no answer to a statement, as OpenRetryable reads one: a connection lost in the middle
+//     of a statement, before ctx's end (io.EOF, io.ErrUnexpectedEOF, a reset), a timeout, or a
+//     server that ended the connection or said to try again later;
 //   - or on a connection that never opened (*pgconn.ConnectError), whatever the server said in
 //     refusing it: no statement was judged, which is the rule internal/supervise's writeOwed reads
-//     first, for the same reason. A refused dial is no failure retryable runs again, so without it
-//     a store that is down would charge every launch that asked.
+//     first, for the same reason. OpenRetryable reads a refused password or a refused certificate
+//     as an answer, so without this a store whose login is refused would charge every launch that
+//     asked.
 //
 // Every other error is definite and is answered as it is: the server refused a statement for a
 // reason of the statement's own, a trigger's P0001 among them, or the ask could not read what the
@@ -588,7 +591,7 @@ func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID s
 // start it fails is charged as a failed launch.
 func copyAskUnanswered(ctx context.Context, err error) error {
 	var connect *pgconn.ConnectError
-	if errors.Is(err, ErrCommitOutcomeUnknown) || retryable(err) || ctx.Err() != nil || errors.As(err, &connect) {
+	if errors.Is(err, ErrCommitOutcomeUnknown) || ctx.Err() != nil || OpenRetryable(err) || errors.As(err, &connect) {
 		return fmt.Errorf("%w: %w", runtime.ErrWorkspaceCopyStore, err)
 	}
 	return err

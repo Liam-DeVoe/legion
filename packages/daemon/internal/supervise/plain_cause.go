@@ -32,19 +32,28 @@ import (
 func plainCause(cause runtime.DeathCause) string {
 	switch cause.Kind {
 	case runtime.DeathMemoryLimit:
-		return "the pod's roles container, which runs every role of this issue, was killed because it used more than its " +
-			plainSize(cause.Limit) + " memory limit"
+		return plainKilled + plainSize(cause.Limit) + " memory limit"
 	case runtime.DeathMemoryRequest:
-		return "the kubelet evicted the pod for node memory pressure because its " + cause.Container + " container was using " +
+		return plainEvicted + "for node memory pressure because its " + cause.Container + " container was using " +
 			plainSize(cause.Use) + ", more than its " + plainSize(cause.Request) + " memory request"
 	case runtime.DeathDiskRequest:
-		return "the kubelet evicted the pod for node disk pressure because its " + cause.Container + " container was using " +
+		return plainEvicted + "for node disk pressure because its " + cause.Container + " container was using " +
 			plainSize(cause.Use) + " of its own disk, outside $TMPDIR, more than its " + plainSize(cause.Request) + " ephemeral storage request"
 	case runtime.DeathDiskLimit:
-		return "the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its " + plainSize(cause.Limit) + " limit"
+		return plainEvicted + "because its container's own disk, outside $TMPDIR, passed its " + plainSize(cause.Limit) + " limit"
 	}
 	return ""
 }
+
+// The two openings every sentence of plainCause starts with: the kernel's kill of the `roles`
+// container for memory, and the kubelet's eviction of the pod. endRecordedDeath reads a recorded
+// cause as a plain sentence followed by the runtime's account only where it opens with one of
+// them, and the runtime's account never does, since it opens with the observation's kind
+// (deathAccount).
+const (
+	plainKilled  = "the pod's roles container, which runs every role of this issue, was killed because it used more than its "
+	plainEvicted = "the kubelet evicted the pod "
+)
 
 // diskTask follows the plain sentence of an eviction over the pod's ephemeral-storage request
 // (runtime.DeathDiskRequest) in the role's next task (endDied), and it closes the note of an

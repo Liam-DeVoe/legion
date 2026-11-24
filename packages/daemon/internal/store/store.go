@@ -177,7 +177,9 @@ func ConnectError(dsn string, err error) error {
 //
 // Every other error cannot clear, a stop of the caller (context.Canceled) among them. The rule
 // supervise's writeOwed reads a claim write by is not this one: it owes every *pgconn.ConnectError
-// whatever the server answered, which here would try a refused password ten times.
+// whatever the server answered, which here would try a refused password ten times. The ask of an
+// issue's saved workspace copies reads its failure by this rule too, as one way the store did not
+// answer it (copyAskUnanswered), so a change here changes which of those asks charge a launch.
 func OpenRetryable(err error) bool {
 	var answer *pgconn.PgError
 	if errors.As(err, &answer) {

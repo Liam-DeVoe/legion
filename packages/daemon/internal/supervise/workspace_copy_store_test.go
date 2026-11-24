@@ -14,17 +14,18 @@ import (
 // A launch the daemon's store of saved workspace copies held (runtime.ErrWorkspaceCopyStore: the
 // take or the drop of the issue's copies for the pod's restore did not answer) started nothing and
 // says nothing about the claim: it is charged no launch failure and is tried again at the probe
-// interval, as a launch whose session hold the store did not answer is. Every issue pod's first
-// start takes, so a charge here would fail every claim a store outage of three launches met. Both
-// record why the claim waits as its last start failure, naming the store that did not answer, and
-// the line each logs names that store too. A launch held because a copy that was taken did not
-// reach the pod's launcher, a slice lost, is the start's own failure: it is charged, and the next
-// try follows at its backoff.
+// interval, as a launch whose session hold the store did not answer is
+// (TestAnUnansweredHoldAtAResumeChargesNothing). Every issue pod's first start takes, so a charge
+// here would fail every claim a store outage of three launches met. It records why the claim waits
+// as its last start failure, naming the store that did not answer, and the line it logs names that
+// store too. A launch held because a copy that was taken did not reach the pod's launcher, a slice
+// lost, is the start's own failure: it is charged, and the next try follows at its backoff.
 //
 // The controls (the pull request records the runs): the sentinel's branch taken out of
 // launchTries, which charges the first row a launch failure and fails its claim at a limit of one;
-// the branch widened to every error that names the saved workspace copy, which charges the third
-// row nothing; and the branch setting no LastStartFailure, as before, which fails the first two.
+// the branch widened to every error that names the saved workspace copy, which charges the second
+// row nothing; and the branch setting no LastStartFailure, as before, which fails the first row and
+// TestAnUnansweredHoldAtAResumeChargesNothing.
 func TestALaunchTheWorkspaceCopyStoreHeldIsChargedNothingAndOneWhoseCopyDidNotReachThePodIsCharged(t *testing.T) {
 	t.Run("the store did not answer the take", func(t *testing.T) {
 		h := newHarness(t)
@@ -51,27 +52,6 @@ func TestALaunchTheWorkspaceCopyStoreHeldIsChargedNothingAndOneWhoseCopyDidNotRe
 		if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 || c.Locator == nil {
 			t.Fatalf("after the retry at the probe interval the claim is %s with %d launch failures charged and process %v, want it launched with none charged",
 				c.State, c.Budgets.LaunchFailures, c.Locator)
-		}
-	})
-
-	t.Run("the store did not answer the session's hold", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateReady)
-		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.deps.Limits.LaunchFailures = 1
-		h.restart()
-		h.store.fail("HoldSessions", errors.New("connection refused"))
-
-		if err := h.handle(RequestResume{Claim: h.token}); !errors.Is(err, errHoldUnanswered) {
-			t.Fatalf("the launch whose hold the store did not answer answered %v, want errHoldUnanswered", err)
-		}
-		c := h.claim()
-		if c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
-			t.Fatalf("the claim is %s with %d launch failures charged, want it launching with none", c.State, c.Budgets.LaunchFailures)
-		}
-		requireStartFailureNames(t, h, c, errHoldUnanswered.Error())
-		if lines := h.logs.lines("the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing"); len(lines) != 1 {
-			t.Fatalf("logged %v, want the session store's hold named once", lines)
 		}
 	})
 
