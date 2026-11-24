@@ -520,12 +520,20 @@ func grantConfig(t *testing.T, public string, publish, subscribe []string, unres
 }
 
 // A NATS user granted exactly Grant() - the deployment's buckets user - runs every step the command
-// has, against a real server, with no refusal: check --first-deployment, create, check and create
-// again. The control removes one subject at a time from the grant and runs the step that needs it,
-// which the server refuses, exit 1, and the test names the subject. check takes the inventory
-// (--host box-1), and create none. recreate refuses before it connects (recreateRefusal), so it
-// is no step here. At 7b262c2e0a no such grant existed, and the command's default _INBOX prefix
-// was refused by any user granted its own inbox alone.
+// has, and the restore after check, against a real server, with no refusal: check
+// --first-deployment, create, check, the restore of each copied bucket as `nats stream restore
+// --inbox-prefix=_INBOX_envoy_buckets` runs it (restoreAs), and create again. check takes the
+// inventory (--host box-1), and create none. recreate refuses before it connects
+// (recreateRefusal), so it is no step here.
+//
+// Both directions are proven. The controls remove one subject at a time from the grant and run the
+// step that needs it, which the server refuses, exit 1. And every subject Grant() holds is one the
+// steps send: an operator's connection with no echo watches every $JS.API and $JS.SNAPSHOT subject
+// a client publishes to, so it sees the granted user's requests alone, and a granted subject no
+// request matches fails the row naming it. At 053e9a2e79 Grant() still held each copied bucket's
+// STREAM.UPDATE and STREAM.DELETE, which no step sends, and that row named all ten. At 7b262c2e0a
+// no such grant existed, and the command's default _INBOX prefix was refused by any user granted
+// its own inbox alone.
 func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	// A control's refused create or read is sent again until refusalWait (untilGranted): a second
@@ -551,22 +559,89 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 		code, stdout, stderr := runCommand(t, w, nil, withInventory(append(append([]string{}, args...), "--nats", uri)...)...)
 		return code, stdout + stderr
 	}
+	// sent is each $JS.API and $JS.SNAPSHOT subject the granted user published to in the run of
+	// every step, as the operator's watch saw it.
+	var sent []string
 	t.Run("every step with the whole grant", func(t *testing.T) {
 		seed, public := testnats.User(t)
-		_, uri := testnats.StartConfig(t, grantConfig(t, public, publish, subscribe), []string{"-js"}, false)
+		operatorSeed, operator := testnats.User(t)
+		_, uri := testnats.StartConfig(t, grantConfig(t, public, publish, subscribe, operator), []string{"-js"}, false)
+		watcher, err := testnats.ConnectSeed(t, uri, operatorSeed, natsgo.NoEcho())
+		if err != nil {
+			t.Fatalf("connect as the operator: %v", err)
+		}
+		defer watcher.Close()
+		var watches []*natsgo.Subscription
+		for _, subjects := range []string{"$JS.API.>", "$JS.SNAPSHOT.>"} {
+			watch, err := watcher.SubscribeSync(subjects)
+			if err != nil {
+				t.Fatalf("watch %s: %v", subjects, err)
+			}
+			watches = append(watches, watch)
+		}
+		if err := watcher.Flush(); err != nil {
+			t.Fatalf("flush the operator's watch: %v", err)
+		}
 		t.Setenv("NATS_NKEY_SEED", seed)
-		for _, args := range [][]string{
-			{"check", "--first-deployment"},
-			{"create"},
-			{"check"},
-			{"create"},
-		} {
+		step := func(args ...string) {
+			t.Helper()
 			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
 			code, stdout, stderr := runCommand(t, w, nil, withInventory(append(append([]string{}, args...), "--nats", uri)...)...)
 			if code != 0 {
 				t.Fatalf("%v as a user granted exactly Grant() = %d:\n%s%s", args, code, stdout, stderr)
 			}
 		}
+		step("check", "--first-deployment")
+		step("create")
+		step("check")
+		// The restore after check: the operator takes each copied bucket's snapshot and deletes the
+		// bucket, and the granted user restores it.
+		operatorJS, err := watcher.JetStream()
+		if err != nil {
+			t.Fatalf("the operator's jetstream: %v", err)
+		}
+		user, err := testnats.ConnectSeed(t, uri, seed, natsgo.CustomInboxPrefix(InboxPrefix))
+		if err != nil {
+			t.Fatalf("connect as the granted user: %v", err)
+		}
+		defer user.Close()
+		for _, bucket := range bus.CopiedBuckets() {
+			stream := "KV_" + bucket
+			config, state, data := snapshotOf(t, watcher, stream)
+			if err := operatorJS.DeleteStream(stream); err != nil {
+				t.Fatalf("delete %s before its restore: %v", stream, err)
+			}
+			if err := restoreAs(user, stream, config, state, data); err != nil {
+				t.Fatalf("the restore of %s as a user granted exactly Grant(): %v", stream, err)
+			}
+		}
+		step("create")
+		if err := user.Flush(); err != nil {
+			t.Fatalf("flush the granted user: %v", err)
+		}
+		if err := watcher.Flush(); err != nil {
+			t.Fatalf("flush the operator's watch: %v", err)
+		}
+		for _, watch := range watches {
+			for {
+				msg, err := watch.NextMsg(100 * time.Millisecond)
+				if err != nil {
+					break
+				}
+				sent = append(sent, msg.Subject)
+			}
+		}
+	})
+	t.Run("every subject of the grant is one a step sends", func(t *testing.T) {
+		if len(sent) == 0 {
+			t.Fatal("UNKNOWN: the watch saw no request of the steps, so nothing was compared")
+		}
+		for _, granted := range publish {
+			if !slices.ContainsFunc(sent, func(subject string) bool { return subjectMatches(granted, subject) }) {
+				t.Errorf("Grant() holds %s, which no step sends", granted)
+			}
+		}
+		t.Logf("compared the %d subjects Grant() publishes to with the %d requests the steps sent", len(publish), len(sent))
 	})
 	for _, c := range []struct {
 		subject string
@@ -586,6 +661,21 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+// subjectMatches reports whether subject, a literal subject, is one pattern names, token by token:
+// each equal, or * for any one token, or > for one or more to the end.
+func subjectMatches(pattern, subject string) bool {
+	want, have := strings.Split(pattern, "."), strings.Split(subject, ".")
+	for i, token := range want {
+		if token == ">" {
+			return len(have) > i
+		}
+		if i >= len(have) || (token != "*" && token != have[i]) {
+			return false
+		}
+	}
+	return len(want) == len(have)
 }
 
 // The host query, run on this machine, sees a real process under every name this repository runs a

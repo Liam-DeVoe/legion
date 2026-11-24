@@ -3431,13 +3431,15 @@ connection, as `--nats` names the hub. It takes its replies under `--inbox-prefi
 reply prefix, so it runs the command with `--inbox-prefix _INBOX.`, as a Job running as the
 clustered hub's `gke` user does, or with `create --break-glass`
 ([Until the cutover](#until-the-cutover-create---break-glass)). The buckets user is granted exactly
-what the command sends (`buckets.Grant`):
+what the command and the restore after `check` send, and nothing more (`buckets.Grant`):
 
-- publish `$JS.API.INFO`, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (for `--first-deployment`),
-  and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>`, `$JS.API.STREAM.CREATE.KV_<B>`,
-  `$JS.API.STREAM.UPDATE.KV_<B>` and `$JS.API.STREAM.DELETE.KV_<B>`, and for the restore after
-  `check`, run as the same user (`nats stream restore --inbox-prefix=_INBOX_envoy_buckets`),
-  `$JS.API.STREAM.RESTORE.KV_<B>` and `$JS.SNAPSHOT.RESTORE.KV_<B>.*`;
+- publish `$JS.API.INFO` (`create` reads the account's JetStream info before each create),
+  `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (every connection reads it, and `--first-deployment`
+  again), and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>` and
+  `$JS.API.STREAM.CREATE.KV_<B>`, and for the restore after `check`, run as the same user
+  (`nats stream restore --inbox-prefix=_INBOX_envoy_buckets`), `$JS.API.STREAM.RESTORE.KV_<B>`
+  and `$JS.SNAPSHOT.RESTORE.KV_<B>.*`. No stream update and no stream delete: `create` raises and
+  changes no bucket, and `recreate` refuses before it connects;
 - subscribe `_INBOX_envoy_buckets.>` alone, the prefix its replies take: a user that subscribes
   `_INBOX.>` receives every other client's replies, sessions' push deliveries among them.
 
