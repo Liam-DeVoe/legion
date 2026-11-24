@@ -1767,6 +1767,7 @@ describe("EnvoyClient", () => {
       expect(session.kinds).toEqual(["unrecorded"]);
       const notice = inboundUnavailableNoticeText({ kind: "unrecorded", why: UNRECORDED });
       expect(notice).toContain("This session's registration is not recorded for certain");
+      // The refusal rows below show both words in the notice of a refused registration.
       expect(notice).not.toContain("no durable consumer");
       expect(notice).not.toContain("receives none");
     });
@@ -1793,9 +1794,12 @@ describe("EnvoyClient", () => {
       expect(failure).toMatchObject({ reason, details: { status: 503 } });
       expect(session.told).toEqual([`${error} (reason: ${reason})`]);
       expect(session.kinds).toEqual(["refused"]);
-      expect(
-        inboundUnavailableNoticeText({ kind: "refused", why: session.told[0] ?? "" })
-      ).toContain("receives none");
+      const refusedNotice = inboundUnavailableNoticeText({
+        kind: "refused",
+        why: session.told[0] ?? "",
+      });
+      expect(refusedNotice).toContain("no durable consumer");
+      expect(refusedNotice).toContain("receives none");
     });
 
     test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {

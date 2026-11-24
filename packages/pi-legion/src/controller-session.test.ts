@@ -205,6 +205,7 @@ test("a daemon-launched controller whose claim, answered 503, is refused naming 
     expect(run.lines.map(({ message }) => message)).toEqual([
       expect.stringContaining("was answered 503 at attempt 1"),
     ]);
+    // The row "… ready the daemon refuses with no stop begun exits at once" shows it posted.
     expect(run.posted).not.toContain("/legion/v1/claims/ready");
   } finally {
     run.stopSink();
@@ -246,6 +247,7 @@ test("a daemon-launched controller whose controller-topic subscription is refuse
     expect(run.subscriptions).toEqual(["notifications.legion.legion.controller"]);
     expect(run.exits).toEqual([]);
     expect(run.lines).toEqual([]);
+    // The row "… ready the daemon refuses with no stop begun exits at once" shows it posted.
     expect(run.posted).not.toContain("/legion/v1/claims/ready");
   } finally {
     run.stopSink();
@@ -349,12 +351,15 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
   }
 });
 
+// The control of the `claims/ready` absence in the stop rows above: a controller whose claim and
+// subscription land, with no stop begun, posts its ready.
 test("a daemon-launched controller whose ready the daemon refuses with no stop begun exits at once", async () => {
   const steps: string[] = [];
   const run = daemonLaunchedController({ ready: readyRefused, steps });
   try {
     await run.controller.handleSessionStart(run.context);
 
+    expect(run.posted).toContain("/legion/v1/claims/ready");
     expect(steps).toEqual(["exit 1"]);
     expect(run.lines.filter(({ level }) => level === "error")).toHaveLength(1);
   } finally {

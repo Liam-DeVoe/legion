@@ -118,15 +118,17 @@ function settled(): Promise<void> {
 
 /** The pane's claim, booted against a daemon that registers it and answers its ready with
  * `options.ready` (a 204 by default), with a first-turn bound of 0. Envoy's one bound instance
- * refuses each claim naming the session's stop (`RoleClaimStoppingError`), as pi-envoy's instance
- * does once its stop began; `reached` settles once a claim reached it. The host's stop is
- * `options.hostStop`; by default none has begun. Every exit the claim makes is recorded, in
- * `exits` and as `exit <code>` on `options.steps`, and `exited` settles at the first. */
+ * refuses each claim with `options.claimError`, by default naming the session's stop
+ * (`RoleClaimStoppingError`), as pi-envoy's instance does once its stop began; `reached` settles
+ * once a claim reached it. The host's stop is `options.hostStop`; by default none has begun.
+ * Every exit the claim makes is recorded, in `exits` and as `exit <code>` on `options.steps`, and
+ * `exited` settles at the first. */
 function pane(
   options: {
     readonly ready?: () => Response;
     readonly hostStop?: () => Promise<void> | undefined;
     readonly steps?: string[];
+    readonly claimError?: (role: string) => Error;
   } = {}
 ) {
   process.env.LEGION_BOOT_TOKEN = fixtureSecret("boot");
@@ -153,7 +155,7 @@ function pane(
     claim: async (_sessionID, role) => {
       claims.push(role);
       reached.resolve();
-      throw new RoleClaimStoppingError(role);
+      throw options.claimError?.(role) ?? new RoleClaimStoppingError(role);
     },
     subscribe: async () => undefined,
     sessionID: () => PANE_SESSION,
@@ -180,7 +182,8 @@ function pane(
 // The pane's stop has begun when its first-turn bound comes (R24 of dispatch://INFRA-3589): the
 // claim it would make exits nothing and writes nothing, so the stop's role release and DELETE
 // run to their end. Either the session's `session_shutdown` told the claim session so, or, in
-// RPC mode where a SIGTERM emits none, Envoy refused the claim naming the stop.
+// RPC mode where a SIGTERM emits none, Envoy refused the claim naming the stop. The control is
+// the row after these.
 describe("a claim whose session's stop has begun", () => {
   it("is not made once the session's shutdown stopped the claim session, and exits nothing", async () => {
     const { claim, context, claims, exits } = pane();
@@ -215,6 +218,28 @@ describe("a claim whose session's stop has begun", () => {
       expect(claims).toHaveLength(1);
       expect(exits).toEqual([]);
       expect(lines).not.toHaveBeenCalled();
+    } finally {
+      lines.mockRestore();
+    }
+  });
+});
+
+// The control of the rows above: the same claim, made at the bound with no stop begun, which
+// Envoy refuses for another reason. The pane says why on its log line and exits 1.
+describe("a claim with no stop begun", () => {
+  it("control: that Envoy refuses for another reason at the bound says why and exits 1", async () => {
+    const { claim, context, claims, exits, exited } = pane({
+      claimError: (role) => new Error(`Envoy role ${role} is held by live session ses_other`),
+    });
+    const lines = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await claim.bootstrap(context);
+      await exited;
+      await settled();
+
+      expect(claims).toHaveLength(1);
+      expect(exits).toEqual([1]);
+      expect(lines).toHaveBeenCalledTimes(1);
     } finally {
       lines.mockRestore();
     }

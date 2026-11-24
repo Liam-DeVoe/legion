@@ -37,15 +37,16 @@ describe("envoy OMP extension", () => {
   // The acceptance's row for #4140 (AcceptE2-2): a broker that answers no trade. Run it alone with
   // `bun test extensions/nats-broker-trade.test.ts -t 'a broker that answers no trade'` in
   // packages/pi-envoy.
-  // With the broker trade one retry loop per session (71dc1b565f), a broker that answers 503 is
-  // traded again at 15 s doubling to 5 minutes, and each caller waits on that loop within its own
-  // deadline. A pass of the session's registration holds several such callers: the listener calls
-  // (the pod's broker credential, since it holds no Envoy bearer) and the NATS dial's `ready` (20 s).
-  // Together they outlast the pass's 30 s deadline, so the queue abandons the task, and the notice
-  // says "a queued task did not settle within 30000ms and was abandoned", with no word of the
-  // trade. At 4ec0330624 the same pass names the failed trade. On the real stack (the acceptance's
-  // leak matrix) this was 12 rows whose trade cannot succeed: a broker refusing connections,
-  // answering 500 or a malformed token, an unreadable machine token.
+  // The broker trade is one retry loop per session: a broker that answers 503 is traded again at
+  // 15 s doubling to 5 minutes, and each caller waits on that loop within its own deadline. A pass
+  // of the session's registration holds several such callers: the listener calls (the pod's
+  // broker credential, since it holds no Envoy bearer) and the NATS dial's `ready` (20 s).
+  // Together they could outlast the pass's 30 s deadline. The queue would then abandon the task,
+  // and the notice would say "a queued task did not settle within 30000ms and was abandoned",
+  // with no word of the trade. The row requires that the pass ends inside its deadline and that
+  // its notice names the failed trade. The acceptance's leak matrix runs the same case on the real
+  // stack, for each trade that cannot succeed: a broker that refuses connections, a broker that
+  // answers 500 or a malformed token, and a machine token that cannot be read.
   test("a broker that answers no trade: the session's notice names the trade, and no pass is abandoned", async () => {
     // The pass deadline the story above names, 30 s, the deadline's floor (`MIN_PASS_DEADLINE_MS`),
     // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat. The

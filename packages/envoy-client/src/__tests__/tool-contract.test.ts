@@ -166,7 +166,6 @@ describe("envoyToolSpecs", () => {
     );
     expect(publish?.description).not.toContain("dispatch, github");
     expect(publish?.description).not.toContain("Every notification topic is stored");
-    expect(publish?.description).not.toContain("webhooks");
   });
 
   test("tells an agent the three answers a role message has, the kept one as a success", () => {

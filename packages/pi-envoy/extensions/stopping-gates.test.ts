@@ -160,26 +160,36 @@ test("control: a session_start registration that fails with no stop begun tells 
   }
 });
 
-// A session follows a topic, and its stop begins: the stop's DELETE is still on the wire when the
-// model calls `envoy_unsubscribe`. The tool is refused naming the stop. It sends the listener no
-// removal and writes no ledger entry.
-test("envoy_unsubscribe after the stop began sends nothing, writes no ledger entry, and is refused naming the stop", async () => {
-  const session = "ses_unsubscribe_while_stopping";
-  const topic = "notifications.dispatch.issue.DSP-9.>";
-  let stopBegan = false;
+/** Runs a session's stop (`shutdown`) to its end, answering its DELETE once the session's fetch
+ *  holds it on the wire (`heldDeletes`). */
+async function stopAnsweringDelete(
+  shutdown: () => unknown,
+  heldDeletes: (() => void)[]
+): Promise<void> {
+  const stopping = shutdown();
+  await until(() => heldDeletes.length > 0, "the stop's deregistration on the wire");
+  for (const answer of heldDeletes.splice(0)) answer();
+  await stopping;
+}
+
+/**
+ * A session of a fresh instance of the entry (the `query` tag) that follows `topic`. Its fetch
+ * records each request on `fetched`, method first, and holds the stop's DELETE on the wire
+ * (`heldDeletes`), so that the stop still runs when a row calls a tool.
+ */
+async function followingSession(query: string, session: string, topic: string) {
   const heldDeletes: (() => void)[] = [];
-  const afterStop: string[] = [];
+  const fetched: string[] = [];
   globalThis.fetch = async (input, init) => {
     const path = new URL(input.toString()).pathname;
-    if (stopBegan) afterStop.push(`${init?.method ?? "GET"} ${path}`);
-    // The stop's last call, held so that the stop still runs when the tool is called.
+    fetched.push(`${init?.method ?? "GET"} ${path}`);
     if (init?.method === "DELETE" && path === `/v1/sessions/${session}`) {
       await heldOn(heldDeletes);
     }
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-while-stopping");
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const notifications: string[] = [];
   const context = host(session, [], [], notifications);
@@ -190,34 +200,78 @@ test("envoy_unsubscribe after the stop began sends nothing, writes no ledger ent
     if (found === undefined) throw new Error(`${name} was not registered`);
     return found;
   };
-  const ledgerEntries = () =>
-    fixture.entries.filter(
-      (entry) => "customType" in entry && entry.customType === REPLAY_STATE_ENTRY
-    ).length;
+  expect((await tool("envoy_subscribe").execute("", { topics: [topic] })).isError).toBeFalsy();
+  return {
+    fixture,
+    context,
+    notifications,
+    fetched,
+    heldDeletes,
+    unsubscribe: () => tool("envoy_unsubscribe").execute("", { topics: [topic] }),
+    ledgerEntries: () =>
+      fixture.entries.filter(
+        (entry) => "customType" in entry && entry.customType === REPLAY_STATE_ENTRY
+      ).length,
+  };
+}
 
+// A session follows a topic, and its stop begins: the stop's DELETE is still on the wire when the
+// model calls `envoy_unsubscribe`. The tool is refused naming the stop. It sends the listener no
+// removal and writes no ledger entry. The control row after it is the same call with no stop
+// begun.
+test("envoy_unsubscribe after the stop began sends nothing, writes no ledger entry, and is refused naming the stop", async () => {
+  const session = "ses_unsubscribe_while_stopping";
+  const run = await followingSession(
+    "unsubscribe-while-stopping",
+    session,
+    "notifications.dispatch.issue.DSP-9.>"
+  );
   try {
-    expect((await tool("envoy_subscribe").execute("", { topics: [topic] })).isError).toBeFalsy();
-    stopBegan = true;
-    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
-    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
-    const ledgerWritten = ledgerEntries();
-    const notified = notifications.length;
+    const beforeStop = run.fetched.length;
+    const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
+    await until(() => run.heldDeletes.length === 1, "the stop's deregistration on the wire");
+    const ledgerWritten = run.ledgerEntries();
+    const notified = run.notifications.length;
 
-    const refused = await tool("envoy_unsubscribe").execute("", { topics: [topic] });
+    const refused = await run.unsubscribe();
     await settle();
 
     expect(refused).toMatchObject({
       isError: true,
       content: [{ type: "text", text: "this session is stopping, so it unsubscribes nothing" }],
     });
-    expect(afterStop).toEqual([`DELETE /v1/sessions/${session}`]);
-    expect(ledgerEntries()).toBe(ledgerWritten);
-    expect(notifications.slice(notified)).toEqual([]);
-    for (const answer of heldDeletes.splice(0)) answer();
+    expect(run.fetched.slice(beforeStop)).toEqual([`DELETE /v1/sessions/${session}`]);
+    expect(run.ledgerEntries()).toBe(ledgerWritten);
+    expect(run.notifications.slice(notified)).toEqual([]);
+    for (const answer of run.heldDeletes.splice(0)) answer();
     await stopping;
   } finally {
-    for (const answer of heldDeletes.splice(0)) answer();
-    await fixture.handlers.get("session_shutdown")?.({}, context);
+    for (const answer of run.heldDeletes.splice(0)) answer();
+    await run.fixture.handlers.get("session_shutdown")?.({}, run.context);
+  }
+});
+
+test("control: envoy_unsubscribe with no stop begun sends the removal and writes a ledger entry", async () => {
+  const run = await followingSession(
+    "unsubscribe-no-stop",
+    "ses_unsubscribe_no_stop",
+    "notifications.dispatch.issue.DSP-9.>"
+  );
+  try {
+    const before = run.fetched.length;
+    const ledgerWritten = run.ledgerEntries();
+
+    const removed = await run.unsubscribe();
+    await settle();
+
+    expect(removed.isError).toBeFalsy();
+    expect(run.fetched.slice(before)).toContain("POST /v1/interests/unsubscribe");
+    expect(run.ledgerEntries()).toBeGreaterThan(ledgerWritten);
+  } finally {
+    await stopAnsweringDelete(
+      () => run.fixture.handlers.get("session_shutdown")?.({}, run.context),
+      run.heldDeletes
+    );
   }
 });
 
@@ -402,57 +456,91 @@ async function failure(call: Promise<void>): Promise<unknown> {
   );
 }
 
-// The Legion controller claims its role, and its session's stop begins: the stop's DELETE is
-// still on the wire when the controller asks for its controller topic for as long as it holds the
-// role. The subscription is refused in the claim's words (`RoleClaimStoppingError`), which the
-// controller reads as its session's stop, and nothing is registered for it.
-test("a role-bound notice subscription after the stop began is refused naming the stop and registers nothing", async () => {
-  const session = "ses_subscribe_while_stopping";
-  const role = "legion-acme-controller";
-  const notice = "notifications.legion.ACME.controller";
-  let stopBegan = false;
+/** The role and the controller topic the Legion controller's rows below claim and subscribe. */
+const CONTROLLER_ROLE = "legion-acme-controller";
+const CONTROLLER_NOTICE = "notifications.legion.ACME.controller";
+
+/**
+ * A session of a fresh instance of the entry (the `query` tag) that holds `CONTROLLER_ROLE`. Its
+ * fetch records each request on `fetched`, method first, and holds the stop's DELETE on the wire
+ * (`heldDeletes`), so that the stop still runs when the subscription is asked for.
+ */
+async function controllerSession(query: string, session: string) {
   const heldDeletes: (() => void)[] = [];
-  const afterStop: string[] = [];
+  const fetched: string[] = [];
   globalThis.fetch = async (input, init) => {
     const path = new URL(input.toString()).pathname;
-    if (stopBegan) afterStop.push(`${init?.method ?? "GET"} ${path}`);
+    fetched.push(`${init?.method ?? "GET"} ${path}`);
     if (path === "/v1/roles/set") {
       return response({
         session_id: session,
         machine_id: "test",
         dir: "/tmp/envoy-omp-test",
-        topics: [`notifications.role.${role}`],
+        topics: [`notifications.role.${CONTROLLER_ROLE}`],
       });
     }
-    // The stop's last call, held so that the stop still runs when the subscription is asked for.
     if (init?.method === "DELETE" && path === `/v1/sessions/${session}`) {
       await heldOn(heldDeletes);
     }
     return responseWithRegistration(input, init, {});
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
-  const { default: envoyExtension } = await import("./envoy.ts?subscribe-while-stopping");
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const context = host(session, [], [], []);
   envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
+  await claimEnvoyRole(session, CONTROLLER_ROLE, context);
+  return {
+    fixture,
+    context,
+    fetched,
+    heldDeletes,
+    subscribe: () => subscribeLegionNotice(session, CONTROLLER_NOTICE, context, CONTROLLER_ROLE),
+    registrations: (since: number) =>
+      fetched.slice(since).filter((call) => call.endsWith("/v1/interests/subscribe")),
+  };
+}
 
+// The Legion controller claims its role, and its session's stop begins: the stop's DELETE is
+// still on the wire when the controller asks for its controller topic for as long as it holds the
+// role. The subscription is refused in the claim's words (`RoleClaimStoppingError`), which the
+// controller reads as its session's stop, and nothing is registered for it. The control row after
+// it asks for the same subscription with no stop begun.
+test("a role-bound notice subscription after the stop began is refused naming the stop and registers nothing", async () => {
+  const run = await controllerSession("subscribe-while-stopping", "ses_subscribe_while_stopping");
   try {
-    await claimEnvoyRole(session, role, context);
-    stopBegan = true;
-    const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
-    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+    const beforeStop = run.fetched.length;
+    const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
+    await until(() => run.heldDeletes.length === 1, "the stop's deregistration on the wire");
 
-    const refused = await failure(subscribeLegionNotice(session, notice, context, role));
+    const refused = await failure(run.subscribe());
     await settle();
 
     expect(claimRefusedForStop(refused)).toBe(true);
-    expect(afterStop.filter((call) => call.endsWith("/v1/interests/subscribe"))).toEqual([]);
-    for (const answer of heldDeletes.splice(0)) answer();
+    expect(run.registrations(beforeStop)).toEqual([]);
+    for (const answer of run.heldDeletes.splice(0)) answer();
     await stopping;
   } finally {
-    for (const answer of heldDeletes.splice(0)) answer();
-    await fixture.handlers.get("session_shutdown")?.({}, context);
+    for (const answer of run.heldDeletes.splice(0)) answer();
+    await run.fixture.handlers.get("session_shutdown")?.({}, run.context);
+  }
+});
+
+test("control: a role-bound notice subscription with no stop begun registers", async () => {
+  const run = await controllerSession("subscribe-no-stop", "ses_subscribe_no_stop");
+  try {
+    const before = run.fetched.length;
+
+    await run.subscribe();
+    await settle();
+
+    expect(run.registrations(before)).not.toEqual([]);
+  } finally {
+    await stopAnsweringDelete(
+      () => run.fixture.handlers.get("session_shutdown")?.({}, run.context),
+      run.heldDeletes
+    );
   }
 });
 

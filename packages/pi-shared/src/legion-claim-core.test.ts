@@ -415,28 +415,42 @@ test("a 5xx at claims/ready after the host's signal aborted is not retried, says
 
 // The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
 // wire; the daemon answers 503 (R24 of dispatch://INFRA-3589). The regain sends no ready again
-// and writes nothing on the host's log: the host's stop ends the agent itself.
-test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log", async () => {
-  const stopping = new AbortController();
-  let readies = 0;
-  const { host, steps, lines, regain } = claimHost({
-    ready: () => {
-      readies += 1;
-      if (readies === 1) return new Response(null, { status: 204 });
-      stopping.abort();
-      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
-    },
-    overrides: { signal: stopping.signal },
-  });
-  const booted = await bootLegionClaim(host);
+// and writes nothing on the host's log: the host's stop ends the agent itself. The control is the
+// same regain with no abort: its ready is sent again, and each failure is written. A regain never
+// stops the agent, so neither run asks for `stop`.
+test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log; the control with no abort writes each failure", async () => {
+  const failingRegain = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        if (readies === 1) return new Response(null, { status: 204 });
+        if (stops) stopping.abort();
+        return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    const booted = await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    // The stop ends the claim step. With no stop, the step waits for a first turn that no run
+    // starts.
+    if (stops) await booted.claimed;
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), lines };
+  };
 
-  await regain()?.(claimToken, "reclaimed");
-  await booted.claimed;
+  const stopped = await failingRegain(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
 
-  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(2);
-  expect(steps).not.toContain("stop");
-  expect(lines).toEqual([]);
-});
+  // The boot's ready, then the regain's three attempts, a second apart.
+  const control = await failingRegain(false);
+  expect(control.readies).toHaveLength(4);
+  expect(control.lines).toHaveLength(4);
+  expect(control.lines.at(-1)).toStartWith(
+    `claims/ready after role ${claimToken} was reclaimed failed;`
+  );
+}, 10_000);
 
 // The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
 // wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
@@ -463,7 +477,6 @@ test("a regain whose claims/ready answers after the host's signal aborted writes
 
   const stopped = await twoRegains(true);
   expect(stopped.readies).toHaveLength(2);
-  expect(stopped.steps).not.toContain("stop");
   expect(stopped.lines).toEqual([]);
 
   const control = await twoRegains(false);

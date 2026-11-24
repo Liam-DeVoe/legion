@@ -19,6 +19,11 @@ import { natsState, settle, until, useExtensionHarness } from "../test/extension
 
 useExtensionHarness();
 
+/** What a restored card says of a session that received nothing before it. Row (e) of the pane
+ *  and the log finds it in no card after a bus-outage 503; the row of a relay open that still
+ *  fails past the bound finds it in the card after that outage, which left the session nothing. */
+const RECEIVED_NOTHING = /receive[sd]? nothing/;
+
 describe("consumer delivery", () => {
   // A refusal is the whole of a session's inbound: nothing else reaches it, so the session must
   // say so and keep asking rather than run on quietly deaf.
@@ -112,7 +117,11 @@ describe("consumer delivery", () => {
       natsState.failConnects = 0;
       setSystemTime(new Date(pastBound + 30_000));
       await session.tick();
-      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+      const restored = session.cards("Envoy inbound restored");
+      expect(restored).toHaveLength(1);
+      // The control of row (e)'s absence below: this outage left the session nothing, so its
+      // restored card says that the session received nothing.
+      expect(restored[0]?.content).toMatch(RECEIVED_NOTHING);
       expect(
         session.notifications.filter((message) => message.includes("inbound messages are back"))
       ).toHaveLength(1);
@@ -160,16 +169,14 @@ describe("consumer delivery", () => {
       expect(found()).toEqual([
         "warn envoy: a registration found that this session holds no relay subject, because its relay subject could not be opened: CONNECTION_REFUSED",
       ]);
-      expect(logged.filter((line) => /receive[sd]? nothing/.test(line))).toEqual([]);
+      expect(logged.filter((line) => RECEIVED_NOTHING.test(line))).toEqual([]);
       expect(told()).toEqual({ cards: 0, notes: 0 });
-      expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
 
       // A later registration of the same outage, inside the bound, logs nothing more.
       setSystemTime(new Date(start + 15_000));
       await session.tickWithoutNats();
       expect(found()).toHaveLength(1);
       expect(told()).toEqual({ cards: 0, notes: 0 });
-      expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
 
       // Past the bound the session is told once: the notice's card, its pane note, and its own
       // log line.
@@ -199,6 +206,10 @@ describe("consumer delivery", () => {
     const told = session.cards("Envoy inbound unavailable");
     expect(told).toHaveLength(1);
     expect(told[0]?.content).toContain("no_grant");
+    // The control of row (e)'s absences below: a refusal leaves the session no consumer, and the
+    // card says so.
+    expect(told[0]?.content).toContain("no durable consumer");
+    expect(told[0]?.content).toContain("receives none");
     expect(
       session.notifications.filter((message) =>
         message.includes("inbound messages are unavailable (")
@@ -378,7 +389,7 @@ describe("consumer delivery", () => {
       expect(restored[0]?.content).toContain(
         "The listener recorded a registration of this session"
       );
-      expect(restored[0]?.content).not.toMatch(/receive[sd]? nothing/);
+      expect(restored[0]?.content).not.toMatch(RECEIVED_NOTHING);
       expect(session.notifications).toContain(
         "envoy: the listener recorded a registration of this session"
       );
@@ -392,20 +403,31 @@ describe("consumer delivery", () => {
     }
   });
 
-  // Row (d) of check l23, for this plugin (R24 of dispatch://INFRA-3589): a session that stops
-  // while a heartbeat's pass waits behind a registration on the wire is told nothing. Its stop
-  // closes the relay on purpose and deletes the record next, so no registration runs once the
-  // stop began (`sendRegistration`), and the pass that waited decides nothing and says nothing.
-  test("(d) a session that stops while a heartbeat's registration waits behind one on the wire sends no registration after the stop began and is told nothing", async () => {
-    const session = await bootConsumer("consumer-stop-behind-registration");
-    // A session event's pass registers, and the listener holds that registration on the wire.
+  /**
+   * A session whose listener holds a session event's registration on the wire (`release` lets it
+   * go), with a heartbeat's pass queued behind it. `navigating` settles once the session event's
+   * pass ends.
+   */
+  async function heartbeatBehindHeldRegistration(query: string) {
+    const session = await bootConsumer(query);
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
     await until(() => session.registrations.length > asked, "the held registration");
-    // The heartbeat's pass queues behind it.
     session.beat();
     await settle();
+    return { session, navigating };
+  }
+
+  // Row (d) of check l23, for this plugin (R24 of dispatch://INFRA-3589): a session that stops
+  // while a heartbeat's pass waits behind a registration on the wire is told nothing. Its stop
+  // closes the relay on purpose and deletes the record next, so no registration runs once the
+  // stop began (`sendRegistration`), and the pass that waited decides nothing and says nothing.
+  // The control row after it is the same wait with no stop begun.
+  test("(d) a session that stops while a heartbeat's registration waits behind one on the wire sends no registration after the stop began and is told nothing", async () => {
+    const { session, navigating } = await heartbeatBehindHeldRegistration(
+      "consumer-stop-behind-registration"
+    );
     const notified = session.notifications.length;
 
     // The session stops: the stop closes the relay, then waits out the registration on the wire,
@@ -426,11 +448,29 @@ describe("consumer delivery", () => {
     expect(session.notifications.slice(notified)).toEqual([]);
   });
 
+  test("control: with no stop begun, a heartbeat's pass that waits behind a registration on the wire registers once that one is answered", async () => {
+    const { session, navigating } = await heartbeatBehindHeldRegistration(
+      "consumer-beat-behind-registration"
+    );
+    try {
+      const sent = session.registrations.length;
+      session.release();
+      await navigating;
+      await until(() => session.registrations.length > sent, "the heartbeat's registration");
+      await settle();
+
+      expect(session.registrations).toHaveLength(sent + 1);
+    } finally {
+      await session.stop();
+    }
+  });
+
   // The outage report's own rule says that a stopping session is told nothing
   // (`inboundUnavailable`'s `stopping`), since the refusal of every registration once the stop
   // began does not reach this case: a registration already on the wire when the stop began is
   // answered during it, and its refusal says nothing about what a session whose record is deleted
-  // next receives.
+  // next receives. A stopping host is never settled, so a notice raised then would be held
+  // (`heldNotices`): the control row after it shows a notice held.
   test("a registration on the wire when the stop began and refused during it tells the session nothing", async () => {
     const session = await bootConsumer("consumer-stop-refused-on-wire");
     session.hold();
@@ -449,5 +489,21 @@ describe("consumer delivery", () => {
     expect(session.cards("Envoy inbound unavailable")).toEqual([]);
     expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
     expect(session.notifications.slice(notified)).toEqual([]);
+  });
+
+  // The control of the held notices the two rows above find none of: the same refusal, answered
+  // while the host streams a turn and so is not settled, with no stop begun. The notice is held,
+  // and recorded in the transcript, rather than handed as a card.
+  test("control: a refusal told while the host is not settled holds its notice", async () => {
+    const session = await bootConsumer("consumer-refused-unsettled", {
+      refuse: { status: 409, reason: "not_requested" },
+      turn: "streaming",
+    });
+    try {
+      expect(session.heldNotices("Envoy inbound unavailable")).toHaveLength(1);
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+    } finally {
+      await session.stop();
+    }
   });
 });

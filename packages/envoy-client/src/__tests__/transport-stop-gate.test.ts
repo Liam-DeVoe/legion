@@ -56,6 +56,17 @@ function listener() {
         delivery: consumerDelivery(SESSION),
       });
     }
+    if (path === "/v1/roles/set" || path === `/v1/interests/${SESSION}`) {
+      return Response.json({
+        session_id: SESSION,
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.reviewer"],
+      });
+    }
+    if (path === "/v1/roles/reviewer") {
+      return Response.json({ role: "reviewer", holder: SESSION, last_seen: 1 });
+    }
     if (path === "/v1/messages/send") return Response.json({ ...ENVELOPE, recipient: "ses_peer" });
     if (path === "/v1/messages/publish") return Response.json(ENVELOPE);
     return new Response("ok");
@@ -83,6 +94,7 @@ async function refusal(call: Promise<unknown>): Promise<unknown> {
 }
 
 describe("the stop gate", () => {
+  // The control row at the end of this block makes the same five calls with no stop reading.
   test("once the stop has begun, a registration, an unsubscribe, a role set, a role get and an interest read each refuse before any fetch, naming the stop", async () => {
     const { client, fetched } = stoppedClient();
 
@@ -232,7 +244,16 @@ describe("the stop gate", () => {
 
     await client.subscribe(REGISTRATION);
     await client.unsubscribe({ sessionID: SESSION, topics: ["notifications.slack.x"] });
+    await client.setRole({ sessionID: SESSION, role: "reviewer", soft: true });
+    await client.getRole("reviewer");
+    await client.getInterest(SESSION);
 
-    expect(fetched).toEqual(["POST /v1/interests/subscribe", "POST /v1/interests/unsubscribe"]);
+    expect(fetched).toEqual([
+      "POST /v1/interests/subscribe",
+      "POST /v1/interests/unsubscribe",
+      "POST /v1/roles/set",
+      "GET /v1/roles/reviewer",
+      `GET /v1/interests/${SESSION}`,
+    ]);
   });
 });

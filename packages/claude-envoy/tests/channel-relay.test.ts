@@ -217,7 +217,9 @@ test("a relay socket dialled with the session's stop reading opens no socket aga
 
 // A relay socket a reopen opened (`channelReopener`) holds the server's stop reading and writes
 // its lines through the server's tell gate, for its whole life: once the stop has begun, a close
-// from the listener opens no socket again and its line is dropped.
+// from the listener opens no socket again and its line is dropped. The row's first close comes
+// with no stop begun, so its line is written and the socket opens again: the control of the
+// absence after the stop.
 test("a reopened relay socket opens no socket again and writes nothing on stderr once the server's stop has begun", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())
@@ -247,12 +249,22 @@ test("a reopened relay socket opens no socket again and writes nothing on stderr
     const reopened = await reopen(() => undefined)
     started.push(() => reopened.connection.close())
 
+    server.close(1012, "listener_stopping")
+    await waitFor(
+      async () => server.upgrades.length === 2 && server.sockets(SESSION) === 1,
+      "the relay socket opened again",
+    )
+    const beforeStop = written.filter((line) => line.startsWith("envoy-channel:"))
+    expect(beforeStop).toContainEqual(
+      expect.stringContaining(`the listener's relay socket for ${SESSION} closed (`),
+    )
+
     stopping = true
     server.close(1012, "listener_stopping")
     await waitFor(async () => reopened.connection.isClosed(), "the relay socket closed for good")
 
-    expect(server.upgrades).toHaveLength(1)
-    expect(written.filter((line) => line.startsWith("envoy-channel:"))).toEqual([])
+    expect(server.upgrades).toHaveLength(2)
+    expect(written.filter((line) => line.startsWith("envoy-channel:"))).toEqual(beforeStop)
   } finally {
     stderr.mockRestore()
   }

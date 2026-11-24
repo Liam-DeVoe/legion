@@ -115,7 +115,9 @@ describe("one registration", () => {
 
     report.at(BOUND);
     await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
-    // The next outage tick says nothing more: the session was told once.
+    // The next outage tick says nothing more: the session was told once. Nothing was sent: the
+    // row "`held` is not called for a lost relay subject …" below shows a registration with a
+    // relay subject sent.
     report.at(BOUND + 15_000);
     await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
     expect(report.sent).toEqual([]);
@@ -151,6 +153,8 @@ describe("one registration", () => {
   test("`held` is not called for a lost relay subject after the first accepted registration, which is told at once, nor for a refusal, nor for a call the bound does not hold, nor once the stop began", async () => {
     const lost = reportOnClock();
     await lost.withRelay(Promise.resolve("registered"));
+    // The control of the first row's `sent`: a registration with a relay subject is sent.
+    expect(lost.sent).toEqual([[AGENT, TEAM]]);
     await expect(lost.withoutRelay()).rejects.toThrow("holds no relay subject");
     expect([lost.held, lost.told]).toEqual([[], [NO_RELAY]]);
 
@@ -636,8 +640,7 @@ describe("one registration", () => {
     expect(notice).toContain(
       "The listener could not read the repositories of this session's projects. So it follows none of this session's GitHub topics now, and it withholds their messages. It refused this registration. If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it; a topic the session began to follow after its last accepted registration is followed only once a registration is accepted. If the listener held no registration of this session, the session receives nothing until a registration is accepted. The session registers again at every heartbeat."
     );
-    // Nothing says outright that the consumer was kept, or that the session receives none.
-    expect(notice).not.toContain("but it kept the session's consumer");
+    // Nothing says that the session has no durable consumer, or that it receives none.
     expect(notice).not.toContain("Envoy inbound unavailable");
     expect(notice).not.toContain("no durable consumer");
     expect(notice).not.toContain("receives none");

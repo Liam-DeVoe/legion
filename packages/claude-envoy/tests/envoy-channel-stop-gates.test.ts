@@ -56,11 +56,13 @@ function held(): { readonly promise: Promise<void>; readonly resolve: () => void
 /** The Legion claim's first-turn bound in the row below (`LEGION_CLAIM_FIRST_TURN_BOUND_MS`). */
 const BOUND_MS = 300
 
-// A Legion pane's claim boot registers and says ready, and the claim waits for the first turn or
-// its bound. The server's stop begins before either: it aborts the boot's signal, and its
-// shutdown's DELETE is still on the wire when the bound would have come. The bound does not fire:
-// the claim sends no role claim and writes no role record.
-test("the Legion claim's bound firing during shutdown() sends no claim and writes no role record", async () => {
+/**
+ * A Legion pane's claim boot, which registers and says ready, then waits for the first turn or its
+ * bound (`BOUND_MS`). No turn starts: only the bound can claim here. The session's client records
+ * each call on `calls`, and holds the shutdown's DELETE on the wire until `deleting` resolves.
+ * `booting` is the server's stop reading, and `claimToken` is the role the daemon registered.
+ */
+async function boundClaim() {
   const session = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
   const stateDirectory = scratchState()
   const configDir = scratchState()
@@ -104,11 +106,29 @@ test("the Legion claim's bound firing during shutdown() sends no claim and write
     signal: booting.signal,
     log: () => undefined,
     stop: () => undefined,
-    // No turn starts: only the bound can claim here.
     onFirstTurn: () => undefined,
     env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(BOUND_MS) },
     pollMs: 5,
   })
+  return {
+    session,
+    stateDirectory,
+    booting,
+    deleting,
+    calls,
+    channel,
+    claim,
+    claimToken: String(registered["claimToken"]),
+  }
+}
+
+// A Legion pane's claim boot registers and says ready, and the claim waits for the first turn or
+// its bound. The server's stop begins before either: it aborts the boot's signal, and its
+// shutdown's DELETE is still on the wire when the bound would have come. The bound does not fire:
+// the claim sends no role claim and writes no role record. The control row after it is the same
+// claim with no stop begun.
+test("the Legion claim's bound firing during shutdown() sends no claim and writes no role record", async () => {
+  const { session, stateDirectory, booting, deleting, calls, channel, claim } = await boundClaim()
   let stopping: Promise<void> | undefined
   try {
     await claim.booted
@@ -137,12 +157,31 @@ test("the Legion claim's bound firing during shutdown() sends no claim and write
   }
 })
 
-// A session follows a topic, and its stop begins: the shutdown's DELETE is still on the wire when
-// the topic is unfollowed. The session drops nothing and sends no removal, as `follow` adds
-// nothing once the stop has begun.
-test("unfollow once the stop has begun drops nothing and sends no removal", async () => {
-  const session = "ses_unfollow_while_stopping"
-  const topic = "notifications.dispatch.issue.DSP-7.>"
+test("control: the Legion claim's bound firing with no stop begun sends the claim and writes the role record", async () => {
+  const { session, stateDirectory, booting, deleting, calls, channel, claim, claimToken } =
+    await boundClaim()
+  try {
+    await claim.booted
+    // The claim step answers once the bound fired and the claim ran.
+    await claim.claimed
+
+    expect(calls.filter((call) => call.startsWith("setRole"))).toEqual([
+      `setRole ${session} ${claimToken} soft`,
+    ])
+    expect(await readPersistedRole(roleStateFile(stateDirectory, session))).toMatchObject({
+      session_id: session,
+      role: claimToken,
+    })
+  } finally {
+    booting.abort()
+    deleting.resolve()
+    await channel.shutdown()
+  }
+})
+
+/** A session that follows `topic`, whose client records each call on `calls` and holds the
+ *  shutdown's DELETE on the wire until `deleting` resolves. */
+async function followingSession(session: string, topic: string) {
   const deleting = held()
   const calls: string[] = []
   const client = recordingClient(calls, {
@@ -154,9 +193,19 @@ test("unfollow once the stop has begun drops nothing and sends no removal", asyn
   const channel = await startChannelSession(
     sessionOptions(new SessionIdentity(session, "/tmp"), scratchState(), { client }),
   )
+  expect(await channel.follow([topic])).not.toEqual([])
+  return { deleting, calls, channel }
+}
+
+// A session follows a topic, and its stop begins: the shutdown's DELETE is still on the wire when
+// the topic is unfollowed. The session drops nothing and sends no removal, as `follow` adds
+// nothing once the stop has begun. The control row after it unfollows with no stop begun.
+test("unfollow once the stop has begun drops nothing and sends no removal", async () => {
+  const session = "ses_unfollow_while_stopping"
+  const topic = "notifications.dispatch.issue.DSP-7.>"
+  const { deleting, calls, channel } = await followingSession(session, topic)
   let stopping: Promise<void> | undefined
   try {
-    expect(await channel.follow([topic])).not.toEqual([])
     stopping = channel.shutdown()
     await waitFor(async () => calls.includes(`unregister ${session}`), "the stop's DELETE")
     const before = calls.length
@@ -173,10 +222,33 @@ test("unfollow once the stop has begun drops nothing and sends no removal", asyn
   }
 })
 
-// A `/clear` moves the session to a new id, and the heartbeat takes the role back from the old
-// id's record: the claim lands, the old record is removed, and the new one is written. The stop
-// begins while that removal runs. The new record is not written.
-test("a role restore whose removal of the old record the stop overtakes writes no new record", async () => {
+test("control: unfollow with no stop begun drops the topic and sends its removal", async () => {
+  const session = "ses_unfollow_no_stop"
+  const topic = "notifications.dispatch.issue.DSP-7.>"
+  const { deleting, calls, channel } = await followingSession(session, topic)
+  try {
+    const before = calls.length
+
+    const removed = await channel.unfollow([topic])
+    await settled()
+
+    // A wildcard follow covers its base subject too, and the removal drops both.
+    expect(removed).toContain(topic)
+    expect(calls.slice(before)).toEqual([`unsubscribe ${session} ${removed.join(",")}`])
+  } finally {
+    deleting.resolve()
+    await channel.shutdown()
+  }
+})
+
+/**
+ * A session `ses_old` whose role record names `reviewer`, and which a `/clear` moves to
+ * `ses_new` (`clear`): the heartbeat takes the role back from the old id's record, the claim
+ * lands, the old record is removed, and the new one is written. `removing` settles when the
+ * removal of the old record starts. Where `stopAtRemoval` is set, the server's stop begins then:
+ * the server's stop aborts the start signal, which is the session's stop reading.
+ */
+async function roleRestore(stopAtRemoval: boolean) {
   const stateDirectory = scratchState()
   const booting = new AbortController()
   const options = sessionOptions(new SessionIdentity("ses_old", "/tmp"), stateDirectory, {
@@ -191,7 +263,6 @@ test("a role restore whose removal of the old record the stop overtakes writes n
     startSignal: booting.signal,
   })
   const oldRecord = roleStateFile(stateDirectory, "ses_old")
-  const newRecord = roleStateFile(stateDirectory, "ses_new")
   await mkdir(dirname(oldRecord), { recursive: true })
   await writePersistedRole(oldRecord, {
     session_id: "ses_old",
@@ -200,62 +271,132 @@ test("a role restore whose removal of the old record the stop overtakes writes n
   })
   const handoff = sessionHandoffFile(stateDirectory, 881)
   await writeSessionHandoff(handoff, "ses_old")
-  // The removal of the old record begins the stop as it starts: the server's stop aborts the
-  // start signal, which is the session's stop reading.
   const realRm = fsPromises.rm
   const removing = held()
   const remove = spyOn(fsPromises, "rm").mockImplementation(async (path, rmOptions) => {
     if (String(path) === oldRecord) {
-      booting.abort()
+      if (stopAtRemoval) booting.abort()
       removing.resolve()
     }
     return realRm(path, rmOptions)
   })
   const channel = await startChannelSession(options)
+  return {
+    booting,
+    channel,
+    removing: removing.promise,
+    newRecord: roleStateFile(stateDirectory, "ses_new"),
+    clear: () => writeSessionHandoff(handoff, "ses_new"),
+    restore: () => remove.mockRestore(),
+  }
+}
+
+// A `/clear` moves the session to a new id, and the heartbeat takes the role back from the old
+// id's record: the claim lands, the old record is removed, and the new one is written. The stop
+// begins while that removal runs. The new record is not written. The control row after it is the
+// same restore with no stop begun.
+test("a role restore whose removal of the old record the stop overtakes writes no new record", async () => {
+  const run = await roleRestore(true)
   try {
-    await writeSessionHandoff(handoff, "ses_new")
-    await removing.promise
-    await channel.shutdown()
+    await run.clear()
+    await run.removing
+    await run.channel.shutdown()
     await settled()
 
-    expect(await readPersistedRole(newRecord)).toBeUndefined()
+    expect(await readPersistedRole(run.newRecord)).toBeUndefined()
   } finally {
-    remove.mockRestore()
-    booting.abort()
-    await channel.shutdown()
+    run.restore()
+    run.booting.abort()
+    await run.channel.shutdown()
   }
 })
 
-// The server's stop begins while the session still starts, after the start's connection
-// confirmed its subscriptions: the start's first registration is being built. Nothing of the
-// start goes on after it: no registration is sent, no role is claimed back from the session's
-// record, and the record is left as it was.
-test("a stop that begins after the start's flush registers nothing, claims nothing and writes no role record", async () => {
-  const session = "ses_stopped_while_starting"
+test("control: a role restore with no stop begun writes the new id's record", async () => {
+  const run = await roleRestore(false)
+  try {
+    await run.clear()
+    await run.removing
+    await waitFor(
+      async () => (await readPersistedRole(run.newRecord)) !== undefined,
+      "the new id's role record",
+    )
+
+    expect(await readPersistedRole(run.newRecord)).toMatchObject({
+      session_id: "ses_new",
+      role: "reviewer",
+    })
+  } finally {
+    run.restore()
+    run.booting.abort()
+    await run.channel.shutdown()
+  }
+})
+
+/**
+ * The start of session `session`, whose role record names `reviewer` under another process: a
+ * process holding no role takes such a record back at its start. The client records each call on
+ * `calls`. Where `stopAtTitle` is set, the server's stop lands as the start's first registration is
+ * built, when the title is read. `written` is the record as the row wrote it, and `ours` is that
+ * record once this process holds it.
+ */
+async function startWithForeignRecord(session: string, stopAtTitle: boolean) {
   const stateDirectory = scratchState()
   const record = roleStateFile(stateDirectory, session)
   await mkdir(dirname(record), { recursive: true })
-  // A record another process wrote, which a process holding no role takes back at its start.
   const written = { session_id: session, role: "reviewer", client_instance_id: "another-process" }
   await writePersistedRole(record, written)
   const booting = new AbortController()
   const calls: string[] = []
-  const channel = await startChannelSession(
-    sessionOptions(new SessionIdentity(session, "/tmp"), stateDirectory, {
-      client: recordingClient(calls),
-      startSignal: booting.signal,
-      // The title is read as the first registration is built: the server's stop lands then.
-      title: () => {
-        booting.abort()
-        return ""
-      },
-    }),
+  const options = sessionOptions(new SessionIdentity(session, "/tmp"), stateDirectory, {
+    client: recordingClient(calls),
+    startSignal: booting.signal,
+    title: () => {
+      if (stopAtTitle) booting.abort()
+      return ""
+    },
+  })
+  const channel = await startChannelSession(options)
+  return {
+    record,
+    written,
+    ours: { ...written, client_instance_id: options.clientInstanceID },
+    calls,
+    channel,
+  }
+}
+
+// The server's stop begins while the session still starts, after the start's connection
+// confirmed its subscriptions: the start's first registration is being built. Nothing of the
+// start goes on after it: no registration is sent, no role is claimed back from the session's
+// record, and the record is left as it was. The control row after it is the same start with no
+// stop begun.
+test("a stop that begins after the start's flush registers nothing, claims nothing and writes no role record", async () => {
+  const { record, written, calls, channel } = await startWithForeignRecord(
+    "ses_stopped_while_starting",
+    true,
   )
   try {
     expect(
       calls.filter((call) => call.startsWith("subscribe") || call.startsWith("setRole")),
     ).toEqual([])
     expect(await readPersistedRole(record)).toEqual(written)
+  } finally {
+    await channel.shutdown()
+  }
+})
+
+test("control: a start with no stop begun registers, claims the record's role back and writes the record", async () => {
+  const session = "ses_started_no_stop"
+  const { record, ours, calls, channel } = await startWithForeignRecord(session, false)
+  try {
+    await waitFor(
+      async () => (await readPersistedRole(record))?.client_instance_id === ours.client_instance_id,
+      "the record this process holds",
+    )
+
+    expect(calls.some((call) => call.startsWith(`subscribe ${session} `))).toBe(true)
+    expect(calls.some((call) => call.startsWith(`setRole ${session} reviewer`))).toBe(true)
+    expect(await readPersistedRole(record)).toEqual(ours)
   } finally {
     await channel.shutdown()
   }
@@ -480,9 +621,10 @@ test("a shutdown whose DELETE, drain and close fail writes those three lines on 
   }
 })
 
-// An inbound-off session (`./envoy-off`) reads the server's stop too: a role claim that was on the
-// wire when the stop began is refused when its answer comes, and leaves no record.
-test("inbound-off: an envoy_role_set claim the listener answers after the stop began keeps no record", async () => {
+/** An inbound-off session (`./envoy-off`) and a client whose listener grants a claim of
+ *  `reviewer`. Where `stopsOnClaim` is set, the server's stop begins while the claim is on the
+ *  wire. */
+function inboundOffClaim(stopsOnClaim: boolean) {
   const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_inbound_off", "/tmp")
   let stopping = false
@@ -494,9 +636,8 @@ test("inbound-off: an envoy_role_set claim the listener answers after the stop b
   })
   const client = createEnvoyClient({
     baseUrl: "http://envoy.test",
-    // The server's stop begins while the claim is on the wire; the listener grants it.
     fetch: async () => {
-      stopping = true
+      if (stopsOnClaim) stopping = true
       return Response.json({
         session_id: identity.id,
         machine_id: "devbox",
@@ -505,18 +646,37 @@ test("inbound-off: an envoy_role_set claim the listener answers after the stop b
       })
     },
   })
+  return {
+    session,
+    record: roleStateFile(stateDirectory, identity.id),
+    claim: () =>
+      executeEnvoyTool(
+        { identity, client, session, clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90" },
+        "envoy_role_set",
+        { role: "reviewer" },
+      ),
+  }
+}
 
-  await expect(
-    executeEnvoyTool(
-      { identity, client, session, clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90" },
-      "envoy_role_set",
-      { role: "reviewer" },
-    ),
-  ).rejects.toThrow(
+// An inbound-off session (`./envoy-off`) reads the server's stop too: a role claim that was on the
+// wire when the stop began is refused when its answer comes, and leaves no record. The control row
+// after it is the same claim with no stop begun.
+test("inbound-off: an envoy_role_set claim the listener answers after the stop began keeps no record", async () => {
+  const { session, record, claim } = inboundOffClaim(true)
+
+  await expect(claim()).rejects.toThrow(
     "this session is stopping, so it claims no role: role reviewer is not held here",
   )
   await session.rememberRole("reviewer")
-  expect(await readPersistedRole(roleStateFile(stateDirectory, identity.id))).toBeUndefined()
+  expect(await readPersistedRole(record)).toBeUndefined()
+})
+
+test("control: inbound-off: an envoy_role_set claim the listener answers with no stop begun keeps its record", async () => {
+  const { session, record, claim } = inboundOffClaim(false)
+
+  await claim()
+  await session.rememberRole("reviewer")
+  expect(await readPersistedRole(record)).toMatchObject({ role: "reviewer" })
 })
 
 // The live view's reads of the mod are on the wire when the server's stop begins; the stop closes
