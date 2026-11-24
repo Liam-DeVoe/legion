@@ -114,7 +114,11 @@ type goingUndoAnswer struct {
 // run that is not the caller's, that the store does not hold, or that History no longer lists -
 // its conversation's newest run is older than goingRunsKept - is 404 GOING_RUN_NOT_FOUND. Each
 // landed call of the run is undone in turn, newest first (goingUndoer.undo), and the answer holds
-// one line for each.
+// one line for each (walkGoingUndo). A keyed press first commits the run as its key's recovery
+// point (bindGoingUndoRecovery), before the walk sends anything: a walk commits as it goes - each
+// undo's landing, and an undo that landed nothing (recordUndo), which marks the key committed -
+// so a press whose process ended mid-walk leaves its key committed, and a repeat under the key is
+// answered by walking the run again (replayGoingUndo) rather than 409 KEY_COMMITTED.
 func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -125,7 +129,33 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		writeGoingRunNotFound(w)
 		return
 	}
-	run := id.String()
+	s.walkGoingUndo(w, r, caller, id.String())
+}
+
+// goingUndoRecovery is the recovery point of a keyed undo: the run it walks.
+type goingUndoRecovery struct {
+	Run string `json:"run"`
+}
+
+// replayGoingUndo is the undo route's keyedReplay: a repeat of a keyed press whose walk committed
+// its recovery point walks the same run again as the repeat's caller - the key's own person - and
+// answers its lines as the press does. The walk is idempotent by its landings: each call whose undo
+// landed, or was recorded, answers from that record and sends nothing, so the repeat finishes what
+// a press whose process ended left, and sends each remaining undo once. The first answer stored
+// says nothing the walk does not say again.
+func (s *server) replayGoingUndo(w http.ResponseWriter, r *http.Request, point goingUndoRecovery, _ []byte) {
+	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	s.walkGoingUndo(w, r, caller, point.Run)
+}
+
+// walkGoingUndo walks run's landed calls as caller, the person of r, and answers the lines: 404
+// GOING_RUN_NOT_FOUND where the run is not the caller's or History no longer lists it. A keyed
+// press binds the run as its key's recovery point before it sends anything; a replay holds no key
+// (it answers a repeat the key layer did not let claim it), and binds nothing.
+func (s *server) walkGoingUndo(w http.ResponseWriter, r *http.Request, caller model.Actor, run string) {
 	listed, err := s.goingRunInHistory(r.Context(), run, caller.ID)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read the going run: %w", err))
@@ -145,6 +175,10 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := s.bindGoingUndoRecovery(r.Context(), run); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	doer := s.goingDoer(goingBarCaller(actor, human, run), PublicOrigin(s.deps.ServerURL, r))
 	undoer := goingUndoer{s: s, doer: doer, observer: goingObserver{read: goingReader{doer: doer}, s: s}, catalogue: s.going,
 		login: caller.ID, session: goingCredentialOf(r, actor, false).session()}
@@ -153,6 +187,30 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		lines = append(lines, undoer.undo(r.Context(), write))
 	}
 	WriteJSON(w, http.StatusOK, goingUndoAnswer{Lines: lines})
+}
+
+// bindGoingUndoRecovery commits run as the recovery point of the keyed press ctx carries
+// (bindRequestKeyRecovery), in a transaction of its own that writes nothing else, so it marks no
+// key committed (markRequestKeyCommitted counts no write of request_keys): a press whose process
+// ends before it sends anything is answered by its replay all the same. A press without a key binds
+// nothing. A press whose key a repeat took over is refused (errRequestKeyTakenOver), and walks
+// nothing: the repeat walks instead.
+func (s *server) bindGoingUndoRecovery(ctx context.Context, run string) error {
+	if _, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim); !keyed {
+		return nil
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := bindRequestKeyRecovery(ctx, tx, goingUndoRecovery{Run: run}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit an undo's recovery point: %w", err)
+	}
+	return nil
 }
 
 // goingRunInHistory reports whether run is login's and History lists it: its conversation's newest
@@ -560,28 +618,19 @@ func goingUnchangedLine(line goingUndoLine, status int) goingUndoLine {
 }
 
 // recordUndo records line as the undo landing of landing's call where nothing of its undo landed
-// in a route's transaction, in a statement of its own, under the call's key, phase undo, request
-// 0: an undo whose request its route answered as done while it committed nothing (unchanged, the
-// line goingUnchangedLine), and an undo that keeps a change another writer made since the run
-// (GOING_UNDO_CHANGED), found by the undo's read with nothing sent - its landing then names no
-// request - or by its route's refusal. Both are settled: a second press answers the call from the
-// landing, as from any undo landing, and sends nothing again, and the run's read counts a kept
-// change as one Undo leaves standing and one that changed nothing in no count
-// (goingRunUndoColumns). Where another press's request of the same undo landed first, that landing
-// stands and its line is answered. A record that fails is logged and the line still answered: a
-// later press then decides the call again.
+// in a route's transaction, in a transaction of its own (insertUndoLanding), under the call's key,
+// phase undo, request 0: an undo whose request its route answered as done while it committed
+// nothing (unchanged, the line goingUnchangedLine), and an undo that keeps a change another writer
+// made since the run (GOING_UNDO_CHANGED), found by the undo's read with nothing sent - its
+// landing then names no request - or by its route's refusal. Both are settled: a second press
+// answers the call from the landing, as from any undo landing, and sends nothing again, and the
+// run's read counts a kept change as one Undo leaves standing and one that changed nothing in no
+// count (goingRunUndoColumns). Where another press's request of the same undo landed first, that
+// landing stands and its line is answered. A record that fails is logged and the line still
+// answered: a later press then decides the call again.
 func (s *server) recordUndo(ctx context.Context, landing goingUndoLanding, line goingUndoLine, unchanged bool) goingUndoLine {
-	answer, err := json.Marshal(goingUndoLandingAnswer{Status: line.Outcome.Status, Body: json.RawMessage("null"), Line: line, Unchanged: unchanged})
-	if err == nil {
-		var wrote bool
-		err = s.deps.Store.Pool.QueryRow(ctx, `
-			insert into going_landings (run_id, phase, step, call, request, method, path, body_digest, answer)
-			values ($1::uuid, 'undo', $2, $3, 0, $4, $5, $6, $7::jsonb)
-			on conflict do nothing
-			returning true
-		`, landing.key.run, landing.key.step, landing.key.call, landing.method, landing.path, landing.digest, string(answer)).Scan(&wrote)
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
+	recorded, err := s.insertUndoLanding(ctx, landing, line, unchanged)
+	if err == nil && !recorded {
 		// Another press's request of the same undo landed first.
 		var landed *goingUndoLine
 		if landed, err = s.goingUndoLanded(ctx, landing.key); landed != nil {
@@ -592,6 +641,40 @@ func (s *server) recordUndo(ctx context.Context, landing goingUndoLanding, line 
 		slog.Error("dispatch: record a command-bar undo that landed nothing", "run", landing.key.run, "error", err)
 	}
 	return line
+}
+
+// insertUndoLanding writes the undo landing recordUndo records, and reports whether it wrote it:
+// false where the call holds an undo landing already. It writes in a transaction of the shared pool
+// (s.begin), so the undo request's commit step marks its Idempotency-Key committed with the
+// landing (markRequestKeyCommitted), and a repeat after a crash answers KEY_COMMITTED rather than
+// writing it again.
+func (s *server) insertUndoLanding(ctx context.Context, landing goingUndoLanding, line goingUndoLine, unchanged bool) (bool, error) {
+	answer, err := json.Marshal(goingUndoLandingAnswer{Status: line.Outcome.Status, Body: json.RawMessage("null"), Line: line, Unchanged: unchanged})
+	if err != nil {
+		return false, err
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var wrote bool
+	err = tx.QueryRow(ctx, `
+		insert into going_landings (run_id, phase, step, call, request, method, path, body_digest, answer)
+		values ($1::uuid, 'undo', $2, $3, 0, $4, $5, $6, $7::jsonb)
+		on conflict do nothing
+		returning true
+	`, landing.key.run, landing.key.step, landing.key.call, landing.method, landing.path, landing.digest, string(answer)).Scan(&wrote)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("record an undo that landed nothing: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit an undo that landed nothing: %w", err)
+	}
+	return true, nil
 }
 
 // goingUndoLandingAnswer is what an undo landing records beside the request: the status and body

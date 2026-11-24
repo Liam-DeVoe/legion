@@ -31,7 +31,10 @@ body: |-
   Before, it said the change was reversed, and each press sent the request again. An undo that
   keeps a change another writer made since the run is recorded the same way, whether its read
   found the change or its route refused the request for it, so a second press answers it as kept
-  and History offers no Undo for it.
+  and History offers no Undo for it. A press of Undo under an Idempotency-Key binds the run as its
+  key's recovery point before it sends anything, so a repeat under the key after a press whose
+  process ended mid-walk walks the run again, sending each remaining undo once, and answers its
+  lines (`Idempotency-Replayed: ?1`) rather than 409 `KEY_COMMITTED`.
   A call whose recorded `last_seq` is not a whole number is a record Undo cannot read: Undo answers
   409 `GOING_UNDO_AFTER_UNREAD` and puts nothing back, and History, which now reads `last_seq` among
   those members, does not offer Undo for it. Before, Undo dropped the bad value and went on, and a

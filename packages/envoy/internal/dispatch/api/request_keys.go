@@ -72,7 +72,10 @@ import (
 //     first request ended: the single-session send, the broadcast, an issue message and a comment,
 //     whose mentions deliver it. Their first answer shows deliveries the repeat must report as they
 //     stand now. A delivery a dead process owed is made once whether anyone asks again or not: the
-//     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
+//     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner. A command-bar
+//     run's Undo keeps one too, the run it walks, bound before it sends anything: its walk commits
+//     as it goes, and is idempotent by its landings, so its replay walks the run again and finishes
+//     what a press whose process ended left (replayGoingUndo).
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
 //     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
@@ -142,8 +145,9 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 type keyedReplay func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte)
 
 // keyedReplays is every route whose write commits a recovery point, by method and pattern: the
-// writes that also deliver to sessions, whose deliveries a repeat finishes. Each key names a
-// registered route (TestEveryKeyedRouteTableNamesARoute).
+// writes that also deliver to sessions, whose deliveries a repeat finishes, and a command-bar run's
+// Undo, whose walk a repeat finishes. Each key names a registered route
+// (TestEveryKeyedRouteTableNamesARoute).
 func (s *server) keyedReplays() map[string]keyedReplay {
 	return map[string]keyedReplay{
 		http.MethodPost + " /api/v1/agents/{session_id}/messages": replayRecovered(s, s.replayAgentMessage),
@@ -151,6 +155,7 @@ func (s *server) keyedReplays() map[string]keyedReplay {
 		http.MethodPost + " /api/v1/issues/{key}/messages":        replayRecovered(s, s.replayIssueMessage),
 		http.MethodPost + " /api/v1/issues/{key}/comments":        replayRecovered(s, s.replayComment),
 		http.MethodPost + " /api/v1/artifacts/{id}/comments":      replayRecovered(s, s.replayComment),
+		http.MethodPost + " /api/v1/going/runs/{id}/undo":         replayRecovered(s, s.replayGoingUndo),
 	}
 }
 
@@ -1138,10 +1143,10 @@ func outlivingTheClient(r *http.Request) context.Context {
 
 // recoveryPoint is every value a keyed write commits as its key's recovery point: the message a
 // send to one session or an issue message made, the broadcast, the comment whose mentions deliver
-// it. A route binds one (bindRequestKeyRecovery) and its keyedReplay reads the same type back
-// (replayRecovered), so the two cannot disagree about the point's shape.
+// it, and the run an Undo walks. A route binds one (bindRequestKeyRecovery) and its keyedReplay
+// reads the same type back (replayRecovered), so the two cannot disagree about the point's shape.
 type recoveryPoint interface {
-	messageRecovery | broadcastRecovery | commentRecovery
+	messageRecovery | broadcastRecovery | commentRecovery | goingUndoRecovery
 }
 
 // requestKeyRecoveryUpdate is the one statement a recovery point is bound with, run at once

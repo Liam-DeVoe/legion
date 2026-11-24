@@ -182,7 +182,9 @@ func replaceText(find, with string) []any {
 // landed from that landing, sending nothing twice, and resumes where the first press ended. An
 // undo whose request its route answered as done while it committed nothing says it changed
 // nothing, never that it reversed the change, and records that as its landing: a second press
-// answers it from there and sends nothing, and the run counts the call in no count.
+// answers it from there and sends nothing, and the run counts the call in no count. A keyed press
+// whose process ended mid-walk, after it recorded a call, is finished by a repeat under its key,
+// which walks the run again rather than being told the write landed (KEY_COMMITTED).
 func TestUndoOfOneRun(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -471,6 +473,60 @@ func TestUndoOfOneRun(t *testing.T) {
 		}
 		if messages := rig.count(t, `select count(*) from messages where issue_key = $1`, created); messages != 0 {
 			t.Fatalf("the closed issue holds %d messages, want none", messages)
+		}
+	})
+
+	t.Run("a repeat under the key of a press whose process ended mid-walk finishes the walk", func(t *testing.T) {
+		older, kept := rig.issue(t, "Renamed before the kept one"), rig.issue(t, "Renamed and retitled by bob")
+		run := rig.ran(t, "rename two issues, one bob retitles",
+			goingChange("dispatch_issue_update", retitle(older, "Ours, older")),
+			goingChange("dispatch_issue_update", retitle(kept, "Ours, kept")))
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+kept, map[string]any{"title": "Bob's"})
+		var ended atomic.Bool
+		var sent atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+older, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			if ended.CompareAndSwap(false, true) {
+				panic("the process ends as the older rename's write back is sent")
+			}
+			sent.Add(1)
+			inner.ServeHTTP(w, r)
+		})
+		key := "undo-" + run
+		path := "/api/v1/going/runs/" + run + "/undo"
+		// The walk goes newest first: it keeps bob's title, which records the call's undo and
+		// marks the key committed, and the process ends as it sends the older rename's write back.
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("the first press ran to its end, want it to end as the older write back is sent")
+				}
+			}()
+			keyedRequest(t, rig.mux, http.MethodPost, path, nil, "alice", key)
+		}()
+		// A process that dies releases nothing: its lease lapses, as the key layer's own tests
+		// leave a dead holder's.
+		rig.exec(t, `update request_keys set leased_at = now() - interval '2 minutes' where idempotency_key = $1`, key)
+		if committed := rig.textOf(t, `select (committed_at is not null)::text || ' ' || coalesce(recovery->>'run', 'none') from request_keys where idempotency_key = $1`, key); committed != "true "+run {
+			t.Fatalf("the press left its key %q, want it committed with the run as its recovery point", committed)
+		}
+		if rig.title(t, older) != "Ours, older" || sent.Load() != 0 {
+			t.Fatalf("after the press that ended the older issue is titled %q with %d write backs sent, want the rename standing and none sent", rig.title(t, older), sent.Load())
+		}
+		repeat := keyedRequest(t, rig.mux, http.MethodPost, path, nil, "alice", key)
+		if repeat.Code != http.StatusOK || !replayed(repeat) {
+			t.Fatalf("the repeat under the key answered %d %s, want the walk replayed", repeat.Code, repeat.Body.String())
+		}
+		lines := decodeBody[goingUndoAnswer](t, repeat).Lines
+		if len(lines) != 2 || lines[0].Outcome.Code != codeGoingUndoChanged || lines[0].Item != kept || !lines[1].Outcome.OK || lines[1].Item != older {
+			t.Fatalf("the repeat answered %+v, want bob's title kept and the older rename written back", lines)
+		}
+		if rig.title(t, older) != "Renamed before the kept one" || rig.title(t, kept) != "Bob's" || sent.Load() != 1 {
+			t.Fatalf("after the repeat the issues are titled %q and %q with %d write backs sent, want the older title back, bob's kept, one sent",
+				rig.title(t, older), rig.title(t, kept), sent.Load())
+		}
+		again := keyedRequest(t, rig.mux, http.MethodPost, path, nil, "alice", key)
+		if again.Code != http.StatusOK || !reflect.DeepEqual(decodeBody[goingUndoAnswer](t, again).Lines, lines) || sent.Load() != 1 {
+			t.Fatalf("a later repeat answered %d %s with %d write backs sent, want the same lines and nothing sent again", again.Code, again.Body.String(), sent.Load())
 		}
 	})
 }

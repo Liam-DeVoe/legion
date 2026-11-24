@@ -4335,6 +4335,7 @@ Four kinds of write keep their own recovery point beside the key, so a repeat of
 a broadcast's repeat answers at once and sends what it owes behind the answer.
 A comment's or an issue message's replay reads every member fresh and keeps from the first answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx.
 Neither send route takes a body `idempotency_key` any more.
+A command-bar run's Undo (`POST /api/v1/going/runs/{id}/undo`) keeps a recovery point too, the run it walks, bound before the walk sends anything: a walk commits as it goes and is idempotent by its landings, so a repeat under the key, however the first press ended, walks the run again as the key's person and answers its lines under `200`, finishing what a press whose process ended mid-walk left, where it would otherwise be told `409 KEY_COMMITTED`.
 
 A delivery a dead process left owed is made whether anyone asks again or not.
 Every write that delivers to sessions claims each attempt before its send and settles it after, on a context its client's cancellation does not reach.
