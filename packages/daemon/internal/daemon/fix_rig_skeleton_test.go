@@ -607,8 +607,8 @@ func fixRigDaemonStates(ctx context.Context, pool *store.Pool, issue string) (ma
 // read of a commit's check runs the fake GitHub answered and each request the daemon's GitHub
 // stand-in answered; each step-record, status, plan-record and fix-job outbox row of the issue, as
 // it appears and as it finishes; the issue's status and closed_at in Dispatch; Dispatch's head row
-// of the pull request; and the lines of the daemon's and Dispatch's logs that name a fact of the
-// walk.
+// of the pull request; each notice the daemon published to the Envoy listener's stand-in; and the
+// lines of the daemon's and Dispatch's logs that name a fact of the walk.
 type fixRigWatch struct {
 	r        *fixRig
 	stopping chan struct{}
@@ -621,7 +621,7 @@ type fixRigWatch struct {
 	eventSeq                                               int64
 	checkReads, githubRequests                             int
 	outbox                                                 map[int64]string
-	daemonLog, dispatchLog                                 int
+	daemonLog, dispatchLog, notices                        int
 	failed                                                 map[string]bool
 }
 
@@ -635,14 +635,25 @@ var fixRigOutboxKinds = []string{string(record.OutboxKindStepRecord), string(rec
 // fixRigDaemonLines are the messages of the daemon's log whose lines are facts of the walk: the
 // supervise machine's hold of a phase task for another claim's turn (supervise/delivery.go,
 // sendPending), the testing move's wait (workflow/check_states.go, testingWaits), a review set
-// aside (workflow/review.go, review), and the merge state reads (daemon/merge_state_reads.go).
+// aside (workflow/review.go, review), the hold of a task's end before its retro and its release
+// (workflow/engine.go, holdBeforeRetro; workflow/retro_hold.go, startHeldRetro and rehold), and
+// the merge state reads (daemon/merge_state_reads.go).
 var fixRigDaemonLines = []string{
 	"the phase task waits rather than adopt the working copy they share",
 	"workflow: the testing move waits for check states",
 	"workflow: a review decides nothing",
 	"workflow: a review of the review App waits",
 	"workflow: the reviewer's own review moves no reviewed commit",
+	"is held before its retro",
+	"holds a task before its retro",
 	"merge state",
+}
+
+// fixRigNotices is each notice listener accepted, in the order it took them.
+func fixRigNotices(listener *noticeListener) []listenerPublish {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	return slices.Clone(listener.accepted)
 }
 
 // startWatch starts the watcher, which stops when the test ends, before anything the rig opened
@@ -710,6 +721,10 @@ func (w *fixRigWatch) poll() {
 		w.githubRequests++
 		r.fact("github-request", "request %d the daemon's GitHub stand-in answered, at %s: %s", w.githubRequests,
 			request.at.UTC().Format("15:04:05.000"), request)
+	}
+	for _, published := range fixRigNotices(r.notices)[w.notices:] {
+		w.notices++
+		r.fact("notice", "the daemon published on %s: %s", published.Topic, fixRigCut(published.Payload, 600))
 	}
 	w.daemonLog = w.logLines("daemon-log", r.logs.String(), w.daemonLog, fixRigDaemonLines)
 	w.dispatchLog = w.logLines("dispatch-log", r.dispatch.output.String(), w.dispatchLog, []string{"check states", "check_states"})
@@ -886,11 +901,13 @@ func (w *fixRigWatch) logLines(name, text string, offset int, messages []string)
 // reviewer`; the Verification document holds k1, which the tester proves, and k-ci, which the CI
 // job unit proves. The implementer completes at X with the pull request open; the tester records
 // k1 and completes; unit concludes at X success and its settlement is published; the issue reaches
-// reviewing; the head moves to Y by the push and the synchronize GitHub sends; unit concludes at Y
-// success with its settlement; the reviewer approves at Y with its own session and Y in its footer
-// and completes; the round ends; the implementer's retro rates the plan; the merger is launched
-// and GitHub's merge of the pull request lands; and the issue is done in Dispatch, its step
-// records written.
+// reviewing; the head moves to Y by the push and the synchronize GitHub sends; the reviewer
+// approves at Y with its own session and Y in its footer while unit still runs at Y; the round
+// ends, and the task's end is held for its CI (record.HoldForCI); unit concludes at Y success with
+// its settlement, which ends the hold while the reviewer's turn is still open, so the retro's task
+// waits for that turn; the reviewer completes; the implementer's retro rates the plan; the merger
+// is launched and GitHub's merge of the pull request lands; and the issue is done in Dispatch, its
+// step records written.
 //
 // It asserts that each step happened, and nothing of any rule of a fix.
 func TestTheFixRigSkeleton(t *testing.T) {
@@ -982,7 +999,7 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		r.fact("head-moved", "the record after the push and the synchronize: %s", fixRigPullRequest(r.pullRequest()))
 	})
 
-	r.walk("unit-concludes-at-y", func() {
+	r.walk("reviewer-approves-at-y-while-unit-runs", func() {
 		r.await("Dispatch's head row of the pull request at Y", func() bool {
 			head, _, _ := r.dispatchHead()
 			return head == y
@@ -990,25 +1007,40 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		r.awaitState(scratchCICheck, y, "that says no run concluded there", func(held scratchCIState) bool {
 			return held.CICase == scratchCINotCompleted || held.CICase == scratchCIAbsent
 		})
-		run := unitRun(9002, "completed", "success")
-		r.setRun(y, run)
-		r.settle(y, run)
-		r.awaitState(scratchCICheck, y, "yes", func(held scratchCIState) bool { return held.State == "yes" })
-		r.await("the daemon's pull request record checked at Y with GitHub's merge state of Y", func() bool {
+		r.await("the daemon's pull request record at Y with GitHub's merge state of Y", func() bool {
 			pr := r.pullRequest()
-			return pr != nil && pr.HeadSHA == y && pr.CheckedHead == y && pr.MergeState.Mergeable()
+			return pr != nil && pr.HeadSHA == y && pr.MergeState.Mergeable()
 		})
 		r.fact("ready-for-review", "the record before the review: %s", fixRigPullRequest(r.pullRequest()))
-	})
-
-	r.walk("reviewer-approves-at-y-and-completes", func() {
 		review := r.publishReview("approved", y, legionEntryFooter(reviewer.session, y, entry))
 		r.awaitProcessed(review)
 		decision := r.phaseOf(claim.RoleReviewer).Decision
 		if decision == nil || decision.State != "approved" || decision.Head != y {
 			t.Fatalf("the reviewer's ReviewDecision after its approval at %s is %+v, want approved at %s; %s", y, decision, y, r.readout())
 		}
-		r.fact("review-decided", "the reviewer's ReviewDecision after the approval: %+v; %s stands in %s", *decision, r.key, r.d.state().Issues[r.key].Phase)
+		r.fact("review-decided", "the reviewer's ReviewDecision after the approval: %+v", *decision)
+		var stands api.Issue
+		r.await(r.key+" held before its retro for its CI, or in its retro", func() bool {
+			stands = r.d.state().Issues[r.key]
+			return stands.Phase == phase.Held || stands.Phase == phase.Retro
+		})
+		if stands.Phase != phase.Held || stands.HoldReason != string(record.HoldForCI) {
+			t.Fatalf("%s stands in %s held for %q after the approval at %s while unit runs there, want held for %q; %s",
+				r.key, stands.Phase, stands.HoldReason, y, record.HoldForCI, r.readout())
+		}
+		r.fact("end-held", "%s stands in %s held for %q after the round ended", r.key, stands.Phase, stands.HoldReason)
+	})
+
+	r.walk("unit-concludes-at-y-and-the-hold-ends", func() {
+		run := unitRun(9002, "completed", "success")
+		r.setRun(y, run)
+		r.settle(y, run)
+		r.awaitState(scratchCICheck, y, "yes", func(held scratchCIState) bool { return held.State == "yes" })
+		r.waitPhase(phase.Retro)
+		r.fact("end-hold-ended", "%s stands in its retro once k-ci passed at %s", r.key, y)
+	})
+
+	r.walk("reviewer-completes", func() {
 		handoff, version := r.writeHandoff(reviewer.session, "review")
 		status, body := r.complete(reviewer, api.HandoffCompleteRequest{Summary: "approved", Commit: y, HandoffID: handoff, HandoffVersion: version})
 		if status != http.StatusOK {
@@ -1016,8 +1048,6 @@ func TestTheFixRigSkeleton(t *testing.T) {
 		}
 		r.fact("reviewer-completed", "the reviewer's completion at %s: %d", y, status)
 		reviewer.endTurn()
-		r.waitPhase(phase.Retro)
-		r.fact("round-ended", "%s left reviewing for retro", r.key)
 	})
 
 	r.walk("retro", func() {
