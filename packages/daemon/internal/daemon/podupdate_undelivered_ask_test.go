@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -361,7 +362,10 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	gone := supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
-	go func() { _ = m.Handle(rig.ctx, gone) }()
+	// Each goroutine below takes a hold mark of its own (store.ForConcurrentWorker): the rig's
+	// ctx carries one mark, and a connection either of them held on it would have the pool refuse
+	// the other, and the test's own reads beside them.
+	go func() { _ = m.Handle(store.ForConcurrentWorker(rig.ctx), gone) }()
 	select {
 	case <-inside:
 	case <-time.After(10 * time.Second):
@@ -369,7 +373,7 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	}
 
 	ran := make(chan error, 1)
-	go func() { ran <- rig.lane.execute(rig.ctx, row) }()
+	go func() { ran <- rig.lane.execute(store.ForConcurrentWorker(rig.ctx), row) }()
 	select {
 	case err := <-ran:
 		if !errors.Is(err, wait.ErrWaiting) {

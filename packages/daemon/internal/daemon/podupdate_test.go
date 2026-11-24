@@ -2601,9 +2601,13 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 		<-released
 	})
 	relaunching := rig.tokens[claim.RoleTester]
+	// The goroutine takes a hold mark of its own (store.ForConcurrentWorker), as every goroutine
+	// this rig starts beside its own calls does: the rig's ctx carries one mark, and a decision
+	// holding a connection on it would have the pool refuse the test's own read beside it.
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(relaunching)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: *rig.claimOf(claim.RoleTester).Locator, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -2703,7 +2707,7 @@ func holdMachineInDecision(t *testing.T, ctx context.Context, rt *fake.Runtime, 
 		}
 	})
 	t.Cleanup(release)
-	go func() { decided <- m.Handle(ctx, supervise.StreamClosed{Claim: token}) }()
+	go func() { decided <- m.Handle(store.ForConcurrentWorker(ctx), supervise.StreamClosed{Claim: token}) }()
 	testwait.Receive(t, fmt.Sprintf("%s's probe to wait inside the runtime", who), inside)
 	if m.Deciding() == nil {
 		t.Fatalf("%s's machine is deciding nothing while its probe waits, want the closed connection's decision", who)

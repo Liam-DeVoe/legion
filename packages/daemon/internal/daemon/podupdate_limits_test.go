@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -563,9 +564,10 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -665,9 +667,10 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 		<-release
 	})
 	defer releaseMachine()
+	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(relaunch, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
