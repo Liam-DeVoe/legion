@@ -348,18 +348,16 @@ type IdleDecline struct {
 //     the disk the check read went with that pod, and with it the work the decline names;
 //   - for a read that failed, DeclineUnreadRetry has passed since the last check.
 func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
-	if d.At.IsZero() || d.podMoved(v) {
-		return false
-	}
-	checked := d.checked()
-	if d.Reason == DeclineWorkspaceUnread && !now.Before(checked.Add(DeclineUnreadRetry)) {
+	if d.At.IsZero() || d.podMoved(v) || d.RetryDue(now) {
 		return false
 	}
 	for _, c := range v.Claims {
-		if c.LastStartRow > d.StartedRow {
-			return false
+		// A turn ends the decline here only where its claim is live.
+		turn := c.LastTurnStart
+		if !c.Live() {
+			turn = time.Time{}
 		}
-		if c.Live() && c.LastTurnStart.After(checked) {
+		if d.EndedBy(c.LastStartRow, turn) {
 			return false
 		}
 	}
@@ -384,13 +382,28 @@ func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
 	if d.At.IsZero() || !(d.Work || d.Reason == DeclineUnpushedWork) || d.podMoved(v) {
 		return false
 	}
-	checked := d.checked()
 	for _, c := range v.Claims {
-		if c.LastStartRow > d.StartedRow || c.LastTurnStart.After(checked) {
+		if d.EndedBy(c.LastStartRow, c.LastTurnStart) {
 			return false
 		}
 	}
 	return true
+}
+
+// EndedBy is whether a claim whose newest start row is startRow, and whose newest turn started at
+// turnStart, ends the decline: its process was started again after the last check (a start row
+// above StartedRow), or it started a turn after that check. It is the one test of a claim that
+// ends a decline: the idle rules read it (Stands, HoldsUnpushedWork), and so does the read that
+// may end an update round's keep of a pod (internal/daemon's keptPodReadDue).
+func (d IdleDecline) EndedBy(startRow int64, turnStart time.Time) bool {
+	return startRow > d.StartedRow || turnStart.After(d.checked())
+}
+
+// RetryDue is whether the decline is of a read that failed (DeclineWorkspaceUnread) and
+// DeclineUnreadRetry has passed at now since its last check (Stands, and internal/daemon's
+// keptPodReadDue).
+func (d IdleDecline) RetryDue(now time.Time) bool {
+	return d.Reason == DeclineWorkspaceUnread && !now.Before(d.checked().Add(DeclineUnreadRetry))
 }
 
 // podMoved is whether the runtime holds another pod for the issue than the one the decline's last

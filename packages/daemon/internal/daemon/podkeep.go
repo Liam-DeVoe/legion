@@ -263,28 +263,18 @@ func (s *supervision) readKeptPod(ctx context.Context, step podReplacement) {
 
 // keptPodReadDue is whether the read that may end a round's keep of a pod (podKeptForWork) is due
 // at now, over declined, the keep's row, and group, the issue's claims: no claim of the issue is
-// in a turn, and since the row's last read a claim of the issue started a turn (that turn has
-// ended), or a process of the issue was started (a start row above the row's started_row), or,
-// for a read that could not be made, pods.DeclineUnreadRetry has passed. A role changes the
-// workspace only in a turn, so the read is made once for each such turn, once that turn has
-// ended.
+// in a turn, and a claim of the issue ends the row as it ends a release's decline
+// (pods.IdleDecline.EndedBy: it started a turn since the row's last read, and that turn has ended,
+// or its process was started again), or, for a read that could not be made,
+// pods.DeclineUnreadRetry has passed (pods.IdleDecline.RetryDue). A role changes the workspace
+// only in a turn, so the read is made once for each such turn, once that turn has ended.
 func keptPodReadDue(declined pods.IdleDecline, group []supervise.Claim, now time.Time) bool {
 	if len(workingClaims(group)) > 0 {
 		return false
 	}
-	checked := declined.CheckedAt
-	if checked.Before(declined.At) {
-		checked = declined.At
-	}
-	if declined.Reason == pods.DeclineWorkspaceUnread && !now.Before(checked.Add(pods.DeclineUnreadRetry)) {
-		return true
-	}
-	for _, c := range group {
-		if c.LastStartRow > declined.StartedRow || c.LastTurnStart.After(checked) {
-			return true
-		}
-	}
-	return false
+	return declined.RetryDue(now) || slices.ContainsFunc(group, func(c supervise.Claim) bool {
+		return declined.EndedBy(c.LastStartRow, c.LastTurnStart)
+	})
 }
 
 // turnsSince is the role of every claim of group that started a turn after at, the moment a read
