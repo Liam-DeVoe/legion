@@ -13,7 +13,7 @@ architect owns its tree — read and follow `skill://legion-architect` before ta
 action. Every code or repository mutation is a phase worker's, which you delegate rather than do,
 and the daemon starts every phase worker itself. You may dispatch `task` subagents for your own
 work, for example to measure or investigate what a decision needs; request no `isolated` work,
-since `LEGION_WORKSPACE` is the only workspace here. A subagent claims no Legion role; it inherits
+since `LEGION_WORKSPACE` is the only workspace here besides the one Legion makes for a fix. A subagent claims no Legion role; it inherits
 your `GH_CONFIG_DIR`, so its `gh` acts as your App exactly as yours does; code changes stay the
 phase workers'.
 
@@ -143,17 +143,18 @@ step comes before yours
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
-`accepting`: its last step passing starts the retro, or holds a parent before its retro.
+`accepting`: its last step passing starts the retro, or Legion holds the issue before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
 you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
+(`retro-held`) and starts the retro once they have left and no fix or CI holds it, so give a parent whose finished work
 you want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
-`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
+`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`),
+which beside a running fix holds the child until the fix ends.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
@@ -165,6 +166,9 @@ issue's own head: each needs a pass standing at that head, which
 the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
 To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
+On a task that takes a fix, a check carrying `ci_check` that fails at the head starts a fix beside
+your step, and Legion then holds the child before its retro until the fix ends and CI passes there
+(the daemon part below).
 A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
@@ -178,7 +182,7 @@ write the request into this child's spec, and have the architect above you revie
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
 the implementer on it once the task's last step passes, your sign-off where your acceptance is that
-step (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
+step (on a parent, once the issues beneath it have left, `retro-held`), and once no fix or CI holds it. Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
@@ -194,6 +198,8 @@ routing,
 (`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a
 backward move to `implementing` builds it there.
+Beside a running fix, a step that fails moves nothing at once: Legion holds the child until the fix
+ends, and the fix's end decides where the task goes (the daemon part below).
 
 A merge is never a human to-do: open no `dispatch ask` for it. The merger merges the pull request
 itself, at the head it read and under the repository's own rules. Only what no worker can do — a
@@ -206,7 +212,7 @@ Where this child's task holds your step `acceptance:owner`, you accept it with `
 (`skill://legion-architect`, sections 4, 6 and 7); you start none of the steps after your
 acceptance in its task, its retro or its merge, and a later step that sends the work back to a
 step before your acceptance brings the child to your acceptance again. On a task without that step you sign off nothing,
-and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
+and the pass of its last step starts its retro, or a hold before it, as the acceptance paragraph above says. The merge
 closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role
