@@ -1917,7 +1917,7 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 // projection backs, and the four kinds whose nodes name the project a read is limited by
 // - an issue, a document, an ask and a message, each written at its own
 // create site, beside the rows it writes, which carry no node columns - and the two kinds of the
-// lens catalogue its migrations seed (20261116123354), a lens kind and the constraint that holds
+// lens catalogue its migrations seed (20261123174710), a lens kind and the constraint that holds
 // its source.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()

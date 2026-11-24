@@ -510,7 +510,7 @@ func storeKinds() []StoreKind {
 			" project, its part_of its lens, its text value, its authored_by and at most two aliases of its author," +
 			" which over-states a finding written with its lens, whose write states those aliases once",
 	}, {
-		// Counted off the seed of migrations 20261116123354, ten kinds, and 20261116123355, twelve,
+		// Counted off the seed of migrations 20261123174710, ten kinds, and 20261123174720, twelve,
 		// which graphstore.AddLensKind writes the shape of: the lens_kind node's visibility, state and
 		// words values and its constrained_by, and its constraint node's visibility, state, standard
 		// and reference values, in no project and by no author.

@@ -365,7 +365,7 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message_block", removedMessageBlock},
 		{"ask_block", askPart},
 		{"ask_block", removedAskPart},
-		// The two kinds of the lens catalogue, which the seed holds (migration 20261116123354):
+		// The two kinds of the lens catalogue, which the seed holds (migration 20261123174710):
 		// a kind and the constraint that is its source, each named by a mention as any node is.
 		{"lens_kind", "pre-mortem"},
 		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},

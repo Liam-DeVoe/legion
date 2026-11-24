@@ -14,7 +14,7 @@ import (
 // AttributeArtifactID is the row a lens on a document, or on a block of one, records: the
 // artifacts.id of the row the artifacts table holds at the document's address as the write that
 // places the lens there runs - not the row the document's node was written for - a value of the
-// lens (migration 20261116123354 declares it on lens, beside verdict), since a row's id is the
+// lens (migration 20261123174710 declares it on lens, beside verdict), since a row's id is the
 // address of no node. A document's address, `<issue key>/<slug>`, is a name a later document
 // takes again, and a row's id is never reused, so a lens whose recorded row no longer stands at
 // its document's address stands on a document that is no more (refs.StaleSQL). The store's write

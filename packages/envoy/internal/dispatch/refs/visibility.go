@@ -196,7 +196,7 @@ func init() {
 		graphstore.KindRole:    resolvedKind(loadStoreNodes),
 		graphstore.KindPage:    resolvedKind(loadStoreNodes),
 		// The kinds of cybermonklabs/legion#4193 the store holds alone, each registered in the commit
-		// that first writes a node of it (migration 20261116123354 writes the first two, the
+		// that first writes a node of it (migration 20261123174710 writes the first two, the
 		// reasoning write of api the next three, and the going POST of api the last). A lens kind
 		// is a node of the catalogue, always project-visible, so its entry takes no node reserved
 		// for its author; a constraint, a lens, a finding of a lens and a risk may each be reserved

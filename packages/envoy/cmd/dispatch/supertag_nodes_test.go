@@ -67,15 +67,21 @@ const backfillVersion = 20261121060636
 // graph_nodes and graph_tuples the backfill filled, before the type migrations numbered above
 // backfillVersion (requireTheUnreleasedBelowTheBackfillAreTheFiles). Among them,
 // 20261116015042_graph_nodes_project adds two nullable columns to graph_nodes,
-// 20261116015056_graph_nodes_project_index builds an index of it concurrently, and
-// 20261116094058_asks_node adds two not valid foreign keys that reference its primary key. The
-// census counts none of the three as a change of graph_nodes for the bounded writes of a type
-// migration after them. None of them is a type migration:
+// 20261116015056_graph_nodes_project_index builds an index of it concurrently,
+// 20261116094058_asks_node adds two not valid foreign keys that reference its primary key, and
+// 20261116172615_graph_nodes_proposed_index builds a partial index of it concurrently. The census
+// counts none of the four as a change of graph_nodes for the bounded writes of a type migration
+// after them. 20261116081010_block_pointer_targets_present replaces the function
+// block_pointer_targets, 20261117020856_graph_edges_asks_and_store_class restates the view
+// graph_edges, and 20261117042519_block_moved_to_lens replaces the function block_moved_to: each
+// reads graph_nodes and graph_tuples only inside a function's body or a view's query, which the
+// census does not read as touching either table. None of them is a type migration:
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit fails one that writes rows of graph_nodes
 // (writesGraphNodes).
 var unreleasedVersionsBelowTheBackfill = []int{
-	20261116015042, 20261116015056, 20261116094058, 20261116094059, 20261116094100, 20261116094101,
-	20261117002006, 20261117002045, 20261117093337, 20261118161237, 20261121034242,
+	20261116015042, 20261116015056, 20261116081010, 20261116094058, 20261116094059, 20261116094100,
+	20261116094101, 20261116172615, 20261117002006, 20261117002045, 20261117020856, 20261117042519,
+	20261117093337, 20261118161237, 20261121034242,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -108,7 +114,7 @@ const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
 // closedSupertags is the root's closed list of types (R21 of the parent change's specification
 // and R6 of this change's): the twenty-seven this change creates and `lens_kind`, which the change
-// that moves lenses and lens kinds adds (migration 20261116123354), twenty-eight in all.
+// that moves lenses and lens kinds adds (migration 20261123174710), twenty-eight in all.
 // `proposed` is a value of a node's state and no type, and the role is the agent, so neither is a
 // supertag. The store holds one supertag node for each and no other. Each later change that
 // creates a kind adds it to this list in its own pull request: the change that moves issues and
@@ -165,7 +171,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // pending migration that writes graph_nodes, for bounded writes of graph_nodes and graph_tuples,
 // with no refusal. The forgotten rows are put back, the runner applies the rest, and the store is
 // held to the file as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and
-// to leaving every node and tuple the backfill wrote as it was.
+// to leaving every node and tuple the backfill wrote as it was (requireTheBackfilledRowsStand).
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
 	database := openAtTheBackfill(t)
@@ -189,9 +195,7 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
-	if after := backfilledRows(t, ctx, pool); !slices.Equal(backfilled, after) {
-		t.Errorf("the migrations after %d moved what the backfill wrote\nbefore: %v\nafter:  %v", backfillVersion, backfilled, after)
-	}
+	requireTheBackfilledRowsStand(t, backfilled, backfilledRows(t, ctx, pool))
 }
 
 // backfillComments is how many comments writeRowsBeforeTheStore writes, each a node and its tuples
@@ -244,30 +248,31 @@ func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 }
 
 // backfilledRows is every node that is no type node, and every tuple out of one, as its row
-// stands: what the backfill wrote, which a type migration must leave as it is.
-func backfilledRows(t *testing.T, ctx context.Context, pool *store.Pool) []string {
+// stands, by the node's kind and id: what the backfill wrote, which a type migration must leave
+// as it is.
+func backfilledRows(t *testing.T, ctx context.Context, pool *store.Pool) map[string][]string {
 	t.Helper()
 	rows, err := pool.Query(ctx, `
-		select 'node ' || kind || ' ' || id || ' ' || supertag || ' ' || visibility || ' ' || state || ' ' ||
+		select kind || ' ' || id, 'node ' || kind || ' ' || id || ' ' || supertag || ' ' || visibility || ' ' || state || ' ' ||
 			attributes::text || ' ' || made_at::text || ' ' || made_by::text || ' ' || source_event::text
 		from graph_nodes where kind not in ('supertag', 'attribute')
 		union all
-		select 'tuple ' || seq::text || ' ' || from_kind || ' ' || from_id || ' ' || kind || ' ' || to_kind || ' ' ||
+		select from_kind || ' ' || from_id, 'tuple ' || seq::text || ' ' || from_kind || ' ' || from_id || ' ' || kind || ' ' || to_kind || ' ' ||
 			to_id || ' ' || at::text || ' ' || who::text || ' ' || source_event::text || ' ' || asserted::text
 		from graph_tuples where from_kind not in ('supertag', 'attribute')
-		order by 1
+		order by 1, 2
 	`)
 	if err != nil {
 		t.Fatalf("read what the backfill wrote: %v", err)
 	}
 	defer rows.Close()
-	var written []string
+	written := map[string][]string{}
 	for rows.Next() {
-		var row string
-		if err := rows.Scan(&row); err != nil {
+		var node, row string
+		if err := rows.Scan(&node, &row); err != nil {
 			t.Fatalf("read a row the backfill wrote: %v", err)
 		}
-		written = append(written, row)
+		written[node] = append(written[node], row)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read what the backfill wrote: %v", err)
@@ -276,6 +281,21 @@ func backfilledRows(t *testing.T, ctx context.Context, pool *store.Pool) []strin
 		t.Fatal("graph_nodes and graph_tuples hold no row but the type nodes', so the backfill wrote nothing to compare")
 	}
 	return written
+}
+
+// requireTheBackfilledRowsStand holds each node of before, the store as the backfill left it
+// (backfilledRows), to standing in after, the store once the migrations after the backfill ran, as
+// it stood, with every tuple out of it and no other: a migration after the backfill that moves,
+// removes or adds to a node the backfill wrote fails, naming the node. A node only after holds is
+// one such a migration wrote, no row the backfill wrote: the lens catalogue's lens_kind and
+// constraint nodes, which 20261123174710 and 20261123174720 write, are such nodes.
+func requireTheBackfilledRowsStand(t *testing.T, before, after map[string][]string) {
+	t.Helper()
+	for _, node := range slices.Sorted(maps.Keys(before)) {
+		if !slices.Equal(before[node], after[node]) {
+			t.Errorf("the migrations after %d moved node %s, which the backfill left\nbefore: %v\nafter:  %v", backfillVersion, node, before[node], after[node])
+		}
+	}
 }
 
 // requireTheUnreleasedBelowTheBackfillAreTheFiles holds unreleasedVersionsBelowTheBackfill to the
@@ -651,7 +671,7 @@ type storeOnlyNode struct {
 }
 
 // storeOnlyAttribute matches one attribute node a type migration writes as the literal rows of
-// 20261116123354 write it, of any type (requireStoreOnlyAttributesMatchTheirMigrations passes over
+// 20261123174710 write it, of any type (requireStoreOnlyAttributesMatchTheirMigrations passes over
 // a block type's): the supertag and the attribute's name, which the node's id `<supertag>/<name>`
 // joins, and its attributes column, a JSON object written as an SQL string (each quote in it
 // doubled) that holds the attribute's kind, its name and its position among that type's

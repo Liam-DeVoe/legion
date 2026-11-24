@@ -17,7 +17,7 @@ type graphEdgeRow struct {
 // appears exactly once with its kind, anchors that are JSON null or absent produce nothing, and
 // the guard in 0032 leaves well-formed uuid anchors alone. Beside the fixture's relations stands
 // the one constrained_by tuple from each kind of the lens catalogue to its source, which every
-// migrated store holds (migrations 20261116123354 and 20261116123355) and the view's tuple arm
+// migrated store holds (migrations 20261123174710 and 20261123174720) and the view's tuple arm
 // answers: they are read from the store as the seed wrote them, so a kind the seed adds or drops
 // moves this expectation with it.
 func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {

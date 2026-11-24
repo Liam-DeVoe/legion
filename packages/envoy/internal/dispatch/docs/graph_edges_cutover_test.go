@@ -1389,7 +1389,7 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 
 // seededStoreClass is the rows of the class `store` every migrated store holds before any write:
 // the one constrained_by tuple from each kind of the lens catalogue to its source (migrations
-// 20261116123354 and 20261116123355), read from the store as the seed wrote them, so a kind the
+// 20261123174710 and 20261123174720), read from the store as the seed wrote them, so a kind the
 // seed adds or drops moves every expectation built on them with it.
 func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
