@@ -3039,7 +3039,7 @@ jq -r --slurpfile listed issues.json '.issues as $I
   | "\(.key) \(.phase) tree=\(.tree) open=\($open[.key] | join(","))"' state.json
 ```
 
-The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.Store.DispatchChildren`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
+The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues (`record.Store.DispatchChildren`), which a boot's listing of the project refreshes: a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
 
 An earlier daemon reads this much of the release:
 

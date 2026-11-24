@@ -365,7 +365,8 @@ func chainOf(byKey, above map[string]Issue) map[string]Issue {
 // they are handed the very records it was built over (passOver). One pass so builds it once, and
 // builds it not at all before the line where it reads no Dispatch child and holds no parent before
 // its retro. Every walk only reads the two maps, which every walk after the first shares, so none
-// may write them.
+// may write them. own and chain fill on first read, through any copy of the facts, so the facts of
+// one pass are read on one goroutine.
 type passChain struct {
 	issues         []Issue
 	above          map[string]Issue
@@ -699,7 +700,8 @@ type LineFacts struct {
 	childrenFirst map[string]ChildWait
 	// pass is the one chain of the pass ReadLineFacts read these facts in (passChain), which the
 	// line (Waiting) and the held list (HeldList) walk where they are handed the very records it
-	// was built over (passOver); nil in facts ReadLineFacts did not read.
+	// was built over (passOver); nil in facts ReadLineFacts did not read. Its maps fill on first
+	// read, so the facts of one pass are read on one goroutine.
 	pass *passChain
 }
 
