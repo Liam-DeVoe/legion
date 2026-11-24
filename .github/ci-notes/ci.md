@@ -272,7 +272,7 @@ packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 b
 for internal/daemon/outbox_scratch_dispatch_test.go:454, and what their tests read
 outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:42,1459, internal/intake/intake_test.go:978,984,1082), the
-agents internal/prompts/roles_test.go:268 stats, the tools skill its :837-838 holds
+agents internal/prompts/roles_test.go:268 stats, the tools skill its :755-756 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:412
 holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:117 sources, and the examples and
