@@ -51,10 +51,11 @@ const (
 	ClaimSession = "session"
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
-	// ClaimService is the service a token that names no person is, a machine's fleet or the
-	// service a read entry names, and is empty for every token that names one. It is written
-	// always, for the reason ClaimProjectScope is: a reader of the row never has to take an
-	// absent service as either "no service" or "a claim this build of the broker did not write".
+	// ClaimService is the service a token that names no person is, a machine's fleet, the service
+	// a read entry names, or the account of an account entry naming no person, and is empty for
+	// every token that names one. It is written always, for the reason ClaimProjectScope is: a
+	// reader of the row never has to take an absent service as either "no service" or "a claim
+	// this build of the broker did not write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and
@@ -991,7 +992,11 @@ func dispatchUnreachable(err error) error {
 // not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
 // misconfiguration, never an outage to mint through.
 //
-// A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
+// A token that names no person names no project and asks nothing: a machine's or a read entry's,
+// whose trade naming a project the policy refuses (exchange.ErrProjectsNoPerson), and an account
+// entry's naming no person, whose entry names no project, so a trade naming one is refused as
+// under any entry naming none (exchange.ErrProjectsFixed). With no person there is nobody whose
+// member kind Dispatch could be asked about, so the restricted-member check does not run for it.
 //
 // A narrowed token is checked as its base word (oauthwire.BaseProjectScope): a trade that asked
 // for read names what the same trade without it would, so it is held to exactly the same rules

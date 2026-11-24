@@ -55,8 +55,11 @@ A Kubernetes pod trades its own projected ServiceAccount token at the same excha
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
 and the one Dispatch project it may write, or no project for an entry that names none
-(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
-service and a fixed session instead, and no person and no project: the token holds the OAuth scope
+(`<service account>==<person>`), or neither a person nor a project for an entry that names
+neither (`<service account>==`): such a token acts as the account itself, names the account as its
+service, and Dispatch records its writes under that account. An entry that names a project names
+its person, so no token held to a project is personless. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`,
+gives it a service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the GET routes it classes as reads, and refuses it on
 every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
 NATS auth service refuses a connection that presents it as `not_a_session`
@@ -65,7 +68,7 @@ needs no OAuth scope, for every project: each issue, closed and iceboxed ones in
 documents, comments and asks. No setting holds a read entry to some projects.
 
 Any trade may also ask for the OAuth scope `read` (`scope=read`), whatever its subject. That
-includes a pod's token under any entry, a workflow run's token, a machine's Google identity, a
+includes a pod's token under any entry, an account entry that names no person among them, whose read token names its account as the service, a workflow run's token, a machine's Google identity, a
 person's sign-in and a machine login. The token keeps the session, the person or the service, and
 the projects that the same trade would have named, and it writes nothing. Its project scope is
 the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It

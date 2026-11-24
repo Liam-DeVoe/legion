@@ -27,14 +27,15 @@ import (
 
 // tradeKinds is every kind of trade the exchange mints a token for, under the subject token type
 // the trade presents. The token type alone does not tell every kind apart: a pod's token is a
-// pod entry's or a read entry's, and a machine's Google identity token is an entry's that names a
-// person or one's that names none, which only the entry the broker's configuration lists decides.
+// pod entry's that names a person, one's that names none, or a read entry's, and a machine's
+// Google identity token is an entry's that names a person or one's that names none, which only
+// the entry the broker's configuration lists decides.
 // So the kinds are written here by hand, and TestEveryTradeKindNarrowsOnRequest ties the list to
 // the code: every subject token type the exchange client accepts must be listed here, and every
 // type listed here must be one the client accepts. A new type the client takes fails that test
 // until its kinds are written here.
 var tradeKinds = map[string][]string{
-	oauthwire.SubjectTokenTypeKubernetes:  {"pod-entry", "read-entry"},
+	oauthwire.SubjectTokenTypeKubernetes:  {"pod-entry", "pod-entry-no-person", "read-entry"},
 	oauthwire.SubjectTokenTypeGitHub:      {"workflow-entry"},
 	oauthwire.SubjectTokenTypeGoogle:      {"google-identity-no-person", "google-identity-with-a-person"},
 	oauthwire.SubjectTokenTypePerson:      {"person-sign-in"},
@@ -89,6 +90,14 @@ const (
 	pinnedFleet   = "example-pinned"
 )
 
+// personlessAccount is a pod account whose entry names no person and no project and fixes
+// personlessSession (<service account>===<session>): its tokens act as the account itself, which
+// they name as their service.
+const (
+	personlessAccount = "system:serviceaccount:example-ns:example-public"
+	personlessSession = "example-public-session"
+)
+
 // narrowingRows is the narrowing row of every kind of trade, keyed by the kind's name as
 // tradeKinds spells it, which is also the key of the kind's answer in
 // internal/ciphertoken/testdata/narrowed-answers.json.
@@ -97,6 +106,10 @@ var narrowingRows = map[string]narrowingRow{
 		f.registers(t, account, narrowedPodUID, narrowedPodSession)
 		return narrowingTrade{form: exchangeForm(f.podToken(t, narrowedPodUID, nil), oauthwire.SubjectTokenTypeKubernetes, narrowedPodSession),
 			key: newKey(t), session: narrowedPodSession}
+	}},
+	"pod-entry-no-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+		return narrowingTrade{form: exchangeForm(f.podTokenOf(t, personlessAccount, "pod-uid-public"), oauthwire.SubjectTokenTypeKubernetes, ""),
+			key: newKey(t), session: personlessSession}
 	}},
 	"read-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: f.readPodForm(t), key: newKey(t), session: readSession}
@@ -128,9 +141,10 @@ var narrowingRows = map[string]narrowingRow{
 }
 
 // newNarrowingFixture is a sign-in fixture whose exchange lists every kind of trade tradeKinds
-// names: the exchange fixture's accounts, read entry and workflows, the sign-in fixture's fleet,
-// whose entry names no person, and pinnedMachine's fleet, whose entry names person and project.
-// adjust is applied to the configuration last.
+// names: the exchange fixture's accounts, personlessAccount's entry, which names no person and no
+// project, the read entry and workflows, the sign-in fixture's fleet, whose entry names no person,
+// and pinnedMachine's fleet, whose entry names person and project. adjust is applied to the
+// configuration last.
 func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
@@ -139,6 +153,7 @@ func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixtur
 				{Account: account, Project: project, Person: person},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
 				{Account: otherAccount, Project: otherProject, Person: otherPerson},
+				{Account: personlessAccount, Session: personlessSession},
 			},
 			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
 			[]exchange.WorkflowEntry{
@@ -537,10 +552,11 @@ func TestANarrowedTokenIsNoSubjectForAnotherTrade(t *testing.T) {
 }
 
 // TestANarrowedTokenExpiresNoLaterThanItsSubject: a narrowed token never outlives the token it
-// was traded from. For a pod's, a workflow run's, a machine's and a person's subject token whose
-// exp is a minute away, and for a machine login's access token with a minute left, the narrowed
-// token's exp, its row's expires_at and its answer's expires_in all end no later than the subject,
-// though the access lifetime is fifteen minutes.
+// was traded from. For a pod's token under an entry that names a person and under one that names
+// none, a workflow run's, a machine's and a person's subject token whose exp is a minute away,
+// and for a machine login's access token with a minute left, the narrowed token's exp, its row's
+// expires_at and its answer's expires_in all end no later than the subject, though the access
+// lifetime is fifteen minutes.
 func TestANarrowedTokenExpiresNoLaterThanItsSubject(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	expires := func(claims map[string]any, at time.Time) { claims["exp"] = at.Unix() }
@@ -560,6 +576,13 @@ func TestANarrowedTokenExpiresNoLaterThanItsSubject(t *testing.T) {
 			f.registers(t, account, narrowedPodUID, narrowedPodSession)
 			subject := f.podToken(t, narrowedPodUID, func(claims map[string]any) { expires(claims, at) })
 			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, narrowedPodSession), key: newKey(t)}
+		}},
+		{"the pod's token of an entry naming no person", func(t *testing.T, at time.Time) narrowingTrade {
+			subject := f.podToken(t, "pod-uid-public", func(claims map[string]any) {
+				claims["sub"] = personlessAccount
+				expires(claims, at)
+			})
+			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, ""), key: newKey(t)}
 		}},
 		{"a workflow run's token", func(t *testing.T, at time.Time) narrowingTrade {
 			subject := f.workflowToken(t, uuid.NewString(), func(claims map[string]any) { expires(claims, at) })

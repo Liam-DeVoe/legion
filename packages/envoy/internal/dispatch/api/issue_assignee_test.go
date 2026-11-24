@@ -565,11 +565,16 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 // them the machine login's narrowed token with a cut, and a read-only personal token of each set
 // such a token may hold (readOnlyPersonalTokens). A read-person token that names its person, and a
 // personal token holding person beside read, are told person beside read, and no read-only token
-// is told approve. The control is a token that writes, told neither read nor a cut.
+// is told approve. No read-only token is told that a person must sign in (sign_in_required
+// false), though several name a service and no person as a machine nobody signed in on does: no
+// sign-in lets a read-only token write. The control is a token that writes, told neither read nor
+// a cut.
 //
-// The handler is called directly with each token, so the test reads whoami's own answer alone;
-// the read-only walks (read_only_token_test.go) hold the gate in front of it, which lets every
-// read-only token through to whoami, a token that carries a cut included.
+// Each token is sent through the mounted handler, as a client sends it: the read-only gate lets
+// every read-only token through to whoami, a token that carries a cut included, and the request
+// resolves its token once (decideBrokerToken), so the sign-in decision whoami answers reads the
+// same caller its scopes and cut are read from. A handler called with no such request would
+// resolve the token a second time on a spent proof and read no caller there at all.
 func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -580,6 +585,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	personAndRead := []string{model.ScopePerson, model.ScopeRead}
 	wantScopes := map[string][]string{
 		"pod-entry":                     read,
+		"pod-entry-no-person":           read,
 		"read-entry":                    read,
 		"workflow-entry":                read,
 		"google-identity-no-person":     read,
@@ -623,8 +629,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 				rig.broker.Says(token, row.answer)
 				request = caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
 			}
-			response := httptest.NewRecorder()
-			rig.served.whoami(response, request)
+			response := rig.serve(request)
 			if response.Code != http.StatusOK {
 				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
 			}
@@ -648,6 +653,9 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 			}
 			if answered, present := members["cut"]; !present || string(answered) != wantCut {
 				t.Fatalf("whoami cut = %s (present %v), want %s: %s", answered, present, wantCut, response.Body.String())
+			}
+			if answered, present := members["sign_in_required"]; !present || string(answered) != "false" {
+				t.Fatalf("whoami sign_in_required = %s (present %v), want false: %s", answered, present, response.Body.String())
 			}
 		})
 	}

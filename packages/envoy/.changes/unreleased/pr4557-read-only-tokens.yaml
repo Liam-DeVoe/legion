@@ -21,7 +21,9 @@ body: |-
   A person can make a personal token that only reads: Settings → Agent tokens offers "Read only".
   Such a token holds `read` alone or beside `person`, and never beside `approve`. No existing token
   changes to or from `read`. `GET /api/v1/whoami` names `read` among the scopes of every read-only
-  token, and its cut.
+  token, and its cut, and answers `sign_in_required` false for it, since no sign-in lets a
+  read-only token write. An account entry that names no person may ask for `read` too, and its
+  token names the account as its service and writes nothing.
 
   A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub exactly what a
   writer's read made at the same moment asks, and gives the same answer. It stores no pull request
