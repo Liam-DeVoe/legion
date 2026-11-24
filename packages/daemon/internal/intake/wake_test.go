@@ -94,7 +94,7 @@ func TestTheWakeConsumerNamesItsProjectOnItsOwnSubject(t *testing.T) {
 	if legionWakeSubject != "notifications.legion.wake" {
 		t.Fatalf("the wake subject is %q, want notifications.legion.wake", legionWakeSubject)
 	}
-	for project, want := range map[string]string{"CAPTURE": "notifications.legion.capture.wake", "INFRA": "notifications.legion.infra.wake"} {
+	for project, want := range map[string]string{"CAPTURE": "notifications.legion.capture.wake", "GLOBEX": "notifications.legion.globex.wake"} {
 		if got, err := wakeSubject(project); err != nil || got != want {
 			t.Errorf("wakeSubject(%q) = %q, %v; want %s", project, got, err, want)
 		}
