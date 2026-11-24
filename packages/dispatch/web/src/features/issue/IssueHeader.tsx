@@ -32,6 +32,7 @@ import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   badgePrimary,
   bgTransparent,
@@ -804,8 +805,9 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -854,8 +856,9 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

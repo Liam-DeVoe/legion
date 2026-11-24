@@ -21,6 +21,7 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   backdrop50,
   badgeLow,
@@ -472,8 +473,9 @@ function SearchNarrowing({
               onBlur={takeAuthor}
               onChange={setAuthor}
               onKeyDown={(event) => {
-                // An Enter that ends or moves an input method's composition is the composition's.
-                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                // An Enter that ends or moves an input method's composition is the composition's
+                // (`inputMethodKey`).
+                if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
                   event.preventDefault();
                   takeAuthor();
                 }
@@ -843,9 +845,10 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // A key that is part of an input method's composition is the composition's, and its default
-    // stays the browser's: it moves no highlight, moves no chip (Tab, Backspace) and picks no row.
-    if (event.nativeEvent.isComposing) {
+    // A key that is part of an input method's composition, or the one that ends it
+    // (`inputMethodKey`), is the composition's, and its default stays the browser's: it moves no
+    // highlight, moves no chip (Tab, Backspace) and picks no row.
+    if (inputMethodKey(event.nativeEvent)) {
       return;
     }
     if (scope.handleKey(event)) {
