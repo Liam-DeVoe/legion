@@ -883,6 +883,19 @@ func (r *reconnectingJetStream) AccountInfo(opts ...natsgo.JSOpt) (*natsgo.Accou
 
 func (r *reconnectingJetStream) AddStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
 	r.creates.Add(1)
+	if r.at == "stream create" {
+		// The create lands and its answer is lost: the stream is made, the connection is dropped
+		// and held, and the send answers as one the server left unanswered, which the bus sends
+		// again (sentAgain). The send after it meets a connection that is reconnecting.
+		info, err := r.JetStreamContext.AddStream(cfg, opts...)
+		if err != nil {
+			return info, err
+		}
+		if dropped := r.answered("stream create"); dropped != nil {
+			return nil, dropped
+		}
+		return nil, natsgo.ErrTimeout
+	}
 	if r.dial != nil {
 		r.dial.held.Store(false)
 		_ = r.conn.ForceReconnect()
@@ -984,6 +997,29 @@ func TestACreateWhoseConnectionReconnectsAfterItsLookupIsRefusedForNoServerVersi
 	}
 	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); !errors.Is(err, natsgo.ErrStreamNotFound) {
 		t.Fatalf("the refused run made KV_%s: %v", bus.KnownSessionBucket, err)
+	}
+}
+
+// A create whose STREAM.CREATE lands and whose answer is lost says the bucket may be there, not
+// that it is not created. A create the server leaves unanswered is sent again (bus's sentAgain),
+// and that send ends at its first read of the server version, having sent nothing, when the
+// connection is reconnecting: the first send still made the stream. The bus marks the failure of
+// a create that sent a STREAM.CREATE (bus.ErrStreamCreateSent), and the run's line says so. Here
+// the fake answers the first STREAM.CREATE as unanswered after it has made the stream, and drops
+// the connection with it. At 570d918b3b the run printed "KV_envoy_known_sessions is not created"
+// while the hub held the bucket.
+func TestACreateWhoseSentStreamCreateLosesItsAnswerSaysTheBucketMayBeThere(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	const refusal = "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; KV_" + bus.KnownSessionBucket + " may have been created: a create of it was sent and its answer was never read: run create again\n"
+	code, stdout, stderr, reconnecting, js := reconnectingRun(t, "stream create", true, 1)
+	if code != 1 || stdout != "" || stderr != refusal {
+		t.Fatalf("the run = %d, want 1\nstdout: %q\nstderr: %q\nwant:   %q", code, stdout, stderr, refusal)
+	}
+	if creates := reconnecting.creates.Load(); creates != 1 {
+		t.Fatalf("the create sent %d STREAM.CREATE, want the one whose answer was lost", creates)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); err != nil {
+		t.Fatalf("the hub holds no KV_%s, so the run's line is right and this test proves nothing: %v", bus.KnownSessionBucket, err)
 	}
 }
 

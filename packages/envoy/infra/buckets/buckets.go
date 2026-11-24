@@ -514,12 +514,13 @@ func createCommand(ctx context.Context, stdout, stderr io.Writer, natsURL string
 // refuses the run with its own line and reads nothing (bus.ServerVersion): nats.go and the bus read
 // "" as a server too old for a bucket, and every present bucket would be judged against a stream
 // made for such a server, discard old, and refused naming its discard policy as a difference. The
-// create reads the version twice more where nats.go does (bus's addBucketStream): before it sends
-// anything, where no version answers nats.go's own error for a server too old for a bucket, and
-// after the account's info, for the discard policy, where no version answers bus.ErrNoServerVersion
-// and the create sends no STREAM.CREATE, where it would have made a stream of discard old. A create
-// that fails while the connection reports no version is refused with the same line, naming the
-// bucket it did not create, whichever read met it.
+// create reads the version twice more where nats.go does (bus's addBucketStream), each before any
+// send: before it sends anything, and after the account's info, for the discard policy. No version
+// at either answers bus.ErrNoServerVersion and the create sends no STREAM.CREATE there, where the
+// second read would have made a stream of discard old. A create that fails while the connection
+// reports no version is refused with the same line, which says the bucket is not created, or, when
+// a send of this create did go out and its answer was lost (bus.ErrStreamCreateSent), that the
+// bucket may be there.
 //
 // A read or a create the server refuses under the connection's grant is sent again until
 // refusalWait has passed since the run began (untilGranted). Once ctx has ended the run stops where
@@ -578,8 +579,15 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 		// A connection that drops during the create reports no server version, which the create
 		// classifies (bus.ErrNoServerVersion) at whichever read met it, so the run says what happened
 		// without reading the connection again, which could report a version a later reconnect
-		// restored and say "not created" after a STREAM.CREATE had already been sent.
+		// restored. What the hub may hold is the create's own answer: a STREAM.CREATE the server
+		// left unanswered is sent again, and the send after it can end at its first version read,
+		// having sent nothing, while the first send still lands. The bus marks such an error
+		// (bus.ErrStreamCreateSent), so the line says the bucket may be there rather than that it
+		// is not created.
 		if errors.Is(err, bus.ErrNoServerVersion) {
+			if errors.Is(err, bus.ErrStreamCreateSent) {
+				return noServerVersion(stderr, "KV_"+bucket+" may have been created: a create of it was sent and its answer was never read")
+			}
 			return noServerVersion(stderr, "KV_"+bucket+" is not created")
 		}
 		if !errors.Is(err, bus.ErrBucketExists) {

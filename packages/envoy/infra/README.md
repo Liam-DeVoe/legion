@@ -3474,9 +3474,13 @@ named bucket first, and changes no bucket that is there, so it can run again:
   nats.go reads no version as a server too old for a bucket. A connection that drops during a
   create, and is reconnecting when the create reads the version again (before it sends anything,
   and after the account's JetStream info, where nats.go reads it for the stream's discard policy),
-  refuses the run the same way, naming the bucket it did not create, where it used to print
-  nats.go's error for a server too old for a bucket, or create that bucket with a discard policy of
-  old. Run `create` again.
+  refuses the run the same way, where it used to print nats.go's error for a server too old for a
+  bucket, or create that bucket with a discard policy of old. Each of those reads is before every
+  send of that call, so the line names the bucket it did not create. It says the bucket **may have
+  been created** instead when a `STREAM.CREATE` of this create did go out and its answer was never
+  read: a create the server leaves unanswered is sent again, and the send after it can end at its
+  first version read while the first send lands. Run `create` again either way: it reads what the
+  hub holds.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
 the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server

@@ -82,7 +82,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 			t.Cleanup(func() { _ = js.DeleteStream(stream) })
 
 			_, natsFirst := js.CreateKeyValue(row.config(bucket))
-			ours := createBucketStream(t.Context(), conn, js, row.config(bucket))
+			_, ours := createBucketStream(t.Context(), conn, js, row.config(bucket))
 			_, natsSecond := js.CreateKeyValue(row.config(bucket))
 
 			if natsFirst == nil {
@@ -125,7 +125,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 		if _, natsErr := unconnected.CreateKeyValue(config); natsErr == nil {
 			t.Fatal("nats.go's CreateKeyValue did not refuse a connection that has not connected")
 		}
-		if ours := createBucketStream(t.Context(), client.Conn, unconnected, config); !errors.Is(ours, ErrNoServerVersion) {
+		if _, ours := createBucketStream(t.Context(), client.Conn, unconnected, config); !errors.Is(ours, ErrNoServerVersion) {
 			t.Fatalf("a create on a connection that has not connected = %v, want ErrNoServerVersion", ours)
 		}
 	})

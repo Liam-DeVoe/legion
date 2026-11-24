@@ -219,10 +219,16 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// (addBucketStream). A request of the step the server refuses under the connection's grant
 		// ends the step at that send instead (refusedBy): it would be refused again. No request of
 		// the step is sent once ctx has ended, though Bounded has stopped waiting for it.
-		send := func() (struct{}, error) { return struct{}{}, createBucketStream(ctx, conn, js, config) }
+		sentCreate := false
+		send := func() (struct{}, error) {
+			sent, err := createBucketStream(ctx, conn, js, config)
+			sentCreate = sentCreate || sent
+			return struct{}{}, err
+		}
 		if mode == createOnly {
 			send = func() (struct{}, error) {
-				_, err := addBucketStream(ctx, conn, js, config)
+				_, sent, err := addBucketStream(ctx, conn, js, config)
+				sentCreate = sentCreate || sent
 				return struct{}{}, err
 			}
 		}
@@ -258,6 +264,14 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			err = namedRequest(create, err)
 		default:
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
+		}
+		// A create this call sent and never read an answer to may have landed, whatever the send
+		// after it answered: a create the server leaves unanswered is sent again, and that send
+		// can end before it sends anything (ErrNoServerVersion). So the failure says the stream
+		// may be there (ErrStreamCreateSent), rather than leave a caller to say nothing was
+		// created.
+		if err != nil && sentCreate {
+			err = fmt.Errorf("%w: %w", err, ErrStreamCreateSent)
 		}
 		created = err == nil
 	case err == nil && mode == createOnly:

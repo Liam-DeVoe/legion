@@ -33,8 +33,11 @@ import (
 // nats.go answers a server too old, answers ErrNoServerVersion instead, so a caller tells no version
 // from a server before 2.6.2 without reading the connection again (addBucketStream). No request is
 // sent once ctx has ended.
-func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) error {
-	stream, err := addBucketStream(ctx, conn, js, config)
+// It answers whether it sent a STREAM.CREATE, which its caller carries across the sends of one
+// create (openKeyValue, ErrStreamCreateSent): a create sent and left unanswered may have landed,
+// whatever the send after it answers.
+func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (bool, error) {
+	stream, sent, err := addBucketStream(ctx, conn, js, config)
 	if errors.Is(err, nats.ErrStreamNameAlreadyInUse) && ctx.Err() == nil {
 		// nats.go drops the read's own error: a stream it cannot read stays "already in use".
 		if info, _ := js.StreamInfo(stream.Name); info != nil && ctx.Err() == nil {
@@ -45,7 +48,7 @@ func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamC
 			}
 		}
 	}
-	return err
+	return sent, err
 }
 
 // addBucketStream is createBucketStream up to its create and no further: nats.go's checks, the
@@ -66,46 +69,54 @@ func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamC
 // connection again. The second read, after the account's info, chooses the stream's discard policy,
 // and a connection can drop and start reconnecting between the two: one that is not connected there
 // reports no version, which nats.go reads as a server too old for a discard policy of new and so
-// makes a stream of discard old. That read too ends the call with ErrNoServerVersion, sending
-// nothing more.
-func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (*nats.StreamConfig, error) {
+// nothing more. Each read is before every send, so a call that ends at one sent nothing; the
+// second return value says whether this call sent its STREAM.CREATE, and a send the server left
+// unanswered may still have landed.
+func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (*nats.StreamConfig, bool, error) {
 	version, err := ServerVersion(conn)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !natsServerMinVersion(version, 2, 6, 2) {
-		return nil, errKeyValueServerTooOld
+		return nil, false, errKeyValueServerTooOld
 	}
 	if config == nil {
-		return nil, nats.ErrKeyValueConfigRequired
+		return nil, false, nats.ErrKeyValueConfigRequired
 	}
 	if !natsBucketName.MatchString(config.Bucket) {
-		return nil, nats.ErrInvalidBucketName
+		return nil, false, nats.ErrInvalidBucketName
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := js.AccountInfo(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	version, err = ServerVersion(conn)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	stream, err := bucketStreamConfig(config, version)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return stream, err
+		return stream, false, err
 	}
 	_, err = js.AddStream(stream)
-	return stream, err
+	return stream, true, err
 }
 
 // ErrNoServerVersion is a connection that reports no server version where a configuration is
 // chosen by the version (ServerVersion).
 var ErrNoServerVersion = errors.New("the connection reports no server version, as one that is not connected does")
+
+// ErrStreamCreateSent marks the error of a create that sent a STREAM.CREATE whose answer it never
+// read: the stream may be there. openKeyValue wraps every failed create of a call that sent one
+// with it, so a caller says what the hub may hold rather than that nothing was created. A create
+// the server left unanswered is sent again (sentAgain), and the send after it can end before it
+// sends anything, such as on a connection that is reconnecting (ErrNoServerVersion).
+var ErrStreamCreateSent = errors.New("a STREAM.CREATE of this create was sent, and may have landed")
 
 // ServerVersion is the version of the server conn is connected to, for a read that chooses a
 // configuration by it: the stream a bucket's create makes (addBucketStream) and the one

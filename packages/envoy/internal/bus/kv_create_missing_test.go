@@ -220,7 +220,7 @@ func TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse(t *testing.
 
 	// The control: the normal path's step on the same answers updates the stream.
 	control := serverBefore211{&behindMember{JetStreamContext: js}}
-	if err := createBucketStream(t.Context(), conn, control, &config); err != nil {
+	if _, err := createBucketStream(t.Context(), conn, control, &config); err != nil {
 		t.Fatalf("control: the normal path's create on a server answering no metadata = %v, want the stream updated", err)
 	}
 	if got := writes.Take(t); len(got) != 2 || got[1] != "$JS.API.STREAM.UPDATE."+stream {

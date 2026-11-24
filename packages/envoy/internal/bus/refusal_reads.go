@@ -150,7 +150,9 @@ func consumerCreateSubject(serverVersion, stream string, cfg *nats.ConsumerConfi
 // older than any minimum. nats.go reads an empty version as a server too old; the bus classifies it
 // as ErrNoServerVersion at both reads a bucket's create makes (addBucketStream), reserving
 // errKeyValueServerTooOld for a server that reports a version before 2.6.2, so an operator tells no
-// version from an old server without reading the connection again.
+// version from an old server without reading the connection again. Each of those reads is before
+// every send of that call, so a call ending at one sent nothing; a create sent by an earlier call
+// of the same create, whose answer was lost, is marked instead (ErrStreamCreateSent).
 var natsVersionPattern = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
 
 func natsVersionComponents(version string) (major, minor, patch int) {
