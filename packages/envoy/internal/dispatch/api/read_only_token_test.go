@@ -783,6 +783,7 @@ func startsWithSQLWord(s, word string) bool {
 // update statement however it names its table is one, a comment hides no write and a merge is one,
 // and a write word it cannot place a table for leaves the statement unreadable.
 func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		statement string
 		writes    []string
