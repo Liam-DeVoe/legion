@@ -651,8 +651,8 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 // otherwise hold the pool open and Dispatch running until the runtime's kill. Shutdown reads the
 // outbox only through outboxStopped, so one that never closes is an outbox that never stops. The
 // shutdown runs on a fake clock the row moves to the budget's end once the wait is armed for it:
-// the shutdown then closes the pool, returns, and says it closed the pool with the outbox still
-// stopping.
+// the shutdown then warns that it closes the pool with the outbox still stopping (waitForOutbox),
+// closes the pool and returns.
 func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
@@ -678,7 +678,7 @@ func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
 	fake.Set(budget)
 	testwait.Receive(t, "shutdown to return once its wait for the outbox reached outboxStopBudget", done)
 	if !strings.Contains(logged.String(), `msg="dispatch: close the pool with the events outbox still stopping"`) {
-		t.Errorf("the shutdown did not say it closed the pool with the outbox still stopping:\n%s", logged)
+		t.Errorf("the shutdown did not warn that it closes the pool with the outbox still stopping:\n%s", logged)
 	}
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err == nil {
 		t.Fatal("shutdown left the pool open once its wait for the outbox was over")

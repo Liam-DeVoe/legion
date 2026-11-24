@@ -509,8 +509,12 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 	// instead, for the same deadline, so the timer alone does not tell the two apart. Admission
 	// commits the newcomer's row (tryRegister) before RegisterOn starts that heartbeat, so the
 	// dead row alone is live while the newcomer is refused and waits.
-	if got := liveIDs(t, database); !slices.Equal(got, []string{dead}) {
-		t.Fatalf("live = %v once a timer was armed on the newcomer's clock, want the dead row %s alone: the newcomer was admitted beside it at once rather than refused and left waiting for it to lapse", got, dead)
+	live := liveIDs(t, database)
+	if !slices.Contains(live, dead) {
+		t.Fatalf("live = %v once a timer was armed on the newcomer's clock: the dead row %s lapsed before the test aged it, so the refusal this row reads was not tested", live, dead)
+	}
+	if !slices.Equal(live, []string{dead}) {
+		t.Fatalf("live = %v once a timer was armed on the newcomer's clock, want the dead row %s alone: the newcomer was admitted beside it at once rather than refused and left waiting for it to lapse", live, dead)
 	}
 	ageHeartbeat(t, database, dead, LiveWindow+time.Second)
 	fake.Advance(HeartbeatInterval)
