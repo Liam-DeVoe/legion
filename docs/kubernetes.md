@@ -1812,10 +1812,7 @@ The daemon writes these routes with its Envoy bearer (`envoy_token_file`, sent a
 The listener refuses every registry write that presents a secrets-broker access token with `403`, since such a token always names a session, and a session that could write an entry or `answering: true` could have another session's messages answered by a daemon instead of stored for it.
 That refusal closes the broker token's way in and no other: every launch also carries the daemon's Envoy bearer (`ENVOY_TOKEN_FILE`), which names no session, so a session that presents it writes these routes as the daemon does.
 
-Each entry carries `finished`, whether its issue has left the workflow
-— closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming.
-The daemon reads the standing of every issue its history names each minute and writes that issue's entries again whenever it changes, in either direction, so an issue a person moves back into the workflow stops being finished within the minute.
-It does not decide what a message to a role **nobody holds** gets; the role's newest entry does, whether its issue has left the workflow or not:
+The role's newest entry decides what a message to a role **nobody holds** gets, whether its issue has left the workflow or not:
 an entry that is not `released` is a stopped agent its daemon answers for, a worker that failed or that the workflow or an operator suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
 a `released` entry's message, and the message of a role the registry holds no entry for, is kept on that role's kept lane for its next worker for one hour and answered `202` with `kept: true`.
 A message addressed to a session id is handed off whether its issue is finished or not, ahead of the copy the listener would store for a session it still knows:
@@ -3429,7 +3426,7 @@ No earlier daemon writes to the bucket, so that `false` stands until this releas
 A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
 
 **An earlier listener needs nothing.**
-A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently, so the `finished` and `released` this release wrote mean nothing to it.
+A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently, so the `released` this release wrote means nothing to it.
 The entries stay in the bucket, which deletes nothing, and its routes serve them as before.
 
 **`answers`, `runtime.tmux.session_store` and `runtime.tmux.session_dsn_file` must come out of `legion.yaml`.**

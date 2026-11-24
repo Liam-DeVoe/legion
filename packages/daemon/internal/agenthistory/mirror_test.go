@@ -73,31 +73,18 @@ func (c *fakeClock) fire(w fakeWait) {
 	w.fire <- now
 }
 
-// fakeStore holds the history in memory, with the standing the test gives each of its issues.
+// fakeStore holds the history in memory, with the released claims the test gives it.
 type fakeStore struct {
 	mu   sync.Mutex
 	rows []store.AgentConversation
-	// finished is what FinishedIssues says of each issue; an issue it does not name is running.
-	finished map[string]bool
 	// released is what ReleasedSessions says: the session of each released claim, with its issue.
 	released map[string]string
-	// standingErr is what FinishedIssues fails with while it is set.
+	// standingErr is what ReleasedSessions fails with while it is set.
 	standingErr error
 	// releasedReads counts the reads of ReleasedSessions.
 	releasedReads int
 	// holding holds the next call of each read it names until the test lets it go (hold).
 	holding map[string]chan chan struct{}
-}
-
-// setFinished is the record moving an issue out of the workflow (a close, a park, its tree
-// retired) or back into it.
-func (s *fakeStore) setFinished(issue string, finished bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.finished == nil {
-		s.finished = map[string]bool{}
-	}
-	s.finished[issue] = finished
 }
 
 // setReleased is the daemon releasing the idle issue pod of the claim that kept session, on
@@ -121,7 +108,7 @@ func (s *fakeStore) failStandings(err error) {
 	s.standingErr = err
 }
 
-// hold has the next call of read (FinishedIssues, a standings pass's first read, or
+// hold has the next call of read (ReleasedSessions, a standings pass's first read, or
 // IssueConversations, which a pass makes once it has read the released claims) wait until the
 // test closes the channel the returned one hands it once the call has begun.
 func (s *fakeStore) hold(read string) <-chan chan struct{} {
@@ -201,39 +188,21 @@ func (s *fakeStore) IssueConversations(ctx context.Context, project, issue strin
 	return rows, nil
 }
 
-// FinishedIssues names every issue the project's rows carry, with the standing the test set it,
-// and checks that the mirror reads the record's own rule (store.FinishedIssues takes
-// record.OutOfWorkflow, which no other function answers the same way).
-func (s *fakeStore) FinishedIssues(ctx context.Context, project string, outOfWorkflow func(string) bool) (map[string]bool, error) {
-	if outOfWorkflow == nil || !outOfWorkflow("done") || !outOfWorkflow("backlog") || outOfWorkflow("in_progress") {
-		return nil, fmt.Errorf("the mirror passed a rule that is not record.OutOfWorkflow")
+// ReleasedSessions is the released claims the test set, each read its own map, as
+// store.ReleasedSessions reads a new one every time.
+func (s *fakeStore) ReleasedSessions(ctx context.Context, project string) (map[string]string, error) {
+	if project != legionProject {
+		return nil, fmt.Errorf("the mirror read the released claims of %s, want %s", project, legionProject)
 	}
-	if err := s.wait(ctx, "FinishedIssues"); err != nil {
+	if err := s.wait(ctx, "ReleasedSessions"); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.releasedReads++
 	if s.standingErr != nil {
 		return nil, s.standingErr
 	}
-	finished := map[string]bool{}
-	for _, row := range s.rows {
-		if row.Project == project {
-			finished[row.Issue] = s.finished[row.Issue]
-		}
-	}
-	return finished, nil
-}
-
-// ReleasedSessions is the released claims the test set, each read its own map, as
-// store.ReleasedSessions reads a new one every time.
-func (s *fakeStore) ReleasedSessions(_ context.Context, project string) (map[string]string, error) {
-	if project != legionProject {
-		return nil, fmt.Errorf("the mirror read the released claims of %s, want %s", project, legionProject)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.releasedReads++
 	released := map[string]string{}
 	maps.Copy(released, s.released)
 	return released, nil
@@ -373,10 +342,10 @@ func (s *standIn) entry(raw []byte) (Entry, error) {
 	want := []string{"harness", "issue", "legion_project", "role", "role_token", "session_id", "started_at", "title"}
 	got := make([]string, 0, len(fields))
 	for key := range fields {
-		// finished and released are the optional fields: each is written only when it is true -
-		// an issue that has left the workflow, a claim suspended by idle release - and omitted
-		// otherwise, which is what the listener reads as false.
-		if key == "finished" || key == "released" {
+		// released is the optional field: it is written only when it is true - a claim
+		// suspended by idle release - and omitted otherwise, which is what the listener reads as
+		// false.
+		if key == "released" {
 			if value, ok := fields[key].(bool); !ok || !value {
 				return Entry{}, fmt.Errorf("%s is %v, want it written only when it is true", key, fields[key])
 			}
@@ -721,108 +690,35 @@ func fireUntil(t *testing.T, clock *fakeClock, what string, holds func() bool) {
 	t.Fatalf("the mirror never %s", what)
 }
 
-// An entry's `finished` is the standing of its issue: false while the issue runs, so the listener
-// keeps a message to that role for its next worker (INFRA-514's 202), and true once the issue has
-// left the workflow - closed, parked, or its tree retired - so the listener hands such a message
-// to this daemon, which answers it from the stopped agent's own conversation. The mirror writes
-// every conversation of an issue again whenever that standing changes, in either direction.
-func TestTheMirrorWritesFinishedWhenAnIssueLeavesTheWorkflowAndAgainWhenItReturns(t *testing.T) {
-	listener, server := newStandIn(t)
-	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
-	_, clock := runMirror(t, server, st, &logs{})
-	w := clock.wait(t)
-
-	batches, _, _ := listener.snapshot()
-	if len(batches) != 1 || len(batches[0]) != 2 {
-		t.Fatalf("the boot wrote %+v, want one batch holding both conversations", batches)
-	}
-	for _, entry := range batches[0] {
-		if entry.Finished {
-			t.Fatalf("the boot wrote %s finished while its issue runs: a message to its role would be answered from a stopped agent instead of kept for the role's next worker", entry.SessionID)
-		}
-	}
-
-	// The issue leaves the workflow: every conversation of it is written again, finished.
-	st.setFinished("LEGION-7", true)
-	clock.fire(w)
-	fireUntil(t, clock, "wrote the closed issue's conversations again", func() bool {
-		_, puts, _ := listener.snapshot()
-		return len(puts) == 2
-	})
-	_, puts, _ := listener.snapshot()
-	if puts[0].SessionID != "ses-0" || puts[1].SessionID != "ses-1" || !puts[0].Finished || !puts[1].Finished {
-		t.Fatalf("the close wrote %+v, want both conversations, oldest first, each finished", puts)
-	}
-
-	// A standing that did not change writes nothing, whatever the minute brings.
-	for range 2 {
-		clock.fire(clock.wait(t))
-	}
-	if _, again, _ := listener.snapshot(); len(again) != 2 {
-		t.Fatalf("a standing that did not change wrote %+v, want only the two writes the close made", again)
-	}
-
-	// And back into the workflow - a person moved the issue in again: the entries say so, so the
-	// role's next worker is kept its messages once more.
-	st.setFinished("LEGION-7", false)
-	fireUntil(t, clock, "wrote the reopened issue's conversations again", func() bool {
-		_, puts, _ := listener.snapshot()
-		return len(puts) == 4
-	})
-	_, puts, _ = listener.snapshot()
-	if puts[2].Finished || puts[3].Finished {
-		t.Fatalf("the reopen wrote %+v, want both conversations again with finished false", puts[2:])
-	}
-}
-
-// A registration recorded while its issue is finished carries that standing, and a standing read
-// that fails changes nothing and is read again on the lane's backoff.
+// A standings read that fails changes nothing and is read again on the lane's backoff: the boot
+// writes the history with the standing it last read, none, so no entry says `released`, and once
+// the read recovers, the released claim's conversation is written again, released.
 func TestTheMirrorWritesTheStandingItLastReadAndRetriesAReadThatFailed(t *testing.T) {
 	listener, server := newStandIn(t)
 	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-history", 0)}}
-	st.setFinished("LEGION-7", true)
+	st.setReleased("ses-history", "LEGION-7", true)
 	st.failStandings(fmt.Errorf("the record is not readable"))
 	log := &logs{}
-	m, clock := runMirror(t, server, st, log)
+	_, clock := runMirror(t, server, st, log)
 	fireUntil(t, clock, "wrote the history", func() bool {
 		batches, _, _ := listener.snapshot()
 		return len(batches) == 1
 	})
-	if batches, _, _ := listener.snapshot(); batches[0][0].Finished {
-		t.Fatalf("the boot wrote %+v while no standing could be read, want every entry unfinished: the keep is what an unread standing leaves", batches[0][0])
+	if batches, _, _ := listener.snapshot(); batches[0][0].Released {
+		t.Fatalf("the boot wrote %+v while no standing could be read, want it not released: the hand-off is what an unread standing leaves", batches[0][0])
 	}
-
-	// A registration made while no standing could be read is unfinished too, which is the answer
-	// every entry had before this field.
-	m.Put(testerRow(t, "ses-registered", 1))
-	fireUntil(t, clock, "wrote the registration", func() bool {
-		_, puts, _ := listener.snapshot()
-		return len(puts) == 1
-	})
-	if _, puts, _ := listener.snapshot(); puts[0].Finished {
-		t.Fatalf("a registration written while no standing could be read is %+v, want it unfinished", puts[0])
-	}
-	if lines := log.lines("could not read the standing of its issues"); len(lines) == 0 {
+	if lines := log.lines("could not read its released claims"); len(lines) == 0 {
 		t.Fatalf("the failed standing read was not logged:\n%s", strings.Join(log.lines(), "\n"))
 	}
 
-	// The read recovers: the finished issue's conversation is written again, finished, and a
-	// registration made after it carries the standing too.
+	// The read recovers: the released claim's conversation is written again, released.
 	st.failStandings(nil)
-	fireUntil(t, clock, "wrote the finished issue's conversation again", func() bool {
+	fireUntil(t, clock, "wrote the released claim's conversation again", func() bool {
 		_, puts, _ := listener.snapshot()
-		return len(puts) == 2
+		return len(puts) == 1
 	})
-	if _, puts, _ := listener.snapshot(); !puts[1].Finished || puts[1].SessionID != "ses-history" {
-		t.Fatalf("the recovered read wrote %+v, want the finished issue's recorded conversation written again", puts[1])
-	}
-	m.Put(testerRow(t, "ses-later", 2))
-	fireUntil(t, clock, "wrote the second registration", func() bool {
-		_, puts, _ := listener.snapshot()
-		return len(puts) == 3
-	})
-	if _, puts, _ := listener.snapshot(); !puts[2].Finished {
-		t.Fatalf("a registration of a finished issue is %+v, want it finished", puts[2])
+	if _, puts, _ := listener.snapshot(); !puts[0].Released || puts[0].SessionID != "ses-history" {
+		t.Fatalf("the recovered read wrote %+v, want the released claim's recorded conversation written again, released", puts[0])
 	}
 }
 
@@ -935,10 +831,11 @@ func TestAReleaseTheDaemonReportsIsWrittenWithoutWaitingForTheMinute(t *testing.
 	}
 }
 
-// A nudge is answered by the read it finds in progress when that read has not yet reached the
-// released claims, so a burst of nudges, one from each role stop of a release, costs the
-// listener's registry one read and one write of each changed entry rather than one per nudge.
-func TestNudgesBeforeARunningReadReachesTheReleasedClaimsCostNoReadOfTheirOwn(t *testing.T) {
+// A burst of nudges, one from each role stop of a release, costs the listener's registry one read
+// more than the read it finds in progress, not one per nudge, and one write of each changed entry:
+// the nudges that come while that read is held set one flag, which the next pass answers with one
+// read that finds nothing more changed.
+func TestABurstOfNudgesWhileAReadRunsCostsOneReadMore(t *testing.T) {
 	listener, server := newStandIn(t)
 	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
 	m, clock := runMirror(t, server, st, &logs{})
@@ -948,12 +845,11 @@ func TestNudgesBeforeARunningReadReachesTheReleasedClaimsCostNoReadOfTheirOwn(t 
 	}
 
 	// The first role stop suspends ses-1's claim and says so; the read it asks for begins.
-	held := st.hold("FinishedIssues")
+	held := st.hold("ReleasedSessions")
 	st.setReleased("ses-1", "LEGION-7", true)
 	m.StandingsChanged()
 	proceed := begun(t, held, "the read the nudge asked for")
-	// Before it reaches the released claims, the second role stop suspends ses-0's claim and says
-	// so, more than once.
+	// While it is held, the second role stop suspends ses-0's claim and says so, more than once.
 	st.setReleased("ses-0", "LEGION-7", true)
 	for range 3 {
 		m.StandingsChanged()
@@ -963,12 +859,12 @@ func TestNudgesBeforeARunningReadReachesTheReleasedClaimsCostNoReadOfTheirOwn(t 
 	clock.wait(t)
 	clock.wait(t)
 
-	if reads := st.releasedReadCount(); reads != 2 {
-		t.Fatalf("the released claims were read %d times, want twice: the boot's, and the one read every nudge here is answered by", reads)
+	if reads := st.releasedReadCount(); reads != 3 {
+		t.Fatalf("the released claims were read %d times, want three: the boot's, the first nudge's, and the one read the later nudges are answered by", reads)
 	}
 	_, puts, _ := listener.snapshot()
 	if len(puts) != 2 || puts[0].SessionID != "ses-0" || !puts[0].Released || puts[1].SessionID != "ses-1" || !puts[1].Released {
-		t.Fatalf("the read wrote %+v, want ses-0 and ses-1 each released once", puts)
+		t.Fatalf("the reads wrote %+v, want ses-0 and ses-1 each released once", puts)
 	}
 }
 

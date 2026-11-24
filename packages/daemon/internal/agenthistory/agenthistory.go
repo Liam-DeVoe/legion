@@ -18,16 +18,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Store is the history table as this package writes and reads it, and the standing of the issues
-// its rows name (store.Store).
+// Store is the history table as this package writes and reads it, and the project's claims
+// suspended by idle release (store.Store).
 type Store interface {
 	RegisterConversation(ctx context.Context, c store.AgentConversation) (store.AgentConversation, error)
 	ScanConversation(ctx context.Context, c store.AgentConversation) (recorded bool, err error)
 	AgentConversations(ctx context.Context, project string) ([]store.AgentConversation, error)
 	IssueConversations(ctx context.Context, project, issue string) ([]store.AgentConversation, error)
-	// FinishedIssues says, of every issue the project's conversations name, whether it has left
-	// the workflow, which the mirror writes as each entry's `finished` (store.FinishedIssues).
-	FinishedIssues(ctx context.Context, project string, outOfWorkflow func(status string) bool) (map[string]bool, error)
 	// ReleasedSessions names the session of every claim of the project suspended by idle release,
 	// with the issue it works, which the mirror writes as each entry's `released`
 	// (store.ReleasedSessions).

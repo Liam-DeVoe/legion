@@ -88,13 +88,6 @@ func (r *handoffRig) register(t *testing.T, sessionID, issue, role, started stri
 	r.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+sessionID, legionEntry(sessionID, issue, role, started))
 }
 
-// registerFinished records a Legion agent whose issue has left the workflow, so no next holder of
-// its role is coming. A role's message is handed off for it as for an agent whose issue still runs.
-func (r *handoffRig) registerFinished(t *testing.T, sessionID, issue, role, started string) {
-	t.Helper()
-	r.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+sessionID, finishedLegionEntry(sessionID, issue, role, started))
-}
-
 // beat writes the project infra's answering record through its route, as the daemon writes it.
 func (r *handoffRig) beat(t *testing.T, answering bool, at time.Time) {
 	t.Helper()
@@ -190,15 +183,13 @@ func TestLegionProjectRouteStoresTheAnsweringRecord(t *testing.T) {
 
 // A send to a stopped Legion agent whose project last said it answers, and a role publish with no
 // live holder whose newest entry is not released, are handed to that project's daemon on the
-// retained subject, carrying the envelope whole: a finished role's, and a role's whose issue is
-// still in the workflow, which fails where the hand-off waits for the newest entry to be finished.
-// Two hand-offs of one envelope -
+// retained subject, carrying the envelope whole. Two hand-offs of one envelope -
 // the copies two listeners' durables make, and a send repeated under one idempotency key -
 // collapse on their MsgId, so the stream stores one, and the second is answered duplicate.
 func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
-	rig.registerFinished(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
+	rig.register(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
 
 	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+".k1", "agent")
@@ -234,8 +225,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 		t.Fatalf("the stream holds %d copies of one hand-off, want 1", count)
 	}
 
-	// A role publish with no live holder, whose role's issue has left the workflow, resolves to
-	// the role token's newest session.
+	// A role publish with no live holder resolves to the role token's newest session.
 	role := envelopeFor(contracts.RoleTopicPrefix+handoffRoleToken, "publish.k2", "agent")
 	handedRole, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: handoffRoleToken})
 	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect || handedRole.duplicate {
@@ -243,19 +233,6 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	}
 	if count, _ := handoffs(t, rig.client, handoffArchitect); count != 1 {
 		t.Fatalf("the stream holds %d hand-offs for the architect, want 1", count)
-	}
-
-	// So does one whose role's issue is still in the workflow: its newest session, the stopped
-	// implementer, is not finished and not released, and its project answers.
-	const runningRole = "legion-infra-infra-204-implementer"
-	running := envelopeFor(contracts.RoleTopicPrefix+runningRole, "publish.k3", "agent")
-	handedRunning, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: running, roleToken: runningRole})
-	if err != nil || handedRunning == nil || handedRunning.TargetSession != handoffAgent || handedRunning.RoleToken != runningRole || handedRunning.duplicate {
-		t.Fatalf("a role publish with no live holder whose issue is still in the workflow = %v, %v; want it handed to %s, not a duplicate",
-			handedRunning, err, handoffAgent)
-	}
-	if count, _ := handoffs(t, rig.client, handoffAgent); count != 2 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want the send's and the role publish's", count, handoffAgent)
 	}
 }
 
@@ -478,7 +455,7 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 // exceptions), a body that carried "handoff": false (every publish the daemon makes), a session
 // this listener holds live, and a session past the live window that is not gone - it keeps its
 // claims and its stored messages and may answer in a moment, so the message stays the agent's. A
-// role token whose newest entry is not finished is handed off
+// role token whose newest entry is not released is handed off
 // (TestHandOffToLegionHandsAStoppedAgentToItsDaemon), and one whose newest entry is released is
 // not (TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff).
 func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
@@ -732,8 +709,8 @@ func TestAGiveUpForAReleasedLegionAgentReachesItsWake(t *testing.T) {
 	}
 }
 
-// The role path reads `released` as the session path does: a role publish whose role is finished
-// and whose newest session's claim is released - the daemon released its idle issue pod and keeps
+// The role path reads `released` as the session path does: a role publish whose newest session's
+// claim is released - the daemon released its idle issue pod and keeps
 // the claim to resume (INFRA-945) - is handed to no daemon, so the publish is kept for the role
 // as before the hand-off existed and the wake it raises reaches the worker. The same role's
 // shape without `released` is handed off, which is the control: the rig reaches the role path's
@@ -743,14 +720,14 @@ func TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff(t *testing.T) {
 	const released, stopped = "ses-rel-reviewer", "ses-fin-reviewer"
 	releasedRole, stoppedRole := "legion-infra-infra-205-reviewer", "legion-infra-infra-206-reviewer"
 	rig.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+released,
-		strings.TrimSuffix(finishedLegionEntry(released, "INFRA-205", "reviewer", "2026-10-26T03:00:00Z"), "}")+`,"released":true}`)
-	rig.registerFinished(t, stopped, "INFRA-206", "reviewer", "2026-10-26T03:00:00Z")
+		strings.TrimSuffix(legionEntry(released, "INFRA-205", "reviewer", "2026-10-26T03:00:00Z"), "}")+`,"released":true}`)
+	rig.register(t, stopped, "INFRA-206", "reviewer", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
 
 	role := envelopeFor(contracts.RoleTopicPrefix+releasedRole, "publish.released", "agent")
 	handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: releasedRole})
 	if err != nil || handed != nil {
-		t.Fatalf("a publish to the finished role %s whose newest session %s is released = %v, %v; want nothing handed off",
+		t.Fatalf("a publish to the role %s whose newest session %s is released = %v, %v; want nothing handed off",
 			releasedRole, released, handed, err)
 	}
 	if count, data := handoffs(t, rig.client, released); count != 0 {
@@ -760,7 +737,7 @@ func TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff(t *testing.T) {
 	control := envelopeFor(contracts.RoleTopicPrefix+stoppedRole, "publish.stopped", "agent")
 	handed, err = rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: control, roleToken: stoppedRole})
 	if err != nil || handed == nil || handed.TargetSession != stopped {
-		t.Fatalf("a publish to the finished role %s, not released = %v, %v; want it handed to %s", stoppedRole, handed, err, stopped)
+		t.Fatalf("a publish to the role %s, not released = %v, %v; want it handed to %s", stoppedRole, handed, err, stopped)
 	}
 }
 

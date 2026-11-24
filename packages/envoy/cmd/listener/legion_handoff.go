@@ -221,9 +221,9 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // registry naming no session.
 //
 // A role token is answered for by its newest entry, whether that entry's issue has left the
-// workflow or not (legionagents.Entry.Finished decides nothing here): a worker that failed, or
-// that the workflow or an operator suspended, has stopped with the role unclaimed, and its daemon
-// answers the role's message from that worker's conversation, as it does for a finished role's.
+// workflow or not: a worker that failed, or that the workflow or an operator suspended, has
+// stopped with the role unclaimed, and its daemon answers the role's message from that worker's
+// conversation, as it does for a finished role's.
 // A role the registry holds no entry for is nobody's to answer
 // for, so its message is kept on the role's kept lane for the role's first holder (INFRA-514's
 // 202, roleSend.noHolder), which is what it was before the hand-off existed. A session addressed

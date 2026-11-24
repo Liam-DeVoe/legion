@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registrywrite"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -31,11 +30,10 @@ const (
 	// not, so the minute's write is how an operator sees the daemon is up, not what keeps the
 	// hand-off alive (spec v21, section 2.12 of dispatch://INFRA-204's plan).
 	heartbeatEvery = time.Minute
-	// standingsEvery is how often the standing of the history's issues and the project's released
-	// claims are read again (Store.FinishedIssues, Store.ReleasedSessions), so an issue that
-	// closed, was parked or whose tree was retired - and one a person moved back into the workflow
-	// - and a claim resumed reach the registry within the minute. A claim the daemon's idle
-	// release suspends reaches it at once: the release says so (Mirror.StandingsChanged).
+	// standingsEvery is how often the project's released claims are read again
+	// (Store.ReleasedSessions), so a claim resumed reaches the registry within the minute. A claim
+	// the daemon's idle release suspends reaches it at once: the release says so
+	// (Mirror.StandingsChanged).
 	standingsEvery = time.Minute
 	// notFoundRetry is how soon a route an older listener answers 404 is tried again.
 	notFoundRetry = time.Minute
@@ -55,17 +53,16 @@ var keySafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // Entry is one registry entry as the listener's write routes take it (dispatch://INFRA-448, "The
 // registry contract"), the listener's wire type (listenerwire.LegionAgentEntry): LegionProject is
 // the Legion project token role tokens carry (claim.ProjectToken), never the Dispatch project;
-// StartedAt is RFC 3339 UTC. The mirror leaves RecordedAt out, which the listener sets. Finished is
-// whether the conversation's issue has left the workflow (Store.FinishedIssues), and Released
+// StartedAt is RFC 3339 UTC. The mirror leaves RecordedAt out, which the listener sets. Released is
 // whether its claim is suspended by idle release (supervise.Claim.Released,
-// Store.ReleasedSessions); each is omitted while false, which is what a reader takes from an entry
+// Store.ReleasedSessions); it is omitted while false, which is what a reader takes from an entry
 // that carries none.
 type Entry = listenerwire.LegionAgentEntry
 
-// entryOf is the registry entry of row, with finished as its issue's standing and released as
-// its claim's, or why it has none: a session id the registry cannot key, or a row whose token is
-// not the one its project, issue and role build.
-func entryOf(row store.AgentConversation, finished, released bool) (Entry, string) {
+// entryOf is the registry entry of row, with released as its claim's standing, or why it has
+// none: a session id the registry cannot key, or a row whose token is not the one its project,
+// issue and role build.
+func entryOf(row store.AgentConversation, released bool) (Entry, string) {
 	if !keySafe.MatchString(row.Session) {
 		return Entry{}, "its session id is not one the registry can key"
 	}
@@ -78,22 +75,20 @@ func entryOf(row store.AgentConversation, finished, released bool) (Entry, strin
 	return Entry{
 		SessionID: row.Session, LegionProject: row.Project, Issue: row.Issue, Role: string(row.Role), RoleToken: string(row.Token),
 		Title: Title(row.Role, row.Issue), Harness: string(row.Harness), StartedAt: row.StartedAt.UTC().Format(registryTime),
-		Finished: finished, Released: released,
+		Released: released,
 	}, ""
 }
 
-// standingRead is what one refresh read: whether each issue the history names has left the
-// workflow (finished, Store.FinishedIssues), and the session of every released claim with the
-// issue it works (released, Store.ReleasedSessions). Every entry written since carries both.
+// standingRead is what one refresh read: the session of every released claim with the issue it
+// works (released, Store.ReleasedSessions). Every entry written since carries it.
 type standingRead struct {
-	finished map[string]bool
 	released map[string]string
 }
 
-// of is row's standing: its issue's finished, and whether its session is a released claim's.
-func (s standingRead) of(row store.AgentConversation) (finished, released bool) {
-	_, released = s.released[row.Session]
-	return s.finished[row.Issue], released
+// of is row's standing: whether its session is a released claim's.
+func (s standingRead) of(row store.AgentConversation) bool {
+	_, released := s.released[row.Session]
+	return released
 }
 
 // Clock is time as the mirror sees it.
@@ -130,10 +125,10 @@ type MirrorConfig struct {
 // Mirror writes the project's `answering` key to the listener's Legion agent registry every
 // minute, and, with a Store, the history: once Run starts, every recorded conversation of the
 // project in batches (each at most 256 entries and 1 MiB), then one PUT for each registration Put
-// hands it, in the order handed. It reads the standing of the history's issues and the project's
-// released claims each minute too (refresh), and at once when the daemon says a release suspended
-// a claim (StandingsChanged), and writes an issue's conversations again when either changes, so
-// each entry's `finished` and `released` follow the record in both directions. Nothing it does
+// hands it, in the order handed. It reads the project's released claims each minute too
+// (refresh), and at once when the daemon says a release suspended a claim (StandingsChanged), and
+// writes an issue's conversations again when one of its sessions turns released or stops being
+// so, so each entry's `released` follows the record in both directions. Nothing it does
 // blocks the boot, a registration or a release. Its writes go through a registrywrite.Writer: a
 // route an older listener answers 404 is logged once and tried again each minute; any other
 // failure is tried again on a backoff. A write the listener refuses (400 or 409: an entry it will
@@ -147,10 +142,9 @@ type Mirror struct {
 	// puts are the registrations Put handed and Run has not written, one per session, in order;
 	// a later registration of a session replaces its entry in place.
 	puts []Entry
-	// read is what the last standings read said of each issue the history names and of the
-	// project's released claims, which every entry written since carries. An issue it does not
-	// name is not finished and a session it does not name is not released, so a mirror that has
-	// read no standing yet writes the keep every entry had before these fields.
+	// read is what the last standings read said of the project's released claims, which every
+	// entry written since carries. A session it does not name is not released, so a mirror that
+	// has read no standing yet writes no entry released.
 	read standingRead
 	// nudged is whether StandingsChanged asked for a standings read that no read has answered yet
 	// (refresh clears it just before it reads the released claims).
@@ -179,18 +173,15 @@ type lane struct {
 
 // NewMirror builds a mirror that writes nothing until Run.
 func NewMirror(cfg MirrorConfig) *Mirror {
-	return &Mirror{cfg: cfg, wake: make(chan struct{}, 1), read: standingRead{finished: map[string]bool{}, released: map[string]string{}},
+	return &Mirror{cfg: cfg, wake: make(chan struct{}, 1), read: standingRead{released: map[string]string{}},
 		registeredAt: map[string]uint64{}, writer: registrywrite.New(cfg.BaseURL, cfg.Token, cfg.Client, cfg.Log)}
 }
 
-// Put queues the registration row for one PUT of its session, never waiting on the listener. A
-// registration is made while its issue runs, so the entry carries the standing the last refresh
-// read of that issue, which is unfinished for every issue no refresh has named. It is never
-// released: a registration is its claim's process running, whatever the last refresh read of
-// the claim before it resumed, and whatever a refresh under way read of it (queueRead).
+// Put queues the registration row for one PUT of its session, never waiting on the listener. It
+// is never released: a registration is its claim's process running, whatever the last refresh
+// read of the claim before it resumed, and whatever a refresh under way read of it (queueRead).
 func (m *Mirror) Put(row store.AgentConversation) {
-	finished, _ := m.standing().of(row)
-	entry, why := entryOf(row, finished, false)
+	entry, why := entryOf(row, false)
 	if why != "" {
 		m.cfg.Log.Warn("legion daemon does not write the conversation to the agent registry: "+why, "session", row.Session, "claim", row.Token)
 		return
@@ -268,12 +259,12 @@ func (m *Mirror) standing() standingRead {
 	return m.read
 }
 
-// Run writes until ctx ends: the heartbeat at once and then each minute, the standing of the
-// history's issues at once, then each minute and whenever StandingsChanged asks, the recorded
-// history in batches, and every Put as it comes, each kind on its own schedule (lane), so a route
-// an older listener lacks never holds up one it has. The standing is read before the boot's own
-// write, so the first batch already carries each entry's `finished` and `released`. Without a
-// Store it writes the heartbeat alone.
+// Run writes until ctx ends: the heartbeat at once and then each minute, the project's released
+// claims at once, then each minute and whenever StandingsChanged asks, the recorded history in
+// batches, and every Put as it comes, each kind on its own schedule (lane), so a route an older
+// listener lacks never holds up one it has. The standing is read before the boot's own write, so
+// the first batch already carries each entry's `released`. Without a Store it writes the
+// heartbeat alone.
 func (m *Mirror) Run(ctx context.Context) {
 	for {
 		now := m.cfg.Clock.Now()
@@ -338,29 +329,18 @@ func (m *Mirror) beat(ctx context.Context, now time.Time) {
 	m.heartbeat.schedule(now, result, heartbeatEvery)
 }
 
-// refresh reads the standing of every issue the history names and the project's released claims,
-// and queues one PUT of each conversation of each issue whose standing changed or one of whose
-// sessions turned released or stopped being so, so a role's entries say `finished` from the
-// minute its issue leaves the workflow - a close, a park, a tree retired - and say it no longer
-// once a person moves that issue back in, and a session's entry says `released` from the moment
-// the daemon's idle release suspends its claim (StandingsChanged) and no longer once a wake
-// resumes it. The queued writes go out on the Put lane, which is the one write path and the one
-// 409 handling: a session the listener holds bound to another issue is refused and dropped there
-// as any other write of it is.
+// refresh reads the project's released claims, and queues one PUT of each conversation of each
+// issue one of whose sessions turned released or stopped being so, so a session's entry says
+// `released` from the moment the daemon's idle release suspends its claim (StandingsChanged) and
+// no longer once a wake resumes it. The queued writes go out on the Put lane, which is the one
+// write path and the one 409 handling: a session the listener holds bound to another issue is
+// refused and dropped there as any other write of it is.
 //
 // Nothing is queued before the boot's write, which writes every entry anyway with the standing
-// this read just recorded. An issue whose conversations could not be read keeps its last recorded
-// standing and its sessions their last recorded release, so the next pass finds it changed again
-// and writes it then; that pass is the failure's own backoff rather than the minute.
+// this read just recorded. An issue whose conversations could not be read keeps its sessions'
+// last recorded release, so the next pass finds it changed again and writes it then; that pass is
+// the failure's own backoff rather than the minute.
 func (m *Mirror) refresh(ctx context.Context, now time.Time) {
-	finished, err := m.cfg.Store.FinishedIssues(ctx, m.cfg.Project, record.OutOfWorkflow)
-	if err != nil {
-		if ctx.Err() == nil {
-			m.cfg.Log.Warn("legion daemon could not read the standing of its issues for the agent registry; trying again", "error", err)
-		}
-		m.standings.schedule(now, registrywrite.Failed, standingsEvery)
-		return
-	}
 	// A nudge is answered from here: one that came before this point told of a suspension the
 	// store had already committed, which the read below sees, and one that comes after it may
 	// tell of one this read misses, so it asks for a read of its own. A registration from here on
@@ -381,11 +361,6 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 	known, booted := m.read, m.booted
 	m.mu.Unlock()
 	changed := map[string]bool{}
-	for issue, left := range finished {
-		if known.finished[issue] != left {
-			changed[issue] = true
-		}
-	}
 	for session, issue := range released {
 		if _, was := known.released[session]; !was {
 			changed[issue] = true
@@ -404,7 +379,6 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 				if ctx.Err() == nil {
 					m.cfg.Log.Warn("legion daemon could not read the conversations of an issue whose standing changed; trying again", "issue", issue, "error", err)
 				}
-				finished[issue] = known.finished[issue]
 				for session, of := range released {
 					if of == issue {
 						delete(released, session)
@@ -418,11 +392,11 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 				result = registrywrite.Failed
 				continue
 			}
-			m.queueRead(m.entriesOf(rows, standingRead{finished: finished, released: released}), since)
+			m.queueRead(m.entriesOf(rows, standingRead{released: released}), since)
 		}
 	}
 	m.mu.Lock()
-	m.read = standingRead{finished: finished, released: released}
+	m.read = standingRead{released: released}
 	m.mu.Unlock()
 	m.standings.schedule(now, result, standingsEvery)
 }
@@ -501,11 +475,10 @@ func (m *Mirror) popBatch(replace [][]Entry) {
 	m.batches = append(replace, m.batches[1:]...)
 }
 
-// entriesOf is the registry entries of rows, each carrying its issue's standing and its claim's
-// release from read. A scanned conversation that would read as its role's newest over a registered
-// one (its header time not before that role's newest registration) is left out: a conversation
-// found by its title never outranks one a registration recorded. A row the registry would not take
-// is logged and left out.
+// entriesOf is the registry entries of rows, each carrying its claim's release from read. A
+// scanned conversation that would read as its role's newest over a registered one (its header time
+// not before that role's newest registration) is left out: a conversation found by its title never
+// outranks one a registration recorded. A row the registry would not take is logged and left out.
 func (m *Mirror) entriesOf(rows []store.AgentConversation, read standingRead) []Entry {
 	registered := map[claim.Token]time.Time{}
 	for _, row := range rows {
@@ -520,8 +493,7 @@ func (m *Mirror) entriesOf(rows []store.AgentConversation, read standingRead) []
 				"session", row.Session, "claim", row.Token, "path", row.Location)
 			continue
 		}
-		finished, released := read.of(row)
-		entry, why := entryOf(row, finished, released)
+		entry, why := entryOf(row, read.of(row))
 		if why != "" {
 			m.cfg.Log.Warn("legion daemon does not write the conversation to the agent registry: "+why, "session", row.Session, "claim", row.Token)
 			continue

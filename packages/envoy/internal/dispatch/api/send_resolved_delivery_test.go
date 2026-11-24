@@ -108,7 +108,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 }
 
 // keptForPlanner is the role planner as resolveDeliveryTarget resolves it when no live session
-// holds it and its newest registry entry is released and not finished: the role itself, kept for
+// holds it and its newest registry entry is released: the role itself, kept for
 // its next holder, beside the listener's own no-holder answer.
 func keptForPlanner() ResolvedMention {
 	return ResolvedMention{

@@ -29,7 +29,7 @@
 // fields carry the tags the listener has always written them with. LegionAgentEntry is both: the
 // daemon's registry writes send it and the registry's reads answer it, so its fields the daemon
 // leaves out are omitempty, and each of them the listener writes on every answer it gives
-// (recorded_at) or omits there too while it is false (finished, released).
+// (recorded_at) or omits there too while it is false (released).
 package listenerwire
 
 import "encoding/json"
@@ -711,16 +711,6 @@ type LegionAgentEntry struct {
 	// it on every entry it stores and answers; a writer's value is ignored, so a writer leaves it
 	// out.
 	RecordedAt string `json:"recorded_at,omitempty"`
-	// Finished is whether the session's issue has left the workflow, so no later holder of its
-	// role token will come: the issue is closed or done, parked, or its tree retired or lingering
-	// after its close. The daemon's mirror sets it from the issue's state it records, and writes
-	// the entry again whenever that changes, in either direction. It is false by default, and a
-	// writer that never states it leaves every entry of its project unfinished.
-	//
-	// No hand-off reads it: a message to a role nobody holds goes to the role's newest session
-	// while that entry is not released and its project answers, whether its issue has left the
-	// workflow or not (the listener's answeringAgent, Dispatch's unheldRoleTarget).
-	Finished bool `json:"finished,omitempty"`
 	// Released is whether the session's claim is suspended by idle release: the daemon released
 	// its idle issue pod (dispatch://INFRA-945) and kept the session, its phase and its pending
 	// task, so the next message to the session or its role is a wake that brings the pod back and

@@ -21,7 +21,7 @@ const finishedLegionRole = "legion-infra-infra-205-reviewer"
 const finishedRoleSession = "ses-old-reviewer"
 
 // withFinishedHandoff is withAuditHandoff's opposite number: the registry holds one stopped agent
-// of finishedLegionRole whose entry is finished, and the project answers for it.
+// of finishedLegionRole, not released, and the project answers for it.
 func withFinishedHandoff(t *testing.T, d *listenerDeps) {
 	t.Helper()
 	agents, err := legionagents.Open(t.Context(), d.client.Conn, legionagents.WithReplicas(1))
@@ -33,7 +33,7 @@ func withFinishedHandoff(t *testing.T, d *listenerDeps) {
 	if _, err := agents.Put(ctx, legionagents.Entry{
 		SessionID: finishedRoleSession, LegionProject: "infra", Issue: "INFRA-205", Role: "reviewer",
 		RoleToken: finishedLegionRole, Title: "Legion reviewer · INFRA-205", Harness: "omp",
-		StartedAt: "2026-10-26T03:00:00Z", Finished: true,
+		StartedAt: "2026-10-26T03:00:00Z",
 	}); err != nil {
 		t.Fatalf("record the stopped reviewer of a finished issue: %v", err)
 	}
@@ -98,57 +98,35 @@ func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T
 	}
 }
 
-// An entry the daemon wrote with no `finished`, the shape of an issue still in the workflow and of
-// one written before the daemon stated any standing, is handed to its daemon at once, as it is once
-// the daemon writes it finished: `finished` decides nothing of
-// a role's hand-off, and a role with no live holder whose newest entry is not released, under a
-// project that answers, is answered by that entry's daemon. Each publish is answered 200 with that
-// session as recipient and nothing is kept.
+// A role with no live holder whose newest entry is not released, under a project that answers, is
+// answered by that entry's daemon, until the daemon writes the entry released. The publish to the
+// entry not released is answered 200 with its session as recipient and nothing is kept.
 //
-// The control is the same entry written released, with no `finished`: the daemon resumes that
-// session on the role's next wake, so the publish is kept for it, 202 kept unclaimed, and nothing
-// more is handed off. A hand-off that waits for `finished` keeps the first publish too.
-func TestARoleEntryIsHandedOffWhetherOrNotTheDaemonWroteItFinished(t *testing.T) {
+// The control is the same entry written released: the daemon resumes that session on the role's
+// next wake, so the publish is kept for it, 202 kept unclaimed, and nothing more is handed off.
+func TestARoleEntryIsHandedOffUntilTheDaemonWritesItReleased(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)
 	agents := d.legionAgents.store()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	running := legionagents.Entry{
+
+	recorder, _ := publishToRole(t, d, finishedLegionRole,
+		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"the next round starts at abc123"}`)
+	var handed handedPublishAnswer
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &handed) != nil || handed.Kept || handed.Recipient != finishedRoleSession {
+		t.Fatalf("publish while the entry is not released: status %d, body %s; want 200 handed off to %s with nothing kept", recorder.Code, recorder.Body.String(), finishedRoleSession)
+	}
+	if got, _ := handoffs(t, client, finishedRoleSession); got != 1 {
+		t.Fatalf("publish while the entry is not released: the stream holds %d hand-offs for %s, want 1", got, finishedRoleSession)
+	}
+	assertNothingKept(t, client, finishedLegionRole)
+
+	if _, err := agents.Put(ctx, legionagents.Entry{
 		SessionID: finishedRoleSession, LegionProject: "infra", Issue: "INFRA-205", Role: "reviewer",
 		RoleToken: finishedLegionRole, Title: "Legion reviewer · INFRA-205", Harness: "omp",
-		StartedAt: "2026-10-26T03:00:00Z",
-	}
-	if _, err := agents.Put(ctx, running); err != nil {
-		t.Fatalf("write the entry again while its issue runs: %v", err)
-	}
-	handedOff := func(when, message string, count uint64) {
-		t.Helper()
-		recorder, _ := publishToRole(t, d, finishedLegionRole,
-			`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"`+message+`"}`)
-		var answer handedPublishAnswer
-		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.Kept || answer.Recipient != finishedRoleSession {
-			t.Fatalf("publish %s: status %d, body %s; want 200 handed off to %s with nothing kept", when, recorder.Code, recorder.Body.String(), finishedRoleSession)
-		}
-		if got, _ := handoffs(t, client, finishedRoleSession); got != count {
-			t.Fatalf("publish %s: the stream holds %d hand-offs for %s, want %d", when, got, finishedRoleSession, count)
-		}
-	}
-
-	handedOff("while the role's issue runs", "the next round starts at abc123", 1)
-	assertNothingKept(t, client, finishedLegionRole)
-
-	finished := running
-	finished.Finished = true
-	if _, err := agents.Put(ctx, finished); err != nil {
-		t.Fatalf("write the entry again once its issue finished: %v", err)
-	}
-	handedOff("once the entry is finished", "what did the review find?", 2)
-	assertNothingKept(t, client, finishedLegionRole)
-
-	released := running
-	released.Released = true
-	if _, err := agents.Put(ctx, released); err != nil {
+		StartedAt: "2026-10-26T03:00:00Z", Released: true,
+	}); err != nil {
 		t.Fatalf("write the entry again released: %v", err)
 	}
 	recorder, answer := publishToRole(t, d, finishedLegionRole,
@@ -158,7 +136,7 @@ func TestARoleEntryIsHandedOffWhetherOrNotTheDaemonWroteItFinished(t *testing.T)
 			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
 	}
 	waitForKeptRoleMessage(t, client, finishedLegionRole, answer.EventID)
-	if count, _ := handoffs(t, client, finishedRoleSession); count != 2 {
-		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the two before its release", count, finishedRoleSession)
+	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
+		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the one before its release", count, finishedRoleSession)
 	}
 }

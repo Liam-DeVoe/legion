@@ -39,9 +39,9 @@ body: |-
 
   A role's newest entry names its session whether that entry's issue has left the workflow or
   not: a worker that failed, or that the workflow or an operator suspended, is answered by its
-  daemon as a finished role's last worker is. A role whose newest entry is `released`, finished or
-  not, is kept for its next holder: Dispatch publishes the message on the role's topic, the
-  listener keeps it on the role's kept lane and wakes the role, and the attempt records `queued`.
+  daemon as a finished role's last worker is. A role whose newest entry is `released` is kept for
+  its next holder: Dispatch publishes the message on the role's topic, the listener keeps it on
+  the role's kept lane and wakes the role, and the attempt records `queued`.
   So is a role the registry holds no entry for while its project answers, for its first holder:
   `GET /v1/legion/agents/roles/{token}` now answers `{"entries":[…],"answering":<bool>}`, the
   flag the role token's own project last stated written out beside the entries, an empty list's

@@ -899,14 +899,14 @@ registry_entry_matches() {
 registry_replaced_by() {
   jq -e --arg s "$2" '.replaced_by == $s' <<<"${1:-null}" >/dev/null 2>&1
 }
-# registry_entry_in_workflow ANSWER SESSION ROLE_TOKEN: the listener's answer for SESSION's Legion
+# registry_entry_not_released ANSWER SESSION ROLE_TOKEN: the listener's answer for SESSION's Legion
 # agent registry entry (GET /v1/legion/agents/sessions/<session>, the entry inside `agent` or bare,
-# as check_boot reads it) is SESSION's under ROLE_TOKEN, and says neither that its issue has left
-# the workflow (`finished`) nor that the daemon released its claim (`released`). A21 asks its role
-# mention only of such an entry: the role's newest entry, read for an issue still in the workflow.
-registry_entry_in_workflow() {
+# as check_boot reads it) is SESSION's under ROLE_TOKEN, and does not say that the daemon released
+# its claim (`released`). A21 asks its role mention only of such an entry: the role's newest entry,
+# one the listener hands to its daemon.
+registry_entry_not_released() {
   jq -e --arg s "$2" --arg r "$3" '(.agent // .) | type == "object" and .session_id == $s and .role_token == $r
-    and (.finished // false) == false and (.released // false) == false' <<<"${1:-null}" >/dev/null 2>&1
+    and (.released // false) == false' <<<"${1:-null}" >/dev/null 2>&1
 }
 
 # ---- GitHub ----------------------------------------------------------------------------------------

@@ -158,10 +158,10 @@ func resolveThenLock[R, T any](
 // message then takes to Dispatch's own queueing (mayQueueForUnknownSession) - exactly as with no
 // registry.
 //
-// A role's newest entry names its session whether the role's issue has left the workflow or not
-// (legionagents.Entry.Finished decides nothing here): a worker that failed, or that the workflow
-// or an operator suspended, has stopped with the role unclaimed, and its daemon answers the
-// message from that worker's own conversation, as it does for a finished role's last worker.
+// A role's newest entry names its session whether the role's issue has left the workflow or not:
+// a worker that failed, or that the workflow or an operator suspended, has stopped with the role
+// unclaimed, and its daemon answers the message from that worker's own conversation, as it does
+// for a finished role's last worker.
 //
 // Two roles are targets that name no session: a role whose newest registry entry is released,
 // whose daemon released the role's idle issue pod and resumes that session on the next wake of

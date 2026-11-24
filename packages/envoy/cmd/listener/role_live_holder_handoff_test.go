@@ -18,15 +18,14 @@ import (
 // route keeps it on the role's kept lane for the live holder (keepRoleSend, #4387's keep, which
 // hands the lane to whoever holds the role now) and hands nothing to the stopped session's daemon:
 // 202 kept, and no hand-off. The hand-off is for a role that no one holds live
-// (TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemonWhetherOrNotItsIssueFinished), finished
-// or not; a live holder reads the message itself.
+// (TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon); a live holder reads the message
+// itself.
 func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolder(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
 	const agent, holder = "ses_finished_role_stopped", "ses_finished_role_taken_over"
 	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
-	finished.Finished = true
 	role := finished.RoleToken
 	withLegionAgent(t, rig.deps, finished)
 	rig.register(t, agent, nil)
@@ -57,7 +56,6 @@ func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *
 	useDispatchPrincipal(rig.deps, principal)
 	const agent, holder = "ses_finished_role_stopped_lapsed", "ses_finished_role_lapsed_holder"
 	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
-	finished.Finished = true
 	role := finished.RoleToken
 	withLegionAgent(t, rig.deps, finished)
 	rig.register(t, agent, nil)
@@ -92,7 +90,6 @@ func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOf
 	useDispatchPrincipal(rig.deps, principal)
 	const agent, holder = "ses_finished_role_stopped_unread", "ses_finished_role_unread_holder"
 	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
-	finished.Finished = true
 	role := finished.RoleToken
 	withLegionAgent(t, rig.deps, finished)
 	rig.register(t, agent, nil)

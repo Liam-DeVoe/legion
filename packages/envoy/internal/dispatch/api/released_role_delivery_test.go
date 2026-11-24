@@ -11,7 +11,7 @@ import (
 )
 
 // sjawhar/legion#2230. A role whose holder is gone because the Legion daemon released the role's
-// idle issue pod - the registry's newest entry for the role token is `released`, finished or not -
+// idle issue pod - the registry's newest entry for the role token is `released` -
 // is coming back: the daemon resumes the same session on the next wake of the role. A person's
 // message to it is kept for that next holder rather than failed, whether or not the project's
 // daemon answers for its stopped agents, since no daemon answers this one: Dispatch publishes it
@@ -19,16 +19,12 @@ import (
 // and wakes the role, and records the attempt taken. A role whose newest entry is not released
 // goes to that entry's session while its project answers, whether its issue has left the workflow
 // or not, and keeps the listener's no-holder answer while its project does not answer.
-//
-// The controls of the "not released" and "released and finished" rows are a resolution that keeps
-// a released role only while its entry is not finished and sends a role to its newest session only
-// once that entry is finished: there both fail "no holder for role ...".
 func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 	noHolder := "no holder for role " + registeredRole
 	roleTarget := "role:" + registeredRole
 	for _, tc := range []struct {
-		name                             string
-		finished, released, notAnswering bool
+		name                   string
+		released, notAnswering bool
 		// publishAnswer is the status the listener answers a role publish with (202 when 0).
 		publishAnswer int32
 		// The outcome both the message's attempt and the mention's record: the state, the
@@ -62,22 +58,9 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 			name: "not released, its project not answering", notAnswering: true,
 			wantState: model.DeliveryStateFailed, wantFailure: noHolder,
 		},
-		{
-			name: "finished", finished: true,
-			wantState: model.DeliveryStateSent, wantSession: stoppedNewest, wantEnvelope: "handed-off-",
-		},
-		{
-			name: "released and finished", finished: true, released: true,
-			wantState: model.DeliveryStateQueued, wantEnvelope: "kept-", published: true,
-		},
-		{
-			name: "finished, its project not answering", finished: true, notAnswering: true,
-			wantState: model.DeliveryStateFailed, wantFailure: noHolder,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := newStoppedAgentListener(t)
-			listener.roleRuns.Store(!tc.finished)
 			listener.released.Store(tc.released)
 			listener.notAnswering.Store(tc.notAnswering)
 			listener.publishAnswer.Store(tc.publishAnswer)
@@ -172,7 +155,6 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 func TestTheReleasedRolesNextHolderMayReplyToWhatWasKeptForIt(t *testing.T) {
 	const holder, intruder, successor = "woken-planner", "intruder", "successor-planner"
 	listener := newStoppedAgentListener(t)
-	listener.roleRuns.Store(true)
 	listener.released.Store(true)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Released role reply", "before")

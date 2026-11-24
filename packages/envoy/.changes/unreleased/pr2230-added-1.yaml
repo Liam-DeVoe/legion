@@ -33,12 +33,8 @@ body: |-
   suspended, has stopped with the role unclaimed, and its daemon answers the role's message from
   that worker's conversation, as it does for a finished role's last worker. A role the registry
   holds no entry for keeps the 202 it had before (`kept: true`, `kept_reason: unclaimed`), for the
-  role's first holder. The new entry field `finished` (whether the issue has left the workflow -
-  closed or done, parked, or its tree retired or lingering after a close) is a boolean the
-  registry stores and the entry routes take, absent and false for every writer that does not
-  state it; the Legion daemon sets it from the issue's state it records and writes the entry again
-  whenever that state changes, in either direction, and no hand-off reads it. A send addressed to
-  a session id is unchanged: that session has stopped, and the message is for it, not for a role.
+  role's first holder. A send addressed to a session id is unchanged: that session has stopped,
+  and the message is for it, not for a role.
 time: 2026-11-08T10:00:00.000000000Z
 custom:
     Issue: pr2230

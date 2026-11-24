@@ -30,11 +30,9 @@ const (
 
 // stoppedAgentListener is an Envoy listener with no live session and no live role holder, whose
 // Legion agent registry holds two stopped sessions of the role legion-test-test-1-planner,
-// stopped-2 newest and stopped-1 before it, each of an issue that has left the workflow
-// (`finished`) and of a project whose daemon answers (`answering`), and holds no entry for any
-// other role token, such as legion-test-test-1-reviewer. Its registry reads fail while
-// registryDown is set, and its entries carry no `finished` while roleRuns is set, as the
-// registry's entries of an issue the workflow still runs do, carry `released` while released is
+// stopped-2 newest and stopped-1 before it, each of a project whose daemon answers (`answering`),
+// and holds no entry for any other role token, such as legion-test-test-1-reviewer. Its registry
+// reads fail while registryDown is set, and its entries carry `released` while released is
 // set, as the entries of a claim whose idle pod the daemon released do, and carry `answering:
 // false` while notAnswering is set, as the entries of a project whose daemon runs without
 // `answers` do. Its role reads answer the role token's project's flag beside the entries, an
@@ -53,7 +51,6 @@ type stoppedAgentListener struct {
 	registryDown  atomic.Bool
 	refuseSends   atomic.Bool
 	storeSends    atomic.Bool
-	roleRuns      atomic.Bool
 	released      atomic.Bool
 	notAnswering  atomic.Bool
 	rolesDown     atomic.Bool
@@ -76,11 +73,6 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			// The listener derives `answering` at the read from the project's answering record,
 			// false while the project has stated none.
 			"answering": !listener.notAnswering.Load(),
-		}
-		// The listener omits `finished` for an issue the workflow still runs, and writes it for
-		// one that has left it (legionagents.Entry.Finished).
-		if !listener.roleRuns.Load() {
-			entry["finished"] = true
 		}
 		// It writes `released` for a claim whose idle issue pod the daemon released
 		// (legionagents.Entry.Released), and omits it otherwise.
@@ -267,9 +259,7 @@ func TestMessageToAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 }
 
 // A role's newest session takes the role's messages while no live session holds the role, its
-// entry is not released and its project answers. Here its issue has left the workflow
-// (`finished`); TestRoleMessageToARoleWhoseIssueStillRunsGoesToItsStoppedNewestSession shows the
-// same for an issue still in it.
+// entry is not released and its project answers.
 func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
@@ -291,26 +281,20 @@ func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T)
 	assertAnswered(t, "the role message", replyAs(t, handler, message.ID, stoppedNewest, "I did."), message.ID)
 }
 
-// A role whose issue is still in the workflow, whose
-// newest registry entry is a stopped agent that is not released - failed, or suspended by the
-// workflow or the operator - and whose project answers, is answered by that agent's daemon, as a
-// finished role is. So a message and a mention of the role are sent to its stopped newest session
-// and settle sent there, and that session's reply, which its daemon posts, answers each. A
-// session named outright is handed off as ever.
-//
-// The control is a resolution that reads the registry for a role only once its newest entry is
-// `finished`: there the role message and the role mention settle failed "no holder for role ..."
-// with no session, and the listener is sent only the session mention.
-func TestRoleMessageToARoleWhoseIssueStillRunsGoesToItsStoppedNewestSession(t *testing.T) {
+// A role whose newest registry entry is a stopped agent that is not released - one whose issue
+// has left the workflow, or one that failed or was suspended by the workflow or the operator -
+// and whose project answers, is answered by that agent's daemon. So a message and a mention of
+// the role are sent to its stopped newest session and settle sent there, and that session's
+// reply, which its daemon posts, answers each. A session named outright is handed off as ever.
+func TestARoleMessageAndARoleMentionOfAStoppedRoleGoToItsNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
-	listener.roleRuns.Store(true)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Running role", "before")
 
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Who holds this?", "target": "role:" + registeredRole, "delivery": "aside",
 	}, "alice")
-	assertHandedOff(t, "a role message of a running issue", message, stoppedNewest)
+	assertHandedOff(t, "a role message", message, stoppedNewest)
 
 	sessionTarget, roleTarget := "session:"+stoppedAgent, "role:"+registeredRole
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -413,14 +397,13 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 // role message and a role mention.
 //
 // Two roles are kept for their next holder instead (roleKept): a role whose newest entry is
-// released, finished or not, whose daemon resumes that
+// released, whose daemon resumes that
 // session on the wake the message raises, and a role the registry holds no entry for while the
 // role read says its project answers, whose first worker is coming. Each role message and role
 // mention is published on the role's topic, which the listener keeps on the role's kept lane, and
-// recorded queued with the kept copy's envelope and no session. Their controls are the role with
+// recorded queued with the kept copy's envelope and no session. Their control is the role with
 // no entry whose read says its project does not answer, which keeps the listener's answer as with
-// no registry, and a resolution that keeps a role only for a released entry that is not finished,
-// under which both kept rows fail "no holder for role ..." and publish nothing.
+// no registry.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -449,7 +432,7 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 			name: "no daemon answers", refuseSends: true, session: stoppedAgent, role: registeredRole,
 			wantSends: map[string]int{stoppedAgent: 3, stoppedNewest: 2},
 		},
-		// Finished as well, which decides nothing: a released role is kept for its next holder.
+		// A released role is kept for its next holder.
 		{name: "released", released: true, session: stoppedAgent, role: registeredRole, roleKept: true},
 		// Not released, so the project's answering flag is the one check that names no session.
 		// Its listener takes a send as main's does for a project that does not answer, stored for

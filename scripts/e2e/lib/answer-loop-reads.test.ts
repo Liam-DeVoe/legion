@@ -1728,22 +1728,21 @@ describe("Dispatch", () => {
   });
 
   // A21 asks the role mention of a failed implementer only once the registry's entry for its
-  // session reads as an issue still in the workflow: under the role token the mention names, and
-  // neither finished nor released. The route answers the entry inside `agent`, or bare.
-  test("registry_entry_in_workflow reads an entry under its role token, neither finished nor released", () => {
+  // session reads under the role token the mention names, and not released. The route answers the
+  // entry inside `agent`, or bare.
+  test("registry_entry_not_released reads an entry under its role token, not released", () => {
     const entry = (fields: string) =>
       `'{"agent":{"session_id":"session-implementer","role_token":"ALX-11-implementer","issue":"ALX-11","live":false${fields}}}'`;
     const holds = (answer: string, session = "session-implementer", token = "ALX-11-implementer") =>
-      run(`registry_entry_in_workflow ${answer} ${session} ${token}`).code;
+      run(`registry_entry_not_released ${answer} ${session} ${token}`).code;
     expect(holds(entry(""))).toBe(0);
-    expect(holds(entry(`,"finished":false,"released":false`))).toBe(0);
+    expect(holds(entry(`,"released":false`))).toBe(0);
     expect(
       holds(
         `'{"session_id":"session-implementer","role_token":"ALX-11-implementer","answering":true}'`
       )
     ).toBe(0);
-    // An issue that has left the workflow, a claim the daemon released: not the case A21 asks.
-    expect(holds(entry(`,"finished":true`))).toBe(1);
+    // A claim the daemon released: not the case A21 asks.
     expect(holds(entry(`,"released":true`))).toBe(1);
     // Another session's entry, another role's, and no entry at all.
     expect(holds(entry(""), "session-other")).toBe(1);
