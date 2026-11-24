@@ -86,18 +86,22 @@ func reconnectWritesCallWritten(port int, path, body string, timeout time.Durati
 // ends: the answer is a 503 whose reason says the bus is reconnecting. No answer and no log line
 // holds nats.go's "outbound buffer limit exceeded", which the client's reconnect buffer, kept off
 // so that nothing is sent after its caller saw an error, makes nats.go answer to every send while
-// it reconnects. And no write the caller gave up on reaches the server once it is back: neither a
-// role claim, nor the session record a claim refreshes, nor a publish.
+// it reconnects. And once the server is back, nothing of such a write reaches it: a role claim
+// refresh and a publish answered 503 in an outage land nothing, the session record the claim
+// refresh writes does not move, and a publish the caller gave up on lands nothing.
 //
-// The server is stopped twice. The first outage is shorter than the routes' deadline, so each
-// write may wait for the server and land; the second is longer, so each must fail by name and
-// leave nothing behind.
+// The server is stopped three times. The first outage is shorter than the routes' deadline, so
+// each write may wait for the server and land. The second is longer, so each must fail by name and
+// leave nothing behind. In the third, the test gives up on a publish, and only then starts the
+// server again, before the route's deadline: a route that sent the publish after its caller gave
+// up would land it then, so the stream holding no copy of it shows that the route stopped at the
+// give-up. The row checks that the listener reconnected before that deadline, since a later
+// reconnect would fail such a route's publish too.
 //
-// Since #5132 a role claim reads the claimant's session from the session bucket's stream leader,
-// and that read fails at once, by name, while NATS reconnects: the claim no longer waits within
-// its deadline. R14 of dispatch://INFRA-3589 allows both. So the write the second outage gives up
-// on is a publish, which still waits for the connection. A claim given up on beside it may answer
-// that 503 before the test gives up on it.
+// A role claim reads the claimant's session from the session bucket's stream leader (#5132), and
+// that read fails at once, by name, while NATS reconnects, so the claim does not wait within its
+// deadline. R14 of dispatch://INFRA-3589 allows both. So the write the third outage gives up on is
+// a publish, which waits for the connection.
 func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	const (
 		machineID = "reconnect-writes"
@@ -221,12 +225,8 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		}
 	})
 
-	t.Run("a role claim refresh and a publish whose caller gives up in an outage fail by name and land nothing", func(t *testing.T) {
-		const (
-			role, topic = "reconnect-writes-ended", "notifications.team.reconnect-writes-ended"
-			abandoned   = "reconnect-writes-abandoned"
-			givenUp     = "notifications.team.reconnect-writes-given-up"
-		)
+	t.Run("a role claim refresh and a publish whose deadline ends in an outage fail by name and land nothing", func(t *testing.T) {
+		const role, topic = "reconnect-writes-ended", "notifications.team.reconnect-writes-ended"
 		listener.waitHealthy(t)
 		js := observe(t)
 		sessions := bucket(t, js, bus.SessionBucket)
@@ -243,30 +243,14 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 			func() reconnectWritesAnswer {
 				return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(topic), answerWithin)
 			},
-			func() reconnectWritesAnswer {
-				return reconnectWritesCall(listener.port, "/v1/roles/set", claim(abandoned), givenUpAfter)
-			},
-			func() reconnectWritesAnswer {
-				return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(givenUp), givenUpAfter)
-			},
 		)
-		// The routes' deadline has ended by now, and the test gave up on the last publish two and a
-		// half seconds ago: nothing of the four may be sent once the server is back.
-		t.Logf("in an outage past the routes' deadline the role claim refresh answered %s, the publish %s, the claim given up on %s, and the publish given up on %s", got[0], got[1], got[2], got[3])
+		// The routes' deadline has ended by now: nothing of the two may be sent once the server
+		// is back.
+		t.Logf("in an outage past the routes' deadline the role claim refresh answered %s and the publish %s", got[0], got[1])
 		for i, what := range []string{"the role claim refresh", "the publish"} {
 			if got[i].status != http.StatusServiceUnavailable || !strings.Contains(got[i].body, reconnectingReason) {
 				t.Errorf("%s whose deadline ended in the outage answered %s, want 503 naming %q", what, got[i], reconnectingReason)
 			}
-		}
-		// The claim's read of the session fails at once while NATS reconnects (#5132), so it may
-		// answer before the test gives up on it, and R14 allows that answer too.
-		if got[2].err == nil && (got[2].status != http.StatusServiceUnavailable || !strings.Contains(got[2].body, reconnectingReason)) {
-			t.Errorf("the claim the test gave up on after %s answered %s, want no answer before the test gave up on it, or 503 naming %q", givenUpAfter, got[2], reconnectingReason)
-		}
-		// The publish waits for the connection within its caller's deadline, so the test gives up
-		// on it first: it is the write the test gave up on while the route still held it.
-		if got[3].err == nil {
-			t.Errorf("the publish the test gave up on after %s answered %s before the test gave up on it", givenUpAfter, got[3])
 		}
 		server.Start(t)
 		waitFor(t, 30*time.Second, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
@@ -275,19 +259,65 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		time.Sleep(2 * time.Second)
 
 		js = observe(t)
-		roles := bucket(t, js, bus.RoleClaimBucket)
-		for _, r := range []string{role, abandoned} {
-			if entry, err := roles.Get(r); !errors.Is(err, natsgo.ErrKeyNotFound) {
-				t.Errorf("role %s's claim, whose caller had given up, reached the server after it came back: %v, %v", r, entry, err)
-			}
+		if entry, err := bucket(t, js, bus.RoleClaimBucket).Get(role); !errors.Is(err, natsgo.ErrKeyNotFound) {
+			t.Errorf("role %s's claim, answered 503 during the outage, reached the server after it came back: %v, %v", role, entry, err)
 		}
 		if after, err := bucket(t, js, bus.SessionBucket).Get(sessionID); err != nil || after.Revision() != before.Revision() {
-			t.Errorf("the session record a given-up claim refreshes moved from revision %d during the outage: %v, %v", before.Revision(), after, err)
+			t.Errorf("the session record the role claim refresh writes moved from revision %d during the outage: %v, %v", before.Revision(), after, err)
 		}
-		for _, published := range []string{topic, givenUp} {
-			if message, err := js.GetLastMsg(bus.Stream, published); !errors.Is(err, natsgo.ErrMsgNotFound) {
-				t.Errorf("the publish on %s, answered 503 or given up on during the outage, reached the stream after the server came back: %v, %v", published, message, err)
+		if message, err := js.GetLastMsg(bus.Stream, topic); !errors.Is(err, natsgo.ErrMsgNotFound) {
+			t.Errorf("the publish on %s, answered 503 during the outage, reached the stream after the server came back: %v, %v", topic, message, err)
+		}
+	})
+
+	t.Run("a publish whose caller gives up in an outage lands nothing when the server is back before the route's deadline", func(t *testing.T) {
+		const givenUp = "notifications.team.reconnect-writes-given-up"
+		listener.waitHealthy(t)
+		reconnects := lines("reconnected")
+		stop(t)
+		// call returns once the test has given up on the publish, so the give-up comes before the
+		// server starts again below. The request reaches the route after called, so the route's
+		// deadline (sendRequestBudget from the request's arrival) is at least that long after it.
+		called := time.Now()
+		got := call(func() reconnectWritesAnswer {
+			return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(givenUp), givenUpAfter)
+		})[0]
+		gaveUp := time.Since(called)
+		// The publish waits for the connection within its caller's deadline, so the test gives up
+		// on it first: it is the write the test gave up on while the route still held it.
+		if got.err == nil {
+			t.Fatalf("the publish the test gave up on after %s answered %s before the test gave up on it", givenUpAfter, got)
+		}
+		if gaveUp >= sendRequestBudget {
+			t.Fatalf("UNKNOWN: the test gave up on the publish %s after the call, not before the route's deadline (sendRequestBudget, %s), so no start of the server can come between the two",
+				gaveUp.Round(time.Millisecond), sendRequestBudget)
+		}
+		server.Start(t)
+		waitFor(t, 30*time.Second, "the listener to reconnect", func() bool { return lines("reconnected") > reconnects })
+		reconnected := time.Since(called)
+		t.Logf("the test gave up on the publish %s after the call (%s), and saw the listener reconnect %s after it; the route's deadline is %s after the request arrived",
+			gaveUp.Round(time.Millisecond), got, reconnected.Round(time.Millisecond), sendRequestBudget)
+		if reconnected >= sendRequestBudget {
+			t.Fatalf("UNKNOWN: the listener reconnected %s after the call, past the route's deadline (sendRequestBudget, %s): a route that went on with the publish after its caller gave up would fail it at that deadline too, so this run cannot tell the two apart",
+				reconnected.Round(time.Millisecond), sendRequestBudget)
+		}
+		// The route's own line for the publish says that the route has answered, and the route
+		// sends nothing after it answers. A route that went on with the publish answers only once
+		// the stream acknowledged it or the route's deadline ended.
+		var answered []map[string]any
+		waitFor(t, 15*time.Second, "the publish route's line for the publish the test gave up on", func() bool {
+			answered = linesIn(listener.Output.String(), "listener publish", map[string]any{"topic": givenUp})
+			return len(answered) > 0
+		})
+		js := observe(t)
+		message, err := js.GetLastMsg(bus.Stream, givenUp)
+		if !errors.Is(err, natsgo.ErrMsgNotFound) {
+			var stored string
+			if message != nil {
+				stored = string(message.Data)
 			}
+			t.Errorf("the publish on %s, given up on %s after the call, reached the stream once the listener reconnected %s after the call, before the route's deadline: %q (%v); the route recorded %v",
+				givenUp, gaveUp.Round(time.Millisecond), reconnected.Round(time.Millisecond), stored, err, answered)
 		}
 	})
 

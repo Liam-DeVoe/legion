@@ -8,10 +8,9 @@
 // signatures, so Real and the fake fit every one. The rule this serves is that no test passes or
 // fails because it read a clock.
 //
-// Only cmd/listener takes a Clock now: its routes' budgets (listenerDeps.clock) and a
-// registration's consumer calls (sessionDelivery.clock). Other code keeps clocks and fakes of its
-// own, in other packages and in tests, cmd/listener's tests among them. This package replaces none
-// of them.
+// Only cmd/listener takes a Clock: its routes' budgets (listenerDeps.clock) and a registration's
+// consumer calls (sessionDelivery.clock). Other code keeps clocks and fakes of its own, in other
+// packages and in tests, cmd/listener's tests among them. This package replaces none of them.
 //
 // # The fake tells the test when a timer is armed
 //
