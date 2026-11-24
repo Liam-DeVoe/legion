@@ -461,3 +461,36 @@ func TestAnOutboxPassAfterTheResumesTurnDeliversNoSecondResume(t *testing.T) {
 		})
 	}
 }
+
+// R2: no ready is delivered a resume while its issue stands at admitted (outbox.readyResume), the
+// architect's or a phase worker's. Admitted is the architect's own phase (phase.RoleFor), and an
+// architect's ready never takes a resume here: readyWorkerTask queues it none, and readyResume
+// answers an architect's claim nil before it reads anything. A planner's or an implementer's ready
+// finds a phase its role does not work, and is answered nil before its run is read. Each role's run
+// holds a resume row of exactly the shape readyWorkerTask writes, so each nil is the guard's, and
+// not that of a run with no such row.
+func TestArchitectUnchangedByAReadyResumeOfAnIssueAtAdmitted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: "LEGION-209", Title: "a root writing its design", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U",
+		HandedOver: true}
+	putOutboxIssue(t, pool, records, issue)
+	roles := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer}
+	for _, role := range roles {
+		enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
+			Generation: issue.Generation, Phase: issue.Phase, Task: "Resume it.", Origin: supervise.OriginResume, ResumeTask: true},
+			time.Now()))
+	}
+	runner := &outbox{log: quietLogger(), pool: pool, records: records}
+	for _, role := range roles {
+		t.Run(string(role), func(t *testing.T) {
+			c := supervise.Claim{Token: mustClaimToken(t, issue.Key, role), Issue: issue.Key, Role: role}
+			if delivery, err := runner.readyResume(ctx, c); delivery != nil || err != nil {
+				t.Fatalf("the ready of the %s of an issue at admitted is delivered %+v (%v), want no resume", role, delivery, err)
+			}
+		})
+	}
+}
