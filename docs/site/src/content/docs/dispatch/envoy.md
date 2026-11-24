@@ -510,11 +510,15 @@ When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `tru
 
 The sixth row is the subject a consumer acknowledges a message on. Replies to the API requests come
 back on `_INBOX.>`. The stream's stored-message get (`STREAM.MSG.GET.ENVOY_NOTIFICATIONS`) is how
-`legion state` reads each consumer's oldest waiting message, whose time is the consumer's lag; it
-only reads, one message at a time. A daemon whose user lacks it still runs. NATS does not answer a
-request it refuses, so the daemon's state shows each consumer with messages waiting as
-`unavailable: read the oldest waiting message: context deadline exceeded`, its waiting count still
-shown and the other consumers unchanged, and the daemon's log names the refused subject.
+`legion state` reads each consumer's oldest waiting message, whose time is the consumer's lag, and
+how the daemon confirms its Dispatch consumer has nothing waiting before admission releases the
+roots it held for that consumer to catch up; it only reads, one message at a time. A daemon whose
+user lacks it still runs. NATS does not answer a request it refuses, so the daemon's state shows
+each consumer with messages waiting as `unavailable: read the oldest waiting message: context
+deadline exceeded`, its waiting count still shown and the other consumers unchanged; a reconcile
+reads the Dispatch consumer as not idle and holds the roots its listing shows behind their log, the
+hold poller releases them on the consumer's own count, and the daemon's log names the refused
+subject.
 
 The rows from `$JS.API.INFO` on are the task bucket's. The daemon creates the bucket when it is
 missing (nats.go asks JetStream's account info, `$JS.API.INFO`, before it creates one), reads the

@@ -141,7 +141,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, ending)
+	return m.launchAfter(ctx, true, false, false, time.Time{}, ending)
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
