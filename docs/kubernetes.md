@@ -2103,7 +2103,7 @@ An earlier release cannot send them: it refuses a controller notice of a kind it
 Stop this release's daemon, and run the block below once before the earlier release starts:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill';
 commit;
@@ -2771,7 +2771,7 @@ The refusal of a `step_stop` row also fails every read of that role's run at tha
 This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose task's last step is not the owner's acceptance, held before its retro for the issues beneath it.
 An earlier release serves `holdReason` as the record holds it, and its plugin reads the key with the one value `escalated` (`LegionStateResponse` in that release's `packages/contracts/src/legion-api.ts`) and refuses the whole state body for another, so every agent's `read_record` and each completion's read of the state on that project would fail while any issue stands held for either reason.
 
-At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That part is owed to the roll-forward, not to the earlier release.
@@ -8242,7 +8242,7 @@ Migration `20261123050533_idle_release_keeps_no_workspace.up.sql` drops `workspa
 Before the upgrade, drain the releases in flight, and copy out every saved bundle worth keeping:
 a release that the earlier daemon marked and whose save ran, but whose teardown had not run, would take its pod after the upgrade with its bundle dropped.
 With the earlier daemon still running, wait until `select issue from issue_releases` prints no row, then stop it.
-For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, check it with `git bundle list-heads <KEY>.bundle`, and fetch it into a clone of the repository; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `PGPASSFILE=<pgpass file> psql '<postgres_url>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle` ([Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand)), check it with `git bundle list-heads <KEY>.bundle`, and fetch it with git's object check into a clone of the repository fetched from GitHub first, as step 3 of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) fetches its bundle, with git 2.46 or later: `git -c fetch.fsckObjects=true fetch <KEY>.bundle 'refs/legion-bundle/*:refs/remotes/bundle-<KEY>/*'`; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
@@ -8250,7 +8250,7 @@ A workspace check that a left pod's close queued (an `issue_bundle` row whose pa
 It is the last paragraph of the migration's header, and the two say the same statements:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
 drop table public.idle_release_declines;
@@ -8531,7 +8531,7 @@ To that release, a held pod in which no role is live is a pod no claim owns, and
 List the pods that are still held, with the project's Dispatch key in place of `<KEY>`:
 
 ```sh
-psql '<postgres_dsn>' -XAt -c "select issue from project_pause_pod_holds where project = '<KEY>' and ended_at is null order by issue"
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -XAt -c "select issue from project_pause_pod_holds where project = '<KEY>' and ended_at is null order by issue"
 ```
 
 For each issue that it prints, resume one claim of that issue (`legion claims list`, then `legion claims resume --claim <token>`), and run the query again until it prints nothing: a hold ends when the resumed role is ready.
