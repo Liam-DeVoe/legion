@@ -59,7 +59,11 @@ func TestEachMergeClosesThePullRequestsWhoseWorkItHolds(t *testing.T) {
 		apply := applyFacts(t, pool, engine)
 		mustSpend(t, "the merge of b's #2", apply("merged-b", mergedFact(2, "b")))
 		byB := record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{1}, Comment: "Merged in #2."}
-		closesAre(t, pool, root.Key, "b's merge", byB)
+		// The steps after b's merge do not stand on its row, so a missing row is reported and the
+		// test goes on to c's merge, whose row then shows what a merge that holds no work closes.
+		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, []record.TaskPullRequestsClose{byB}) {
+			t.Errorf("the closes of pull requests of %s after b's merge = %+v, want %+v", root.Key, got, []record.TaskPullRequestsClose{byB})
+		}
 		if pr := pullRequestOfTask(t, pool, root.Key, "c"); pr.State != record.PullRequestOpen {
 			t.Fatalf("c's #3 after b's merge is %s, want open: b's merge holds none of c's work", pr.State)
 		}
