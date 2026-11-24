@@ -23,10 +23,10 @@ const instructionQuote = 8
 // "Run `go test` and read the log" (codeAsWords).
 const codeWord = "\uE000"
 
-// instructionVerbsFile is the list of the verbs of an instruction, which its program writes from
-// the imperative sentences of the repository's skills and of the live procedures of The Spec
-// (instruction_verbs_test.go; its header names the source commit and the command). The rule
-// instructions reads a verb only from it, so a word that it does not list starts no instruction.
+// instructionVerbsFile is the list of the verbs of an instruction, reviewed data: a change of the
+// list is a change of the rule, which a person reviews (its header says where its verbs came
+// from). The rule instructions reads a verb only from it, so a word that it does not list starts no
+// instruction.
 //
 //go:embed instruction-verbs.txt
 var instructionVerbsFile string
