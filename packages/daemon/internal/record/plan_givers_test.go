@@ -106,12 +106,12 @@ func TestAVersionIsItsOwnersWhileOneOfItsGiversOwnsTheIssue(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) { must(t, NewStore().PutIssue(ctx, tx, member)) })
 
 	inTx(t, st, func(tx pgx.Tx) {
-		earlier, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		earlier, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if len(earlier) != 0 {
 			t.Errorf("the plans of earlier owners = %+v, want none: the root's architect gave each", earlier)
 		}
-		newest, err := NewStore().OwnersNewestPlan(ctx, tx, issue)
+		newest, err := OwnersNewestPlan(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if newest == nil || newest.Version.Generation != 0 || newest.Version.Version != 3 {
 			t.Errorf("the owners' newest plan = %+v, want version 3 of generation 0, given last after version 5", newest)

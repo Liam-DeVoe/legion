@@ -86,10 +86,11 @@ func (v PlanVersion) Givers() []claim.Token {
 }
 
 // GivenByOwner says whether a giver of version (PlanVersion.Givers) is an architect of issue's tree
-// now (ArchitectOfTree): the one rule by which a version is its owners' or an earlier owners',
-// which the first step of a run (workflow's passOverEarlierOwners, through PlansOfEarlierOwners)
-// and a give of a plan (workflow's planGiven) both read. A default plan has no giver and is
-// nobody's.
+// now, as store reads the tree (ArchitectOfTree): the one rule by which a version is its owners'.
+// A default plan has no giver and is nobody's. Each reader of an owner's plans judges by it through
+// the store its caller hands (GivenByEarlierOwners, OwnersNewestPlan, PlansOfEarlierOwners,
+// PlansOfOwners), so the workflow, which hands its own store, judges a give of a plan and the first
+// step of a run by the one tree the routes read too.
 func GivenByOwner(ctx context.Context, store Store, tx pgx.Tx, version PlanVersion, issue Issue) (bool, error) {
 	for _, giver := range version.Givers() {
 		owner, err := ArchitectOfTree(ctx, store, tx, giver, issue)
@@ -98,6 +99,23 @@ func GivenByOwner(ctx context.Context, store Store, tx pgx.Tx, version PlanVersi
 		}
 	}
 	return false, nil
+}
+
+// GivenByEarlierOwners says whether version, the plan in force of a generation of issue, is one
+// that only earlier owners gave: an owner's version (PlanSourceOwner) of which no giver is an
+// architect of issue's tree now (GivenByOwner). The owner of an issue changes where an orphan is
+// admitted again as a root of its own and where an adoption moves a member to another tree, and a
+// version that only earlier owners gave is not the new owner's to run: the issue's first step
+// passes it over (PlansOfEarlierOwners, workflow's passOverEarlierOwners), so a give of a plan
+// before that step is judged as though the version were gone (workflow's versionRefusal), and a
+// plan given at generation 0 still waits there while the issue's own generation holds only such a
+// version (workflow's waitsAtZero).
+func GivenByEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, version PlanVersion, issue Issue) (bool, error) {
+	if version.Source != PlanSourceOwner {
+		return false, nil
+	}
+	owners, err := GivenByOwner(ctx, store, tx, version, issue)
+	return !owners && err == nil, err
 }
 
 // TaskPlace is where a task stands: at a step (PlaceStep, Position from 1), at its retro or its
@@ -379,76 +397,82 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 const inForce = `source = 'owner' and issue = $1
 	and version = (select max(version) from issue_plans newest where newest.issue = issue_plans.issue and newest.generation = issue_plans.generation)`
 
-// OwnersNewestPlan is the newest plan in force that an owner of issue gave, of any generation,
-// generation 0 among them, which holds a plan given before the daemon recorded the issue: the
-// latest given (PlanVersion.GivenAt, the last give of the version) of which a giver is an
-// architect of the issue's tree now (GivenByOwner), and of two given at one moment the later
-// generation's. nil where no owner gave a plan that is in force; a default plan is nobody's. The
-// versions are read, and their rows closed, before each giver is judged, since a transaction runs
-// one statement at a time.
-func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error) {
-	describe := fmt.Sprintf("read the newest plan an owner gave for %s", issue.Key)
+// PlansInForce is each owner's version of the plan of issue that is the plan in force of its
+// generation, generation 0 among them, which holds a plan given before the daemon recorded the
+// issue, and each copy a carry wrote to a later generation (CarryPlan) among them, in the order
+// they were given (PlanVersion.GivenAt, the last give of the version), and of two given at one
+// moment the earlier generation's first. A default plan is nobody's, so none is among them. It
+// judges no giver: OwnersNewestPlan, PlansOfEarlierOwners and PlansOfOwners judge each version
+// through the store their caller hands (GivenByOwner).
+func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([]PlanVersion, error) {
 	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
-		order by given_at desc, generation desc`, issue.Key)
+		order by given_at, generation`, issue)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("read the plans in force of %s: %w", issue, err)
 	}
 	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanVersion, error) { return scanPlanVersion(row) })
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("read the plans in force of %s: %w", issue, err)
 	}
-	for _, version := range given {
-		owner, err := GivenByOwner(ctx, s, tx, version, issue)
+	return given, nil
+}
+
+// OwnersNewestPlan is the newest plan in force that an owner of issue gave, of any generation
+// (Store.PlansInForce), generation 0 among them, which holds a plan given before the daemon
+// recorded the issue: the latest given of which a giver is an architect of the issue's tree now,
+// as store reads the tree (GivenByOwner), and of two given at one moment the later generation's.
+// nil where no owner gave a plan that is in force. The versions are read, and their rows closed,
+// before each giver is judged, since a transaction runs one statement at a time.
+func OwnersNewestPlan(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (*StoredPlan, error) {
+	given, err := store.PlansInForce(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	for _, version := range slices.Backward(given) {
+		owner, err := GivenByOwner(ctx, store, tx, version, issue)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", describe, err)
+			return nil, fmt.Errorf("read the newest plan an owner gave for %s: %w", issue.Key, err)
 		}
 		if owner {
-			return s.Plan(ctx, tx, issue.Key, version.Generation)
+			return store.Plan(ctx, tx, issue.Key, version.Generation)
 		}
 	}
 	return nil, nil
 }
 
-// PlansOfEarlierOwners is the version in force of each generation of issue of which no giver is an
-// architect of the issue's tree now (GivenByOwner), in the order they were given: the plans only
-// earlier owners gave, which the issue's first step passes over. The architect of the tree's root
-// and each sub-architect of the tree are owners, so no plan one of them gave is among them, and a
-// default plan is nobody's, so none is either.
-func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	return s.plansInForce(ctx, tx, issue, false, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key))
+// PlansOfEarlierOwners is each plan in force of issue (Store.PlansInForce) that only earlier owners
+// gave, as store reads the issue's tree (GivenByEarlierOwners), in the order they were given: the
+// plans the issue's first step passes over. The architect of the tree's root and each
+// sub-architect of the tree are owners, so no plan one of them gave is among them.
+func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
+	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key),
+		func(version PlanVersion) (bool, error) { return GivenByEarlierOwners(ctx, store, tx, version, issue) })
 }
 
-// PlansOfOwners is the version in force of each generation of issue of which a giver is an
-// architect of the issue's tree now (GivenByOwner), in the order they were given, generation 0
-// among them,
-// which holds a plan given before the daemon recorded the issue: every plan an owner gave that a
-// first step could take, each copy a carry wrote to a later generation (CarryPlan) among them. A
-// default plan is nobody's, so none is among them.
-func (s *Postgres) PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	return s.plansInForce(ctx, tx, issue, true, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key))
+// PlansOfOwners is each plan in force of issue (Store.PlansInForce) of which a giver is an
+// architect of the issue's tree now, as store reads the tree (GivenByOwner), in the order they
+// were given: every plan an owner gave that a first step could take, generation 0 and each copy a
+// carry wrote among them.
+func PlansOfOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
+	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key),
+		func(version PlanVersion) (bool, error) { return GivenByOwner(ctx, store, tx, version, issue) })
 }
 
-// plansInForce is the owner's version in force of each generation of issue, in the order they were
-// given, of which a giver is an architect of the issue's tree now where owners is true, and none
-// is where it is false. The versions are read, and their rows closed, before each giver is judged,
-// since a transaction runs one statement at a time.
-func (s *Postgres) plansInForce(ctx context.Context, tx pgx.Tx, issue Issue, owners bool, describe string) ([]PlanVersion, error) {
-	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
-		order by given_at, generation`, issue.Key)
+// plansInForceWhere is each plan in force of issue (Store.PlansInForce) that keep keeps, in the
+// order they were given; describe names the read in an error. The versions are read, and their
+// rows closed, before keep judges any, since a transaction runs one statement at a time.
+func plansInForceWhere(ctx context.Context, store Store, tx pgx.Tx, issue Issue, describe string, keep func(PlanVersion) (bool, error)) ([]PlanVersion, error) {
+	given, err := store.PlansInForce(ctx, tx, issue.Key)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanVersion, error) { return scanPlanVersion(row) })
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
 	}
 	var plans []PlanVersion
 	for _, version := range given {
-		owner, err := GivenByOwner(ctx, s, tx, version, issue)
+		kept, err := keep(version)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		if owner == owners {
+		if kept {
 			plans = append(plans, version)
 		}
 	}
@@ -457,11 +481,11 @@ func (s *Postgres) plansInForce(ctx context.Context, tx pgx.Tx, issue Issue, own
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version with its
 // givers, every task and every step. carried is a hand-over that carries its run, whose tasks go
-// on where they stood,
-// so each task keeps its state, its place and its counts. Without carried, the plan starts from its
-// start: each task waits at no act with every count 0. Neither copies a count of starts, which
-// step_starts keeps by place alone. Where from has no plan rows it writes nothing, so an issue that
-// ran before plans goes on as it did; a generation to that holds a plan already is refused.
+// on where they stood, so each task keeps its state, its place and its counts. Without carried,
+// the plan starts from its start: each task waits at no act with every count 0. Neither copies a
+// count of starts, which step_starts keeps by place alone. Where from has no plan rows it writes
+// nothing, so an issue that ran before plans goes on as it did; a generation to that holds a plan
+// already is refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {

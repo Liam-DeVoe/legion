@@ -345,7 +345,7 @@ func TestAGiveOfAVersionBelowThePlanInForceIsRefusedWhateverItsID(t *testing.T) 
 }
 
 // Before LEGION-209's first step, a version in force that only an earlier owner gave is passed over
-// at the give, by the rule its first step reads (workflow's earlierOwnersPlans): the owner's give is
+// at the give, by the rule its first step reads (record.GivenByEarlierOwners): the owner's give is
 // judged as the generation's first plan, stored as the owner's, and run by the first step, which
 // tells nobody that a plan was not taken. Here the sub-architect gives a version, its issue then
 // stands in a tree of its own, and the root's architect gives the same version, or a lower one.

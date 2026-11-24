@@ -47,55 +47,23 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 }
 
 // passOverEarlierOwners deletes each plan of issue that only earlier owners gave, before its first
-// step reads its plan, so the walk never takes one, and answers the versions it passed over
-// (earlierOwnersPlans, passOver). The rows go in this transaction, so the next first step finds
-// none. An issue with no plan rows, or only its owners', is read and nothing is written.
+// step reads its plan, so the walk never takes one, and answers the versions it passed over: the
+// version in force of each generation of which no giver is an architect of the issue's tree now
+// (record.PlansOfEarlierOwners, record.GivenByEarlierOwners), judged through the engine's store,
+// the one a give of a plan before this step judges through too (versionRefusal), so the two read
+// one tree. The rows go in this transaction, so the next first step finds none. An issue with no
+// plan rows, or only its owners', is read and nothing is written.
 func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.PlanVersion, error) {
-	earlier, err := e.earlierOwnersPlans(ctx, tx, issue)
+	earlier, err := record.PlansOfEarlierOwners(ctx, e.store, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	return earlier, e.passOver(ctx, tx, issue.Key, earlier, "")
-}
-
-// earlierOwnersPlans is each plan of issue that only earlier owners gave, at each generation of at
-// (every generation for none): the version in force of a generation of which no giver is an
-// architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.GivenByOwner, the
-// rule the routes hold every architect's call to). The owner of an issue changes where an orphan is
-// admitted again as a root of its own and where an adoption moves a member to another tree, and a
-// plan that only earlier owners gave is not the new owner's to run. It is the one rule of a plan
-// passed over: the first step reads every generation (passOverEarlierOwners), and a give of a plan
-// before that step the one generation it is given at (planGiven's versionRefusal), so the give is
-// judged against the plan that step will run.
-func (e *Engine) earlierOwnersPlans(ctx context.Context, tx pgx.Tx, issue record.Issue, at ...uint64) ([]record.PlanVersion, error) {
-	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
-	if err != nil || len(at) == 0 {
-		return earlier, err
-	}
-	var plans []record.PlanVersion
 	for _, version := range earlier {
-		if slices.Contains(at, version.Generation) {
-			plans = append(plans, version)
+		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
+			return nil, err
 		}
 	}
-	return plans, nil
-}
-
-// passOver deletes the plan of issue at the generation of each of versions (record.Store's
-// DeletePlan), and logs line for each, where line names one: a give of a plan passes over the plan
-// of an earlier owner with a line of its own, and the first step tells what it passed over itself
-// (tellPassedOver, tellNotTaken).
-func (e *Engine) passOver(ctx context.Context, tx pgx.Tx, issue string, versions []record.PlanVersion, line string) error {
-	for _, version := range versions {
-		if err := e.store.DeletePlan(ctx, tx, issue, version.Generation); err != nil {
-			return err
-		}
-		if line != "" {
-			e.logOnCommit(ctx, line, "issue", issue, "generation", version.Generation, "version", version.Version,
-				"document", version.ArtifactID, "givers", version.Givers())
-		}
-	}
-	return nil
+	return earlier, nil
 }
 
 // groupOf is the group of issue: the row of its experiment assignments that says how it is done
@@ -125,7 +93,7 @@ func takesNoPlan(group record.Assignment) bool {
 // (passOverEarlierOwners), so nothing below carries one. A run whose generation then holds plan
 // rows, the owner's own or a hand-over's carried plan, keeps them. One whose generation holds none
 // takes the newest plan its owner gave, of any generation, generation 0 among them, which holds a
-// plan given before the daemon recorded the issue (record.Store's OwnersNewestPlan), carried from
+// plan given before the daemon recorded the issue (record.OwnersNewestPlan), carried from
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
@@ -160,7 +128,7 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
 	}
 	if stored == nil {
-		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
+		if stored, err = record.OwnersNewestPlan(ctx, e.store, tx, issue); err != nil {
 			return err
 		}
 	}
@@ -191,14 +159,14 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 // passOverOwners deletes every plan of issue's owner that its first step could take, for an issue
 // whose group runs the project's default steps, and answers the versions it passed over, in the
 // order they were given, and the plan of the run's generation that stands after it (stored, as the
-// caller read it): the owner's plan in force at each generation (record.Store's PlansOfOwners), the
+// caller read it): the owner's plan in force at each generation (record.PlansOfOwners), the
 // run's own, generation 0, which holds a plan given before the daemon recorded and drew the issue,
 // and each copy a carry wrote to a later generation. A run that passed over the newest alone would
 // leave the copies before it to the next run's first step, which would tell the same version again.
 // A plan of the run's generation that no owner gave, a hand-over's carried default, stands. The
 // rows go in this transaction.
 func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan) ([]record.PlanVersion, *record.StoredPlan, error) {
-	passed, err := e.store.PlansOfOwners(ctx, tx, issue)
+	passed, err := record.PlansOfOwners(ctx, e.store, tx, issue)
 	if err != nil {
 		return nil, nil, err
 	}

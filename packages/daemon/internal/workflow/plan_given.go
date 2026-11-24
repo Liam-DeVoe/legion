@@ -38,8 +38,12 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if given.taken {
 		return intake.Result{}, e.addGiver(ctx, tx, fact, given.stored.Version)
 	}
-	if err := e.passOver(ctx, tx, fact.Issue, given.passedOver, "workflow: a plan of an earlier owner is set aside for a plan its owner gave"); err != nil {
-		return intake.Result{}, err
+	if earlier := given.passedOver; earlier != nil {
+		if err := e.store.DeletePlan(ctx, tx, fact.Issue, earlier.Generation); err != nil {
+			return intake.Result{}, err
+		}
+		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is set aside for a plan its owner gave", "issue", fact.Issue,
+			"generation", earlier.Generation, "version", earlier.Version, "document", earlier.ArtifactID, "givers", earlier.Givers())
 	}
 	written, err := e.writeVersion(ctx, tx, fact, given)
 	if err != nil || !given.recorded {
@@ -68,14 +72,14 @@ func (e *Engine) addGiver(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven,
 // for one passedOver), the tasks the version changes, adds or removes over it
 // (plan.ChangedTasks), whether the version is the one in force (taken), which planGiven writes
 // nothing of but its giver, and the version in force that only earlier owners gave, which
-// planGiven passes over before it writes (passedOver, none where none is).
+// planGiven deletes before it writes (passedOver, nil for none).
 type givenVersion struct {
 	issue      *record.Issue
 	recorded   bool
 	stored     *record.StoredPlan
 	changed    []string
 	taken      bool
-	passedOver []record.PlanVersion
+	passedOver *record.PlanVersion
 }
 
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
@@ -89,14 +93,14 @@ type givenVersion struct {
 // a run that started without it, and is refused PLAN_STALE_GENERATION.
 //
 // Before the first step of the generation the version is given at, a version in force there that
-// only earlier owners gave is one that step passes over (earlierOwnersPlans, the first step's own
-// rule, passOverEarlierOwners), so the give is judged as the generation's first plan, and planGiven
-// passes that version over before it writes (passedOver). The version in force as the judgement
-// then reads it is the one the generation runs or the first step will run, and a give of that very
-// version is answered taken (taken), whoever gave it before: it is no later version, and nothing
-// of it is written but its giver (addGiver). An issue the daemon has not recorded has no tree to
-// judge an earlier owner by, so its plan at generation 0 is judged as it stands, and its first
-// step judges the givers once the issue is recorded.
+// only earlier owners gave is one that step passes over (record.GivenByEarlierOwners, read through
+// the engine's store as the first step reads it, passOverEarlierOwners), so the give is judged as
+// the generation's first plan, and planGiven deletes that version before it writes (passedOver).
+// The version in force as the judgement then reads it is the one the generation runs or the first
+// step will run, and a give of that very version is answered taken (taken), whoever gave it
+// before: it is no later version, and nothing of it is written but its giver (addGiver). An issue
+// the daemon has not recorded has no tree to judge an earlier owner by, so its plan at generation
+// 0 is judged as it stands, and its first step judges the givers once the issue is recorded.
 //
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one in force is refused,
@@ -139,11 +143,12 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		return givenVersion{}, nil, err
 	}
 	if given.stored != nil && issue != nil && beforeItsWork(*issue) {
-		if given.passedOver, err = e.earlierOwnersPlans(ctx, tx, *issue, fact.Generation); err != nil {
+		earlier, err := record.GivenByEarlierOwners(ctx, e.store, tx, given.stored.Version, *issue)
+		if err != nil {
 			return givenVersion{}, nil, err
 		}
-		if len(given.passedOver) > 0 {
-			given.stored = nil
+		if earlier {
+			given.passedOver, given.stored = &given.stored.Version, nil
 		}
 	}
 	if given.stored == nil && given.recorded && !beforeItsWork(*issue) {
@@ -268,7 +273,7 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
 // the route read it unrecorded, still waits there for the issue's first step: the issue stands
 // before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
-// only one earlier owners gave (record.GivenByOwner), which the step passes over
+// only one earlier owners gave (record.GivenByEarlierOwners), which the step passes over
 // (passOverEarlierOwners) — so the step takes the newest plan its owner gave, or passes it over
 // too for an issue whose group takes none (planFirstStep). Once a plan of the generation is the
 // one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
@@ -284,11 +289,7 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	if err != nil || stored == nil {
 		return err == nil, err
 	}
-	if stored.Version.Source != record.PlanSourceOwner {
-		return false, nil
-	}
-	owners, err := record.GivenByOwner(ctx, e.store, tx, stored.Version, issue)
-	return !owners && err == nil, err
+	return record.GivenByEarlierOwners(ctx, e.store, tx, stored.Version, issue)
 }
 
 // sameVersion says whether next is held, the version in force, as its owner gave it: an owner's
