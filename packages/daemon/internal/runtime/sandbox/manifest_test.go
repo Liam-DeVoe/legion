@@ -258,7 +258,8 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 	}
 }
 
-// goldenControllerAccount is the controller goldens' runtime.kubernetes.pod.controller_service_account.
+// goldenControllerAccount is the controller goldens'
+// runtime.kubernetes.pod.controller_service_account.
 const goldenControllerAccount = "legion-controller"
 
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the

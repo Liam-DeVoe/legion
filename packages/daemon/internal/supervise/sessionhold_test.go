@@ -1004,13 +1004,13 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	}
 }
 
-// The controller's resume of an agent it suspended, whose claim records a session another claim holds, is
-// refused by the same check as the operator's (resumeRefusal), which runs after the controller's
-// own checks (askedBy, Claim.HeldAgainst) admit it: a RefusedError naming the operator's
-// forget-session, after which the agent's next start is in a new session, or the controller's own
-// fresh_session, which starts the agent in a new session, the claim still suspended by the
-// controller, nothing launched and nothing charged.
-// Once the claim holds its session, the controller's resume starts the agent again on it.
+// The controller's resume of an agent it suspended, whose claim records a session another claim
+// holds, is refused by the same check as the operator's (resumeRefusal), which runs after the
+// controller's own checks (askedBy, Claim.HeldAgainst) admit it: a RefusedError naming the
+// operator's forget-session, after which the agent's next start is in a new session, or the
+// controller's own fresh_session, which starts the agent in a new session, the claim still
+// suspended by the controller, nothing launched and nothing charged. Once the claim holds its
+// session, the controller's resume starts the agent again on it.
 //
 // The control: resume with no resumeRefusal: the controller's resume answers no refusal and the
 // agent is launched into the hold's refusal.

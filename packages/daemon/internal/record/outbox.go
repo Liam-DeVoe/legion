@@ -2772,12 +2772,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // its own (MergeHoldsChanged), since a notice reaches only an architect.
 //
 // `provider-errors` is a claim whose turns have ended six times in a row in an error the model's
-// provider returned (supervise's tellOfProviderErrors). The issue's architect is told,
-// since narrowing the work the provider keeps refusing is the architect's, and so is the
-// controller, in a row of its own (ProviderErrorsNotice), since compacting that agent's session
-// or starting that agent in a fresh session is the controller's (internal/daemon's providerErrorRunReached). A run of
-// the tree root's architect's own claim is told to the controller alone: the architect's copy would
-// reach the failing session itself. A run of a child's own architect's claim is told to the
+// provider returned (supervise's tellOfProviderErrors). The issue's architect is told, since
+// narrowing the work the provider keeps refusing is the architect's, and so is the controller, in a
+// row of its own (ProviderErrorsNotice), since compacting that agent's session or starting that
+// agent in a fresh session is the controller's (internal/daemon's providerErrorRunReached). A run
+// of the tree root's architect's own claim is told to the controller alone: the architect's copy
+// would reach the failing session itself. A run of a child's own architect's claim is told to the
 // architect above that child (NoticeStartsAtParent).
 //
 // `task-stopped` is a task stopped where it stands, its issue held: by its owner's stop_task

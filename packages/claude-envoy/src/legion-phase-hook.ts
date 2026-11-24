@@ -52,8 +52,8 @@ import { configuredValue } from "./claude-session"
  * the status Claude Code named, and marks a turn no prompt of the daemon's ran — a reminder
  * written over the inbox — so the daemon judges that turn from the report (dispatch://INFRA-4508):
  * a refusal whose status cannot clear fails the claim at once and holds the issue, and a refusal
- * that can clear fails nothing, so the reminders keep their pace and the project's controller is
- * told once at six such turns in a row.
+ * that can clear fails nothing, so the reminders keep their pace, and the issue's architect and
+ * the project's controller are told once at six such turns in a row.
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -551,8 +551,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // with it. What ends the reminding is the daemon failing the claim, which the timer's
           // own record check reads: it does at once for a refusal whose status cannot clear, the
           // status the bridge reports beside the turn's outcome, a reminder's own turn included,
-          // and never for a refusal that can clear, of which the controller is told at six in a
-          // row (dispatch://INFRA-4508).
+          // and never for a refusal that can clear, of which the issue's architect and the
+          // controller are told at six in a row (dispatch://INFRA-4508).
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

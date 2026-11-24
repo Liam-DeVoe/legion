@@ -3378,14 +3378,14 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //   - A retired claim runs nothing in any pod. The sweep drops retired claims before it groups
 //     them (reconcilePodUpdates, roundGroup). The predicate leaves them out too, so it holds for
 //     any group it is given.
-//   - A failed claim's launches or prompts ran out, so it runs no process and no turn of it runs
-//     on the pod. Its machine ignores the round's post, and only a retry of its agent brings that
+//   - A failed claim's launches or prompts ran out, so it runs no process and no turn of it runs on
+//     the pod. Its machine ignores the round's post, and only a retry of its agent brings that
 //     agent back (supervise's onRetry and onAskedRetry rows), which the round does not make.
-//     Holding the round for its answer held the pod, and every answered worker's next task with it, for an
-//     answer it can never give: on the first contract-46 roll a planner that had failed at
+//     Holding the round for its answer held the pod, and every answered worker's next task with it,
+//     for an answer it can never give: on the first contract-46 roll a planner that had failed at
 //     contract 41 recorded no round at all, and held its issue's round open behind the three
-//     workers that had answered. A retry starts it again, and it is asked like any other claim
-//     from the next tick.
+//     workers that had answered. A retry starts it again, and it is asked like any other claim from
+//     the next tick.
 //   - A claim that left the round's pod (supervise's Claim.LeftPodRound) runs its process in
 //     another pod. The ask names work that died with that pod, and no process the claim runs now
 //     holds any of it.
