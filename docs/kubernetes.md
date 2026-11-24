@@ -2675,6 +2675,7 @@ It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_f
 The release before refuses two kinds of `merge_forward` row that this release writes:
 
 - a row whose step is `withdrawn`, which it knows as no step;
+
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`).
 
 Its decode refuses each one (`validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
@@ -2686,7 +2687,8 @@ delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = 
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-`pull_requests.merge_forward` can hold the keys `withdrawn` and `waits`. The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), so it reads a withdrawn ask as one its role still holds, and it never sends an ask that waits for a role's ended claim again.
+`pull_requests.merge_forward` can hold the keys `withdrawn` and `waits`.
+The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), so it reads a withdrawn ask as one its role still holds, and it never sends an ask that waits for a role's ended claim again.
 For an issue whose ask waits (`merge_forward->>'waits' = 'true'`), have its architect move it back to `implementing`, which drops the ask: the release before asks once for each head, so nothing else asks again.
 The statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
