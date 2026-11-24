@@ -198,9 +198,10 @@ func TestAPlacedIssuesDispatchWritesApplyAfterAMidwayStart(t *testing.T) {
 
 // The daemon's own session writes both what its outbox writes, which a replay makes again from its
 // own rows, and what its API writes for an agent, which no row makes, and a replay applies the
-// second as recorded (keepsDaemonEvent): a move to backlog, icebox or triage, and one from those or
-// from done to todo that adds no legion label, root or child alike. The test reads in order each
-// event of a window whose daemon session writes: ACME-1, a root a person filed in backlog with the
+// second as recorded (keepsDaemonEvent), each judged against its issue's event before it in the
+// record: a move to backlog, icebox or triage, and one from those or from done to todo that adds
+// no legion label, root or child alike. The test reads in order each event of a window whose daemon
+// session writes: ACME-1, a root a person filed in backlog with the
 // label, todo at 09:10 (the controller's set_status), in_progress at 09:11 (its promotion), backlog
 // at 09:20 (the controller parks it), icebox at 09:21 and icebox again at 09:22, which moves
 // nothing; ACME-2, a child filed in triage, todo at 09:31 (release_children); ACME-3, a root a
@@ -239,7 +240,7 @@ func TestADaemonWriteNoOutboxRowMakesIsAppliedAsRecorded(t *testing.T) {
 	b.handsOver(clock(10, 23), "ACME-7")
 	window := b.build()
 
-	d := &driver{shadow: newShadow(window.Project, nil)}
+	d := &driver{}
 	var applied []string
 	for _, key := range slices.Sorted(maps.Keys(window.Events)) {
 		for i, raw := range window.Events[key] {
@@ -251,10 +252,14 @@ func TestADaemonWriteNoOutboxRowMakesIsAppliedAsRecorded(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the envelope of event %d of %s: %v", i+1, key, err)
 			}
-			if daemonWrote(env.actor, env.key) && d.keepsDaemonEvent(&scriptEvent{parsed: parsed, env: env}) {
+			event := scriptEvent{parsed: parsed, env: env, prev: -1}
+			if i > 0 {
+				event.prev = len(d.script.events) - 1
+			}
+			d.script.events = append(d.script.events, event)
+			if daemonWrote(env.actor, env.key) && d.keepsDaemonEvent(&d.script.events[len(d.script.events)-1]) {
 				applied = append(applied, key+" "+parsed.At.Format("15:04"))
 			}
-			d.shadow.note(env)
 		}
 	}
 	if want := []string{"ACME-1 09:10", "ACME-1 09:20", "ACME-1 09:21", "ACME-2 09:31", "ACME-3 09:41", "ACME-6 10:13"}; !slices.Equal(applied, want) {

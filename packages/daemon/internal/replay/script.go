@@ -2,7 +2,6 @@ package replay
 
 import (
 	"cmp"
-	"encoding/json"
 	"maps"
 	"math"
 	"slices"
@@ -118,9 +117,13 @@ type piece struct {
 	drawn bool
 	// stretchDrawn says the stretch the piece's move ends drew its conflict already: the piece
 	// goes on with a stretch past its recorded end (stretchEnds), which is not drawn a second
-	// time. drew is, for a merge-forward piece, the piece whose stretch drew the conflict.
+	// time, or drew it at a boot inside it (bootConflicts). drew is, for a merge-forward piece, the
+	// piece whose stretch drew the conflict, and resumes says that piece stands paused by a
+	// conflict a boot's read found while it ran, which the merge forward's end resumes
+	// (mergedForward).
 	stretchDrawn bool
 	drew         *piece
+	resumes      bool
 	// acts is every act of the piece, by its offset from the start.
 	acts []act
 
@@ -168,9 +171,10 @@ type actKind int
 const (
 	actTurnStart actKind = iota
 	actTurnEnd
-	// actEvent is a Dispatch event a worker of the issue made (its session the actor) inside a
-	// piece of its role's work (script.workPiece), which moves with that work: a child filed, a
-	// document's version written, an ask opened, a link set.
+	// actEvent is a Dispatch event on the issue, or the filing of a child under it, that a worker
+	// of the issue made (its session the actor) inside a piece of its role's work (script.workPiece),
+	// which moves with that work: a child filed, a document's version written, an ask opened, a link
+	// of the issue's own set. An event of the worker's on another issue is none (placeEvents).
 	actEvent
 	// actRegistration is the architect's registration of a design document
 	// (intake.GateRegistered, from its `workflow: design gate registered` line).
@@ -229,6 +233,13 @@ const (
 	// anchorWait places it at its offset from the replay's start of the wait it ended in the
 	// record (Branch.Timing).
 	anchorWait
+	// anchorFollow places a write of the daemon's own session at its offset from the event before
+	// it on its issue (scriptEvent.prev) once that is applied, or at its recorded time where that
+	// comes later, where that event is the issue's filing as a child, an act of a piece of its
+	// parent's work that moves with that piece, or itself follows one: an architect's own write on a
+	// child and its API's write on the child that Dispatch records under the daemon's session, a
+	// release or a park, keep the order the record shows them in (driver.placeFollowers).
+	anchorFollow
 )
 
 // scriptEvent is one recorded Dispatch event, read once (ParseDispatchEvent, and its envelope as
@@ -242,13 +253,19 @@ type scriptEvent struct {
 	// it where that piece runs it, and by its anchor where the piece does not run it (placeUnrun).
 	piece  *piece
 	anchor anchorKind
-	// on is the event an anchorEvent is placed from, and offset the event's own distance from
-	// it; wait is the wait an anchorWait ended in the record.
+	// on is the event an anchorEvent or an anchorFollow is placed from, and offset the event's own
+	// distance from it; wait is the wait an anchorWait ended in the record.
 	on     int
 	offset time.Duration
 	wait   waitAnchor
-	// dependents is every event placed from this one.
+	// dependents is every person's answer placed from this one, and followers every write of the
+	// daemon's own session placed from it (anchorFollow).
 	dependents []int
+	followers  []int
+	// prev is the issue event before this one on its issue, in the record's order, -1 for none or
+	// for an event that is no issue event: what a write of the daemon's own session is judged
+	// against (driver.keepsDaemonEvent).
+	prev int
 	// dispatched is whether the replay has applied the event to its copy of Dispatch; where the
 	// replay placed it is driver.placed's.
 	dispatched bool
@@ -581,14 +598,22 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 
 // placeEvents reads every recorded event of the window at or after its start, from events, the
 // window's events in the trace's order (readTrace): by time, then by id. It says how a replay
-// places each, and answers each issue's issue events, by their index, in that order. A worker's
-// event — one whose actor is a session the record shows running a claim of an issue, by the
-// session's title or by the claim token its id is (actorClaimOf) — that falls in a piece of that
-// claim's role's work (workPiece) is an act of that piece, placed at its offset in it where the
-// replay runs the piece. Every other event is placed by its anchor, and so is a worker's event
-// whose piece the replay does not run (placeUnrun): a person's answer from its question
-// (Branch.Answer); an event that ended a wait in the record from the replay's start of that wait
-// (Branch.Timing); every other at its recorded time.
+// places each, and answers each issue's issue events, by their index, in that order, each issue
+// event naming the one before it on its issue (scriptEvent.prev). A worker's event — one whose
+// actor is a session the record shows running a claim of an issue, by the session's title or by
+// the claim token its id is (actorClaimOf) — on that claim's issue, or the filing of a child under
+// it, that falls in a piece of that claim's role's work (workPiece) is an act of that piece, placed
+// at its offset in it where the replay runs the piece (spec R2, assumption 17: a child's filing
+// moves with the start it is filed after). A worker's event on another issue — an edit of it, a
+// link it adds or takes off, a child it moves out, a filing into another tree — is no act of its
+// piece and keeps its recorded time, as a version of a root's design does where the replay opens
+// the root's work early (keepDesignTimes): the replay moves a piece of work, not the issues the
+// worker touched, whose own course the record's times hold. Every other event is placed by its
+// anchor, and so is a worker's event whose piece the replay does not run (placeUnrun, cancelWork):
+// a person's answer from its question (Branch.Answer); an event that ended a wait in the record
+// from the replay's start of that wait (Branch.Timing); a write of the daemon's own session that
+// follows the filing of its issue as a child, or follows such a write, from the event before it
+// (anchorFollow); every other at its recorded time.
 func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, error) {
 	s.events = make([]scriptEvent, 0, len(events))
 	for _, read := range events {
@@ -596,12 +621,16 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 		if err != nil {
 			return nil, err
 		}
-		s.events = append(s.events, scriptEvent{parsed: read.event, env: env, at: read.event.At, order: int(read.event.ID), on: -1})
+		s.events = append(s.events, scriptEvent{parsed: read.event, env: env, at: read.event.At, order: int(read.event.ID), on: -1, prev: -1})
 	}
 	issueEvents := map[string][]int{}
 	for i := range s.events {
 		if s.events[i].parsed.Issue != nil {
-			issueEvents[s.events[i].env.key] = append(issueEvents[s.events[i].env.key], i)
+			key := s.events[i].env.key
+			if own := issueEvents[key]; len(own) > 0 {
+				s.events[i].prev = own[len(own)-1]
+			}
+			issueEvents[key] = append(issueEvents[key], i)
 		}
 	}
 	ended := s.waitEnders(t, issueEvents)
@@ -611,7 +640,7 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 		if event.at.Before(t.From) {
 			continue
 		}
-		if ran, ok := actorClaimOf(event.parsed); ok {
+		if ran, ok := actorClaimOf(event.parsed); ok && movesWithWork(event, ran) {
 			if p := s.workPiece(ran, event.at); p != nil {
 				event.piece = p
 				p.acts = append(p.acts, act{kind: actEvent, offset: event.at.Sub(p.start), rec: event.at, event: i})
@@ -626,7 +655,27 @@ func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, err
 			event.anchor, event.wait, event.offset = anchorWait, wait, event.at.Sub(wait.start)
 		}
 	}
+	for i := range s.events {
+		event := &s.events[i]
+		if event.at.Before(t.From) || event.prev < 0 || event.anchor != anchorTime || !daemonWrote(event.env.actor, event.env.key) {
+			continue
+		}
+		if before := &s.events[event.prev]; before.piece != nil && before.piece.issue != event.env.key || before.anchor == anchorFollow {
+			event.anchor, event.on, event.offset = anchorFollow, event.prev, event.at.Sub(before.at)
+			before.followers = append(before.followers, i)
+		}
+	}
 	return issueEvents, nil
+}
+
+// movesWithWork says whether event, made by the worker of ran, moves with the work it falls in
+// (placeEvents): an event on ran's own issue, or the filing of a child under it (issue.created
+// naming it the parent).
+func movesWithWork(event *scriptEvent, ran SessionClaim) bool {
+	if event.env.key == ran.Issue {
+		return true
+	}
+	return event.parsed.Type == "issue.created" && event.parsed.Issue != nil && event.parsed.Issue.Parent == ran.Issue
 }
 
 // markHeldRootTodos marks each event in which the daemon's own session set a held root todo
@@ -794,15 +843,6 @@ func (s *script) linkAnchor(own []int, iss *IssueTrace, wait Wait) waitAnchor {
 		}
 	}
 	return anchor
-}
-
-// decodeField decodes payload, a payload read by its fields, into into, and says whether it read.
-func decodeField(payload map[string]json.RawMessage, into any) bool {
-	if payload == nil {
-		return false
-	}
-	raw, err := json.Marshal(payload)
-	return err == nil && json.Unmarshal(raw, into) == nil
 }
 
 // recordLines is what a replay reads of the window's log beside its trace: the lines of acts it

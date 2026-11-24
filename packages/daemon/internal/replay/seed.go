@@ -732,7 +732,8 @@ func (s *seeder) slots() error {
 // lifecycles opens, under the workflow's authority, the lifecycle of each tree that runs or
 // lingers at the start: each tree whose root the start state recorded in its current run, once
 // that run took its first slot or a member of the tree had started (record.Issue.TakenBack, which
-// the start state set from the member's run), and whose linger has not closed it.
+// the start state set from the member's run), or the record shows that run running with no slot
+// line of it in the log (ranWithNoSlotLine), and whose linger has not closed it.
 func (s *seeder) lifecycles() error {
 	started := map[string]bool{}
 	for _, member := range s.placed {
@@ -749,7 +750,7 @@ func (s *seeder) lifecycles() error {
 		entry, _ := s.run(iss)
 		opened := started[root] || slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool {
 			return span.Start.Before(s.at) && (!span.Start.Before(entry.At) || span.Before)
-		})
+		}) || ranWithNoSlotLine(iss, entry.At, s.at)
 		if !opened {
 			continue
 		}
@@ -760,6 +761,21 @@ func (s *seeder) lifecycles() error {
 		s.epochs[root] = lifecycle.Epoch
 	}
 	return nil
+}
+
+// ranWithNoSlotLine says whether the record shows the run of iss, a root, that it entered at
+// entered running before at though no slot line of that run is in the log: its design gate opened
+// in the run (a registration that found it open, or an opening line), which is what the daemon
+// reads as a run of its own (record's ran, TreeGate.EverOpened), or its architect's claim was
+// launched afresh in it (Launch). Either is the daemon's tree at work, whose slot came by a way the
+// log holds no line of, so its tree runs a lifecycle as one promoted in the run does.
+func ranWithNoSlotLine(iss *IssueTrace, entered, at time.Time) bool {
+	inRun := func(moment time.Time) bool { return !moment.Before(entered) && moment.Before(at) }
+	return slices.ContainsFunc(iss.Gates, func(fact GateFact) bool {
+		return inRun(fact.At) && (fact.Kind == GateOpenedFact || fact.Kind == GateRegisteredFact && fact.Open)
+	}) || slices.ContainsFunc(iss.Launches, func(launch Launch) bool {
+		return inRun(launch.At) && launch.Role == claim.RoleArchitect && !launch.Resumed
+	})
 }
 
 // closedLifecycles writes, under the workflow's authority, the lifecycle of each tree whose root

@@ -192,8 +192,16 @@ type driver struct {
 	started   map[string]time.Time
 	childWait map[string]time.Time
 	placed    map[int]time.Time
-	// anchored is the events whose place waits for the replay's start of the wait they ended.
+	// anchored is the events whose place waits for the replay's start of the wait they ended, and
+	// reopens, by issue, each reopen of the daemon's own session that waits for the replay's issue
+	// to leave the workflow (defersReopen).
 	anchored []int
+	reopens  map[string][]int
+	// serving is when the daemon process that runs at the window's start begins to serve, its
+	// recorded reconcile where that comes after the start (servesFrom), zero where it serves from
+	// the start: every act before it waits for that boot, as an act that falls while the daemon is
+	// down waits for the next.
+	serving time.Time
 	// signOffs is each issue whose sign-off the engine holds behind a member beneath, which the
 	// replay applies again at each leave of a member of its tree.
 	signOffs map[string]bool
@@ -460,6 +468,7 @@ func (d *driver) observe() error {
 			if to == phase.Accepting {
 				d.openOnPhase(key, to)
 			}
+			d.queueFreshRetries(key, to)
 			if err := d.waitMoves(key, to); err != nil {
 				return err
 			}
@@ -467,7 +476,10 @@ func (d *driver) observe() error {
 			delete(d.inFlight, key)
 			delete(d.started, key)
 			delete(d.childWait, key)
-			d.cancelWork(key)
+			if err := d.cancelWork(key); err != nil {
+				return err
+			}
+			d.placeReopens(key)
 			delete(d.waiting, key)
 			tree := line.str("tree")
 			for _, waiting := range slices.Sorted(maps.Keys(d.signOffs)) {
@@ -682,6 +694,16 @@ func (d *driver) run() error {
 		}
 		d.push(&item{at: boot.At, class: classBoot, rec: boot.At, run: func() error { return d.boot(boot) }})
 	}
+	// The process that runs at the window's start serves from its recorded reconcile where that
+	// comes after the start: no pass runs before it, and every act before it waits for it, as an
+	// act that falls while the daemon is down waits for the next boot (servesFrom).
+	if boot, serves, waits := d.servesFrom(); waits {
+		d.serving = serves
+		d.push(&item{at: serves, class: classBoot, rec: serves, run: func() error {
+			d.serving = time.Time{}
+			return d.boot(boot)
+		}})
+	}
 	for _, at := range t.Ticks {
 		if at.Before(w.From) || !at.Before(w.To) {
 			continue
@@ -741,7 +763,7 @@ func (d *driver) run() error {
 				return err
 			}
 		}
-		if it.class != classBoot && d.down(it.at) {
+		if it.class != classBoot && (d.down(it.at) || it.at.Before(d.serving)) {
 			d.held = append(d.held, it)
 			continue
 		}
@@ -914,7 +936,8 @@ func (d *driver) arrivalBefore(key string) time.Time {
 // at its recorded time, from its question (Branch.Answer) or from the replay's start of the wait it
 // ended (Branch.Timing), as the branch asks; and never before the clock's instant, which an event
 // whose piece the replay does not run can stand past by then (placeUnrun). A person's answer under
-// answer offset waits for its question to place it.
+// answer offset waits for its question to place it, and a write of the daemon's own session that
+// follows a child's filing waits for that filing (anchorFollow, placeFollowers).
 func (d *driver) placeByAnchor(i int) {
 	event := &d.script.events[i]
 	at := maxTime(d.clock.Instant(), event.at)
@@ -940,8 +963,11 @@ func (d *driver) placeEvent(i int, at time.Time) {
 // ordered among the items of its instant by rec, its moment in the record, and the act of p's work
 // it is, nil for an event no piece places. A piece's event is ordered by the act's moment in the
 // record of p's work: the event's own, or, for an event another piece's work took over
-// (giveEvents), its moment in that work. A person's answer to it is placed once it is applied
-// (placeAnswers). An event the replay has placed already is not queued again.
+// (giveEvents), its moment in that work. A person's answer to it and each write of the daemon's
+// own session that follows it are placed once it is applied (placeAnswers, placeFollowers). An
+// event the replay has placed already is not queued again, but for a reopen of the daemon's own
+// session that waits for the replay's issue to leave the workflow (defersReopen), which is queued
+// again at that leave (placeReopens).
 func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 	if _, placed := d.placed[i]; placed {
 		return
@@ -951,11 +977,16 @@ func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 	var applied []byte
 	d.push(&item{at: at, class: classAct, rec: rec, order: int64(event.order), piece: p, eventKey: event.env.key, eventKind: event.env.kind,
 		dispatch: func() error {
+			var deferred bool
 			var err error
+			applied, deferred, err = d.dispatchEvent(i)
+			if err != nil || deferred {
+				return err
+			}
 			event.dispatched = true
-			applied, err = d.dispatchEvent(i)
 			d.placeAnswers(event)
-			return err
+			d.placeFollowers(event)
+			return nil
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
 }
@@ -973,6 +1004,43 @@ func (d *driver) placeAnswers(event *scriptEvent) {
 	now := d.clock.Instant()
 	for _, answer := range event.dependents {
 		d.placeEvent(answer, maxTime(now, now.Add(d.script.events[answer].offset)))
+	}
+}
+
+// placeFollowers places each write of the daemon's own session that follows event in the record
+// (anchorFollow), event just applied to the replay's copy of Dispatch: at its recorded offset from
+// this moment, or at its recorded time where that is later. So an architect's release or park of a
+// child, which Dispatch records under the daemon's session, comes after the architect's filing of
+// the child, wherever the replay placed the filing, as in the record (keepsDaemonEvent judges it
+// against that filing), and never before its recorded time, which a filing the replay placed early
+// leaves it at.
+func (d *driver) placeFollowers(event *scriptEvent) {
+	now := d.clock.Instant()
+	for _, i := range event.followers {
+		follower := &d.script.events[i]
+		d.placeEvent(i, maxTime(follower.at, now.Add(follower.offset)))
+	}
+}
+
+// placeReopens queues again each reopen of the daemon's own session that waited for key to leave
+// the workflow in the replay (defersReopen), key having just left: each at its recorded offset from
+// the record's last leave of key before it, from this moment, so the issue's next run follows the
+// replay's end of the run before it as the record's followed its own.
+func (d *driver) placeReopens(key string) {
+	waiting := d.reopens[key]
+	delete(d.reopens, key)
+	now := d.clock.Instant()
+	for _, i := range waiting {
+		event := &d.script.events[i]
+		offset := time.Duration(0)
+		if iss, ok := d.trace.Issues[key]; ok {
+			for _, leave := range iss.Leaves {
+				if !leave.At.After(event.at) {
+					offset = event.at.Sub(leave.At)
+				}
+			}
+		}
+		d.placeEvent(i, now.Add(offset))
 	}
 }
 
@@ -1043,17 +1111,25 @@ func (d *driver) waitStart(wait waitAnchor) (time.Time, bool) {
 
 // dispatchEvent applies the recorded event events[i] to the shadow at the clock's instant, and
 // answers the event as the replay applies it; nil for an event of the daemon's own, which the
-// replay makes again from its own outbox, and which the shadow only notes.
-func (d *driver) dispatchEvent(i int) ([]byte, error) {
+// replay makes again from its own outbox, and which the shadow only notes. A reopen of the daemon's
+// own session that waits for the replay's issue to leave the workflow (defersReopen) is neither
+// applied nor noted: it answers deferred, and waits to be queued again.
+func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error) {
 	event := &d.script.events[i]
-	if daemonWrote(event.env.actor, event.env.key) && !d.keepsDaemonEvent(event) {
-		d.shadow.note(event.env)
-		return nil, nil
+	if daemonWrote(event.env.actor, event.env.key) {
+		if !d.keepsDaemonEvent(event) {
+			d.shadow.note(event.env)
+			return nil, false, nil
+		}
+		if deferred, err := d.defersReopen(i); err != nil || deferred {
+			return nil, deferred, err
+		}
 	}
 	if d.namesLinkOrChild(event) {
 		d.used[10] = true
 	}
-	return d.shadow.apply(event.env, d.clock.Instant())
+	applied, err = d.shadow.apply(event.env, d.clock.Instant())
+	return applied, false, err
 }
 
 // keepsDaemonEvent says whether event, one the daemon's own session wrote, is a write the replay's
@@ -1073,21 +1149,17 @@ func (d *driver) dispatchEvent(i int) ([]byte, error) {
 // of that hold names a todo as its cause, for which the replay enters no retry of its own
 // (queueHoldEnd), so the hold ends only where the todo's own event is applied, as a person's todo
 // on a held root ends it. Every other write of the daemon's own is its outbox's status write,
-// which the replay's own rows make.
+// which the replay's own rows make. What a write moves the issue from is the issue's event before
+// it in the record (scriptEvent.prev), whatever the replay's copy applied before it: the write's
+// meaning is the record's, and an event the replay applies early or late, an act of a piece of work
+// it moves, would otherwise stand in for the status the write was made over.
 func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 	after := event.parsed.Issue
-	if after == nil {
+	if after == nil || event.prev < 0 {
 		return false
 	}
-	iss, ok := d.shadow.issues[event.env.key]
-	if !ok || iss.recorded == nil {
-		return false
-	}
-	var before struct {
-		Status string   `json:"status"`
-		Labels []string `json:"labels"`
-	}
-	if !decodeField(iss.recorded, &before) || before.Status == after.Status {
+	before := d.script.events[event.prev].parsed.Issue
+	if before == nil || before.Status == after.Status {
 		return false
 	}
 	if shelved(after.Status) {
@@ -1095,6 +1167,27 @@ func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 	}
 	labelled := dispatch.CarriesLegionLabel(after.Labels) && !dispatch.CarriesLegionLabel(before.Labels)
 	return after.Status == "todo" && !labelled && (record.OutOfWorkflow(before.Status) || event.releasesHold)
+}
+
+// defersReopen says whether events[i], a write of the daemon's own session the replay keeps
+// (keepsDaemonEvent) that sets its issue todo from a status out of the workflow, waits for the
+// replay's issue to leave the workflow: the replay's own record of the issue stands in the
+// workflow, its run, which the record shows ended before the write, still under way in the replay.
+// Such a write deferred is queued again at the replay's leave (placeReopens). A todo on an issue the
+// replay does not record, or records out of the workflow, applies now, and so does one that ends a
+// hold (releasesHold), whose issue stands held in the workflow by design.
+func (d *driver) defersReopen(i int) (bool, error) {
+	event := &d.script.events[i]
+	if event.parsed.Issue.Status != "todo" || event.releasesHold || !record.OutOfWorkflow(d.script.events[event.prev].parsed.Issue.Status) {
+		return false, nil
+	}
+	issue, err := d.recorded(event.env.key)
+	if err != nil || issue == nil || !record.InWorkflow(*issue) {
+		return false, err
+	}
+	delete(d.placed, i)
+	d.reopens[event.env.key] = append(d.reopens[event.env.key], i)
+	return true, nil
 }
 
 // shelved says whether status is out of the workflow, as done is (record.OutOfWorkflow), but not
@@ -1157,7 +1250,9 @@ func answers(fact intake.Fact) bool {
 // pass, the reconcile of the shadow's listing with the holds the record's lines show at that boot
 // (the listing's summaries held for the Dispatch consumer, and the roots the boot's catch-up
 // holds), the release of each root's catch-up where the record shows it applied, DaemonBooted,
-// and then every act that fell while the daemon was down, in order (assumption 24).
+// and then every act that fell while the daemon was down, in order (assumption 24). Once it
+// serves, its read of the pull requests (bootRead) is where a conflict a stretch under way draws
+// enters (bootConflicts, assumption 3).
 func (d *driver) boot(boot Boot) error {
 	d.boots++
 	d.used[assumeBootRepairsNothing] = true
@@ -1252,7 +1347,41 @@ func (d *driver) boot(boot Boot) error {
 		}
 		return nil
 	}})
+	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.To) && d.conflicts.clustersAtBoots() {
+		d.push(&item{at: read, class: classAct, rec: read, order: lineOrder + 1, run: d.bootConflicts})
+	}
 	return nil
+}
+
+// servesFrom is the daemon process that runs at the window's start, the newest begun before it,
+// and the moment it begins to serve, where that comes inside the window: its reconcile, the line of
+// which the log holds where the reconcile held summaries for the Dispatch consumer (Boot.Holding),
+// and otherwise the first slot line of the process before its `legion daemon started` line, the
+// pass of its reconcile. False where no process began before the start, or the log shows its
+// reconcile before the start or not at all. The daemon applies no fact before its reconcile, so a
+// replay's first pass waits for it, and no act before it runs (run), as none runs while no daemon
+// does.
+func (d *driver) servesFrom() (Boot, time.Time, bool) {
+	t, w := d.trace, d.window
+	var boot *Boot
+	for i := range t.Boots {
+		if t.Boots[i].At.Before(w.From) {
+			boot = &t.Boots[i]
+		}
+	}
+	if boot == nil {
+		return Boot{}, time.Time{}, false
+	}
+	serves := boot.Holding
+	if serves.IsZero() && !boot.Started.IsZero() {
+		for _, move := range t.Slots {
+			if !move.At.Before(boot.At) && move.At.Before(boot.Started) {
+				serves = move.At
+				break
+			}
+		}
+	}
+	return *boot, serves, serves.After(w.From) && serves.Before(w.To)
 }
 
 // serialized runs write in one transaction that takes the lock every fact applies under, with

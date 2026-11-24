@@ -256,11 +256,12 @@ func TestTheTraceInfersASlotHeldFromBeforeTheReach(t *testing.T) {
 }
 
 // A replay never stops at a recorded turn it cannot write a claim of. ACME-1, a root, holds the one
-// slot from 08:05; ACME-2, a root handed to Legion at 08:10, waits for it, and its architect takes
-// turns with no slot, from 09:00 to 09:30, before the window's start at 10:00, and from 10:30 to
-// 10:45, in it. ACME-2's tree runs no lifecycle in the replay, which the record never opened, so
-// no claim of the 10:30 turn can be admitted: the run writes none, counts the turn as one begun with
-// no lifecycle, and finishes the window.
+// slot from 08:05; ACME-2, a root handed to Legion at 08:10, waits for it, and its architect, whose
+// claim the log shows no launch of, takes turns with no slot, from 09:00 to 09:30, before the
+// window's start at 10:00, and from 10:30 to 10:45, in it. ACME-2's tree runs no lifecycle in the
+// replay, which the record never shows open — no slot, no gate opened and no fresh launch of its
+// architect in its run (seeder.lifecycles) — so no claim of the 10:30 turn can be admitted: the run
+// writes none, counts the turn as one begun with no lifecycle, and finishes the window.
 func TestARunGoesOnPastATurnInATreeThatRunsNoLifecycle(t *testing.T) {
 	dsn := replayDSN(t)
 	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
@@ -269,6 +270,7 @@ func TestARunGoesOnPastATurnInATreeThatRunsNoLifecycle(t *testing.T) {
 	b.boot(clock(8, 0))
 	rootThrough(b, "ACME-1", "a1", clock(8, 5), clock(8, 20))
 	b.file(clock(8, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.launchedBefore("ACME-2", claim.RoleArchitect)
 	b.turnStarts(clock(9, 0), "ACME-2", claim.RoleArchitect)
 	b.turnEnds(clock(9, 30), "ACME-2", claim.RoleArchitect)
 	b.turnStarts(clock(10, 30), "ACME-2", claim.RoleArchitect)

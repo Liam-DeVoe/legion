@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -603,6 +604,14 @@ func (b *windowBuilder) launched(at time.Time, key string, role claim.Role, agai
 	b.claims[token] = b.launches
 	b.info(at, "supervise: launched", "claim", string(token), "generation", b.generation(key),
 		"incarnation", fmt.Sprintf("5e0c1a%02x", b.claims[token]), "resumed", false, "resumedBy", "none")
+}
+
+// launchedBefore is key's role's claim standing launched from before the window's inputs reach: the
+// log holds no launch of it, and its turns launch nothing.
+func (b *windowBuilder) launchedBefore(key string, role claim.Role) {
+	b.t.Helper()
+	b.launches++
+	b.claims[b.token(key, role)] = b.launches
 }
 
 // turnStarts is a turn of key's role starting at at, its claim launched first where it has not
@@ -1282,6 +1291,11 @@ func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
 // signs ACME-2 off to retro at 12:00, from where it moves to merging at 12:15. No stretch begins and
 // ends inside the window, so the fitted rate draws no conflict.
 func acceptingLoopWindow(t *testing.T) Window {
+	return acceptingLoopRecord(t).build()
+}
+
+// acceptingLoopRecord is the record of acceptingLoopWindow, unbuilt, for a window that adds to it.
+func acceptingLoopRecord(t *testing.T) *windowBuilder {
 	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
 	b.window.Parts[0].Rule = "legion-v20.42.5"
 	b.reaches(3 * time.Hour)
@@ -1297,7 +1311,7 @@ func acceptingLoopWindow(t *testing.T) Window {
 	b.specRevised(clock(11, 40), "ACME-2", 2)
 	b.through("ACME-2", phase.Accepting, moveAt(12, 0, phase.Retro, workflow.TriggerSignOff),
 		moveAt(12, 15, phase.Merging, workflow.TriggerRetroCompleted))
-	return b.build()
+	return b
 }
 
 // A root architect's design document keeps its recorded time where the replay passes over the
@@ -1553,6 +1567,545 @@ func TestAFittedRateRecoversEachPhasesTermFromBuiltStretches(t *testing.T) {
 			t.Errorf("the model's JSON holds %s with no estimate or no end of its interval: %s", c.name, raw)
 		case math.Abs(*got.Estimate-c.truth) > 1e-6 || *got.Low > c.truth || c.truth > *got.High:
 			t.Errorf("%s is %v [%v, %v], want %v inside its interval", c.name, *got.Estimate, *got.Low, *got.High, c.truth)
+		}
+	}
+}
+
+// acceptingLoopChildWindow is acceptingLoopWindow with a child of ACME-2 that holds a slot. ACME-4,
+// an issue Legion is not given, stands in backlog from 07:10. ACME-3, which a person files todo
+// under ACME-2 at 07:30, starts at 07:40 and implements from 08:00 to the window's end, holding its
+// slot. At 11:40, ten minutes into ACME-2's accepting after its loop, ACME-2's architect links
+// ACME-3 as blocked by ACME-4, and admission gives ACME-3's slot back for the wait.
+func acceptingLoopChildWindow(t *testing.T) Window {
+	b := acceptingLoopRecord(t)
+	b.file(clock(7, 10), "ACME-4", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "c4"})
+	b.file(clock(7, 30), "ACME-3", filing{Title: "Write the export's header row", Parent: "ACME-2", Tree: "ACME-2", Status: "todo", Rank: "b3"})
+	b.childStarts(clock(7, 40), "ACME-3")
+	b.segmentEnds(clock(8, 0), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.changed(clock(11, 40), "ACME-3", b.session("ACME-2", claim.RoleArchitect), func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-4"} })
+	b.slotReleased(clock(11, 40), "ACME-3")
+	return b.build()
+}
+
+// An event a piece of work's worker makes on another issue keeps its recorded time where the
+// replay moves the piece (script.placeEvents): a link it adds or takes off, a child it removes, an
+// edit of another issue, unlike a child the worker files under its own issue, whose filing moves
+// with the piece's start (spec R2, assumption 17). The test replays acceptingLoopChildWindow under
+// main, where ACME-2's stretch draws no conflict at 10:30 and its accepting after the recorded
+// loop opens then, an hour before its recorded start: the link its architect adds to ACME-3 at
+// 11:40 enters then, and ACME-3 gives its slot back for the wait at 11:40, as recorded. It fails
+// where the link moves with the accepting work, for which ACME-3 gives its slot back at 10:40.
+func TestAMovedPiecesEventOnAnotherIssueKeepsItsRecordedTime(t *testing.T) {
+	_, log := knobRun(t, acceptingLoopChildWindow(t), mainRule(t), "main")
+	released := linesAt(log, func(line replayLine) bool { return line.Msg == slotReleasedLine && line.Issue == "ACME-3" })
+	if want := []time.Time{clock(11, 40)}; !slices.EqualFunc(released, want, time.Time.Equal) {
+		t.Errorf("ACME-3 gave its slot back at %s, want at %s, when ACME-2's architect links it as blocked", describeTimes(released),
+			describeTimes(want))
+	}
+}
+
+// lateRootWindow is a window from 09:00 to 13:00 recorded under main with a cap of 1, its inputs
+// reaching back to the daemon's boot at 06:00, in which a root's first slot comes an hour late in a
+// replay under keep-past-review. ACME-1, a root at rank a0 promoted at 06:30, works to its review's
+// approval at 10:00, where its slot goes back under main, and then through accepting, retro and
+// merging to its merge at 11:00. ACME-2, a root at rank a1 handed to Legion at 07:00, waits for the
+// slot and is promoted at 10:00, its architect in a turn from then; tail writes what that architect
+// does next. Under keep-past-review ACME-1 keeps its slot to its merge, and ACME-2 is promoted at
+// 11:00.
+func lateRootWindow(t *testing.T, tail func(b *windowBuilder)) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a0", clock(6, 30), clock(6, 45), moveAt(7, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 0, phase.Accepting, workflow.TriggerReviewApproved))
+	b.file(clock(7, 0), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootPromoted(clock(10, 0), "ACME-2")
+	b.through("ACME-1", phase.Accepting, moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 0), "ACME-1", record.DoneStatus)
+	tail(b)
+	return b.build()
+}
+
+// headerChild is the filing of ACME-3 under ACME-2 at status by ACME-2's architect.
+func headerChild(b *windowBuilder, at time.Time, status string) {
+	b.t.Helper()
+	b.filedBy(at, "ACME-3", filing{Title: "Write the export's header row", Parent: "ACME-2", Tree: "ACME-2", Status: status, Rank: "b3"},
+		b.session("ACME-2", claim.RoleArchitect))
+}
+
+// replayCopied replays window under rule on the main branch at seed 1 and f 1, and answers the
+// replay's log and its copy of Dispatch.
+func replayCopied(t *testing.T, window Window, rule string) ([]replayLine, *shadow) {
+	t.Helper()
+	var copied *shadow
+	out := t.TempDir()
+	cfg := RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay the window under %s: %v", rule, err)
+	}
+	return replayLog(t, out), copied
+}
+
+// startedAt is the moments key moved from admitted into planning in log: its first phase's
+// starts.
+func startedAt(log []replayLine, key string) []time.Time {
+	return linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == key && line.From == string(phase.Admitted) && line.To == string(phase.Planning)
+	})
+}
+
+// A child its parent's worker files under the parent enters at its recorded offset from the
+// start of the work it is filed in (spec R2, assumption 17), and never vanishes: where that work
+// never runs, the filing enters by its anchor, at its recorded time or once the replay knows the
+// work cannot run. The test replays lateRootWindow under keep-past-review twice. In the first,
+// ACME-2's architect files ACME-3 todo at 10:30, half an hour into its turn, and registers its
+// design at 10:45, where ACME-2 waits for its child and ACME-3 starts; ACME-2 is promoted at 11:00,
+// so ACME-3 is filed at 11:30 and starts at 11:45. In the second, a person moves ACME-2 to backlog
+// at 10:30, right after its architect files ACME-3: in the replay ACME-2 leaves the workflow still
+// waiting for its slot, its architect's work never runs, and ACME-3's filing enters at 10:30. The
+// second fails where a filing of work that never runs is left with it, for which ACME-3 is never
+// filed.
+func TestAChildsFilingMovesWithItsParentsStartAndNeverVanishes(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		tail           func(b *windowBuilder)
+		filed, started []time.Time
+	}{
+		{name: "the parent's work runs late", tail: func(b *windowBuilder) {
+			headerChild(b, clock(10, 30), "todo")
+			b.rootWaitsForChildren(clock(10, 45), "ACME-2", 1)
+			b.childStarts(clock(10, 45), "ACME-3")
+		}, filed: []time.Time{clock(11, 30)}, started: []time.Time{clock(11, 45)}},
+		{name: "the parent's work never runs", tail: func(b *windowBuilder) {
+			headerChild(b, clock(10, 30), "todo")
+			b.edit(clock(10, 30), "ACME-2", setStatus("backlog"))
+			b.leaves(clock(10, 30), "ACME-2", "backlog")
+		}, filed: []time.Time{clock(10, 30)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, copied := replayCopied(t, lateRootWindow(t, c.tail), "keep-past-review")
+			if filed := eventsApplied(t, copied, "ACME-3", "issue.created"); !slices.EqualFunc(filed, c.filed, time.Time.Equal) {
+				t.Errorf("ACME-3 was filed in the copy of Dispatch at %s, want at %s", describeTimes(filed), describeTimes(c.filed))
+			}
+			if started := startedAt(log, "ACME-3"); !slices.EqualFunc(started, c.started, time.Time.Equal) {
+				t.Errorf("ACME-3 started at %s, want at %s", describeTimes(started), describeTimes(c.started))
+			}
+		})
+	}
+}
+
+// An architect's own writes on a child and the writes of its API that Dispatch records under the
+// daemon's session keep their recorded order (driver.placeFollowers): a daemon session's write
+// that follows a worker's act on the same issue comes after it, at its recorded offset from it, or
+// at its recorded time where that is later. The test replays lateRootWindow under keep-past-review,
+// in which ACME-2's architect files ACME-3 in triage at 10:20, its release writes ACME-3 todo under
+// the daemon's session at 10:21, and ACME-2 waits for its child from 10:30, where ACME-3 starts.
+// ACME-2 is promoted an hour late, so ACME-3 is filed at 11:20 and released at 11:21, and it starts
+// at 11:30. It fails where the release keeps its recorded time ahead of the late filing, for which
+// the filing's triage stands last, ACME-3 leaves the workflow and never starts.
+func TestAnArchitectsReleaseOfAChildKeepsItsOrderWithTheFiling(t *testing.T) {
+	log, _ := replayCopied(t, lateRootWindow(t, func(b *windowBuilder) {
+		headerChild(b, clock(10, 20), "triage")
+		b.daemonWrites(clock(10, 21), "ACME-3", "todo")
+		b.rootWaitsForChildren(clock(10, 30), "ACME-2", 1)
+		b.childStarts(clock(10, 30), "ACME-3")
+	}), "keep-past-review")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(11, 30)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s: filed at 11:20 and released at 11:21", describeTimes(started), describeTimes(want))
+	}
+}
+
+// earlyAcceptingWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 06:00. ACME-2, a root promoted at 06:05, works 30 minutes
+// in each phase to accepting at 08:20; at 09:20 a conflict moves it back to implementing, and its
+// loop of 20 minutes in each phase brings it back to accepting at 10:20, where its architect works
+// to the window's end. At 10:30 its architect files ACME-3 in triage under it, at 10:31 the
+// architect's release writes ACME-3 todo under the daemon's session, ACME-3 starts at 10:40, and at
+// 11:00 the architect edits ACME-3's title, its event showing ACME-3 in progress. No stretch begins
+// and ends inside the window, so the fitted rate draws no conflict.
+func earlyAcceptingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-2", "a2", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(7, 50, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(8, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(9, 20, phase.Implementing, workflow.TriggerConflict),
+		moveAt(9, 40, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 0, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 20, phase.Accepting, workflow.TriggerReviewApproved))
+	headerChild(b, clock(10, 30), "triage")
+	b.daemonWrites(clock(10, 31), "ACME-3", "todo")
+	b.childStarts(clock(10, 40), "ACME-3")
+	b.changed(clock(11, 0), "ACME-3", b.session("ACME-2", claim.RoleArchitect), func(issue *builtIssue) {
+		issue.Title = "Write the export's header row in bold"
+	})
+	return b.build()
+}
+
+// A write of the daemon's own session is judged against the issue's event before it in the record
+// (driver.keepsDaemonEvent), not against the last one the replay's copy applied, and a reopen it
+// keeps is applied by the replay's own record of the issue. The test replays earlyAcceptingWindow
+// under main: ACME-2's stretch draws no conflict at 09:20, and its accepting after the loop opens
+// then, an hour before its recorded start, so the architect's filing of ACME-3 enters at 09:30; the
+// release's todo at 10:31 is judged against that filing's triage and enters, and ACME-3 starts at
+// 10:31, a slot being free. It fails where the release is judged against a later event the copy
+// applied first, the architect's title edit carrying ACME-3 in progress, which then stands as a
+// session's status and ACME-3 never enters.
+func TestADaemonWriteIsJudgedInTheRecordsOrder(t *testing.T) {
+	_, log := knobRun(t, earlyAcceptingWindow(t), mainRule(t), "main")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(10, 31)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s, once its release enters", describeTimes(started), describeTimes(want))
+	}
+}
+
+// reopenLateWindow is a window from 09:00 to 13:00 recorded under main with a cap of 2, its inputs
+// reaching back to the daemon's boot at 06:00. ACME-2, a root promoted at 06:05, implements from
+// 06:50 to the window's end, holding a slot. ACME-1, a root promoted at 06:30, holds the other slot
+// to its review's approval at 10:00, and merges at 11:00. ACME-3, filed todo under ACME-2 at 06:35,
+// takes ACME-1's slot at 10:00 and works 10 minutes in each phase to its merge at 11:10, giving its
+// slot back at its accepting at 10:40. At 11:20 the daemon's session writes it todo again, the run
+// again of a child out of the workflow, and it starts its second generation on the free slot.
+// Under keep-past-review ACME-1 and ACME-3 keep their slots past their reviews: ACME-3 starts at
+// 11:00, an hour late, and merges at 12:10.
+func reopenLateWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(2)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-2", "a2", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted))
+	rootThrough(b, "ACME-1", "a0", clock(6, 30), clock(6, 45), moveAt(7, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 0, phase.Accepting, workflow.TriggerReviewApproved))
+	b.file(clock(6, 35), "ACME-3", filing{Title: "Write the export's header row", Parent: "ACME-2", Tree: "ACME-2", Status: "todo", Rank: "b3"})
+	b.childStarts(clock(10, 0), "ACME-3")
+	b.through("ACME-1", phase.Accepting, moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 0), "ACME-1", record.DoneStatus)
+	b.through("ACME-3", phase.Planning, moveAt(10, 10, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 40, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 50, phase.Retro, workflow.TriggerSignOff),
+		moveAt(11, 0, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 10, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 10), "ACME-3", record.DoneStatus)
+	b.issue("ACME-3").generation++
+	b.daemonWrites(clock(11, 20), "ACME-3", "todo")
+	b.childStarts(clock(11, 20), "ACME-3")
+	return b.build()
+}
+
+// A reopen the daemon's session writes is applied once the replay's own record of the issue stands
+// out of the workflow: one that comes while the replay's issue is still in flight waits for its
+// leave, and comes at its recorded offset from it. The test replays reopenLateWindow under
+// keep-past-review: ACME-3 starts at 11:00 and merges at 12:10, so the reopen recorded at 11:20,
+// ten minutes after its recorded merge, comes at 12:20, where ACME-3 takes its second slot, and no
+// move is refused. It fails where the reopen is applied while ACME-3's first generation runs,
+// which starts the second over it and refuses the first one's moves.
+func TestAKeptReopenWaitsForTheReplaysOwnLeave(t *testing.T) {
+	result, log := knobRun(t, reopenLateWindow(t), replayedRule(t, "keep-past-review"), "main")
+	var given []string
+	for _, slot := range slotsGiven(log) {
+		if strings.HasPrefix(slot, "ACME-3 ") {
+			given = append(given, slot)
+		}
+	}
+	if want := []string{"ACME-3 at 11:00", "ACME-3 at 12:20"}; !slices.Equal(given, want) {
+		t.Errorf("the replay gave ACME-3 the slots %v, want %v", given, want)
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
+	}
+}
+
+// restartedRootWindow is the window of a root whose current run ran with no slot line, from 10:00
+// to 13:00 under a cap of 2, in a deployment that gates the spec, its inputs reaching back to the
+// daemon's boot at 05:00. ACME-5, a root promoted at 05:05, works to its review and reviews from
+// 06:50 to its approval at 10:10, where its slot goes back. ACME-1, a root promoted at 07:05, is
+// restarted at 08:00: the daemon's session writes it backlog, it leaves the workflow, its tree
+// lingers, and ACME-4, a root handed to Legion at 07:30, is promoted into its slot and implements
+// from 08:45 on; at 08:01 the daemon's session writes ACME-1 todo again. ACME-1's architect is
+// launched at 08:30, with no slot line, writes the spec and registers it at 08:40; a person approves
+// it at 09:00, which opens the gate, and at 09:10 a person files ACME-2 todo under ACME-1, which
+// waits for it. At 10:10 ACME-2 takes ACME-5's slot, and ACME-1's architect works from 10:20 to
+// 10:30.
+func restartedRootWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
+	b.reaches(5 * time.Hour)
+	b.capped(2)
+	b.gated(record.DesignStepSpec)
+	b.boot(clock(5, 0))
+	rootThrough(b, "ACME-5", "a0", clock(5, 5), clock(5, 20), moveAt(5, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(6, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(6, 50, phase.Reviewing, workflow.TriggerTesterPassed))
+	promotedRoot(b, clock(7, 5), "ACME-1", "a1")
+	b.file(clock(7, 30), "ACME-4", filing{Title: "Archive the old exports", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	b.daemonWrites(clock(8, 0), "ACME-1", "backlog")
+	b.leaves(clock(8, 0), "ACME-1", "backlog")
+	b.rootPromoted(clock(8, 0), "ACME-4")
+	b.daemonWrites(clock(8, 1), "ACME-1", "todo")
+	b.issue("ACME-1").generation++
+	b.rootDesigned(clock(8, 15), "ACME-4")
+	b.launched(clock(8, 30), "ACME-1", claim.RoleArchitect, true)
+	b.turnStarts(clock(8, 30), "ACME-1", claim.RoleArchitect)
+	b.specWritten(clock(8, 35), "ACME-1")
+	b.turnEnds(clock(8, 40), "ACME-1", claim.RoleArchitect)
+	b.registered(clock(8, 40), "ACME-1", false)
+	b.segmentEnds(clock(8, 45), "ACME-4", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.approves(clock(9, 0), "ACME-1", "")
+	b.gateOpened(clock(9, 0), "ACME-1", intake.DispatchArtifactApproved, 1)
+	b.file(clock(9, 10), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "b2"})
+	b.waitsForChildren(clock(9, 10), "ACME-1", 1)
+	b.segmentEnds(clock(10, 10), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.childStarts(clock(10, 10), "ACME-2")
+	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleArchitect)
+	b.turnEnds(clock(10, 30), "ACME-1", claim.RoleArchitect)
+	return b.build()
+}
+
+// The start state runs the tree of a root whose current run the record shows running though no
+// slot line of that run is in the log (seeder.lifecycles): its design gate opened in the run, or
+// its architect was launched afresh in it. The test replays restartedRootWindow under main: ACME-1's
+// tree is live from the start, so at 10:10 ACME-2 takes the slot ACME-5 gives back, and ACME-1's
+// architect's turn at 10:20 is written, no turn going without a lifecycle. It fails where the start
+// state opens no lifecycle for that run, for which ACME-1's tree is closed, ACME-2 is held by no
+// word the daemon has and takes no slot, and the turn is counted as one begun with no lifecycle.
+func TestATreeThatRanWithNoSlotLineRunsFromTheStart(t *testing.T) {
+	result, log := knobRun(t, restartedRootWindow(t), mainRule(t), "main")
+	if given := slotsGiven(log); !slices.Contains(given, "ACME-2 at 10:10") {
+		t.Errorf("the replay gave the slots %v, want ACME-2's at 10:10", given)
+	}
+	architect := string(builtToken(t, "ACME-1", claim.RoleArchitect))
+	turns := linesAt(log, func(line replayLine) bool { return line.Msg == turnStartedLine && line.Claim == architect })
+	if want := []time.Time{clock(10, 20)}; !slices.EqualFunc(turns, want, time.Time.Equal) {
+		t.Errorf("ACME-1's architect started turns at %s, want at %s", describeTimes(turns), describeTimes(want))
+	}
+	if n := result.Divergence.NoLifecycleTurns; n != 0 {
+		t.Errorf("the replay counted %d turns begun with no lifecycle, want 0", n)
+	}
+}
+
+// A clone of a piece of work under way at the window's start opens as the piece would have opened
+// had it not been under way (clonePieces): an accepting piece, whose start is the move into
+// accepting, on that move; every other on its role's start.
+func TestACloneOfASeededPieceOpensAsItsPhaseOpens(t *testing.T) {
+	seeded := []*piece{
+		{issue: "ACME-1", phase: phase.Accepting, role: claim.RoleArchitect, opens: opensAtSeed},
+		{issue: "ACME-1", phase: phase.Testing, role: claim.RoleTester, opens: opensAtSeed},
+	}
+	clones := clonePieces(seeded, "ACME-9")
+	if len(clones) != 2 || clones[0].opens != opensOnPhase || clones[1].opens != opensOnStart {
+		var opens []pieceOpen
+		for _, clone := range clones {
+			opens = append(opens, clone.opens)
+		}
+		t.Errorf("the clones open by %v, want the accepting one on its phase (%d) and the testing one on its start (%d)", opens,
+			opensOnPhase, opensOnStart)
+	}
+}
+
+// seededSendBackWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 with a cap of
+// 10, its inputs reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05,
+// works 30 minutes in each phase to accepting at 08:50, where it stands at the window's start; its
+// architect sends it back to implementing at 09:30, and it works 20 minutes in implementing and 10
+// in each phase after it to merging at 10:30. ACME-2, a root promoted at 07:00, moves to testing at
+// 09:00, and a conflict moves it back from accepting at 09:40; its loop is 20 minutes in
+// implementing and 10 in testing and in reviewing, and it is back in accepting at 10:20. ACME-3, a
+// root promoted at 08:00, moves to testing at 10:30, and its architect sends it back from accepting
+// at 11:10. The base branch took one commit, at 09:25, inside ACME-2's stretch and none inside
+// ACME-3's: the stretches inside the window separate, so the chance fitted at M = 1 is 1 and at
+// M = 0 is 0, and ACME-1's stretch, begun before the window, draws a conflict at its send-back.
+func seededSendBackWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.capped(10)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(7, 50, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(8, 50, phase.Accepting, workflow.TriggerReviewApproved), moveAt(9, 30, phase.Implementing, workflow.TriggerBackward),
+		moveAt(9, 50, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 0, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 10, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 30, phase.Merging, workflow.TriggerRetroCompleted))
+	rootThrough(b, "ACME-2", "a2", clock(7, 0), clock(7, 15), moveAt(7, 45, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(9, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(9, 10, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(9, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(9, 40, phase.Implementing, workflow.TriggerConflict),
+		moveAt(10, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 10, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 20, phase.Accepting, workflow.TriggerReviewApproved))
+	rootThrough(b, "ACME-3", "a3", clock(8, 0), clock(8, 15), moveAt(8, 45, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 30, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 40, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 50, phase.Accepting, workflow.TriggerReviewApproved), moveAt(11, 10, phase.Implementing, workflow.TriggerBackward))
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {{SHA: "5b8e2d7c1f4a3069b1c2d3e4f5a6b7c8d9e0f1a3", At: clock(9, 25), Branch: "main"}}}
+	return window
+}
+
+// A drawn conflict that takes the place of an architect's send-back of a piece under way at the
+// window's start gives the issue its loop and then that piece's work again, which opens on the
+// issue's return to accepting (clonePieces). The test replays seededSendBackWindow under
+// legion-v20.42.5: ACME-1's stretch draws a conflict at its send-back at 09:30, it runs ACME-2's
+// loop back to accepting at 10:10, its architect's 40 minutes of accepting send it back at 10:50,
+// the stretch after the loop drawing no conflict, and it works its own recorded way back to
+// accepting and signs off into retro at 11:40. It fails where the clone of the accepting piece
+// waits for a start no move into accepting writes, for which ACME-1 stands in accepting from 10:10
+// to the window's end.
+func TestAClonedAcceptingPieceOpensOnItsPhase(t *testing.T) {
+	_, log, _ := replayLoopWindow(t, seededSendBackWindow(t), "legion-v20.42.5", 1)
+	retro := linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.To == string(phase.Retro)
+	})
+	if want := []time.Time{clock(11, 40)}; !slices.EqualFunc(retro, want, time.Time.Equal) {
+		t.Errorf("ACME-1 moved into retro at %s, want at %s", describeTimes(retro), describeTimes(want))
+	}
+}
+
+// bootAtStartWindow is a window from 10:00 to 12:00 recorded under keep-past-review, its inputs
+// reaching back to the daemon's boot at 07:00, that opens inside the next boot. ACME-1, a root
+// promoted at 07:05, works 30 minutes in each phase to its review's approval at 09:20, and keeps
+// its slot in accepting to the window's end. A daemon process starts at 09:58:30, and its reconcile
+// holds the roots for the Dispatch consumer at 10:00:40; at 10:00:10 a person files ACME-3, which
+// Legion is not given.
+func bootAtStartWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "keep-past-review"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(7, 0))
+	rootThrough(b, "ACME-1", "a1", clock(7, 5), clock(7, 20), moveAt(7, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 50, phase.Reviewing, workflow.TriggerTesterPassed))
+	b.pastReviewKept(clock(9, 20), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.boot(clock(9, 58).Add(30 * time.Second))
+	b.file(clock(10, 0).Add(10*time.Second), "ACME-3", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "c3"})
+	b.info(clock(10, 0).Add(40*time.Second), reconcileHoldingLine, "count", 1, "target", 9, "ack_floor", 3)
+	return b.build()
+}
+
+// The first pass of the daemon process that runs at the window's start waits for that process's
+// recorded reconcile (driver.run): no fact is applied before it. The test replays bootAtStartWindow
+// under main: ACME-1, past its review, keeps its slot from the window's start to the reconcile at
+// 10:00:40, where main's pass gives it back, 40 seconds past the review holding a slot. It fails
+// where the first fact of the window, the filing at 10:00:10, runs the first pass, for which the
+// slot goes back at 10:00:10.
+func TestTheFirstPassWaitsForTheRunningBootsReconcile(t *testing.T) {
+	result, log := knobRun(t, bootAtStartWindow(t), mainRule(t), "main")
+	released := linesAt(log, func(line replayLine) bool { return line.Msg == slotReleasedLine && line.Issue == "ACME-1" })
+	if want := []time.Time{clock(10, 0).Add(40 * time.Second)}; !slices.EqualFunc(released, want, time.Time.Equal) {
+		t.Errorf("ACME-1 gave its slot back at %s, want at %s, the boot's reconcile", describeTimes(released), describeTimes(want))
+	}
+	if hours, want := result.Scorecard.PastReviewHolding.Hours, 40.0/3600; math.Abs(hours-want) > fixtureTolerance {
+		t.Errorf("pastReviewHolding is %v hours, want %v", hours, want)
+	}
+}
+
+// freshSessionWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, in a
+// deployment that gates the spec, its inputs reaching back to the daemon's boot at 05:00. ACME-1, a
+// root promoted at 05:05 whose spec a person approves at 05:15, implements from 05:50 to the
+// window's end. ACME-2, filed todo under it at 05:30, starts at 06:00 and works 30 minutes in each
+// phase to retro at 08:30. At 09:50 ACME-1's architect writes version 2 of the spec, which closes
+// the gate to the window's end. ACME-2 moves to merging at 10:30, where its merger's start waits
+// for the gate. At 11:00 the operator retries the merger with a fresh session: its claim is
+// launched afresh, and the phase is released by the operator's retry with no hold standing. The
+// merger works from 11:01 to 11:02 and sends ACME-2 back to implementing at 11:03.
+func freshSessionWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(5 * time.Hour)
+	b.gated(record.DesignStepSpec)
+	b.boot(clock(5, 0))
+	promotedRoot(b, clock(5, 5), "ACME-1", "a1")
+	b.specWritten(clock(5, 10), "ACME-1")
+	b.approves(clock(5, 15), "ACME-1", "")
+	b.rootDesigned(clock(5, 20), "ACME-1")
+	b.file(clock(5, 30), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "b2"})
+	b.segmentEnds(clock(5, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.childStarts(clock(6, 0), "ACME-2")
+	b.through("ACME-2", phase.Planning, moveAt(6, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(7, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(8, 0, phase.Accepting, workflow.TriggerReviewApproved), moveAt(8, 30, phase.Retro, workflow.TriggerSignOff))
+	b.specRevised(clock(9, 50), "ACME-1", 2)
+	b.gateClosed(clock(9, 50), "ACME-1", intake.DispatchArtifactVersion, 2)
+	b.turnEnds(clock(10, 30), "ACME-2", claim.RoleImplementer)
+	b.moved(clock(10, 30), "ACME-2", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.launched(clock(11, 0), "ACME-2", claim.RoleMerger, false)
+	b.info(clock(11, 0), "workflow: a held phase is released", "issue", "ACME-2", "phase", string(phase.Merging), "reason", operatorRetryReason)
+	b.turnStarts(clock(11, 1), "ACME-2", claim.RoleMerger)
+	b.turnEnds(clock(11, 2), "ACME-2", claim.RoleMerger)
+	b.moved(clock(11, 3), "ACME-2", phase.Merging, phase.Implementing, workflow.TriggerBackward)
+	b.slotTaken(clock(11, 3), "ACME-2")
+	b.turnStarts(clock(11, 3), "ACME-2", claim.RoleImplementer)
+	return b.build()
+}
+
+// The operator's retry of a phase's worker with a fresh session, which launches its claim outside
+// the start fence and then restarts the phase (api/freshsession.go at 958173da), enters a replay at
+// its recorded offset from the start of the visit it retries (driver.freshRetry): the worker's
+// claim is launched, its next piece of work in the phase opens, and the restart's own start waits
+// for the fence as recorded. The test replays freshSessionWindow under legion-v20.42.5: ACME-2
+// moves to merging at 10:30, its merger's start waits for the closed gate, the retry at 11:00 opens
+// the merger's work, and ACME-2 moves back to implementing at 11:03, with no move refused. It fails
+// where the replay enters no such retry, for which the merger's work waits for the gate and ACME-2
+// stands in merging to the window's end.
+func TestAnOperatorsFreshSessionRunsTheWorkerOutsideTheFence(t *testing.T) {
+	result, log, _ := replayLoopWindow(t, freshSessionWindow(t), "legion-v20.42.5", 1)
+	back := linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Merging)
+	})
+	if want := []time.Time{clock(11, 3)}; !slices.EqualFunc(back, want, time.Time.Equal) {
+		t.Errorf("ACME-2 left merging at %s, want at %s", describeTimes(back), describeTimes(want))
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
+	}
+}
+
+// bootConflictsWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00. ACME-1 and ACME-2, roots promoted at 09:00 and
+// 09:05, work 15 minutes in each phase to accepting and 5 in accepting and in retro, so they reach
+// merging at 10:25 and 10:30. A daemon process stops and the next starts at 10:45, and conflicts
+// move ACME-1 back at 10:50 and ACME-2 at 10:55; each loop is 15 minutes in each phase, back to
+// merging at 12:05 and 12:10, where each stands at the window's end. Both stretches inside the
+// window end in a conflict, so the fitted chance is 1, and both conflicts come within 15 minutes
+// after the boot, so conflicts in merging cluster after boots.
+func bootConflictsWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(2 * time.Hour)
+	b.boot(clock(7, 0))
+	for i, key := range []string{"ACME-1", "ACME-2"} {
+		at := func(hour, minute int) time.Time { return clock(hour, minute).Add(time.Duration(5*i) * time.Minute) }
+		rootThrough(b, key, fmt.Sprintf("a%d", i), at(9, 0), at(9, 15), builtMove{at(9, 30), phase.Implementing, workflow.TriggerPlannerCompleted},
+			builtMove{at(9, 45), phase.Testing, workflow.TriggerImplementationReady}, builtMove{at(10, 0), phase.Reviewing, workflow.TriggerTesterPassed},
+			builtMove{at(10, 15), phase.Accepting, workflow.TriggerReviewApproved}, builtMove{at(10, 20), phase.Retro, workflow.TriggerSignOff},
+			builtMove{at(10, 25), phase.Merging, workflow.TriggerRetroCompleted})
+	}
+	b.stopped(clock(10, 45))
+	b.boot(clock(10, 45))
+	for i, key := range []string{"ACME-1", "ACME-2"} {
+		at := func(hour, minute int) time.Time { return clock(hour, minute).Add(time.Duration(5*i) * time.Minute) }
+		b.through(key, phase.Merging, builtMove{at(10, 50), phase.Implementing, workflow.TriggerConflict},
+			builtMove{at(11, 5), phase.Testing, workflow.TriggerImplementationReady}, builtMove{at(11, 20), phase.Reviewing, workflow.TriggerTesterPassed},
+			builtMove{at(11, 35), phase.Accepting, workflow.TriggerReviewApproved}, builtMove{at(11, 50), phase.Retro, workflow.TriggerSignOff},
+			builtMove{at(12, 5), phase.Merging, workflow.TriggerRetroCompleted})
+	}
+	return b.build()
+}
+
+// A drawn conflict of a stretch that spans a recorded boot enters at the first boot inside the
+// stretch, in a phase whose recorded conflicts cluster after boots (assumption 3): the boot
+// re-reads each pull request, so its read sees the conflict. The chance of the stretch does not
+// change, only its moment. The test replays bootConflictsWindow under legion-v20.42.5 at the seeds
+// 1 to 3: both merging stretches span the boot at 10:45 and draw at their fitted chance of 1, and
+// both issues move back to implementing at 10:45. It fails where a conflict enters at its stretch's
+// end, for which ACME-1 moves back at 10:50 and ACME-2 at 10:55.
+func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
+	for seed := int64(1); seed <= 3; seed++ {
+		_, log, _ := replayLoopWindow(t, bootConflictsWindow(t), "legion-v20.42.5", seed)
+		for _, key := range []string{"ACME-1", "ACME-2"} {
+			back := linesAt(log, func(line replayLine) bool {
+				return line.Msg == phaseChangedLine && line.Issue == key && line.From == string(phase.Merging) && line.Trigger == workflow.TriggerConflict
+			})
+			if len(back) == 0 || !back[0].Equal(clock(10, 45)) {
+				t.Errorf("at seed %d %s moved back from merging by conflict at %s, want first at 10:45:00, the boot", seed, key, describeTimes(back))
+			}
 		}
 	}
 }

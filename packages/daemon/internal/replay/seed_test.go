@@ -465,6 +465,9 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 			b.boot(clock(8, 0))
 			rootThrough(b, "ACME-1", "a0", clock(8, 5), clock(8, 20))
 			b.file(clock(8, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
+			// The architect's claim launched before the inputs reach: a fresh launch of it in the
+			// run would show the tree's lifecycle open (seeder.lifecycles).
+			b.launchedBefore("ACME-2", claim.RoleArchitect)
 			b.turnStarts(clock(9, 0), "ACME-2", claim.RoleArchitect)
 			return b.build()
 		}},

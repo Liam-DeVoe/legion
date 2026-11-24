@@ -301,22 +301,38 @@ legion replay run \
 
 `run` replays the window through the daemon's own handler chain: the Dispatch mirror, the workflow engine and the admission pass.
 It enters each Dispatch event, each recorded phase move, each tick and each boot at its recorded time or offset.
+Where the window starts while a daemon process boots, no pass runs before that process's recorded reconcile, and each act before the reconcile waits for it, as an act waits for the next boot while no daemon runs.
+The replay reads that reconcile from the line that holds roots for the Dispatch consumer, or else from the process's first slot line before its line `legion daemon started`.
 Most Dispatch events that the daemon's own session wrote are its outbox's status writes, which the replay's own outbox makes again, so the replay leaves those events out.
 The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
+The replay decides whether a write of the daemon's session is such a move from the issue's event before it in the record, and not from the event that its copy of Dispatch applied last, because the replay can apply an event early or late.
+A move to todo from done or from another status out of the workflow waits while the replay's own record holds the issue in the workflow.
+It then enters when the replay's issue leaves the workflow, at its recorded offset from the record's leave of the issue before it, so a run that the record starts again after its done starts again after the replay's done.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
 An architect's `release_children` of a root that has left the workflow first adopts the root into the architect's tree, at the generation that the line `workflow: a queued root joined a live tree` names, and parks it at done there, because its status is not todo.
 The release's todo then runs the root again at the next generation, so the replay makes the root's recorded moves at that generation, as the record's daemon made them.
 An event that a worker's session wrote inside a work segment of that worker's role on that worker's issue enters at its offset in that segment, so it moves with that work.
+So does the filing of a child under that issue, because a child's filing moves with the start that the child is filed after.
+An event that the worker wrote on another issue is part of no segment: an edit of that issue, a link that the worker adds to it or takes off, or a child that the worker moves out.
+Such an event keeps its recorded time, because the replay moves a worker's work and not the issues that the work changed.
+A write of the daemon's session that follows the filing of a child, such as the architect's release or park of that child, enters after the filing, at its recorded offset from it, and never before its recorded time.
+So the architect's writes on a child and the writes that its calls make under the daemon's session keep the order that the record shows.
 The record names that session by an id under the title `Legion <role> · <KEY>`, which names the role and the issue of the claim that the session runs.
 Where a window's events name a worker's session by its claim token instead, the replay reads the claim from that token.
 A worker's event outside every work segment of its role is part of no segment, so it enters as an event that no worker wrote enters: at its recorded time, or at its offset from the replay's start of the wait that it ended.
 A root's architect writes such events between the phases of its root, for example when it files a child while its root is in implementing.
 Where the replay does not run the segment of an event, because it passes over that segment or ends its work before the event, the event enters in the same way, at once where its recorded time has passed.
+Where the worker's issue leaves the workflow before a segment of its current run opens, each event of that segment enters in the same way when the issue leaves, so a recorded child is filed under every rule.
+A segment of a later run of the issue waits for the replay to enter that run.
 Where `answer` is `offset`, a person's answer to a worker's question enters at its offset from the moment that the question entered the replay, wherever the question entered, so no answer comes before its question.
 Where a drawn conflict loop takes the place of the issue's own recorded loop, each event of the issue's own loop enters at its offset in the drawn loop's segment of the same role and phase, or at the end of that segment where the segment is shorter, and an event of a role and phase that the drawn loop does not hold enters as an event that no worker wrote.
 So the replay enters each recorded event once.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
+An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, at the same moment, a held phase released by the operator's retry where no hold stands.
+The release `legion-v20.42.5` launched the claim outside the start fence of the outbox and then restarted the phase, and the fence held the start of that restart, for example while the tree's design gate stood closed.
+The replay enters such a retry at its recorded offset from the replay's start of the visit that it retries: the stub launches the claim and opens the worker's next work segment in that phase, and the replay then restarts the phase, whose start the fence holds as recorded.
+Where the replay's issue stands in another phase at that moment, the replay counts the retry as refused.
 Each claim that the replay writes runs the session that the record shows that claim running at that moment.
 A claim runs a fresh session after a fresh start of its agent, so at each launch the claim takes the latest session whose first event comes at or before that moment, or else the first session after it.
 A claim that the record shows no session for runs a session of the replay's own.
@@ -325,14 +341,20 @@ The start state writes the claim of each turn under way at the window's start.
 It also writes the claim of the architect of each root that waits on a person at the start, between that architect's turns, where the record shows the architect's session.
 The daemon keeps that claim through the wait, and at each pass it keeps the root only while the session that holds the root's Dispatch claim has a claim in the root's tree.
 The start state's copy of Dispatch holds each issue's Dispatch claim as the newest event before the window's start that shows a claim shows it, as the record's daemon held it then.
+The start state opens the lifecycle of the tree of each root in the workflow whose current run took a slot, or had a member start, or opened its design gate, or launched its architect afresh.
+The last two show a run that the daemon ran where the log holds no slot line of it.
 The replay's copy of Dispatch also takes the claim of each `issue.claimed` and `issue.released` event, so a later boot or tick reads the claim that Dispatch showed.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.
+A daemon's boot reads each pull request again, so the run also reads, for each phase, whether the window's conflicts in that phase came within 15 minutes after a boot more often than the time in that phase lies there.
+In such a phase, a stretch that spans a boot draws at the boot's read, at the chance that it would draw at its end, and a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
+A stretch that draws no conflict at a boot goes on and does not draw again at its end.
 Under a rule whose conflicting head moves back, an issue whose stretch draws a conflict runs a recorded conflict loop, drawn with `--seed` among the loops of the window whose conflict left the same phase.
 Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
 Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
 Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
+Where the record ended the stretch otherwise than in a conflict, the issue runs the work that ended it again after the loop, and an accepting segment of that work opens on the move into accepting, also where the segment was under way at the window's start.
 The replay draws only among the loops whose work, as the drawn conflict takes it, the record shows ending.
 A loop whose issue the record shows still in it at `--to`, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last work segment to the window's end and never run its own work after the loop.
 A loop that left a later phase counts where the record shows it reaching the phase that the drawn conflict left.
@@ -1143,6 +1165,11 @@ A phase takes a term only when its stretches in the window hold a conflict and a
 The stretches of every other phase draw at the base, as the stretches that end in merging do.
 A branch sets the merges term to zero and keeps the base and the phase terms.
 A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows.
+A daemon's boot reads each pull request again, so a conflict that the boot's read sees comes soon after the boot.
+For each phase, the tool reads the share of the window's conflicts out of that phase that came within 15 minutes after a boot, and the share of the time in that phase that lies in those 15 minutes.
+In each phase where the first share is the larger, the conflicts cluster after boots, and a drawn conflict of a stretch that spans a boot enters at the first boot inside the stretch, at the boot's read.
+The stretch draws at the chance that it would draw at its end, so a boot moves the moment of a conflict and not its chance.
+In every other phase, a drawn conflict enters at the end of its stretch.
 It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
@@ -1151,9 +1178,12 @@ The phase lines give each move back with its trigger, and the trace names its ca
 `compare` prints the same terms for each window that measures conflicts.
 In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 In one deployment's window, a rate with no phase term gave the stretches that end in merging about twice the share of conflicts that the record shows for them, so the rate takes a term for each phase.
+`run` prints each phase whose conflicts cluster after boots, with its conflicts within 15 minutes after a boot and the share of its time there.
+In one deployment's window, 50 of the 72 conflicts past the review came within 15 minutes after a boot, where those 15 minutes held about 4% of the time past the review, and every phase in which a head can conflict clustered so.
 
 **If it is wrong.**
 If a longer wait brings more conflicts than the fitted rate gives, the replay moves the measures so for a rule under which branches wait longer.
+If conflicts cluster after boots more or less than the window shows, the replay misstates how many returned issues wait for a slot at once.
 
 - Issues finished: Up, because the replay draws fewer conflicts for that rule than it would meet.
 
@@ -1172,6 +1202,7 @@ At the same phase and the same number of merges, a higher rate of conflict after
 For each phase, the share of the stretches that end there in a conflict in a window that the rate was not fitted on tests the phase terms.
 A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
 `validate` and `compare` give the branch `main+merges=zero` beside `main`, which shows how far the merges term moves each measure.
+For each phase, the share of the conflicts that come within 15 minutes after a boot against the share of the time there, in a window that the model was not fitted on, tests the boot timing.
 
 ### Assumption 4: A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start
 
@@ -1590,10 +1621,13 @@ The number of reopens for each issue finished, in two windows recorded under two
 Doubtful, because a planner files children after its parent starts.
 Children filed at their recorded times favour a rule that starts parents later.
 The tool moves the filing of a child with its parent's start.
+It never loses a recorded child: where the replay passes over, drops or never opens the work that a child is filed in before the parent leaves the workflow, the filing enters at its recorded time, or then where that time has passed.
+A worker's other events on another issue keep their recorded times: an edit of that issue, a link that the worker adds to it or takes off, and a child that the worker moves out.
 
 **Evidence in a recorded window.** _Children filed after their parent started._
 Dispatch's events give each child's filing, and the phase lines give its parent's start.
 The fixture window `child-filed-after-parent-start` replays one under `main` and `keep-past-review`.
+The tests of the built windows replay a filing in work that runs late, a filing in work that never opens before its issue leaves, and a link that an architect adds to another issue in work that the replay opens early.
 
 **If it is wrong.**
 If an issue would have other links or children under another rule, or a child's filing does not follow its parent's start, the replay moves the measures so.

@@ -173,6 +173,33 @@ type IssueTrace struct {
 	// claim of this one (DispatchEvent.ActorClaim). A claim runs a fresh session where its agent
 	// was started anew, so one role may have several.
 	Sessions []RecordedSession
+	// Launches is each launch of a claim of the issue (`supervise: launched`), in order, and
+	// FreshRetries each of the operator's retries of a phase's worker with a fresh session where no
+	// hold stood (traceBuilder.freshRetried).
+	Launches     []Launch
+	FreshRetries []FreshRetry
+}
+
+// Launch is one launch of a claim of an issue: its moment, the claim's role, whether it resumed the
+// claim's session, and whether it ended a hold of that role's claim the record shows no release of
+// (traceBuilder.holdWentOn).
+type Launch struct {
+	At        time.Time
+	Role      claim.Role
+	Resumed   bool
+	EndedHold bool
+}
+
+// FreshRetry is the operator's retry of the worker of an issue's phase with a fresh session where
+// no hold stood (`legion claims retry --fresh-session` of a suspended claim): its moment, the phase
+// it retries, on today's phases, and the role of that phase's worker. At 958173da it launched the
+// worker's claim outside the outbox's start fence and then restarted the phase, whose own start
+// the fence held (api's freshSession), which a replay enters at its offset from the start of the
+// visit it retries (driver.freshRetry).
+type FreshRetry struct {
+	At    time.Time
+	Phase phase.Phase
+	Role  claim.Role
 }
 
 // RecordedSession is one session the record shows running a claim: the session's id, which
@@ -1144,7 +1171,10 @@ func (b *traceBuilder) onLine(line LogLine) {
 			// The operator's retry of a phase's worker writes this line whether or not the issue
 			// stands held (workflow/engine.go at e6edc575: (*Engine).restartPhase hands the phase
 			// its worker works to (*Engine).retryPhase, which writes the line with no regard to a
-			// hold), so with no hold held it is that retry, and releases nothing.
+			// hold), so with no hold held it is that retry, and releases nothing; with a fresh launch
+			// of the phase's worker at the same moment, it is the retry with a fresh session
+			// (freshRetried).
+			b.freshRetried(iss, at, l.Phase)
 		default:
 			b.unplaced(UnplacedHold, l.Issue, at, "%s at %s releases a hold the trace does not hold", l.Msg, stamp(at))
 		}
@@ -1226,7 +1256,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		}
 	case Launched:
 		if iss, ok := b.t.Issues[l.Claim.Issue]; ok && l.Claim.Issue != "" {
-			b.holdWentOn(iss, at, l.Claim.Role)
+			ended := b.holdWentOn(iss, at, l.Claim.Role)
+			iss.Launches = append(iss.Launches, Launch{At: at, Role: l.Claim.Role, Resumed: l.Resumed, EndedHold: ended})
 		}
 	case ProcessStart, BootStage:
 	}
@@ -1515,13 +1546,30 @@ func (b *traceBuilder) holdBegins(iss *IssueTrace, at time.Time, from phase.Phas
 // phase again from the relaunch or the move on; the hold ends there, and a replay releases it at
 // that moment as it releases a recorded one (driver.queueHoldEnd), so its next piece opens on the
 // retry and the recorded move is applied. A hold no relaunch, move, release or leave ends stands at
-// the window's end, as the record leaves it.
-func (b *traceBuilder) holdWentOn(iss *IssueTrace, at time.Time, role claim.Role) {
+// the window's end, as the record leaves it. It answers whether it ended a hold.
+func (b *traceBuilder) holdWentOn(iss *IssueTrace, at time.Time, role claim.Role) bool {
 	wait := iss.openWait(WaitHeld)
 	if wait == nil || role != "" && wait.Role != role {
-		return
+		return false
 	}
 	wait.End, wait.EndedBy = at, WaitWentOn
+	return true
+}
+
+// freshRetried reads the operator's retry of the worker of iss's phase in at at (the release line
+// of operatorRetryReason with no hold standing) as the retry with a fresh session where a launch
+// of that worker's claim afresh came at the same moment and ended no hold (Launch): `legion claims
+// retry --fresh-session` of a suspended claim, which at 958173da launched the claim (api's
+// freshSession, supervise.RequestResume) and then restarted the phase (intake.RestartPhase), whose
+// release line comes at the launch's moment (IssueTrace.FreshRetries).
+func (b *traceBuilder) freshRetried(iss *IssueTrace, at time.Time, in phase.Phase) {
+	role := phaseRole(foldPhase(in))
+	if role == "" || !slices.ContainsFunc(iss.Launches, func(launch Launch) bool {
+		return launch.At.Equal(at) && launch.Role == role && !launch.Resumed && !launch.EndedHold
+	}) {
+		return
+	}
+	iss.FreshRetries = append(iss.FreshRetries, FreshRetry{At: at, Phase: foldPhase(in), Role: role})
 }
 
 // left reads an issue's leaving the workflow: the visit it stands in ends, and so do its hold and

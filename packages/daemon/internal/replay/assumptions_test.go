@@ -26,7 +26,9 @@ func listsAssumption(number int) bool {
 // specAssumptions is the list a replay's assumptions start from: the eighteen of the tool's spec
 // (its Design, "The assumptions"), each with what it assumes and the direction it moves a result if
 // it is wrong, and the seven its plan adds, 19 to 25. Assumption 3 is as the plan's D7 restates it,
-// with a term for each phase a stretch can end in.
+// with a term for each phase a stretch can end in, and as plan t22 gives it its moment, a drawn
+// conflict entering at the first boot inside its stretch where the window's conflicts in its phase
+// cluster after boots.
 var specAssumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -35,8 +37,8 @@ var specAssumptions = []Assumption{
 		Text:      "A stretch past the review keeps its recorded length and its outcome.",
 		Direction: "Doubtful: if architects and mergers are slower with more issues past review, a rule that keeps slots past review is favoured. The tool keeps it, and the comparison says so."},
 	{Number: 3,
-		Text:      "Send-backs keep their count and cause, but a conflict, which a stretch draws at the rate fitted on the window for the phase it ends in and the merges into its base.",
-		Direction: "Doubtful for conflicts: the first replay saw more conflicts after a longer slot wait, so if a longer wait brings more conflicts than the fitted rate gives, a rule under which branches wait longer is favoured. The tool fits the rate on the window with a base, a term for each phase a stretch can end in and a merges term, draws conflicts from it, with a branch that sets the merges term to zero and keeps the phase terms, and keeps the other loops; a rule moves conflicts through the merges term alone, since each stretch ends in the phase the record shows."},
+		Text:      "Send-backs keep their count and cause, but a conflict, which a stretch draws at the rate fitted on the window for the phase it ends in and the merges into its base, and which enters at the first boot inside the stretch where the window's conflicts in that phase cluster after boots.",
+		Direction: "Doubtful for conflicts: the first replay saw more conflicts after a longer slot wait, so if a longer wait brings more conflicts than the fitted rate gives, a rule under which branches wait longer is favoured. The tool fits the rate on the window with a base, a term for each phase a stretch can end in and a merges term, draws conflicts from it, with a branch that sets the merges term to zero and keeps the phase terms, and keeps the other loops; a rule moves conflicts through the merges term alone, since each stretch ends in the phase the record shows. A daemon's boot reads each pull request again, so in a phase whose recorded conflicts come within 15 minutes after a boot more often than its time lies there, a drawn conflict of a stretch that spans a boot enters at the first boot inside it, at the chance of the stretch; if conflicts come at boots more or less often than the window shows, the replay misstates how many returned issues wait for a slot at once."},
 	{Number: 4,
 		Text:      "A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start.",
 		Direction: "Doubtful, and the direction is unknown. The tool runs both as branches."},
@@ -78,7 +80,7 @@ var specAssumptions = []Assumption{
 		Direction: "Wrong in the first replay, which dropped it: dropping the later work understates the issues finished and the slots held under every rule. The tool keeps it."},
 	{Number: 17,
 		Text:      "The links and children of an issue are the same under every rule.",
-		Direction: "Doubtful, because a planner files children after its parent starts: children filed at their recorded times favour a rule that starts parents later. The tool moves a child's filing with its parent's start."},
+		Direction: "Doubtful, because a planner files children after its parent starts: children filed at their recorded times favour a rule that starts parents later. The tool moves a child's filing with its parent's start, and never loses one: where the replay passes over, drops or never opens the work a child is filed in before the parent leaves the workflow, the filing enters at its recorded time, or then where that time has passed. A worker's other events on another issue, an edit, a link it sets or takes off, a child it moves out, keep their recorded times."},
 	{Number: 18,
 		Text:      "A conflict under the release that a project runs next behaves as recorded.",
 		Direction: "Wrong for a project that moves to a release with cybermonklabs/legion#4464, where a conflicting head keeps its phase, and its recorded conflict loops overstate the conflicts of that release. The tool takes the conflict behaviour of the release as part of the rule."},

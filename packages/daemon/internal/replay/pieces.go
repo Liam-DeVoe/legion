@@ -121,6 +121,25 @@ func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 	}})
 }
 
+// openPieceFrom opens p as from, a moment at or before the clock's instant, had opened it: each of
+// its acts is queued at its offset from from, those already past coming at once in their order,
+// and its end at from plus its length, sized at the end of the instant as openPiece sizes a piece.
+// The operator's retry with a fresh session opens a piece so (driver.freshRetry), from the replay's
+// start of the visit it retries at the piece's recorded offset in that visit.
+func (d *driver) openPieceFrom(p *piece, from time.Time) {
+	p.state, p.at, p.turns = pieceRunning, from, map[claim.Role]bool{}
+	for _, a := range p.acts {
+		if a.offset <= 0 {
+			d.queueAct(p, a, from)
+		}
+	}
+	now := d.clock.Instant()
+	d.push(&item{at: now, class: classSize, rec: now, piece: p, run: func() error {
+		d.sizePiece(p, from, len(d.inFlight), false)
+		return nil
+	}})
+}
+
 // sizePiece sets p's length for n issues in flight at its start and queues its acts after its
 // start, at their offsets from at, and its end at at plus its length. An act the record shows at
 // the segment's end, the last turn's end among them, comes at the replay's end of it, and an act
@@ -267,13 +286,55 @@ func (d *driver) resumePiece(p *piece) error {
 }
 
 // cancelWork cancels every piece of key's work under way (cancelPiece): its issue left the
-// workflow, or its claims were closed, so nothing of that work goes on.
-func (d *driver) cancelWork(key string) {
+// workflow, so nothing of that work goes on. The recorded events of the pieces of the generation it
+// stands in that the replay has not opened enter then too, by their anchors (placeUnrun), as the
+// events of work the replay passed over or cancelled enter: an issue the replay ran ahead of the
+// record, or behind it, can leave before the piece that files a child, writes a document or sets a
+// link opens, and that event must still enter (assumption 17). A piece of a later generation, work
+// the record ran after the issue entered the workflow again, is left to run where the replay enters
+// it again (assumption 16); a piece left unopened stays so, its events entered once.
+func (d *driver) cancelWork(key string) error {
+	boundary, err := d.nextGenerationAt(key)
+	if err != nil {
+		return err
+	}
 	for _, p := range d.script.pieces[key] {
-		if p.state == pieceRunning || p.state == piecePaused {
+		switch p.state {
+		case pieceRunning, piecePaused:
 			d.cancelPiece(p)
+		case pieceWaiting:
+			if boundary.IsZero() || p.start.Before(boundary) {
+				d.placeUnrun(p)
+			}
 		}
 	}
+	return nil
+}
+
+// nextGenerationAt is the record's moment key entered the workflow at a generation after the one
+// its replay record stands at, the first piece of whose work is no work of the generation it
+// stands in; zero where the record shows no later entry.
+func (d *driver) nextGenerationAt(key string) (time.Time, error) {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return time.Time{}, nil
+	}
+	var generation uint64
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := d.records.Issue(ctx, tx, key)
+		if issue != nil {
+			generation = issue.Generation
+		}
+		return err
+	}); err != nil {
+		return time.Time{}, err
+	}
+	for _, entry := range iss.Entries {
+		if entry.Generation > generation {
+			return entry.At, nil
+		}
+	}
+	return time.Time{}, nil
 }
 
 // endPiece ends p at the replay's end of its segment: the turns under way in it end, the task its
@@ -705,6 +766,108 @@ func (d *driver) queueHoldEnd(key string, role claim.Role, hold *Wait, began tim
 		_, err := d.apply("api", d.factID("retry", key), intake.RetryOrEscalate{Issue: key, Decision: intake.RetryDecision, Reason: reason})
 		return err
 	}})
+}
+
+// queueFreshRetries queues each of the operator's retries with a fresh session the record shows in
+// the visit of key's next piece of work in to (IssueTrace.FreshRetries), key having just moved into
+// to: each at its recorded offset from the start of that visit, from this moment, the replay's
+// start of it (freshRetry). A piece of drawn work stands in another issue's visit, whose retries
+// are that issue's.
+func (d *driver) queueFreshRetries(key string, to phase.Phase) {
+	iss, ok := d.trace.Issues[key]
+	if !ok || len(iss.FreshRetries) == 0 {
+		return
+	}
+	i := slices.IndexFunc(d.script.pieces[key], func(q *piece) bool { return q.state == pieceWaiting && q.phase == to })
+	if i < 0 {
+		return
+	}
+	q, from := d.script.pieces[key][i], d.clock.Instant()
+	if q.drawn || q.visit == nil {
+		return
+	}
+	for _, retry := range iss.FreshRetries {
+		if retry.Role != q.role || retry.Phase != q.phase || retry.At.Before(q.visit.Enter) ||
+			!q.visit.Exit.IsZero() && !retry.At.Before(q.visit.Exit) {
+			continue
+		}
+		d.push(&item{at: from.Add(retry.At.Sub(q.visit.Enter)), class: classAct, rec: retry.At, order: lineOrder,
+			run: func() error { return d.freshRetry(key, q, from) }})
+	}
+}
+
+// freshRetry enters the operator's retry of the worker of q, key's next piece of work in the
+// visit the retry falls in, with a fresh session, the replay having begun that visit at from, as
+// 958173da ran it (api's freshSession): the worker's claim is launched afresh outside the outbox's
+// start fence (freshLaunch, the resume of the suspended claim), the piece opens as from places it
+// at its recorded offset in the visit (openPieceFrom), and then the phase is restarted
+// (intake.RestartPhase), whose own start the fence holds as the record shows it held. A retry that
+// finds the replay's issue standing in another phase is refused and counted; one that finds the
+// piece opened already, its start having passed the fence in the replay, adds nothing.
+func (d *driver) freshRetry(key string, q *piece, from time.Time) error {
+	if q.state != pieceWaiting {
+		return nil
+	}
+	issue, err := d.recorded(key)
+	if err != nil {
+		return err
+	}
+	refuse := func(standing phase.Phase, reason string) {
+		d.counters.Refused = append(d.counters.Refused, RefusedMove{Issue: key, At: d.clock.Instant(), From: standing, To: q.phase, Reason: reason})
+	}
+	if issue == nil || !record.InWorkflow(*issue) || record.StandsAt(*issue) != q.phase {
+		standing := phase.Phase("")
+		if issue != nil {
+			standing = record.StandsAt(*issue)
+		}
+		refuse(standing, fmt.Sprintf("the operator's retry of the %s of %s with a fresh session finds it in %s, not %s", q.role, key, standing, q.phase))
+		return nil
+	}
+	if err := d.freshLaunch(key, q.role); err != nil {
+		return err
+	}
+	d.openPieceFrom(q, from.Add(q.start.Sub(q.visit.Enter)))
+	result, err := d.apply("api", d.factID("fresh-session", key), intake.RestartPhase{Issue: key, Role: q.role})
+	if err != nil {
+		return err
+	}
+	if result.Refusal != nil {
+		refuse(q.phase, result.Refusal.Message)
+	}
+	return nil
+}
+
+// freshLaunch launches key's role's claim afresh, as supervise's resume of a suspended claim does
+// for the operator's fresh session: admitted and launched where the stub holds none (ensureClaim),
+// and otherwise launched again, its turn under way ended first. The claim takes the entry its
+// role's phases row names (record.PhaseRow.Entry), so a start of that entry the fence held, which
+// passes it later, opens no more work (startWork), the work having opened here.
+func (d *driver) freshLaunch(key string, role claim.Role) error {
+	token, err := claim.NewToken(d.token, key, role)
+	if err != nil {
+		return err
+	}
+	c, had := d.claims[token]
+	if had {
+		if d.turnOpen(c) {
+			if err := d.writeTurnEnd(key, role); err != nil {
+				return err
+			}
+			c = d.claims[token]
+		}
+		d.launch(&c, false)
+	} else {
+		var held bool
+		if c, held, err = d.ensureClaim(key, role); err != nil || !held {
+			return err
+		}
+	}
+	entry, err := d.phaseEntry(key, role)
+	if err != nil {
+		return err
+	}
+	c.GivenEntry = max(c.GivenEntry, entry)
+	return d.putClaim(c)
 }
 
 // claimFailed enters a recorded claim failure: the claim the stub holds is failed, its turn
