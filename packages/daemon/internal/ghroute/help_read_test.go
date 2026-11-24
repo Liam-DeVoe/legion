@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
@@ -23,7 +22,7 @@ import (
 // The row reads that in three reads, so that no verdict of it is a race with the clock. In the
 // first, gh never answers, and the read's deadline passes once gh has recorded its pid: ReadHelp
 // gives up naming the timeout and the stop of gh's process group, which it says only where
-// procgroup's stop ended the read. The deadline is passed by hand (passedDeadline), since a
+// procgroup's stop ended the read. The deadline is passed by hand (testwait.PassedDeadline), since a
 // timeout of a second could pass before a loaded machine started gh, which is the second read's
 // case: under a timeout that has already passed, gh never starts and the read says so. In the
 // third, gh starts a helper of its own, detached from gh's output so nothing holds the read's
@@ -63,13 +62,13 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 			t.Fatal(err)
 		}
 		ghroutetest.KillRecordedHelper(t, ghPid, ghSeconds)
-		deadline := newPassedDeadline()
+		deadline := testwait.NewPassedDeadline()
 		answered, _ := read(t, deadline, gh)
 		testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "gh to start", func() bool {
 			_, running := ghroutetest.RecordedHelper(ghPid, ghSeconds)
 			return running
 		})
-		deadline.pass()
+		deadline.Pass()
 		err := testwait.Receive(t, "the help read of a gh that never answers to end once its deadline passed", answered)
 		if err == nil || !helpTimedOutStopped.MatchString(err.Error()) {
 			t.Fatalf("ReadHelp of a gh that never answers, its deadline passed = %v; want it to match %q", err, helpTimedOutStopped)
@@ -126,29 +125,3 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 // helpTimedOutStopped is how ReadHelp says a read whose deadline passed while gh ran: the timeout,
 // whatever bound the read took (programbound), and the stop of gh's process group.
 var helpTimedOutStopped = regexp.MustCompile(`^gh did not answer its help within \S+, and its process group was stopped$`)
-
-// passedDeadline is a context whose deadline a test passes by hand, once what it waits for has
-// happened: Done closes, and Err answers context.DeadlineExceeded, from pass on. A context derived
-// from it ends then with that error, as one whose deadline passed does.
-type passedDeadline struct {
-	context.Context
-	done chan struct{}
-	once sync.Once
-}
-
-func newPassedDeadline() *passedDeadline {
-	return &passedDeadline{Context: context.Background(), done: make(chan struct{})}
-}
-
-func (d *passedDeadline) pass() { d.once.Do(func() { close(d.done) }) }
-
-func (d *passedDeadline) Done() <-chan struct{} { return d.done }
-
-func (d *passedDeadline) Err() error {
-	select {
-	case <-d.done:
-		return context.DeadlineExceeded
-	default:
-		return nil
-	}
-}
