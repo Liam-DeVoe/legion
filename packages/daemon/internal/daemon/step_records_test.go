@@ -652,7 +652,8 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 
 // seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
 // daemon's store in reviewing at generation 1, on an open pull request of its own at
-// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+// stepRecordsHead that GitHub reports clean, where Dispatch holds no check of it (noChecksAt), and
+// answers its key and its pull request's number.
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
@@ -673,6 +674,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
+	noChecksAt(t, r.st.Pool(), created.Key, liveRepo, stepRecordsHead)
 	return created.Key, number
 }
 
