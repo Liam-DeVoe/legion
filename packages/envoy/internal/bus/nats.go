@@ -2315,8 +2315,10 @@ func (c *Client) Publish(item contracts.Envelope) error {
 // a core publish and its flush or a JetStream publish, takes nats.go's connection lock before it
 // waits on ctx, so a send made while a reconnect's handshake holds that lock waits for that
 // attempt, up to the client's connect timeout (connectTimeout, 5 s), past ctx; readWithin lists
-// such calls. The listener's HTTP handlers publish this way, so a bus they cannot reach is
-// answered inside the deadline their own caller gave them, but for that wait.
+// such calls. The listener's wake report publishes this way (publishWithinBudget in cmd/listener),
+// so an attempt that cannot reach the bus ends inside the bound the report gave it, but for that
+// wait. The listener's HTTP handlers bound their publishes by ctx as well, through
+// PublishEachWithin (the webhook routes) and PublishAckWithin (the send and publish routes).
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicateWithin(ctx, item)
 	return err
@@ -2651,10 +2653,10 @@ func cursorMoved(err error) error {
 //
 // ctx is the publish's bound, so it is both what the wait for a reconnect ends with and the window
 // publishConfirmed flushes and confirms within. A caller answering inside a deadline of its own
-// (the listener's routes: a publish through PublishWithin) is held past it only by the publish's
-// and the flush's waits for nats.go's connection lock, which they take before they wait on ctx: a
-// publish made while a reconnect's handshake holds that lock waits for the attempt (readWithin
-// lists such calls).
+// (the listener's routes: a publish through PublishAckWithin or PublishEachWithin) is held past it
+// only by the publish's and the flush's waits for nats.go's connection lock, which they take
+// before they wait on ctx: a publish made while a reconnect's handshake holds that lock waits for
+// the attempt (readWithin lists such calls).
 // The bound taken below is the earlier of ctx's own deadline and publishBound, since WithTimeout
 // keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
 // that passed none.

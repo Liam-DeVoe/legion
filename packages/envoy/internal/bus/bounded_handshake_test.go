@@ -104,6 +104,7 @@ func releaseUntilConnected(t *testing.T, hold *testnats.HandshakeHold, conn *nat
 // within the handshake attempt held when the calls began. The negative control makes Bounded's
 // reads on the caller's goroutine: then no call answers within the bound and the margin.
 func TestABoundedCallAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	runs := func(t *testing.T, when string) {
@@ -179,6 +180,7 @@ func TestABoundedCallAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
 // handshake attempt held when the calls began. The negative control makes the reads on the
 // caller's goroutine: then no call answers within the bound and the margin.
 func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	consumers := sessionConsumersOn(client, 0, nil)
@@ -254,6 +256,7 @@ func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *te
 // answers once the hold is released. The negative control holds the client's lock across the
 // status read of each of the three reads: then no send answers within the bound and the margin.
 func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	if !client.Connected() || !client.subscriptionsHealthy() {
@@ -345,6 +348,7 @@ func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) 
 // read at once on the caller's goroutine, whatever the request's context: then no call answers
 // within the bound and the margin.
 func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	const key = "never-written"
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -415,6 +419,7 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 // requests, so every unsubscribe left running has landed. The negative control unsubscribes on the
 // caller's goroutine: then no request answers within 1 s of its end.
 func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	const forwardWindow = 4 * time.Second
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -563,6 +568,7 @@ func (d *doneWatch) Done() <-chan struct{} {
 // answered after ctx ended rather than leaving the publish unsent at the floor. The negative
 // control has publishConfirmed read ctx only before the read: then it publishes.
 func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
+	// Serial (busTestParallelism): it changes readFloor, which every readWithin in the process reads.
 	const raisedFloor = 3 * time.Second
 	floor := readFloor.Swap(int64(raisedFloor))
 	t.Cleanup(func() { readFloor.Store(floor) })
@@ -643,6 +649,7 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 // control calls observe on the caller's goroutine (with the seam kept): then the request answers
 // only when the attempt ends.
 func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	silent := testnats.Connect(t, testnats.URL(t))
@@ -736,6 +743,7 @@ func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *
 // request answers. The negative control takes every answer the wait reads for a reply over a live
 // link: then the request answers only when the attempt ends.
 func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	subject := contracts.LegacyAgentSubject(fmt.Sprintf("ses_held_handshake_window_answer_%d", time.Now().UnixNano()))
@@ -808,6 +816,7 @@ func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *
 // with stored.go's waits so changed, the probe and the consumer request answer only when the
 // attempt ends; with nats.go's, the forward does.
 func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	responder := testnats.Connect(t, testnats.URL(t))
@@ -945,6 +954,7 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 // returns for that answer with no replied: then Wait answers while the write holds the lock, and
 // its inbox is still subscribed.
 func TestAForwardAnsweredADuplicateWithNoSequenceEndsItsInboxOnItsGoroutine(t *testing.T) {
+	t.Parallel()
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	responder := testnats.Connect(t, testnats.URL(t))

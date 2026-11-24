@@ -128,6 +128,7 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 // Publish names that refusal ErrTooLarge, an ErrRefused, with the frame's size, headers included,
 // and the limit. The connection stays up and still sends a frame at the limit.
 func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
+	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	limit := int(consumers.client.Connection().MaxPayload())
 	header := nats.Header{}

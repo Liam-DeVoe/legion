@@ -27,6 +27,7 @@ import (
 // the context, and its own check of the server's version refuses as nats.go's does, which the
 // step names from the connection's state too.
 func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
+	t.Parallel()
 	const (
 		named   = "bus: NATS is reconnecting"
 		session = "ses_reconnecting_sends"
@@ -146,6 +147,7 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 // The control: while the connection is up, the same call under a live ctx starts and is answered,
 // so a call that started under an ended ctx would be seen.
 func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T) {
+	// Serial (busTestParallelism): its connected rows' reads have a wall-clock bound, ConnLockWait.
 	srv, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {

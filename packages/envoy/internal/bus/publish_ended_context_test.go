@@ -215,6 +215,7 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 // confirmed. The negative control is publishConfirmed that returns reconnectWaitEnded alone: its
 // answer is not ErrWindowEndedBeforePublish.
 func TestAPublishWhoseStateReadItsContextEndedIsAWindowEndedBeforeThePublish(t *testing.T) {
+	// Serial (busTestParallelism): each answer has a wall-clock bound, heldBound and heldMargin.
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	subject := fmt.Sprintf("held-handshake.ended-read.%d", time.Now().UnixNano())

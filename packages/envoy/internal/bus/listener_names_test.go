@@ -35,6 +35,7 @@ func TestListenerDurableAndQueueKeepTheListenersNames(t *testing.T) {
 // CheckListenerMachineID refuses an id holding '%', which could spell another id's escape and so
 // give that id's names, and an id whose durable, escapes included, is over NATS's 255 bytes.
 func TestCheckListenerMachineIDRefusesAnIDWhoseNamesAreNotItsOwn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct{ name, machineID, want string }{
 		{"a plain id", "gke", ""},
 		{"a fully qualified host name", "host.example.internal", ""},

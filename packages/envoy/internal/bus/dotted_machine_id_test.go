@@ -16,6 +16,7 @@ import (
 // creates the durable of host.example.internal, and its queue group is one subject token.
 // cmd/listener's test of this name runs a listener with that id.
 func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
+	t.Parallel()
 	t.Run("a plain machine id keeps its names", func(t *testing.T) {
 		for _, row := range []struct{ machineID, durable, queue string }{
 			{"gke", "listener-gke", "envoy-listener-gke"},

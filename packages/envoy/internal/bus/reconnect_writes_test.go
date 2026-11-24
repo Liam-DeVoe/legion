@@ -30,6 +30,7 @@ import (
 // A KV write whose caller holds a deadline waits for the connection within it (bus.Bounded); the
 // listener's TestAWriteThroughANATSReconnectWaitsOrFailsByName drives that through its routes.
 func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
+	// Serial (busTestParallelism): the KV write's failure has a wall-clock bound of 1 s.
 	const (
 		reconnecting    = "NATS is reconnecting"
 		key             = "written-while-reconnecting"
