@@ -106,8 +106,9 @@ func (c ReleaseCause) String() string {
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
 //
-// Teardown is what the release's teardown has met of the runtime so far (issue_releases.teardown,
-// NoteReleaseTeardown), as IssueRelease reads it.
+// Teardown is what the mark notes of the release's teardown (issue_releases.teardown,
+// ReleaseTeardown). Every decision that holds a mark carries all of the mark's half of it
+// (releaseMark.decision), so no reader gets the zero note, which is a real state, by accident.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
@@ -117,22 +118,36 @@ type ReleaseDecision struct {
 	Teardown       ReleaseTeardown
 }
 
-// ReleaseTeardown is what the teardown of a release has met of the runtime's release so far, as
-// its mark notes it (issue_releases.teardown). Only the release of a pod no role can use notes it:
-// that release records no pod release when its teardown took nothing, and the note is how a retry
-// tells a release that took nothing from one whose earlier attempt took the pod and then failed,
-// or whose daemon died, before its record. Either retry finds no Sandbox, and the outbox counts no
-// attempt a daemon died in.
+// ReleaseTeardown is whether the teardown of the release of a pod no role can use may have taken
+// the pod, as its mark notes it (issue_releases.teardown, NoteReleaseTeardown). It is the one
+// statement of that teardown's rule; the outbox's releaseIssue, its doc and the migration that
+// adds the column point here.
+//
+// The rule: that release records a pod release when the runtime took a Sandbox (its own answer,
+// runtime.IssueReleaser's true) or the mark says TeardownReached, and otherwise records none — the
+// Sandbox was deleted by another hand, or by an earlier teardown of this daemon's, and nothing of
+// this release took it. The idle release reads no note: it records its release whatever the
+// runtime answered, since its stops suspended the roles a wake pairs with its record.
+//
+// The protocol: the teardown writes TeardownReached from the runtime's callback, under the pod
+// lock, just before the runtime's first write to the issue's Sandbox, so an attempt that took the
+// pod and then failed, or whose daemon died, before its record leaves its retry the note, and the
+// retry, which finds no Sandbox, still records the release. An attempt that fails before that
+// first write, or finds no Sandbox at all, leaves the note unset, and its retry decides afresh.
+// The outbox's count of a row's attempts cannot stand in for the note: a run the daemon died in is
+// counted as no attempt (record.QueuedSupervise.Attempts), and a retry of a release that took
+// nothing and then failed is counted as one.
+//
+// The window it leaves: a note written just before a first write that then failed or never ran,
+// its daemon dead or its write refused, over a Sandbox another hand deleted before the retry —
+// that retry records a release no attempt made, as every teardown recorded before the note.
 type ReleaseTeardown string
 
 const (
-	// TeardownNotReached: no attempt of the teardown has asked the runtime yet.
+	// TeardownNotReached: no attempt of the teardown has come to the runtime's first write.
 	TeardownNotReached ReleaseTeardown = ""
-	// TeardownReached: an attempt was about to ask the runtime, and nothing since says what that
-	// ask found; the pod may have been taken.
+	// TeardownReached: an attempt came to the runtime's first write; the pod may have been taken.
 	TeardownReached ReleaseTeardown = "reached"
-	// TeardownTookNothing: the first attempt that asked the runtime found no Sandbox to release.
-	TeardownTookNothing ReleaseTeardown = "took_nothing"
 )
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -156,6 +171,12 @@ type releaseMark struct {
 // written in the mark's own transaction, so its id lies between the release's first row and its
 // last; a row outside that range belongs to a release this mark is not.
 func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
+
+// decision is the mark's half of a ReleaseDecision — the release's id, the roles its stops have
+// suspended, its rule and its teardown's note — which every row of the release reads alike.
+func (m releaseMark) decision() ReleaseDecision {
+	return ReleaseDecision{Release: m.id, Suspended: m.roles(), SuspendsNoRole: m.suspendsNoRole(), Teardown: m.teardown}
+}
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
@@ -271,7 +292,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
+		decision = mark.decision()
 		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
 		if err != nil {
 			return err
@@ -352,8 +373,8 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Act, decision.Release = ReleaseActs, mark.id
-		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
+		decision = mark.decision()
+		decision.Act = ReleaseActs
 		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 		if err != nil {
 			return err
@@ -409,8 +430,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
-		decision.Teardown = mark.teardown
+		decision = mark.decision()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string

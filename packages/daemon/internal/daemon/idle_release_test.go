@@ -102,19 +102,21 @@ func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	_, err := r.teardown(ctx, "SuspendIssue", authorize)
+	_, err := r.teardown(ctx, "SuspendIssue", authorize, nil)
 	return err
 }
 
-func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) (bool, error) {
-	return r.teardown(ctx, "ReleaseIssue", authorize)
+func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, "ReleaseIssue", authorize, writing)
 }
 
 // teardown is both teardowns, method naming which: it records the call, runs beforeAuthorize,
 // asks the store and counts the pod it took down, or the store's refusal. It answers whether it
 // took a Sandbox down: an authorized teardown of a runtime that still holds one (sandboxGone
-// false).
-func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) (bool, error) {
+// false), which calls writing first, as the Kubernetes runtime calls it before its first write.
+func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	r.mu.Lock()
 	r.teardowns = append(r.teardowns, method)
 	hook := r.beforeAuthorize
@@ -127,13 +129,19 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 		return false, err
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if act {
 		r.suspended++
 	} else {
 		r.refused++
 	}
-	return act && !r.sandboxGone, nil
+	takes := act && !r.sandboxGone
+	r.mu.Unlock()
+	if takes && writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
+	}
+	return takes, nil
 }
 
 // teardownsAsked is every issue-level teardown the daemon asked for, by method and in order.

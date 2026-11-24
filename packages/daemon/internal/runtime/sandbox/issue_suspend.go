@@ -29,7 +29,7 @@ var (
 // launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
 // Sandbox is another issue's and is never touched.
 func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	_, err := r.endIssuePod(ctx, issue, tree, authorize, false)
+	_, err := r.endIssuePod(ctx, issue, tree, authorize, nil, false)
 	return err
 }
 
@@ -54,10 +54,11 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // resets the volume on the mark (volumeReset). A close (SuspendIssue) writes no mark, because it
 // deletes the Sandbox and the volume with it.
 //
-// It answers as runtime.IssueReleaser says. A kept Sandbox an earlier release already released is
-// one releasedKept reads so, which it leaves as it is.
-func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (bool, error) {
-	return r.endIssuePod(ctx, issue, tree, authorize, true)
+// It answers, and calls writing, as runtime.IssueReleaser says. A kept Sandbox an earlier release
+// already released is one releasedKept reads so, which it leaves as it is.
+func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.endIssuePod(ctx, issue, tree, authorize, writing, true)
 }
 
 // endIssuePod is SuspendIssue, and ReleaseIssue where keep is true: the issue's pod ended under
@@ -73,9 +74,11 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
 // nothing (runtime.IssueReleaser), the released kept Sandbox read off the object the API answered
-// (releasedKept). A delete and a release's record on a kept Sandbox are kept for IssueSandbox
-// until the store shows them (noteTaken).
-func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) (bool, error) {
+// (releasedKept). writing, where it is not nil, runs once that Sandbox is found and is this
+// release's to act on, just before suspendOver, the first write. A delete and a release's record on
+// a kept Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
+func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error, keep bool) (bool, error) {
 	act := "suspend"
 	if keep {
 		act = "release"
@@ -118,6 +121,11 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	var pod *corev1.Pod
 	if keep {
 		pod = r.storedPod(name)
+	}
+	if writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
+		}
 	}
 	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
 		return false, fmt.Errorf("%s issue %s: %w", act, issue, err)

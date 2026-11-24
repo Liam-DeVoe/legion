@@ -213,8 +213,9 @@ func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string,
 	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
 }
 
-func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (bool, error) {
-	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize, writing)
 }
 
 // A release leaves the issue in the workflow, so its teardown row (record.IssueRelease) asks the

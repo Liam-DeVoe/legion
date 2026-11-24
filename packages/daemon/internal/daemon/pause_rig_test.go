@@ -161,23 +161,30 @@ func (r *pauseRuntime) BundleWorkspace(_ context.Context, issue string, _ claim.
 	return runtime.WorkspaceBundle{}, nil
 }
 
-func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) (bool, error) {
-	return r.teardown(ctx, issue, authorize)
+func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, issue, authorize, writing)
 }
 
 func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	_, err := r.teardown(ctx, issue, authorize)
+	_, err := r.teardown(ctx, issue, authorize, nil)
 	return err
 }
 
 // teardown is both teardowns: once the store authorizes it, the issue's pod is deleted and its
 // Sandbox is gone. It answers that it released a Sandbox whenever the store authorizes it: a
 // launch of this rig stands its pod up again without marking it (holdPod is the seed's), so an
-// authorized teardown always has a pod to take.
-func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) (bool, error) {
+// authorized teardown always has a pod to take, and calls writing before it takes it.
+func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	act, err := authorize(ctx)
 	if err != nil || !act {
 		return false, err
+	}
+	if writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
