@@ -152,6 +152,21 @@ const advancesOf = (): IssueAdvance[] => [
   inherited,
 ];
 
+/** What the next PATCH of DSP-1 answers in place of the issue, when a case sets it: Dispatch's
+ *  refusal of the write, with the code and the sentence the server writes. */
+let patchRefusal: { readonly code: string; readonly error: string } | undefined;
+
+/** The sentence the server refuses a write of DSP-1's advances with when the write carries no
+ *  revision and moves two relations, as `refuseAdvancesRevision`
+ *  (internal/dispatch/api/issue_advances.go) writes it, naming revision 8, the one another
+ *  session's write left after the command's read. */
+const SET_WITH_NO_REVISION_REFUSED =
+  "this write changes 2 of the issue's advances relations and carries no revision: a write with no revision asserts or retracts one relation at a time, and a whole-set write carries the revision the read it is answering returned, which is 8 here";
+
+/** What the command adds to that refusal: how the caller answers it, with the revision it names. */
+const READ_THEN_SEND_8 =
+  "read the issue with dispatch read --issue DSP-1, then send the whole set you mean with --advances-revision 8";
+
 /** DSP-1 as every read of it answers: the fields `dispatch read` insists on, and the two
  *  priority fields every issue read carries. */
 function issueBody() {
@@ -204,7 +219,11 @@ const server = Bun.serve({
         { status: 201 }
       );
     }
+    if (pathname === "/api/v1/issues/DSP-1/messages" && request.method === "POST") {
+      return Response.json({ id: "message-1", issue_key: "DSP-1" });
+    }
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "PATCH") {
+      if (patchRefusal !== undefined) return Response.json(patchRefusal, { status: 409 });
       if (body.advances !== undefined) ownAdvances = body.advances as string[];
       return Response.json(issueBody());
     }
@@ -227,6 +246,7 @@ beforeEach(() => {
   requests.length = 0;
   priorities = recorded;
   ownAdvances = ["ship-the-daemon"];
+  patchRefusal = undefined;
   stateDir = makeDirectory();
   resetAdviceMemory();
 });
@@ -300,7 +320,7 @@ describe("the priorities an issue advances", () => {
     });
   });
 
-  test("dispatch issue-update replaces the set, carrying the revision the read answered", async () => {
+  test("dispatch issue-update sends the set with no revision when the caller names none", async () => {
     const { code, stdout } = await run([
       "issue-update",
       "--issue",
@@ -312,21 +332,84 @@ describe("the priorities an issue advances", () => {
     ]);
 
     expect(code).toBe(0);
-    // A whole-set write carries the revision of the read it answers, else the server refuses a
-    // write that moves two relations (409 ADVANCES_REVISION). It names the relation and nothing
-    // else: a key the update did not touch would overwrite what another writer left.
+    // Only the caller's own read answers a whole set, so the call sends no revision of its own
+    // read: the server takes the write one relation at a time and refuses one that moves two
+    // (409 ADVANCES_REVISION). It names the relation and nothing else: a key the update did not
+    // touch would overwrite what another writer left.
     const patch = sent("PATCH", "/api/v1/issues/DSP-1").body as Record<string, unknown>;
-    expect(Object.keys(patch).sort()).toEqual(["actor", "advances", "advances_revision"]);
-    expect(patch).toMatchObject({
-      advances: ["ship-the-daemon", "cut-the-latency"],
-      advances_revision: 7,
-    });
+    expect(Object.keys(patch).sort()).toEqual(["actor", "advances"]);
+    expect(patch).toMatchObject({ advances: ["ship-the-daemon", "cut-the-latency"] });
     expect(stdout).toContain("DSP-1: advances ship-the-daemon, cut-the-latency");
+  });
+
+  // Another session moved the set after the command's read, to revision 8, so the server refuses
+  // a write with no revision that moves two relations, naming the revision it holds. The error
+  // keeps the server's sentence and says how to answer it.
+  test("a refused set says to read the issue and send the set with the revision named", async () => {
+    patchRefusal = { code: "ADVANCES_REVISION", error: SET_WITH_NO_REVISION_REFUSED };
+
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-1",
+      "--advance",
+      "ship-the-daemon",
+      "--advance",
+      "cut-the-latency",
+    ]);
+
+    expect(code, stdout).toBe(1);
+    expect(stdout).toContain(
+      `ADVANCES_REVISION: ${SET_WITH_NO_REVISION_REFUSED}; ${READ_THEN_SEND_8}`
+    );
+  });
+
+  // The reason of a close is posted before the PATCH, so a refused set leaves it on the issue:
+  // the error says how to answer the refusal and where the reason already is.
+  test("a refused set after the closing reason names the reason's message too", async () => {
+    patchRefusal = { code: "ADVANCES_REVISION", error: SET_WITH_NO_REVISION_REFUSED };
+
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-1",
+      "--status",
+      "done",
+      "--reason",
+      "Shipped.",
+      "--advance",
+      "ship-the-daemon",
+      "--advance",
+      "cut-the-latency",
+    ]);
+
+    expect(code, stdout).toBe(1);
+    expect(stdout).toContain(
+      `ADVANCES_REVISION: ${SET_WITH_NO_REVISION_REFUSED}; ${READ_THEN_SEND_8}; the reason already landed as message message-1 `
+    );
+  });
+
+  // Only that refusal tells the caller to send a revision: any other reads as Dispatch wrote it.
+  test("another refusal of the update reads as Dispatch wrote it", async () => {
+    patchRefusal = { code: "ISSUE_CLOSED", error: "issue is closed" };
+
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-1",
+      "--advance",
+      "ship-the-daemon",
+      "--advance",
+      "cut-the-latency",
+    ]);
+
+    expect(code, stdout).toBe(1);
+    expect(stdout).toBe("ISSUE_CLOSED: issue is closed\n");
   });
 
   // A set this read did not answer is refused 409 ADVANCES_REVISION naming the revision the
   // server holds. The agent answers that refusal with the revision it named, which the call
-  // sends in place of the revision of its own read.
+  // sends as it was named.
   test("dispatch issue-update sends the revision the caller named", async () => {
     expect(commandFlags("dispatch_issue_update")).toContain("--advances-revision");
     expect(commandFlags("dispatch_issue")).not.toContain("--advances-revision");
@@ -353,14 +436,14 @@ describe("the priorities an issue advances", () => {
     expect(stdout).toContain("DSP-1: advances ship-the-daemon, cut-the-latency");
   });
 
+  // One relation moved needs no revision, so a clear of the one relation DSP-1 states sends none.
   test("dispatch issue-update --clear-advances sends the empty list and says so", async () => {
     const { code, stdout } = await run(["issue-update", "--issue", "DSP-1", "--clear-advances"]);
 
     expect(code).toBe(0);
-    expect(sent("PATCH", "/api/v1/issues/DSP-1").body).toMatchObject({
-      advances: [],
-      advances_revision: 7,
-    });
+    const patch = sent("PATCH", "/api/v1/issues/DSP-1").body as Record<string, unknown>;
+    expect(Object.keys(patch).sort()).toEqual(["actor", "advances"]);
+    expect(patch).toMatchObject({ advances: [] });
     expect(stdout).toContain("DSP-1: advances cleared");
   });
 
