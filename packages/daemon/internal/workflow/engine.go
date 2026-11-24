@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -1074,9 +1075,13 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // before into the new one, whether or not the promotion raised the entry since. A row a start ran
 // stands on 1 or above, so a completion of entry 0 writes none. Otherwise it writes nothing: the
 // commit stays where it stood, and the next run reads more. A step of another type writes none,
-// and nor does a completion naming no commit. w is the walk of the issue's run, as handoff read it.
+// and nor does a completion naming no commit or one not spelled as a head is (reviewround.IsHead),
+// as a review footer's head of that spelling names no commit (intake.PullRequestReview.LegionHead):
+// the route asks a step's commit only to be non-empty, and the commit is named in tasks, another
+// agent's among them (record.AnotherAgentsReview). w is the walk of the issue's run, as handoff
+// read it.
 func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row record.PhaseRow, fact intake.HandoffComplete) error {
-	if fact.Commit == "" || row.EntryTask == "" || fact.Entry != row.Entry {
+	if !reviewround.IsHead(fact.Commit) || row.EntryTask == "" || fact.Entry != row.Entry {
 		return nil
 	}
 	step, ok := w.planStepAt(w.Place)

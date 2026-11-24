@@ -105,8 +105,10 @@ func Split(task string) (body, sentences string, named bool) {
 // IsHead says whether commit is spelled as GitHub spells every head it reports: exactly 40
 // lowercase hexadecimal characters. Nothing shorter is compared with a head, since a prefix names
 // a commit only by chance. It is the one test of that spelling: the head a review's Legion footer
-// names is read through it (intake.PullRequestReview.LegionHead), so a commit the record keeps
-// for the reviewer (record.PhaseRow.ReviewedHead), which Sentences names, is one Split reads back.
+// names is read through it (intake.PullRequestReview.LegionHead), and so is the commit a completion
+// of a deployment role's review step names (workflow's recordStepReview), so each commit either
+// writes as a review's (record.PhaseRow.ReviewedHead) is spelled as a head, and the one Sentences
+// names for the reviewer is one Split reads back.
 func IsHead(commit string) bool {
 	if len(commit) != 40 {
 		return false

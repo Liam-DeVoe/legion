@@ -59,20 +59,24 @@ func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.R
 // as the reviewer does (v-review-range for this role): the critic fails at X, its completion
 // carrying the entry its row stands on, the implementer pushes Y, and the critic's second task
 // names X; its first names none. The checker, of the type testing, in the same plan form, is told
-// no commit. The control, which stays in the suite: with the commit the critic's phases row holds
-// cleared between the rounds, the critic's second task names none, so the commit comes from that
-// row alone.
+// no commit. A completion whose commit is not spelled as a head is (reviewround.IsHead), a short
+// SHA here, writes no commit, as a review footer's head of that spelling names none
+// (intake.PullRequestReview.LegionHead): the critic's second task names none. The control, which
+// stays in the suite: with the commit the critic's phases row holds cleared between the rounds,
+// the critic's second task names none, so the commit comes from that row alone.
 func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		role    claim.Role
 		typ     string
+		read    string
 		cleared bool
 		names   bool
 	}{
-		{"the critic, of the type review", "critic", "review", false, true},
-		{"the checker, of the type testing", "checker", "testing", false, false},
-		{"the control: the critic with its step's commit cleared between the rounds", "critic", "review", true, false},
+		{"the critic, of the type review", "critic", "review", stepCommitX, false, true},
+		{"the checker, of the type testing", "checker", "testing", stepCommitX, false, false},
+		{"the critic, whose completion names a short SHA", "critic", "review", stepCommitX[:7], false, false},
+		{"the control: the critic with its step's commit cleared between the rounds", "critic", "review", stepCommitX, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -85,7 +89,7 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			reportsAtEntry(t, pool, engine, "impl-1", root.Key, root.Generation, claim.RoleImplementer, "", stepCommitW, 0)
 			first := roleRowOf(t, pool, engine, root.Key, tc.role)
-			reportsAtEntry(t, pool, engine, "fail-1", root.Key, root.Generation, tc.role, "fail", stepCommitX, first.Entry)
+			reportsAtEntry(t, pool, engine, "fail-1", root.Key, root.Generation, tc.role, "fail", tc.read, first.Entry)
 			if tc.cleared {
 				if _, err := pool.Exec(t.Context(), "update phases set reviewed_head = '' where issue = $1 and role = $2", root.Key, string(tc.role)); err != nil {
 					t.Fatalf("clear the step's commit: %v", err)
