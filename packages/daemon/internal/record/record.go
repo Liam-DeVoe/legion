@@ -674,13 +674,14 @@ type PhaseRow struct {
 	// hold it, and the rows of a deployment role's review step (workflow's recordStepReview). It is
 	// its agent's, not its step's: a review that moves it writes it onto every row of that agent's
 	// role on the task (workflow's shareReviewedHead), so each row of one agent holds the commit of
-	// its newest deciding review there, and a step's first run takes it from the agent's own earlier
-	// row, or none where the agent ran none, as does a run of a step whose row another agent's runs
-	// wrote, which a later version of the plan can give the step (workflow's stepRunRow,
-	// ReviewedBefore). A person's review does not move it, since the reviewer did not read that
-	// commit; neither does another review-App session's review or a review that decides
-	// nothing, and while the reviewer's claim records no session no review-App review decides the
-	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
+	// its newest deciding review there, and a step's first run takes it from another row of the
+	// agent's own of the role on the task, at any of its steps, or none where the agent has none, as
+	// does a run of a step whose row another agent's runs wrote, which a later version of the plan
+	// can give the step (workflow's stepRunRow, ReviewedBefore). A person's review does not move it,
+	// since the reviewer did not read that commit; neither does another review-App session's review
+	// or a review that decides nothing, and while the reviewer's claim records no session no
+	// review-App review decides the round or moves it (workflow's RefusedWhileNoSession). Unlike
+	// Decision it outlives its round:
 	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
 	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
 	// the reviewer reads the difference from it to the head. Only a review of the entry that stands

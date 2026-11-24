@@ -21,12 +21,13 @@ import (
 //
 // A row's commit is its own agent's newest on the task, at whichever of that agent's steps of the
 // role its deciding review was made: each such review writes it onto every row of that agent's role
-// on the task (shareReviewedHead), and a step's first run takes it from the agent's own earlier row
-// (stepRunRow). Where the row holds no commit, as for an agent with no deciding review of its own on
-// the task, the reviewer reads the whole change, and in reviewing each of its tasks, wakes and
-// resumes included, names before the two sentences the commit another agent's review on the task
-// read (record.AnotherAgentsReview, reviewround.AnotherAgentsSentence), where one read one, so it
-// can see what changed since. For any other role it is task as it is.
+// on the task (shareReviewedHead), and a step's first run takes it from the agent's own row of the
+// role on the task, at any of its steps, else none (stepRunRow). Where the row holds no commit, as
+// for an agent with no deciding review of its own on the task, the reviewer reads the whole change,
+// and in reviewing each of its tasks, wakes and resumes included, names before the two sentences
+// the commit another agent's review on the task read (record.AnotherAgentsReview,
+// reviewround.AnotherAgentsSentence), where one read one, so it can see what changed since. For any
+// other role it is task as it is.
 //
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
 // stand where one of the daemon's sentences stands: a retry's reason or a title that ends with the
@@ -53,14 +54,14 @@ import (
 // A role the deployment defines whose step at step is of the type review is named the same commits,
 // read from the same row by the same rules, in its own sentences: the commit its row holds,
 // ` Last reviewed commit: <sha>.` (record.PhaseRow.ReviewedHead, written by the workflow's
-// recordStepReview for a review step alone, and at a step's first run its agent's own nearest
-// earlier row's, else none: stepRunRow, record.ReviewedBefore), and where its row holds none, the
-// commit another agent's review step on the task read, ` Commit another agent's review read:
-// <sha>.`, so a review step whose agent has no deciding review of its own on the task reads the
-// whole change and sees what changed since, as the reviewer does. It is told no `none`: where it
-// gets neither sentence it has no commit to read from, as in its first run of a generation with no
-// other agent's review before it. Such a step reports with its verdict and submits no review of
-// GitHub's, so it gets no entry's sentence.
+// recordStepReview for a review step alone, and at a step's first run its agent's own row of the
+// role on the task's, at any of its steps, else none: stepRunRow, record.ReviewedBefore), and where
+// its row holds none, the commit another agent's review step on the task read, ` Commit another
+// agent's review read: <sha>.`, so a review step whose agent has no deciding review of its own on
+// the task reads the whole change and sees what changed since, as the reviewer does. It is told no
+// `none`: where it gets neither sentence it has no commit to read from, as in its first run of a
+// generation with no other agent's review before it. Such a step reports with its verdict and
+// submits no review of GitHub's, so it gets no entry's sentence.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow, rows []record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		switch {

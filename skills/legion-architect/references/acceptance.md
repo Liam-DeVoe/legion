@@ -18,7 +18,7 @@ Read, against the goal, every check and every requirement:
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the last such step's approval of the last step's head, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim in the review of each reviewer step, against the code at that head;
+3. where a reviewer step comes before your acceptance, the approval of the last such step, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim in the review of each such step, against the code at that head; no reviewer step approved the commits of an implementer step between that step and your acceptance (`implementer:a reviewer implementer:a acceptance:owner`);
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
@@ -95,7 +95,7 @@ When it asks, the daemon tells you once by `checks-red`, naming the phase the is
 You start nothing for the merge.
 
 Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
-Where the task has two reviewer steps, it asks once the first has run, and asks the agent of the one that started last.
+Where the task has more than one reviewer step, it asks once the first has run, and asks the agent of the one that started last.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
 A task with no reviewer step has no review to await.

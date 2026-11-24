@@ -588,14 +588,15 @@ claim the daemon holds no cause and sentence for, or with `legion claims list --
 whole record.
 
 **`refusal-unrecorded` in that column** is no failure. The claim's last launch was refused by its
-issue's pod, and the daemon's database has not taken the fact that records the refusal, so the
-issue and the controller have not been told and the claim's start is not queued. The daemon tries
-the fact again, at least once an hour, and logs each failed try at ERROR (`apply a launch its
-issue's pod refused`, or `apply the end of a start row of a claim its pod refused`).
+issue's pod, and the daemon's database has not taken a fact of that refusal: its report, before
+which the issue and the controller are not told, or the read again at the end of a start row of
+the claim. Until one is taken, the claim's start is not queued. The daemon tries the fact again,
+at least once an hour, and logs each failed try at ERROR (`apply a launch its issue's pod
+refused`, or `apply the end of a start row of a claim its pod refused`).
 `legion claims list --json` shows `unrecordedRefusal`: `since`, when the first try failed,
 `attempts`, and `error`, the last try's error. Look at the database first. The word goes once a
-try is taken, or once the claim launches on another pod. A claim that failed prints its failure's
-word instead.
+try is taken, or at the first try after the claim launches on another pod, which applies nothing.
+A claim that failed prints its failure's word instead.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
@@ -1551,11 +1552,12 @@ These arrive as messages on the Dispatch issue:
   commit to the head. The commit is the one its agent's newest deciding review on the task read, at
   whichever of that agent's reviewer steps it was made: such a review writes its commit onto the
   phases row of each reviewer step of the task that agent works, and the first round of a reviewer
-  step starts from the commit of that agent's nearest earlier reviewer step, or `none` where there
-  is none. So in `implementer reviewer:r tester reviewer:r`, after step 4 requests changes at X,
-  step 2's next round names X. While the row holds no commit, each task of that step's round, a
-  wake or a resume included, names `Commit another agent's review read: <sha>.` before its last two
-  sentences where another agent's reviewer step before it read one: the commit of the nearest such
+  step starts from the commit of that agent's own reviewer row of the task, at any of its steps, or
+  `none` where there is none. So in `implementer reviewer:r tester reviewer:r`, after step 4
+  requests changes at X, step 2's next round names X. While the row holds no commit, each task of
+  that step's round, a wake or a resume included, names
+  `Commit another agent's review read: <sha>.` before its last two sentences where another agent's
+  reviewer step before it read one: the commit of the nearest such
   step. A wake or a resume names the commit of the row of the agent it is queued for. A review
   moves that commit only when it is the reviewer's own (its Legion footer names the session the
   reviewer's claim records), the phases row of the reviewer step whose round it is holds the task of
@@ -1576,8 +1578,8 @@ These arrive as messages on the Dispatch issue:
   GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
   while the issue stays in `merging`. Where the task's reviewer step ran, the daemon asks the
   reviewer to read that merge, the agent of the reviewer step that started last where the task
-  has two, and the merger merges the new head once the reviewer's approval of it is on the pull
-  request; where the task has no reviewer step, the merger goes on at the new
+  has more than one, and the merger merges the new head once the reviewer's approval of it is on
+  the pull request; where the task has no reviewer step, the merger goes on at the new
   head. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
@@ -1685,8 +1687,8 @@ forward replaced, the head an earlier merge forward replaced included, or that n
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
 before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
-approve the new head; where the task has two reviewer steps, that is the agent of the one that
-started last, once the first has run. A red check sends nothing back from anywhere.
+approve the new head; where the task has more than one reviewer step, that is the agent of the one
+that started last, once the first has run. A red check sends nothing back from anywhere.
 
 That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
 defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on

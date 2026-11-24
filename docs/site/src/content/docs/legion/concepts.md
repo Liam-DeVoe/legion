@@ -209,18 +209,21 @@ defines, in the order the owner names them, with `implementer` among them and be
 implementer opens, and after each other step of the type implementation, since Legion's retro is
 done by the implementer, where `acceptance:owner` is the architect's own acceptance in
 `accepting`; any other step may carry a key after its role (`implementer:a tester:a`), the steps
-of one key running as one agent in one claim and one session. A role may stand at two steps, of
-one agent or of two: one key's agent at both (`implementer:a reviewer implementer:a`), a later
-step's agent that starts with another role (`implementer reviewer:a implementer:a`), or a second
-agent of the role, as `implementer reviewer implementer` runs step 3 in a second agent of the role
-implementer, `implementer-2`, in a session of its own. A key keeps its name in every version of
-the plan, and while a version leaves the key out no other agent takes that name, so the key's agent
-finds its session again when a later version names the key; the agent that would have taken the
-name takes a numbered one and a slot of its own, so its start can wait for the issue pod's update
-round. A name that only agents with no key held is free again once no agent of the version holds
-it: a later agent of their role can take it, in a session of its own, and an agent of another role
-never does. The architect writes the plan as the issue's `plan.md` document, with one
-`plan_task` block such as
+of one key running as one agent in one claim and one session.
+Where `implementer` stands at two steps, as in `implementer:a reviewer implementer:a`, the first of
+them is the one that stands before each `tester`, `reviewer` and `acceptance:owner` step and after
+each other step of the type implementation, and the later one may stand after them. A role may
+stand at two steps, of one agent or of two: one key's agent at both (`implementer:a reviewer
+implementer:a`), a later step's agent that starts with another role (`implementer reviewer:a
+implementer:a`), or a second agent of the role, as `implementer reviewer implementer` runs step 3
+in a second agent of the role implementer, `implementer-2`, in a session of its own. A key keeps
+its name in every version of the plan, and while a version leaves the key out no other agent takes
+that name, so the key's agent finds its session again when a later version names the key; the
+agent that would have taken the name takes a numbered one and a slot of its own, so its start can
+wait for the issue pod's update round. A name that only agents with no key held is free again once
+no agent of the version holds it: a later agent of their role can take it, in a session of its
+own, and an agent of another role never does. The architect writes the plan as the issue's
+`plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
@@ -246,11 +249,11 @@ of `design`, `planning`, `implementation`, `testing` and `review`, or a type `ro
 and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
 `review`, the review App by default.
 A step of such a role reads no pull request, so a plan may put it at any place, except that a role
-of the type implementation stands before the `implementer` step, since Legion's retro is done by
-the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a
-failed test does, and a fail of a step of the type review counts a review round. A role the
-deployment no longer defines stops each task that still has a step of it to run, and its owner is
-told (`docs/deployment.md`, "Roles the deployment defines").
+of the type implementation stands before the task's first `implementer` step, since Legion's retro
+is done by the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work
+back as a failed test does, and a fail of a step of the type review counts a review round. A role
+the deployment no longer defines stops each task that still has a step of it to run, and its owner
+is told (`docs/deployment.md`, "Roles the deployment defines").
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, beside whatever a step of a role of the deployment
@@ -528,11 +531,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
   phase the issue has already left is recorded as before. Where the task's reviewer step already
   ran, the daemon asks the reviewer to read the merge (`git show --remerge-diff`) and approve the
-  new head by its SHA, or request changes. Where the task has two reviewer steps, it asks once the
-  first has run, and asks the agent of the one that started last. A reviewer step still to come
-  reviews the new head when it runs. A merger that enters `merging` while that approval is owed, or
-  that made the merge, merges the new head only once the approval is on the pull request. A task
-  with no reviewer step has no review to ask, and its merger goes on at the new head.
+  new head by its SHA, or request changes. Where the task has more than one reviewer step, it asks
+  once the first has run, and asks the agent of the one that started last. A reviewer step still
+  to come reviews the new head when it runs. A merger that enters `merging` while that approval is
+  owed, or that made the merge, merges the new head only once the approval is on the pull request.
+  A task with no reviewer step has no review to ask, and its merger goes on at the new head.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue

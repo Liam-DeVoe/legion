@@ -94,9 +94,8 @@ func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) 
 
 // earlierStepRow is the one lookup of what an earlier step of a role read on a task: the row of
 // role on task among rows at the nearest place before place, of the rows of a step (place 1 and up)
-// that of accepts, and whether one stands. The commit a step's agent last read on the task is read
-// through it (ReviewedBefore), and so is the commit another agent's review read (AnotherAgentsReview),
-// so the two never take their agents from two different rows.
+// that of accepts, and whether one stands. The commit another agent's review read is read through
+// it (AnotherAgentsReview).
 func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of func(PhaseRow) bool) (PhaseRow, bool) {
 	var found *PhaseRow
 	for i, row := range rows {
@@ -114,15 +113,23 @@ func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of
 // ReviewedBefore is the commit the first run of agent's step of role at place of task is named as
 // the one its own reviews read, and so is a run of a step whose row names another agent's claim (a
 // later version of the plan can give the step to another key's agent), among rows: the commit
-// agent's own nearest earlier row of role on task holds (ReviewedHead), and "" where agent ran no
-// earlier step of role on task, so an agent whose step has no deciding review of its own on the
-// task reads the whole change (workflow's stepRunRow). Each row of one agent's role on a task holds
-// the commit that agent's newest deciding review there read (AgentsOtherRow), so the row it is
-// taken from holds the newest whichever step read it. agent "" is the worker of an issue whose key
-// names no claims, one for each role, whose every row of the role is its own.
+// another row of agent's own of role on task holds (ReviewedHead), at any of its steps, and ""
+// where no such row holds one, so an agent with no deciding review of its own on the task reads the
+// whole change (workflow's stepRunRow). Each row of one agent's role on a task holds the commit
+// that agent's newest deciding review there read (AgentsOtherRow, workflow's shareReviewedHead),
+// so whichever of them it is taken from holds the newest. Inside one version of the plan a step's
+// first run finds the agent's rows at earlier places alone; after a later version, a row the
+// earlier version's steps wrote at a later place can hold the agent's newest too. agent "" is the
+// worker of an issue whose key names no claims, one for each role, whose every row of the role is
+// its own.
 func ReviewedBefore(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
-	own, _ := earlierStepRow(rows, role, task, place, func(row PhaseRow) bool { return agent == "" || row.Claim == agent })
-	return own.ReviewedHead
+	for _, row := range rows {
+		if task != "" && row.Role == role && row.StepTask == task && row.StepPlace > 0 && row.StepPlace != place &&
+			(agent == "" || row.Claim == agent) && row.ReviewedHead != "" {
+			return row.ReviewedHead
+		}
+	}
+	return ""
 }
 
 // AnotherAgentsReview is the commit another agent's review on row's task read, which the task of a

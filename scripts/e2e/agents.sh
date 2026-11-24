@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The live proof of the agents of an owner's plan: one key is one agent in one session across
-# roles, one role at two steps of a task is one agent in one session, and a second agent of one
-# role is an agent in a session of its own.
+# roles, a key on both steps of a role that stands at two steps of a task is one agent in one
+# session, and a second agent of one role is an agent in a session of its own.
 # The driver (packages/daemon/internal/daemon/agents_live_test.go, which this script builds with
 # `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy on a
 # database of its own, boots the whole daemon with dispatch_url at it, has the owner of each of five
