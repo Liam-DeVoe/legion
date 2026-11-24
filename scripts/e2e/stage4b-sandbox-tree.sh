@@ -581,7 +581,9 @@ limit_pending() {
 # would wrongly BLOCK an unrelated later timeout on an old failure. Ties a match to the current
 # check instead: reads the daemon log for a claim that failed with launch failures ran out at or
 # after check_started, whose token (claim_token, lib/workflow.sh:133) names an issue inside
-# SELECTOR; from the pod watch, keeps that issue's pod if it was Unschedulable at or before the
+# SELECTOR — cut as the daemon's claim.Token cuts it, the issue key and then the agent's name, a
+# role or a numbered name such as implementer-2, so the claim of every agent of the issue counts;
+# from the pod watch, keeps that issue's pod if it was Unschedulable at or before the
 # failure with no PodScheduled=True before it (placement after the failure still counts) and was
 # never deleted at or before the failure (a pod of an earlier, already-abandoned incarnation of
 # the same issue is not evidence about this one); then requires Karpenter's own nodepool-limit
@@ -624,7 +626,7 @@ limit_pending_exhausted() {
     | [$lines[]
         | select(.msg == "supervise: claim failed" and .why == "launch failures ran out")
         | select((.time | seconds) >= $since_t)
-        | (.claim | capture("^legion-" + $run_label + "-(?<issue>.+)-(?<role>architect|planner|implementer|tester|reviewer|merger)$")) as $m
+        | (.claim | capture("^legion-" + $run_label + "-(?<issue>[a-z][a-z0-9]*-[0-9]+)-(?<agent>[a-z][a-z0-9-]*)$")) as $m
         | select($m != null)
         | {issue: ($m.issue | ascii_upcase), failed_at: (.time | seconds)}
       ] as $failures
