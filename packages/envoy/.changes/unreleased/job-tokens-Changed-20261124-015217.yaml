@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  Dispatch takes a write by a broker token that names a service and no person when the token's
+  project scope is `named` or `public`, the two shapes of a job's token. It records the write under
+  the token's session and its service, the identity the job entry lists, and under no person. The
+  access log names the caller `broker-token:service:<identity>`. `GET /api/v1/whoami` answers
+  `owner` null, `service` that identity, and `project` the entry's one project for `named` and null
+  for `public`. A `named` job token writes its one project alone. A `public` one writes wherever a
+  token that names no project may write. A job's token holds no OAuth scope, so a route that needs
+  `person` or `approve` refuses it. Every other broker token that names a service and no person is
+  still refused every write with `403 SIGN_IN_REQUIRED`: that is a machine's token under the project
+  scope `person`, from a machine nobody signed in on. A deployment that lists no job entry sees no
+  change. Run every Dispatch, Envoy listener and broker replica on this release before the broker
+  lists a job entry: an older verifier refuses a job's token as no session's credential.
+time: 2026-11-24T01:52:17Z
+custom:
+    Issue: job-tokens

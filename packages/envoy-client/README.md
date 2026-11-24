@@ -956,7 +956,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of five (`machineIdentity` in
 `@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -964,6 +964,15 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+`github-actions` asks GitHub for a GitHub Actions run's OIDC token, as the Go client's
+`GitHubActionsIdentity` does (`github-actions-identity.ts`), from `ACTIONS_ID_TOKEN_REQUEST_URL`,
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` and `AGENT_SECRETS_MACHINE_AUDIENCE`, read in that order. GitHub
+sets the first two in a job that holds `id-token: write`. The client adds `audience` to the
+request URL's own query and sends the request token as its bearer, follows no redirect, and reads
+the answer's `value`; it refuses a request URL that is not https, except on this machine's
+loopback, and no refusal names the URL or the token. It asks for a new token at every trade,
+since the broker takes each GitHub token once, and the broker answers it from the workflow's
+entry. `AGENT_SECRETS_MACHINE_AUDIENCE` must equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`.
 An identity with one of its variables missing is an error that names the variable.
 
 `device-login` is the identity of a machine that has none of its own, such as a person's laptop
@@ -1048,7 +1057,7 @@ trades that person, as the Go client does:
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
 - The actor is the machine's identity token. The broker takes only a Google identity token as
   the actor, so the machine's identity is `metadata` or `pool`. The broker refuses a `kubernetes`
-  actor in its own words.
+  or `github-actions` actor in its own words.
 - The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
   revoke of that sign-in stops the session's trades.
 - The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
@@ -1237,6 +1246,66 @@ the command names that credential and says to revoke it in Machine logins on the
 typed into. The earlier login is the one the file holds just before the save, read under the lock
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+
+`dispatch api <METHOD> <path> [--body-file <file>|-]` sends one request of Dispatch's HTTP API and
+prints the answer's body (`dispatch-commands/api.ts`). It is for a script or a job: a broker token
+is bound to a key, so no script can send it as a bearer. `runDispatchCli` runs it before it parses
+any other command, as it runs `dispatch login`. `<METHOD>` is `GET`, `POST`, `PUT`, `PATCH` or
+`DELETE`. `<path>` is `/api/v1`, which lists every route, or a path under `/api/v1/`, with its
+query if it has one. It must parse against the Dispatch URL the command is set for to that URL's
+origin, and the path before `?` must be the pathname the URL parser reads, so a URL, `..`,
+`%2e%2e`, `\` and every other spelling the parser changes are refused before anything is sent,
+and the credential goes to no other server and no other route. `--body-file <file>` sends the
+file's text, and `--body-file -` standard input, as the request's JSON body
+(`Content-Type: application/json`); standard input is read only with that flag, and `GET` takes
+no body. The credential is the one every command presents: a set bearer, else a token traded at
+the secrets broker, with a new DPoP proof for the request. It sends the request once: it follows
+no redirect, retries nothing and sends no `Idempotency-Key`. The answer's body goes to standard
+output as text, and every line of the command's own to standard error. It exits 0 on a 2xx
+answer; 1 on any other answer, writing `dispatch api: <METHOD> <path> answered <status> <code>`,
+where `<code>` is the body's `code` or `with no code` for a body that is not Dispatch's JSON, on
+no answer, naming the failure, and on a write AskGate refuses (below); and 2 on a usage error,
+which sends nothing.
+
+Under a host it acts as that host's session, as every command does, and refuses a missing
+session id with the usage error they give. Where no host is found, as in a GitHub Actions job, it
+reads Dispatch from the environment alone and no envoy.json: `DISPATCH_URL`, and
+`DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE` or the broker's `AGENT_SECRETS_URL` and
+`AGENT_SECRETS_MACHINE_IDENTITY`, with `DISPATCH_TOKEN_BROKER` read as every command reads it.
+Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
+session, which the fixed session of the job's broker entry answers; with none, the broker refuses
+the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
+exits 2, naming those variables. The AskGate record of every session the environment names
+(`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
+host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
+every other method before any request with exit 1, naming the `dispatch` command that makes that
+write (`WRITE_ROUTES`), which AskGate reviews. A variable that holds no valid session id (1 to 128
+letters, digits, `.`, `_` or `-`) is a usage error that names the variable, a `GET` included.
+Where every record is off, or the environment names no
+session (CI, a terminal, a script), every method is sent.
+
+A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
+`@sjawhar/codex-envoy`, which is that package's npm `bin`
+(`npx --package @sjawhar/codex-envoy dispatch api …`), or of `@sjawhar/pi-envoy`, which declares
+no npm `bin` (`node_modules/@sjawhar/pi-envoy/bin/dispatch` once the package is installed). Each
+runs the bundled `dist/dispatch.js` with `bun`, so the job puts bun on its `PATH` first. The job
+holds `id-token: write`, the broker lists its workflow (`BROKER_EXCHANGE_JOB_WORKFLOWS` for a job
+that writes for no person), and the job's environment names the identity `github-actions`
+(above), with `AGENT_SECRETS_MACHINE_AUDIENCE` set to the broker's
+`BROKER_EXCHANGE_GITHUB_AUDIENCE`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  # bun is on PATH from an earlier step: bin/dispatch runs dist/dispatch.js with it.
+  - run: npx --package @sjawhar/codex-envoy dispatch api GET /api/v1/whoami
+    env:
+      DISPATCH_URL: https://dispatch.example
+      AGENT_SECRETS_URL: https://cipher.example
+      AGENT_SECRETS_MACHINE_IDENTITY: github-actions
+      AGENT_SECRETS_MACHINE_AUDIENCE: <the broker's BROKER_EXCHANGE_GITHUB_AUDIENCE>
+```
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

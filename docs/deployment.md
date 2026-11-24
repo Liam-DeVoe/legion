@@ -538,6 +538,21 @@ identity the broker can issue"), and nothing on this box does that at this relea
 box session writing under an approved machine login included, and `dispatch://INFRA-264` is where
 Dispatch accepts a broker token.
 
+A job entry of the broker is how such a token names its writer's own account and no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS` lists a pod's Kubernetes service account,
+`BROKER_EXCHANGE_JOB_WORKFLOWS` a GitHub Actions workflow of one repository on one ref, and
+`BROKER_VM_EXCHANGE_JOB_ACCOUNTS` a machine's Google service account, each with its projects (one
+project key, or `public` and at most 16 private project keys) and, where it fixes one, a session.
+The token the exchange mints for that identity names it as its service and no person, so Dispatch
+records a daemon's or a workflow's write under its session and its own account, and under no
+person. A token whose entry names one project writes that project alone; one whose entry names
+`public` writes every public project. A GitHub Actions job trades its run's token with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`
+(`packages/envoy-client/README.md`, "The `dispatch` command"). A machine's token that names a
+service under the project scope `person`, of a machine nobody has signed in on and no job entry
+lists, still reads and is refused every write `403 SIGN_IN_REQUIRED` (`docs/kubernetes.md`, "The
+Dispatch identity the broker can issue").
+
 ## Phase workers on Claude Code
 
 `worker_backends` in `legion.yaml` runs a role on another agent harness than Oh My Pi:
