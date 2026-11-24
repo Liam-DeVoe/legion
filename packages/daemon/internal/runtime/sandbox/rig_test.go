@@ -678,19 +678,24 @@ func (h hookedSandboxes) Get(ctx context.Context, name string, opts metav1.GetOp
 // every request reads the tracker.
 func withHeldSandboxEvents(release <-chan struct{}, hold func(watch.Event) bool) rigOption {
 	return func(g *rig, _ *Options) {
-		tracker := g.dyn.Tracker()
-		g.dyn.PrependWatchReactor("sandboxes", func(action k8stesting.Action) (bool, watch.Interface, error) {
-			var opts metav1.ListOptions
-			if watchAction, ok := action.(k8stesting.WatchActionImpl); ok {
-				opts = watchAction.ListOptions
-			}
-			inner, err := tracker.Watch(action.GetResource(), action.GetNamespace(), opts)
+		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			inner, err := sandboxTrackerWatch(g, a)
 			if err != nil {
 				return true, nil, err
 			}
 			return true, holdEvents(inner, release, hold), nil
 		})
 	}
+}
+
+// sandboxTrackerWatch is the tracker's watch of Sandboxes for the informers' watch action a, with
+// the list options a carries: the watch a reactor that reshapes the informers' feed wraps.
+func sandboxTrackerWatch(g *rig, a k8stesting.Action) (watch.Interface, error) {
+	var opts metav1.ListOptions
+	if w, ok := a.(k8stesting.WatchActionImpl); ok {
+		opts = w.ListOptions
+	}
+	return g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
 }
 
 // heldDeletion picks a Sandbox's deletion (withHeldSandboxEvents).
@@ -1662,11 +1667,7 @@ func modePatched(t *testing.T, body, mode string) bool {
 func withLaggingSandboxInformer(delay time.Duration) rigOption {
 	return func(g *rig, _ *Options) {
 		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
-			var opts metav1.ListOptions
-			if w, ok := a.(k8stesting.WatchActionImpl); ok {
-				opts = w.ListOptions
-			}
-			upstream, err := g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
+			upstream, err := sandboxTrackerWatch(g, a)
 			if err != nil {
 				return true, nil, err
 			}

@@ -585,23 +585,19 @@ func keptCleanupRig(t *testing.T) *cleanupRig {
 }
 
 // IssueSandbox answers a Sandbox that is going absent, though the informer's store still holds
-// it. The API confirms a delete (awaitSandboxDeleted) before the watch carries it to the store,
-// so a release's teardown can finish while the store holds the Sandbox it deleted, and the
-// daemon's next release pass asks IssueSandbox in that gap; answered present, the release of a
-// pod no claim owns released the same pod a second time (INFRA-3149). So a Sandbox this
-// runtime's own delete took answers absent from the moment the API accepted the delete, by its
-// uid, until the store lets it go, and a Sandbox made again under the name answers present. A
-// stored Sandbox that carries a deletionTimestamp, whoever deleted it, answers absent too. A
-// release that finds no Sandbox says it released none (ReleaseIssue's false), which is what keeps
-// the daemon from recording a release of nothing. A kept Sandbox is the same case with the
-// release's record in place of the delete: it answers absent from the moment the API answered the
-// patch that wrote the record, and a release of it after that takes nothing and answers false.
+// it. The API answers a delete (awaitSandboxDeleted) before the watch carries it to the store, so
+// a Sandbox this runtime's own delete took answers absent from the moment the API accepted the
+// delete, by what the runtime keeps of that delete (its uid), until the store lets it go, and a
+// Sandbox made again under the name answers present. A stored Sandbox that carries a
+// deletionTimestamp, whoever deleted it, answers absent too. A release that finds no Sandbox says
+// it released none (ReleaseIssue's false). A kept Sandbox is the same case with the release's
+// record in place of the delete: it answers absent from the moment the API answered the patch
+// that wrote the record, and a release of it after that takes nothing and answers false.
 func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 	name := SandboxName(workerToken)
 	t.Run("one this runtime's release deleted, before the store lets it go", func(t *testing.T) {
 		release := make(chan struct{})
-		var letOnce sync.Once
-		let := func() { letOnce.Do(func() { close(release) }) }
+		let := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(let)
 		g := newRig(t, nil, withHeldSandboxEvents(release, heldDeletion))
 		g.issueLaunchers(workerToken)
@@ -687,8 +683,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 	t.Run("one this runtime's release kept, before the store shows the release's record", func(t *testing.T) {
 		kept := SandboxName(childToken)
 		release := make(chan struct{})
-		var letOnce sync.Once
-		let := func() { letOnce.Do(func() { close(release) }) }
+		let := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(let)
 		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withHeldSandboxEvents(release, heldReleaseRecord))
 		g.spawn(childSpec(t))

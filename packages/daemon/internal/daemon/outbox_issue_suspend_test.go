@@ -274,12 +274,11 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 		line        string
 		recordsGone bool
 	}{
-		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, 1,
-			"outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake", true},
+		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, 1, idleRigIdleTeardown, true},
 		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
 			rig.stoppedImplementer(t, false)
 			rig.w.releaseUnownedPods(ctx)
-		}, 0, "outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake", false},
+		}, 0, idleRigUnownedTeardown, false},
 	} {
 		t.Run(release.name+" keeps a kept volume's Sandbox", func(t *testing.T) {
 			rig, api, name := overSandbox(t, true)
@@ -349,7 +348,7 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 			if got := loggedMessages(t, logs.String(), release.line); len(got) != lines {
 				t.Fatalf("the teardown logged %d lines %q, want %d", len(got), release.line, lines)
 			}
-			nothing := loggedMessages(t, logs.String(), "outbox: the release found no Sandbox of the issue to release and released nothing")
+			nothing := loggedMessages(t, logs.String(), idleRigUnownedFoundNothing)
 			if len(nothing) != found || (found == 1 && nothing[0]["issue"] != rig.issue.Key) {
 				t.Fatalf("the teardown's lines saying it found no Sandbox to release = %v, want %d for %s", nothing, found, rig.issue.Key)
 			}
@@ -380,6 +379,13 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 			got, present := pods.IssueSandbox(rig.issue.Key)
 			return present && got == name
 		})
+		// The watch holds the release's record until the daemon's next pass has run: the API
+		// answers the teardown's patch, and the runtime's store still holds the kept Sandbox as
+		// the suspension left it, Suspended with no record.
+		release := make(chan struct{})
+		let := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(let)
+		api.holdWatches(release, heldReleaseRecord)
 		rig.stoppedImplementer(t, false)
 		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Contains(queued, "issue_release") {
 			t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
@@ -389,10 +395,11 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 			t.Fatalf("the kept volume's Sandbox after the release is %s, want it kept, Suspended", got)
 		}
 
-		// The daemon's next pass, at once: the store may not show the release's record yet.
+		// The daemon's next pass, while the store does not show the release's record yet.
 		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); slices.Contains(queued, "issue_release") {
 			t.Fatalf("the pass after the release queued %v, want no second release of the kept Sandbox it released", queued)
 		}
+		let()
 		rig.drain(t)
 		if releases := rig.records(t).Releases; len(releases) != 1 {
 			t.Fatalf("releases recorded = %+v, want the one release of the kept Sandbox", releases)

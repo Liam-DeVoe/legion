@@ -56,12 +56,8 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 //
 // It answers whether it released a Sandbox: true once it has ended the pod of the Sandbox it found
 // and deleted that Sandbox or kept it, and false where it acted on nothing — authorize said no, the
-// API held no Sandbox of the issue, or the Sandbox is one an earlier release already kept:
-// Suspended, owning the kept volume and carrying that release's record with its own uid, so it
-// holds no pod and owns no Secret and nothing of it is this release's to take. The release of a
-// pod no claim owns records a release only on true (internal/daemon's outbox.releaseIssue); the
-// idle release records its own either way, since its stops suspended the roles a wake pairs with
-// that record.
+// API held no Sandbox of the issue, or the Sandbox is one an earlier release already kept
+// (releasedKept), which holds no pod and owns no Secret, and which it leaves as it is.
 func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (bool, error) {
 	return r.endIssuePod(ctx, issue, tree, authorize, true)
 }
@@ -78,10 +74,10 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
-// nothing: authorize's no, a Sandbox already gone, or a release's Sandbox an earlier release
-// already kept (its secretsReleasedAnnotation), which it leaves as it is. A release that keeps
-// the Sandbox records its record's write (noteReleased) for IssueSandbox, as deleteSandbox records
-// a delete.
+// nothing: authorize's no, a Sandbox already gone, or, for a release, a kept Sandbox an earlier
+// release already released (releasedKept), read off the object the API answered. A release that
+// keeps the Sandbox keeps its record's write (noteReleased) for IssueSandbox, as deleteSandbox
+// keeps a delete.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) (bool, error) {
 	act := "suspend"
 	if keep {
@@ -114,9 +110,9 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
 		return false, fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
 	}
-	// A Sandbox an earlier release already kept carries that release's record and holds nothing
-	// this release could take; a second patch would only write the same record again.
-	if keep && s.mode() == modeSuspended && ownsKeptVolume(s) && s.Annotations[secretsReleasedAnnotation] == string(s.UID) {
+	// A kept Sandbox an earlier release already released holds nothing this release could take;
+	// a second patch would only write the same record again.
+	if keep && releasedKept(object) {
 		return false, nil
 	}
 	// The pod as it stands before the suspension takes it down: the issue's next launch reads no
