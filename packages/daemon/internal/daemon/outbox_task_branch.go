@@ -41,9 +41,11 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // branches the task starts from (record.StoredPlan.StartsFrom): the branch of each need whose work
 // did not merge, in the order of its needs, then the default branch the issue's record names once
 // where the work of any need merged, so the branch of a merged need, which GitHub can have deleted
-// at its merge, is never read. A task that starts from none starts at the default branch; one that
-// starts from some starts at the head of the first. A task whose pull request is based on its join
-// branch (record.StoredPlan.BaseOf: a task that starts from several branches and does not merge)
+// at its merge, is never read. A task that starts from none starts at the head of its base
+// (record.StoredPlan.BaseOf): the default branch for a task of the top level, and for a part, its
+// task's branch, which holds the joined work of that task's needs. One that starts from some
+// starts at the head of the first. A task whose pull request is based on its join branch
+// (record.StoredPlan.BaseOf: a task that starts from several branches and does not merge)
 // joins them there rather than on its branch, which then starts at the join branch's head, so its
 // pull request shows its own work alone. Each branch it starts from is then merged into the branch
 // the join is made on in that order (ghbranch.Merge), whether the row created the branch or GitHub
@@ -112,7 +114,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if join {
 		onto = base
 	}
-	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, starts, task.Needs)
+	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, base, starts, task.Needs)
 	var missing *needBranchMissing
 	if errors.As(err, &missing) {
 		return r.joinCannotEnd(ctx, row, issue, task, missing)
@@ -244,23 +246,24 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 }
 
 // joinBranch makes onto, the branch the join of starts, the branches the task starts from
-// (record.StoredPlan.StartsFrom), is made on, on GitHub at the head of the first of starts, or at the
-// issue's default branch where it names none, unless GitHub has it, and merges each of starts into
-// it in order, with the message `<KEY>: join the work of task <id>` for a need's branch and
-// `<KEY>: join <default branch>, which holds the work of task <id>` for the default branch, as
-// branchClient makes each write of a branch, within branchRowTimeout. Where onto is not branch, the
-// task's join branch, branch is then made at onto's head, unless GitHub has it, and onto is merged
-// into it, with the message `<KEY>: join the work of tasks <needs>`, so a branch GitHub has, with
-// the task's own work on it, takes what its needs did since. It answers the id of each need whose
-// work GitHub refused to merge into onto as a conflict (for the default branch, each need whose work
-// it holds), nil for none, which the task's first step repairs on onto, and whether
-// GitHub refused the merge of onto into branch as a conflict (unmerged), which only the task's own
-// work on branch makes and which that step repairs on branch: two facts, since the first step
-// repairs each on another branch, and a repair on branch of a need's conflict would show that
-// need's work in the task's pull request, which is based on onto. GitHub's 404 for a branch of
-// starts, to the read of the first one's head or to a merge of one, is a *needBranchMissing naming
-// that branch and the needs whose work it holds.
-func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, starts []record.StartBranch, needs []string) (conflicts []string, unmerged bool, err error) {
+// (record.StoredPlan.StartsFrom), is made on, on GitHub at the head of the first of starts, or at
+// from, the task's base (record.StoredPlan.BaseOf), where it names none, unless GitHub has it,
+// and merges each of starts into it in order, with the message `<KEY>: join the work of task
+// <id>` for a need's branch and `<KEY>: join <default branch>, which holds the work of task <id>`
+// for the default branch, as branchClient makes each write of a branch, within branchRowTimeout.
+// Where onto is not branch, the task's join branch, branch is then made at onto's head, unless
+// GitHub has it, and onto is merged into it, with the message `<KEY>: join the work of tasks
+// <needs>`, so a branch GitHub has, with the task's own work on it, takes what its needs did
+// since. It answers the id of each need whose work GitHub refused to merge into onto as a conflict
+// (for the default branch, each need whose work it holds), nil for none, which the task's first
+// step repairs on onto, and whether GitHub refused the merge of onto into branch as a conflict
+// (unmerged), which only the task's own work on branch makes and which that step repairs on
+// branch: two facts, since the first step repairs each on another branch, and a repair on branch
+// of a need's conflict would show that need's work in the task's pull request, which is based on
+// onto. GitHub's 404 for a branch of starts, to the read of the first one's head or to a merge of
+// one, is a *needBranchMissing naming that branch and the needs whose work it holds; a 404 for
+// from, a part's task's branch, is an error the row tries again on its backoff.
+func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto, from string, starts []record.StartBranch, needs []string) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
 	github, repo, err := r.branchClient(ctx, issue)
@@ -270,7 +273,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	missing := func(start record.StartBranch, err error) error {
 		return &needBranchMissing{branch: start.Branch, needs: start.Needs, merged: start.Branch == issue.DefaultBranch, err: err}
 	}
-	base := issue.DefaultBranch
+	base := from
 	if len(starts) > 0 {
 		base = starts[0].Branch
 	}

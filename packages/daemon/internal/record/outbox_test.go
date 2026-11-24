@@ -581,6 +581,88 @@ func TestANoticeToASubOwnerIsAKnownKind(t *testing.T) {
 	}
 }
 
+// A notice names the claim it goes to (Notice.To) only where that is a task's sub-owner's, the one
+// claim a writer decides from the task the notice is about: such a notice is taken. A notice that
+// names a step's claim, the controller's, or an architect's is refused, naming it: an architect is
+// reached by naming no claim (the owner walk), and no other claim is a notice's recipient, so no
+// ready of it would release the notice and no reader of a failed forward would queue it again.
+//
+// The fault it catches is a notice named to a claim that nothing hands it to (its control: the
+// validation of the base, which takes a notice named to a step's claim).
+func TestANoticeNamesOnlyASubOwnersClaim(t *testing.T) {
+	token := func(agent claim.Agent) claim.Token {
+		t.Helper()
+		named, err := claim.AgentToken("legion", "LEGION-208", agent)
+		if err != nil {
+			t.Fatalf("claim token of %s: %v", agent, err)
+		}
+		return named
+	}
+	subOwner := token(SubOwnerAgent("f"))
+	if err := validateOutboxPayload("LEGION-208", Notice{Kind: "parts-done", Role: claim.RoleArchitect, To: subOwner}); err != nil {
+		t.Fatalf("a notice named to the sub-owner %s = %v, want it taken", subOwner, err)
+	}
+	for _, named := range []claim.Token{token("implementer"), token("architect"), claim.ControllerToken("legion"), "nobody"} {
+		err := validateOutboxPayload("LEGION-208", Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, To: named})
+		if err == nil || !strings.Contains(err.Error(), string(named)) || !strings.Contains(err.Error(), "sub-owner") {
+			t.Errorf("a notice named to %s = %v, want it refused, naming that claim and that a notice names a sub-owner's claim alone", named, err)
+		}
+	}
+}
+
+// A notice goes to an architect's claim, which a notice that names none reaches, and to a task's
+// sub-owner's, which a notice names, and to no other claim: not a step's, not the controller's, and
+// not a token of no claim (NoticeGoesTo). Every claim a valid notice names is one it goes to.
+//
+// The fault it catches is a recipient the daemon's ready or its read of a failed forward passes
+// over (its control: NoticeGoesTo answering an architect's claim alone, which fails the
+// sub-owner's).
+func TestTheClaimsANoticeGoesTo(t *testing.T) {
+	token := func(agent claim.Agent) claim.Token {
+		t.Helper()
+		named, err := claim.AgentToken("legion", "LEGION-208", agent)
+		if err != nil {
+			t.Fatalf("claim token of %s: %v", agent, err)
+		}
+		return named
+	}
+	for named, want := range map[claim.Token]bool{
+		token("architect"): true, token(SubOwnerAgent("f")): true,
+		token("implementer"): false, token("implementer-2"): false, claim.ControllerToken("legion"): false, "nobody": false, "": false,
+	} {
+		if got := NoticeGoesTo(named); got != want {
+			t.Errorf("NoticeGoesTo(%q) = %t, want %t", named, got, want)
+		}
+		if _, subOwner := SubOwnerOf(named); subOwner && !NoticeGoesTo(named) {
+			t.Errorf("a notice can name %s, which NoticeGoesTo refuses", named)
+		}
+	}
+}
+
+// A controller notice goes to the project's controller topic and to no other claim, so it names no
+// claim it goes to (Notice.To): one that names a sub-owner's claim, the one claim a notice to an
+// architect may name, is refused, naming that claim, as a notice that names a claim outside
+// NoticeGoesTo is. The same notice naming none is taken, and so is a held notice's copy for the
+// controller that names none.
+//
+// The fault it catches is a controller's copy of a notice to a sub-owner (the workflow's
+// noticeWithController copies a notice whole) that carries a claim nothing routes it to (its
+// control: the validation of the base, which takes it).
+func TestAControllerNoticeNamesNoClaim(t *testing.T) {
+	subOwner, err := claim.AgentToken("legion", "LEGION-208", SubOwnerAgent("f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"}
+	if err := validateOutboxPayload("LEGION-208", held); err != nil {
+		t.Fatalf("a held notice for the controller that names no claim = %v, want it taken", err)
+	}
+	held.To = subOwner
+	if err := validateOutboxPayload("LEGION-208", held); err == nil || !strings.Contains(err.Error(), string(subOwner)) || !strings.Contains(err.Error(), "controller") {
+		t.Fatalf("a held notice for the controller that names %s = %v, want it refused, naming that claim and the controller", subOwner, err)
+	}
+}
+
 // A pause's stop of a claim of another project's issue is keyed by the project, which the outbox
 // of the project's own daemon serves, and names the claim's issue in its payload: it round-trips
 // through Postgres and that daemon lists it. A row may carry that issue only so: on a pause's stop

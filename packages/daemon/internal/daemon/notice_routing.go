@@ -30,18 +30,18 @@ func parseNoticeSummary(summary string) (record.NoticeKind, string, bool) {
 
 const noticeSummarySeparator = " on "
 
-// errNoticeWaits is a notice held for its architect: the architect holds no role while its claim
-// can hold it again, or an earlier notice held for the same architect has not gone yet, and a later
+// errNoticeWaits is a notice held for its recipient: the recipient holds no role while its claim
+// can hold it again, or an earlier notice held for the same recipient has not gone yet, and a later
 // one must not overtake it. The row is tried again on the outbox's backoff, logged once, or,
-// while the wake pacing holds its architect's launch, at that launch's turn or parkedWakeBound
+// while the wake pacing holds its recipient's launch, at that launch's turn or parkedWakeBound
 // on, whichever comes first (wakeForDelivery's turn, parkedWait).
-var errNoticeWaits = wait.New("the notice waits for its architect")
+var errNoticeWaits = wait.New("the notice waits for its recipient")
 
-// errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is
+// errNoticeUnroutable is a notice whose recipient cannot be resolved from the record: its issue is
 // not recorded, has no tree or no recorded root, or its keys make no claim token. readNoticeRoute
 // decides it, once, when it reads the tree. Retrying cannot change the record and the outbox has
 // no dead-letter path, so the row finishes undelivered with one log line.
-var errNoticeUnroutable = errors.New("the notice has no architect to go to")
+var errNoticeUnroutable = errors.New("the notice has no recipient to go to")
 
 // errNoticeRowGone is a notice row deleted while the runner held its lease: a catch-up a newer
 // ready dropped (record.Store.DropCatchUps).
@@ -164,36 +164,30 @@ func earlierNoticeFor(tree treeSnapshot, recipient claim.Token, runs func(claim.
 	return 0, time.Time{}
 }
 
-// noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the
-// architect of its own issue and to no other: it states what that architect owns
-// (workflow.QueueCatchUp, which queues it on that issue), so a child's catch-up that walked up to
-// the architect above it while the child's own architect was stopped would be read there as that
-// architect's own state. It waits for its architect, and finishes undelivered once that claim
-// will not hold its role again or, for a child's catch-up, once the child is out of the workflow
-// by its status or its phase (deliverNotice's record.InWorkflow), since a park leaves that claim
-// suspended rather than ended. A root's catch-up gets no such check: besides the endings every
-// notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. Every other notice
-// goes to the architect that owns its issue (record.OwningArchitect), by runs, from the issue's
-// parent for a notice the architect above it must hear (record.NoticeStartsAtParent). A notice
-// that names the claim it goes to is not this function's (noticeRecipient). project is the
+// noticeRecipient is the claim notice, of issue in tree, goes to: the claim the notice names
+// (record.Notice.To, a task's sub-owner's), which the workflow decided from the task the notice is
+// about, else an architect. A catch-up names none and goes to the architect of its own issue and to
+// no other: it states what that architect owns (workflow.QueueCatchUp, which queues it on that
+// issue), so a child's catch-up that walked up to the architect above it while the child's own
+// architect was stopped would be read there as that architect's own state. It waits for its
+// architect, and finishes undelivered once that claim will not hold its role again or, for a
+// child's catch-up, once the child is out of the workflow by its status or its phase
+// (deliverNotice's record.InWorkflow), since a park leaves that claim suspended rather than ended.
+// A root's catch-up gets no such check: besides the endings every notice has, catchUpSuperseded,
+// stoppedWithTree and recipientEnded end it. Every other notice goes to the architect that owns its
+// issue (record.OwningArchitect), by runs, from the issue's parent for a notice the architect above
+// it must hear (record.NoticeStartsAtParent). The publish (deliverNotice), the fence
+// (earlierNoticeFor) and a ready's release (releaseWaiting) all ask this, so each finds a notice the
+// same recipient, and each answer is a claim a notice goes to (record.NoticeGoesTo). project is the
 // tree's claim project token.
-func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
-	if notice.CatchUp != nil {
+func noticeRecipient(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
+	switch {
+	case notice.To != "":
+		return notice.To, nil
+	case notice.CatchUp != nil:
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
 	}
 	return record.OwningArchitect(project, tree, issue, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
-}
-
-// noticeRecipient is the claim notice, of issue in tree, goes to: the claim the notice names
-// (record.Notice.To), which the workflow decided from the task the notice is about, else the
-// architect noticeArchitect finds. The publish (deliverNotice), the fence (earlierNoticeFor) and
-// a ready's release (releaseWaiting) all ask this, so each finds a notice the same recipient.
-// project is the tree's claim project token.
-func noticeRecipient(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
-	if notice.To != "" {
-		return notice.To, nil
-	}
-	return noticeArchitect(project, tree, issue, notice, runs)
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
@@ -203,7 +197,7 @@ func noticeRecipient(project string, tree map[string]record.Issue, issue record.
 // catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
 // the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
 // release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// the architect of its own issue (noticeRecipient).
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
@@ -244,11 +238,11 @@ func (r *outbox) holdsItsRole(token claim.Token) bool {
 	return holdsRole(r.supervisedClaim(token))
 }
 
-// architectEnded says why nobody will hold the role of the owning architect, in state, for a
-// notice of tree, or "" when its claim can hold the role again: a lingering tree's architects are
-// suspended, and a closed tree's retired, until re-admission, which starts each with the tree's
-// record rather than the notices of its close.
-func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
+// recipientEnded says why nobody will hold the role of a notice's recipient, in state, for a notice
+// of tree, or "" when its claim can hold the role again: a lingering tree's claims are suspended,
+// and a closed tree's retired, until re-admission, which starts each with the tree's record rather
+// than the notices of its close.
+func recipientEnded(tree treeSnapshot, state supervise.ClaimState) string {
 	if tree.root.Lingers() {
 		return "its tree lingers or has closed"
 	}
@@ -258,10 +252,10 @@ func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
 	return ""
 }
 
-// stoppedWithTree says whether the owning architect of a notice, its claim held, has stopped with
-// its finished tree: the tree lingers or has closed (lingers), and the claim holds its role no
-// longer (holdsRole), as the close suspended it, or is suspending it now, or it failed or retired.
-// Nothing more is sent to such an architect, not even through the Envoy registration its stopped
+// stoppedWithTree says whether the recipient of a notice, its claim held, has stopped with its
+// finished tree: the tree lingers or has closed (lingers), and the claim holds its role no longer
+// (holdsRole), as the close suspended it, or is suspending it now, or it failed or retired.
+// Nothing more is sent to such a recipient, not even through the Envoy registration its stopped
 // session left behind: re-admission starts it with the tree's record rather than the notices of its
 // close.
 func stoppedWithTree(lingers bool, held supervise.ClaimView) bool {

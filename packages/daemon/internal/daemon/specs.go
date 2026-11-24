@@ -540,7 +540,11 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // holds what was pushed to the claim's own branch, which the sentence names: the branch of the task
 // its pending delivery is of (supervise.Delivery.Branch), and the issue's own where that names none
 // or the claim holds no delivery, as the replacement of an abandoned session is told (supervise's
-// abandonedTask). The guidance is that of the plugin's own notice of a recreated workspace
+// abandonedTask). Where nothing was pushed it holds what that branch started from (the outbox's
+// taskBranch): for a task that needs none, its base (record.StoredPlan.BaseOf), the default branch
+// for a task of the top level and its task's branch for a part; for a task with needs, the joined
+// work of its needs. The claim holds neither, so the sentence names none, and names no default
+// branch. The guidance is that of the plugin's own notice of a recreated workspace
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
@@ -579,7 +583,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		}
 		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
 			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
-			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
+			"since the session last ran. If it was, it holds what was pushed to %s (or, if nothing was, the base that branch started from). Anything you had not "+
 			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+
 			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
 			c.Session, branch, c.Issue, c.Issue)

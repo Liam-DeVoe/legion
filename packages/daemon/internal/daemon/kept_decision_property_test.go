@@ -133,7 +133,7 @@ const (
 	keptDelivers keptPublishMode = iota
 	// keptNoHolder: no live session holds the role (notify.ErrNoHolder), so the row waits while
 	// the architect's claim can hold its role again, and finishes undelivered once nobody will
-	// hold it (architectEnded).
+	// hold it (recipientEnded).
 	keptNoHolder
 	// keptRefuses: the holder does not advertise the delivery mode, so the row finishes
 	// undelivered (notify.ErrRefusedByHolder) and releases what it claimed.
@@ -568,7 +568,7 @@ type keptCounts struct {
 	// outbox's start, case StateFailed).
 	retriedFailed int
 	// endedCatchUps is every catch-up the executor finished undelivered because nobody will hold
-	// the architect's role again (architectEnded), and endedByFailure those of them whose reason
+	// the architect's role again (recipientEnded), and endedByFailure those of them whose reason
 	// was the claim itself — failed, retired or unsupervised — rather than the lingering tree.
 	endedCatchUps  int
 	endedByFailure int
@@ -871,7 +871,7 @@ type keptRun struct {
 // (supervise.Limits.LaunchFailures) into failed, which the run tells the workflow as the daemon's
 // terminal hook does (claimFailed), and from there through the start row's relaunch of a failed
 // claim and the catch-up the executor finishes because nobody will hold the architect's role again
-// (architectEnded). The denied forward finishes a catch-up undelivered as a refusal does; the
+// (recipientEnded). The denied forward finishes a catch-up undelivered as a refusal does; the
 // failed forward is none of the answers the executor classifies, so its row fails without
 // finishing and is retried: on its backoff in a lane, at once here (retryRow). Each run reports
 // how often each of these fired (keptCounts).
