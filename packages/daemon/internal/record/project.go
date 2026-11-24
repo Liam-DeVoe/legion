@@ -220,9 +220,9 @@ func Accepted(issue Issue) bool {
 // It is the one reading of that half of the condition inside a transaction of the daemon's own: a
 // registration on a basis reads it again under the lock every fact applies under (workflow's
 // gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
-// on the ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and
-// the person's approval as its live event read it before either opens a step; and a step carried
-// onto a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+// on the ancestor (RestingRoots), apply in one order; the pending-basis seed's read and the
+// person's approval as its live event read it before either opens a step; and a step carried onto
+// a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
 func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
@@ -787,11 +787,14 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
 // (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
 // tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
-// project owes, and both judgements of a parent's open children — the started parents'
-// (LineFacts.StartedParentWaits) and the children-first waits ChildWaitsOf hands on — from one
-// read of the children (readChildWaits: no read where no issue can wait on its children, and two
-// where any can), whatever the number of trees, gates and issues involved. project is the
-// Dispatch project key and steps the design-gate steps the deployment gates.
+// project owes, the three judgements of a parent's open children — the started parents'
+// (LineFacts.StartedParentWaits), the children-first waits ChildWaitsOf hands on and those of the
+// parents held before their retro (LineFacts.RetroHeldChildren) — from one read of the children
+// (readChildWaits: no read where no issue can wait on its children, and two where any can), and
+// after the children, where any parent is held before its retro, the roots resting on them
+// (RestingRootsOn: two reads, and none where no parent is held so), whatever the number of trees,
+// gates and issues involved. project is the Dispatch project key and steps the design-gate steps
+// the deployment gates.
 //
 // The roots are read before the gates because the gates cover both sets of roots: the roots
 // among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
@@ -832,13 +835,16 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		}
 	}
 	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
-	// The children are read last, since the gates say which issues are children-first
+	// The children are read after the rest, since the gates say which issues are children-first
 	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
-	// crosses the records above the pass's own.
-	if facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren, err = readChildWaits(ctx, tx, store, project, issues, facts); err != nil {
+	// crosses the records above the pass's own. The parents held before their retro
+	// (RetroHeldParents) are found once, for that read and for the read of the roots that rest on
+	// them (RestingRootsOn) after it, which reads nothing where no parent is held so.
+	held := RetroHeldParents(issues)
+	if facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren, err = readChildWaits(ctx, tx, store, project, issues, held, facts); err != nil {
 		return LineFacts{}, err
 	}
-	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, RetroHeldParents(issues)); err != nil {
+	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, held); err != nil {
 		return LineFacts{}, err
 	}
 	return facts, nil

@@ -327,7 +327,7 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // cases no transition raises:
 //
 //   - a parent in accepting, where no worker runs: it holds accepting, with the task that start
-//     is given (task, over the handoff of the step before accepting, acceptedRole, as the
+//     is given (task, over the handoff of the step before accepting, acceptedRoleOn, as the
 //     sign-off reads it);
 //   - a parent whose start is written and not yet delivered — a start of the phase it stands in,
 //     owed its worker at its own generation: it holds that start with the task the role's phases
@@ -400,7 +400,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	hold := childrenHold{Start: issue.Phase, Open: open}
 	if issue.Phase == phase.Accepting {
-		accepted, err := e.acceptedRole(ctx, tx, issue)
+		accepted, err := acceptedRoleOn(issue, w)
 		if err != nil {
 			return false, err
 		}

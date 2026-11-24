@@ -912,13 +912,13 @@ func (r *sessionsRun) edit(artifact, session, find, with string, want int) {
 // dispatchAs sends one request to Dispatch as the person smoke, requiring a 2xx answer.
 func (r *sessionsRun) dispatchAs(method, path string, body, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, 0, into, func(request *http.Request) { request.Header.Set("X-Dispatch-User", versionNewsPerson) })
+	r.dispatchCall(method, path, body, 0, into, dispatchUser(versionNewsPerson))
 }
 
 // dispatchAgent sends one request to Dispatch with the agent bearer, requiring want.
 func (r *sessionsRun) dispatchAgent(method, path string, body any, want int, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token) })
+	r.dispatchCall(method, path, body, want, into, bearing(r.s.dispatch.token))
 }
 
 // dispatchCall is one request to Dispatch; want 0 takes any 2xx answer. A failure fails the run's
@@ -948,8 +948,8 @@ func (r *sessionsRun) dispatchCall(method, path string, body any, want int, into
 	if err != nil {
 		r.t.Fatalf("read Dispatch's answer to %s %s: %v", method, path, err)
 	}
-	if (want != 0 && response.StatusCode != want) || (want == 0 && response.StatusCode/100 != 2) {
-		r.t.Fatalf("Dispatch %s %s = %d %s", method, path, response.StatusCode, answer)
+	if refused := dispatchRefused(method, path, want, response.StatusCode, answer); refused != "" {
+		r.t.Fatal(refused)
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {

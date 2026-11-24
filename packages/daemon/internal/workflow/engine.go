@@ -2512,9 +2512,11 @@ func (h acceptanceHold) holding() string {
 
 // What a sign-off's refusal over a resting root and over an open Dispatch child tell the owner,
 // which the retro-held notice of a parent those holds hold before its retro tells it too
-// (acceptanceRefusals, retroHeldNotice). restingAcceptedAfter is a format of the issue's key.
+// (acceptanceRefusals, retroHeldNotice). restingAcceptedAfter is a format of the issue's key;
+// restingTreeMover, who moves a resting root, ends it and the close's refusal over one.
 const (
-	restingAcceptedAfter  = "The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it."
+	restingTreeMover      = "Each is a tree of its own: its own architect, or a person, moves it."
+	restingAcceptedAfter  = "The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. " + restingTreeMover
 	childrenAcceptedAfter = "A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released."
 	ownTreeChildMover     = "A child that runs as a tree of its own is moved by its own architect or a person."
 )
@@ -2547,7 +2549,7 @@ var acceptanceRefusals = map[string]map[architectAct]string{
 	},
 	signOffRestingRoot: {
 		actSignOff:   "%[1]s is not accepted while " + restingHolding + ": %[2]s. " + restingAcceptedAfter + " Sign off again once each one is done or out of the workflow",
-		actCloseRoot: "%[1]s is not closed while " + restingHolding + ": %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
+		actCloseRoot: "%[1]s is not closed while " + restingHolding + ": %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. " + restingTreeMover + " Close the tree again once each one is done or out of the workflow",
 	},
 	signOffChildOpen: {
 		actSignOff:   "%[1]s is not accepted while " + openChildHolding + ": %[2]s. " + childrenAcceptedAfter + " Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held%[3]s; otherwise sign off again. " + ownTreeChildMover + " " + endChildrenFirst("acceptance"),
@@ -2587,9 +2589,9 @@ func heldAcceptanceBack(w Walk) string {
 // answers the first that holds; each later one is read only when the one before it holds nothing.
 // First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
 // SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step rests on its approval
-// and is still in the workflow (RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks of the
-// issues under an ancestor prove its requirements together, so it is accepted only after them. Then
-// a Dispatch child of it that is still open, one that runs as a tree of its own included
+// and is still in the workflow (record.RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks
+// of the issues under an ancestor prove its requirements together, so it is accepted only after
+// them. Then a Dispatch child of it that is still open, one that runs as a tree of its own included
 // (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
 // child of it is named by the second, as it holds there first. It is the one statement of the
 // rule for the sign-off (signOff), the close of a root (closeRoot), and the retro of a parent that
@@ -2716,14 +2718,23 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
 }
 
-// acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
-// the acceptance's place on the task of its walk, by place and never by type, so the step after
-// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
-// where the review stands before accepting.
+// acceptedRole is the role of the step the owner's acceptance of issue accepts (acceptedRoleOn),
+// on the walk of its run, which it reads (walk).
 func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
+	if err != nil {
 		return claim.RoleReviewer, err
+	}
+	return acceptedRoleOn(issue, w)
+}
+
+// acceptedRoleOn is the role of the step the owner's acceptance of issue accepts on w, the walk of
+// its run: the step before the acceptance's place on the task of w, by place and never by type, so
+// the step after the sign-off reads the report the owner read. An issue with no plan rows walks
+// today's line, where the review stands before accepting.
+func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
+	if !w.Stored {
+		return claim.RoleReviewer, nil
 	}
 	place, ok := w.PlaceOf(phase.Accepting)
 	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {

@@ -69,10 +69,10 @@ func standsOn(gate record.DesignGate, basis record.GateBasis) bool {
 // one lock every fact takes (intake.SerializeFacts), so the two apply in one order: a sign-off or
 // close applied first is read here, the close by the status it wrote on the ancestor's record
 // before Dispatch's event of it comes back, and refuses the registration; one applied after reads
-// the row the registration wrote among the roots that rest on the ancestor (RestingRoots) and is
-// refused itself (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). The refusal writes nothing and leaves the
-// fact unspent (intake.Result.Unspent): its cause can clear, as a move of the ancestor back out of
-// its retro clears it, and a call made again is then judged afresh rather than answered as one
+// the row the registration wrote among the roots that rest on the ancestor (record.RestingRoots)
+// and is refused itself (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). The refusal writes nothing and leaves
+// the fact unspent (intake.Result.Unspent): its cause can clear, as a move of the ancestor back out
+// of its retro clears it, and a call made again is then judged afresh rather than answered as one
 // already applied. A step the deployment does not gate takes no basis (registeredBasis), so it
 // refuses nothing, and neither does a registration on a root out of the workflow, whose basis
 // gateRegistered drops before it asks.
@@ -287,7 +287,7 @@ func restingEnded(ask string) restingRootEvent { return "ended:" + restingRootEv
 // restingClosed is a resting root's close as done, and restingLeft its leave of the workflow any
 // other way: a move to backlog, icebox or triage, or admission's leave of a root it found with
 // neither a slot nor a place in the line (tellRestingLeft). Either ends the wait of the ancestor's
-// sign-off and close for that root (RestingRoots).
+// sign-off and close for that root (record.RestingRoots).
 const (
 	restingClosed restingRootEvent = "closed"
 	restingLeft   restingRootEvent = "left"
@@ -392,9 +392,9 @@ func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, s
 // tellRestingLeft tells the architect of each ancestor that root rests on (R8) that root has left
 // the workflow for status (leaveBases): closed as done (restingClosed), or out of the workflow any
 // other way (restingLeft). gates is root's steps as the leave read them. The ancestor's sign-off
-// and close wait for a resting root while it is in the workflow (RestingRoots), so this tells the
-// end of that wait. A step rests on each ancestor a basis opened it on (RestsOn) and on the
-// ancestor its basis names now, standing or pending (record.DesignGate.RestsOnIssue), so one
+// and close wait for a resting root while it is in the workflow (record.RestingRoots), so this
+// tells the end of that wait. A step rests on each ancestor a basis opened it on (RestsOn) and on
+// the ancestor its basis names now, standing or pending (record.DesignGate.RestsOnIssue), so one
 // notice goes to each such ancestor, once per root, generation, ancestor and event
 // (queueRestingRoot), naming each step that rests there and the requirements the root's checks
 // serve, each once. The document and the version the notice names are one step's: the ancestor's

@@ -534,7 +534,7 @@ describe("the arguments check's jj", () => {
 const transactSeam =
   "packages/daemon/internal/daemon/approved_version_news_control_transact_live_test.go";
 const taskSeam = "packages/daemon/internal/daemon/approved_version_news_control_task_live_test.go";
-const seedFile = "packages/daemon/internal/daemon/approved_version_news_seed_live_test.go";
+const seedFile = assignment("seed_file").slice("seed_file=".length);
 
 /** Runs control_compat over a scratch base tree whose package daemon holds two Go files, the
  * first defining seedTransact where TRANSACT says so and the second defining recordTaskAt where
@@ -556,7 +556,7 @@ function controlCompat(transact: boolean, task: boolean) {
     "-c",
     `set -euo pipefail
 ${helperGuard}
-check=base-tree seed_file=${seedFile}
+check=base-tree ${assignment("seed_file")}
 ${note}
 ${fail}
 ${fn("control_compat")}

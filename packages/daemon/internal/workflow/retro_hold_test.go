@@ -2,12 +2,10 @@ package workflow
 
 import (
 	"bytes"
-	"context"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -27,28 +25,10 @@ const heldParentReason = "LEGION-208 passed its last step, and Legion holds it b
 	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it. " + retroHeldStarts + " " +
 	record.StatusNotTakenYet + " " + record.EndChildRule
 
-// approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
-// reviewer's phases row as the round left it, with the handoff the retro's task names written to
-// the store so a later read of the row finds it, and no reason (review.go's roundApproved).
+// approveReview settles LEGION-208's review round as approved (approvesReviewOf).
 func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
-	row := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleReviewer)
-	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = "review-record", 1, "c0ffee", "approved"
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.store.PutPhase(ctx, tx, row); err != nil {
-			return err
-		}
-		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", row, pr, "")
-	})
-
+	approvesReviewOf(t, pool, engine, "LEGION-208")
 }
 
 // retroStarts is the count of starts step_starts holds for the retro of key, and how many rows

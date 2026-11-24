@@ -96,34 +96,35 @@ func OpenChildHolds(p phase.Phase) bool {
 	return false
 }
 
-// readChildWaits is both judgements of a parent's open Dispatch children that one pass makes
-// (ReadLineFacts), from one read of the mirror's children of every parent either judges and one
-// read of the daemon's own record of every child, whatever the number of parents: the
+// readChildWaits is the three judgements of a parent's open Dispatch children that one pass makes
+// (ReadLineFacts), from one read of the mirror's children of every parent any of them judges and
+// one read of the daemon's own record of every child, whatever the number of parents: the
 // children-first waits of the issues whose first phase has not started (ChildrenFirstCandidates,
-// ChildWaits), and the open children of every started parent (StartedParents), with the one
-// child withoutHeldUnderAccepted leaves out. ChildWaits judges each parent on its own, from that
-// parent's rows and its children's records alone, so one read split by parent gives each
-// judgement exactly what a read of its own parents would; an issue in both sets — one at
-// admitted that owes a start — is judged in both. A parent with none has no entry in either map.
-// facts are the pass's own, which carry the gates each candidate is read against, the starts the
-// project owes (LineFacts.Owed) and the records above the pass's own that the cycle walk crosses
-// (LineFacts.Parents).
+// ChildWaits), the open children of every started parent (StartedParents), and the open children
+// of every parent held before its retro, held (RetroHeldParents, LineFacts.RetroHeldChildren), the
+// last two with the one child withoutHeldUnderAccepted leaves out. ChildWaits judges each parent
+// on its own, from that parent's rows and its children's records alone, so one read split by
+// parent gives each judgement exactly what a read of its own parents would; an issue in more than
+// one set — one at admitted that owes a start — is judged in each. A parent with none has no entry
+// in any of the three maps. facts are the pass's own, which carry the gates each candidate is read
+// against, the starts the project owes (LineFacts.Owed) and the records above the pass's own that
+// the cycle walk crosses (LineFacts.Parents).
 //
 // It is two queries whatever the number of parents, and none where no issue can wait on its
 // children (Store.DispatchChildren reads nothing for no parents, judgeChildren nothing for no
 // child), because every judgement the daemon makes about a parent's children runs inside a
 // transaction that performs no I/O of its own and under the one fact lock every fact takes
 // (intake.ApplyFact): a read per parent would cost a round trip per parent on every fact of every
-// consumer, and a read of its own for each judgement two more on every pass.
+// consumer, and a read of its own for each judgement four more on every pass.
 //
 // Nothing here is stored, and nothing here moves an issue: the admission pass moves a started
 // parent with an open child into awaiting_children and takes one whose last open child has gone
 // back to the start it held (admit's childrenWaits), and the held list names the children of a
-// parent in awaiting_children (HeldReasonOf), each from this one judgement of the pass.
-func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
+// parent in awaiting_children and of one held before its retro (HeldReasonOf), each from this one
+// read of the pass.
+func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, held []string, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
 	candidates := ChildrenFirstCandidates(issues, facts.Gates)
 	parents := StartedParents(issues, facts.Owed)
-	held := RetroHeldParents(issues)
 	all := slices.Concat(candidates, parents, held)
 	slices.Sort(all)
 	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(all))

@@ -540,27 +540,27 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
-			lacks:  []int{20261114064234, 20261114232555},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 4ad19fe8459c",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{20261114064234, 20261114232555, basisSeedsVersion},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 8517faba31ac",
 			newest: startFailureAfterReadyVersion,
-			lacks:  []int{20261114064234, 20261114232555, basisSeedsVersion},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
-			newest: 20261122154643,
+			newest: basisSeedsVersion,
 			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261121170714 names these columns and no other (record's
@@ -580,7 +580,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		},
 		{
 			name:   "this branch at 03ac783258da",
-			newest: 20261122154643,
+			newest: basisSeedsVersion,
 			lacks:  []int{issuePlansVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261117034837 names no step of a phases row.

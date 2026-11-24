@@ -63,11 +63,13 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // phase (record.ChildWaitsOf), and every open child a parent waiting in awaiting_children waits
 // on (blockers.ChildRows). A candidate the rule exempts is read for nothing, as promotion admits
 // it whatever its links say and nothing consults the answer (blockers.Exempt), and the keys come
-// out in that judgement's own order, by the issue waiting on them. The open children of every
-// other started parent follow (record.LineFacts.StartedParentWaits), which the admission pass
-// moves into awaiting_children or leaves where it stands from the same judgement, and then the
-// open children of every parent held before its retro (record.LineFacts.RetroHeldChildren),
-// whose retro the admission pass starts once none of them is open (admit's childrenWaits).
+// out in that judgement's own order, by the issue waiting on them. Then come the open children of
+// every other started parent (record.LineFacts.StartedParentWaits), which the admission pass moves
+// into awaiting_children or leaves where it stands from the same judgement, and of every parent
+// held before its retro (record.LineFacts.RetroHeldChildren), whose retro the admission pass
+// starts once none of them is open (admit's childrenWaits). Both kinds of parent are sorted
+// together by key, and each parent's open children are added in that order, a key already added
+// keeping the place it took first.
 //
 // An open child is in the set because the turn's re-read is what writes its row of the copy
 // again: a reading of all five values, each of which replaces the one an older reading wrote. A

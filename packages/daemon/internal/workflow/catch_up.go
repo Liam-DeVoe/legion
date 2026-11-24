@@ -327,10 +327,11 @@ type treeWaits struct {
 // architect's own to do.
 //
 // With them come, for each listed issue still in the workflow, in key order, the roots that rest
-// on its approval and are still in the workflow (RestingRoots, dispatch://INFRA-3320 R8), read for
-// all of them at once (restingRootsOn): their work holds that issue's acceptance and its close,
-// and a resting-root notice that told of one is ended undelivered when the architect's claim has
-// failed, as the phase-finished notice is, so the reason names them beside the accepting list.
+// on its approval and are still in the workflow (record.RestingRoots, dispatch://INFRA-3320 R8),
+// read for all of them at once (record.RestingRootsOn): their work holds that issue's acceptance
+// and its close, and a resting-root notice that told of one is ended undelivered when the
+// architect's claim has failed, as the phase-finished notice is, so the reason names them beside
+// the accepting list.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, treeWaits, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {

@@ -158,14 +158,15 @@ const sessionsFile = scriptValue("sessions_file");
 const promptsDir = scriptValue("prompts_dir");
 // Part one's driver files, which the control copies from the checkout into the base tree.
 const partOneDriverFiles = ["driver_file", "steps_file", "seed_file"].map(scriptValue);
+// This checkout's sessions_file, line by line.
+const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
 // The news marks: the text of every sessions…Mark constant of this checkout's part two driver,
 // which the scratch checkout holds as it is here, so a scratch prompt written with them is one the
 // script's own read of that file finds.
-const newsMarks = [
-  ...readFileSync(join(repoRoot, sessionsFile), "utf8").matchAll(
-    /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/gm
-  ),
-].map((match) => match[1]);
+const newsMarks = sessionsLines.flatMap((line) => {
+  const mark = /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/.exec(line);
+  return mark === null ? [] : [mark[1]];
+});
 // The two prompt files part two's base arm takes in the scratch checkout, a prompt with no news
 // mark, and the same prompt with every news mark after it.
 const reviewerPrompt = join(promptsDir, "roles", "reviewer.md");
@@ -256,9 +257,8 @@ const secondMarkFirst: History = ({ commit }, c0) => {
   return { c0, c1, c2 };
 };
 
-/** This checkout's sessions_file, line by line, and its first line that assigns a news mark in the
- * form the script reads (unreadLine), numbered from 1, with the name of the constant it assigns. */
-const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
+/** The first line of sessionsLines that assigns a news mark in the form the script reads
+ * (unreadLine), numbered from 1, with the name of the constant it assigns. */
 const firstMarkIndex = sessionsLines.findIndex((line) =>
   /^\s*sessions\w*Mark\s*=\s*".*"$/.test(line)
 );

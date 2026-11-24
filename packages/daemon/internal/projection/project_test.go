@@ -167,8 +167,8 @@ func (s projectionStore) GatesRestingOn(_ context.Context, _ pgx.Tx, ancestors .
 
 // IssuesByKey is the record of each of keys this store holds, as the real store reads them by
 // primary key.
-func (s projectionStore) IssuesByKey(_ context.Context, _ pgx.Tx, keys []string) ([]record.Issue, error) {
-	return s.IssuesOf(context.Background(), nil, "", keys)
+func (s projectionStore) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
+	return s.IssuesOf(ctx, tx, "", keys)
 }
 
 // projectedAt is the fixed instant every test here projects at.

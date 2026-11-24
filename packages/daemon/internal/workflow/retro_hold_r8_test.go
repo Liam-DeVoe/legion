@@ -36,8 +36,9 @@ func reviewingWithoutAcceptance(t *testing.T, pool *pgxpool.Pool, engine *Engine
 	assertWalksAt(t, pool, engine, key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 }
 
-// approvesReviewOf settles key's review round as approved, as settleRound moves it (approveReview's
-// move, for a key of the test's choosing).
+// approvesReviewOf settles key's review round as approved, as settleRound moves it: the
+// reviewer's phases row as the round left it, with the handoff the retro's task names written to
+// the store so a later read of the row finds it, and no reason (review.go's roundApproved).
 func approvesReviewOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	row := roleRowOf(t, pool, engine, key, claim.RoleReviewer)
