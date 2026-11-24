@@ -46,13 +46,14 @@ const levelTwoWorkGrowth = 6
 // judgment (specFormOf) of a document of four times as many statements sends as many statements to
 // the database, so it reads the database once for the document and not once for each text, and
 // its work grows less than levelTwoWorkGrowth times, so it does no work for each pair of texts.
-// The work is the user CPU time of the thread that judges, the work of the judgment's own code,
-// measured as the form's own table measures it (cputest.Growth, as
+// The work is the CPU time, user and system, of the thread that judges, measured as the form's own
+// table measures it (cputest.Growth, on cputest's thread clock, as
 // specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText does): a wait for a core is not in it,
-// nor the kernel's work for the thread, nor the work of Postgres, which the count of statements
-// bounds; work that allocates nothing is in it. All the documents stand under the root before any
-// is judged, since the judgment reads each other covered document under it. Through the request
-// route, the broken document of 301 statements is refused, and the clean one opens.
+// nor the work of Postgres, which the count of statements bounds; the kernel's work for the
+// thread, its sends to the server among it, is in it, and so is work that allocates nothing. All
+// the documents stand under the root before any is judged, since the judgment reads each other
+// covered document under it. Through the request route, the broken document of 301 statements is
+// refused, and the clean one opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	served := &server{deps: tree.deps}
@@ -92,12 +93,9 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 				}
 			}
 			small, large := sizes[0], sizes[1]
-			grows, smallWork, largeWork, err := cputest.Growth(3, scale, cputest.Again(judge(small)), cputest.Again(judge(large)))
+			grows, smallWork, largeWork := cputest.Growth(3, scale, cputest.Again(judge(small)), cputest.Again(judge(large)))
 			t.Logf("%d statements %d times: %d sent each, %v; %d statements once: %d sent, %v; %.1f times",
 				small, scale, statements[small], smallWork, large, statements[large], largeWork, grows)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if statements[small] == 0 {
 				t.Fatal("the judgment sent no statement to the database, so this test counts nothing")
 			}

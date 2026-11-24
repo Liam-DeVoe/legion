@@ -28,7 +28,11 @@ const workSamples = 3
 // that it guards broken, grew 60.5 times or more in 5 of 5 runs (the walks below). With the four
 // rows of the whole text and of the holders of a footnote, 10 more plain runs at a load average of
 // 299 to 634 gave a worst growth of 18.8 (the row "many sentences of one text, each with a way out
-// that the whole text reads").
+// that the whole text reads"). Those numbers are of the user time of the thread alone; the table
+// now reads its user and system time (cputest's thread clock). Read on both over the same windows,
+// in 4 plain runs at a load average of 205 to 366, two of them in a cgroup full of page cache, one
+// of which took 363 MiB of reclaim on the test's own thread, the worst growth was 21.1 to 21.8 on
+// user and system time and 20.4 to 21.3 on user time alone.
 const (
 	workScale = 16
 	workBound = 32
@@ -36,8 +40,8 @@ const (
 
 // workRaceShrink is how many times smaller each row's n is under the race detector, whose
 // instrumentation makes the judgment 10 to 20 times the work (16 at the median row): the race
-// build runs each row for about the plain build's time, its smaller window lasts cputest.MinWindow
-// or more as the plain build's does (Growth holds both), and it claims no bound.
+// build runs each row for about the plain build's time, its windows last about as long as the
+// plain build's, and it claims no bound.
 const workRaceShrink = 12
 
 // workJudgment builds the judgment of a text of n units: the text is built once, before any
@@ -80,21 +84,21 @@ func workRows(race bool) []workRow {
 // links could share, and a link and an image hold their own address and title. Each row judges a
 // text of n units and one of workScale times n, and the work of the larger grows less than
 // workBound times (Growth): the smaller text is judged workScale times in one window and the
-// larger once, so that both windows last about as long. The work is the user CPU time of the
-// thread that judges: the work of the judgment's own code. A wait for a core is not in it, and nor
-// is the kernel's work for the thread, such as the reclaim of memory when the machine is short of
-// it; work that allocates nothing is in it. The smaller window of each row lasts cputest.MinWindow
-// or more, which Growth holds, so that the kernel's split of the thread's time into user and system
-// time, the collector's work and a cold cache are a small part of it. A row whose judgment finds
-// no finding of its rule at either size reads nothing, so it fails; a row of a rule "" is a shape
-// that breaks no rule. A row's n is the larger of two: twice the least n at which the walk that the
-// row is for, made a walk for each pair, still failed the bound when its n was searched at steps of
-// about 1.41, and the n at which the row's smaller window lasts about 110 ms on the machine of 288
-// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the sixteen
-// walks failed its rows in 5 of 5 runs at the table's n, each walk broken in turn: ste-lint's
-// count of a column from the start of the line (many semicolons, many phrasal verbs, many
-// marketing adjectives, many nominalizations); the list of distinct addresses and titles, read
-// through for each one (many links, many titles, many images); the texts already kept for a node,
+// larger once, so that both windows last about as long. The work is the CPU time, user and system,
+// of the thread that judges (Growth, on cputest's thread clock): a wait for a core is not in it,
+// nor the collector's mark workers; the kernel's work for the thread, such as the page faults of
+// its allocation, is in it, and so is work that allocates nothing. The smaller window of each row
+// lasts long enough that the collector's work and a cold cache are a small part of it. A row whose
+// judgment finds no finding of its rule at either size reads nothing, so it fails; a row of a rule
+// "" is a shape that breaks no rule. A row's n is the larger of two: twice the least n at which the
+// walk that the row is for, made a walk for each pair, still failed the bound when its n was
+// searched at steps of about 1.41, and the n at which the row's smaller window lasts about 110 ms
+// on the machine of 288 cores, so that a machine somewhat faster still reads a window of tens of
+// milliseconds. Each of the sixteen walks failed its rows in 5 of 5 runs at the table's n, each
+// walk broken in turn: ste-lint's count of a column from the start of the line (many semicolons,
+// many phrasal verbs, many marketing adjectives, many nominalizations); the list of distinct
+// addresses and titles, read through for each one (many links, many titles, many images); the
+// texts already kept for a node,
 // read through for each new one (many purpose lines of one id); the links found, read through for
 // each key (many references, many keys); the brackets before each closing bracket of a reference,
 // counted again (one reference before many closing brackets); a word's letters before each stop,
@@ -452,11 +456,8 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			sizes := []int{row.n, workScale * row.n}
 			judges := []func() []Finding{row.judge(t, sizes[0]), row.judge(t, sizes[1])}
 			findings := make([][]Finding, len(sizes))
-			growth, small, large, err := cputest.Growth(workSamples, workScale,
+			growth, small, large := cputest.Growth(workSamples, workScale,
 				cputest.Again(func() { findings[0] = judges[0]() }), cputest.Again(func() { findings[1] = judges[1]() }))
-			if err != nil {
-				t.Fatal(err)
-			}
 			for index, found := range findings {
 				if has := slices.ContainsFunc(found, func(finding Finding) bool { return finding.Rule == row.rule }); row.rule != "" && !has {
 					t.Fatalf("the judgment of %d units finds no finding of %s, so this row reads nothing: %.300v", sizes[index], row.rule, found)

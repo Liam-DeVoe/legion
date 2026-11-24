@@ -44,12 +44,11 @@ var alternatingBlocks = []int{4_096, 16_384}
 // Parse and Render finish in time linear in the text on the shapes that once cost them quadratic
 // time: the work of each at its full size (parseFullTarget/renderFullTarget, above)
 // grows less than growthBound times over its work at a growthScale-th of it (growsLinearly,
-// below). The work is the user CPU time of the thread that parses or renders (cputest.Growth), not
-// wall time and not the process's CPU time: a wait for a core is not in it, nor the kernel's work
-// for the thread, such as the reclaim of memory when the machine is short of it, nor the
-// collector's work on another thread. The smaller size runs growthScale times in one window and
-// the full size once in another, so that the two windows last about as long and a load of the
-// machine that comes and goes reaches both alike.
+// below). The work is the CPU time, user and system, of the thread that parses or renders
+// (cputest.Growth, on cputest's thread clock), not wall time and not the process's CPU time: a
+// wait for a core is not in it, nor the collector's work on another thread. The smaller size runs
+// growthScale times in one window and the full size once in another, so that the two windows last
+// about as long and a load of the machine that comes and goes reaches both alike.
 //
 // A write of a mebibyte of these is refused for the elements it makes (MaxDocumentElements), so
 // the parse here is a read-back's, which counts none and reads all of it. Render's target is
@@ -434,8 +433,8 @@ func readsAndWritesLinearly(t *testing.T, head, shape, tail string, full int) {
 // document whose every other block changes type costs a walk per replaced block, as it did before
 // runs were batched. That shape is held to ygo's own walks instead: the work of Update is no more
 // than alternatingAllowance times the work of a Delete and an Insert at each replaced index on the
-// same document, the two timed in turn in windows of cputest.Growth at a scale of 1 (grown). On one
-// machine at a load of 105 to 121, back to back, it took 134 ms and 5.83 s at 4,096 and 16,384
+// same document, the two timed in turn on cputest.Growth at a scale of 1. On one machine at a
+// load of 105 to 121, back to back, it took 134 ms and 5.83 s at 4,096 and 16,384
 // blocks (2.1 and 1.6 times ygo's walks), the Update before sjawhar/legion#1892 112 ms and 5.65 s
 // (1.6 and 1.6 times); the write that typed its batch from the live fragment's children, walking
 // the whole fragment once more per replaced block, took 936 ms at 4,096 (12.7 times).
@@ -501,12 +500,12 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 					})
 				}
 			}
-			ratio, walked, took, repeat := grown(t, fmt.Sprintf("replacing every other block of %d", blocks), 1, walks, update)
+			ratio, walked, took := cputest.Growth(growthSamples, 1, walks, update)
 			if ratio > alternatingAllowance {
-				t.Errorf("replacing every other block of %d took %v, %.1f times the %v that ygo's own Delete and Insert at those indexes take (each run %d times, at most %d)",
-					blocks, took, ratio, walked, repeat, alternatingAllowance)
+				t.Errorf("replacing every other block of %d took %v, %.1f times the %v that ygo's own Delete and Insert at those indexes take (at most %d)",
+					blocks, took, ratio, walked, alternatingAllowance)
 			}
-			t.Logf("replacing every other block of %d: %v, %.1f times ygo's walks (%v, each run %d times, at most %d)", blocks, took, ratio, walked, repeat, alternatingAllowance)
+			t.Logf("replacing every other block of %d: %v, %.1f times ygo's walks (%v, at most %d)", blocks, took, ratio, walked, alternatingAllowance)
 		}
 	})
 }
@@ -562,64 +561,18 @@ const (
 // growthSamples is how many times cputest.Growth times each window of a row.
 const growthSamples = 3
 
-// growthWindow is about the least that grown lets each window of cputest.Growth last: four times
-// cputest.MinWindow, so that a machine several times faster than the one it was measured on still
-// reads windows past cputest.MinWindow. maxRepeat is the most times grown repeats each run.
-const (
-	growthWindow = 4 * cputest.MinWindow
-	maxRepeat    = 1 << 16
-)
-
 // growsLinearly requires the work at a size of full to grow less than growthBound times over the
-// work at full/growthScale (grown). input builds the input of one size, untimed, and returns the
-// small or large of cputest.Growth for it: cputest.Again of a run that changes nothing, or a
-// function that builds a fresh input for each run.
+// work at full/growthScale (cputest.Growth). input builds the input of one size, untimed, and
+// returns the small or large of cputest.Growth for it: cputest.Again of a run that changes nothing,
+// or a function that builds a fresh input for each run.
 func growsLinearly(t *testing.T, what string, full int, input func(size int) func() func()) {
 	t.Helper()
 	small := full / growthScale
-	growth, smallWindow, largeWindow, repeat := grown(t, what, growthScale, input(small), input(full))
-	t.Logf("%s: %s %d times %v, %s once %v, each run %d times: %.1f times", what, sizeText(small), growthScale, smallWindow, sizeText(full), largeWindow, repeat, growth)
+	growth, smallWork, largeWork := cputest.Growth(growthSamples, growthScale, input(small), input(full))
+	t.Logf("%s: %s %d times %v, %s once %v: %.1f times", what, sizeText(small), growthScale, smallWork, sizeText(full), largeWork, growth)
 	if growth >= growthBound {
-		t.Errorf("%s: the work grew %.1f times, from %v for %d runs of %s to %v for one run of %s, each run %d times, want less than %d times",
-			what, growth, smallWindow, growthScale, sizeText(small), largeWindow, sizeText(full), repeat, growthBound)
-	}
-}
-
-// grown is cputest.Growth of small and large at scale, with each run of a window repeated as many
-// times as makes the window last growthWindow or more: a reading that Growth refuses for a window
-// shorter than cputest.MinWindow (cputest.ErrShortWindow) is taken again with each run repeated
-// as many more times as brings the shorter window past growthWindow. Any other refusal fails t.
-func grown(t *testing.T, what string, scale int, small, large func() func()) (float64, time.Duration, time.Duration, int) {
-	t.Helper()
-	for repeat := 1; ; {
-		growth, smallWindow, largeWindow, err := cputest.Growth(growthSamples, scale, repeated(repeat, small), repeated(repeat, large))
-		if err == nil {
-			return growth, smallWindow, largeWindow, repeat
-		}
-		shortest := min(smallWindow, largeWindow)
-		if !errors.Is(err, cputest.ErrShortWindow) || shortest <= 0 || repeat >= maxRepeat {
-			t.Fatalf("%s, each run %d times: %v", what, repeat, err)
-		}
-		repeat *= int(growthWindow/shortest) + 1
-	}
-}
-
-// repeated is input with each run repeated times: each call builds the inputs of times runs and
-// returns one run that runs them in turn.
-func repeated(times int, input func() func()) func() func() {
-	if times == 1 {
-		return input
-	}
-	return func() func() {
-		runs := make([]func(), times)
-		for index := range runs {
-			runs[index] = input()
-		}
-		return func() {
-			for _, run := range runs {
-				run()
-			}
-		}
+		t.Errorf("%s: the work grew %.1f times, from %v for %d runs of %s to %v for one run of %s, want less than %d times",
+			what, growth, smallWork, growthScale, sizeText(small), largeWork, sizeText(full), growthBound)
 	}
 }
 

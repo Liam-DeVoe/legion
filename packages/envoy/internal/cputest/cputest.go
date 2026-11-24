@@ -10,7 +10,7 @@
 //
 // It reads two clocks. Process is the whole process's, every goroutine's and the garbage
 // collector's. OnThread is the clock of the one OS thread a call runs on, which counts that call's
-// goroutine alone.
+// goroutine alone. Growth compares the work of a call at two sizes on that thread clock.
 package cputest
 
 import (
@@ -32,102 +32,6 @@ func Process() time.Duration {
 		panic(fmt.Sprintf("getrusage(RUSAGE_SELF): %v", err))
 	}
 	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
-}
-
-// onThread is how far clock, a clock of the thread that runs the caller, moves while call runs,
-// and the thread at the reading before call and at the reading after it (threadID): it holds the
-// calling goroutine on its thread (runtime.LockOSThread) from the one reading to the other, so both
-// readings are of that thread.
-func onThread(clock func() time.Duration, call func()) (took time.Duration, from, to int) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	from = threadID()
-	before := clock()
-	call()
-	took = clock() - before
-	return took, from, threadID()
-}
-
-// MinWindow is the least time that each window of Growth lasts. The kernel splits a thread's time
-// into user and system time by the ticks of the scheduler, so a window's time is off by up to about
-// a tick, 1 ms to 4 ms, and a window of MinWindow or more holds that as a small part of it.
-const MinWindow = 50 * time.Millisecond
-
-// Growth is how many times the work of large grows over the work of small, where the input of
-// large is scale times the input of small. Small runs scale times in one timed window and large
-// once in another, so that for work in proportion to the input the two windows last about as long,
-// and a load of the machine that comes and goes reaches both alike: a window that is much shorter
-// than the other is more likely to fall between two bursts. Each window is timed samples times, the
-// two in turn, each after a collection of the heap (runtime.GC), so that neither pays for the
-// garbage of the other. A busy machine only adds to the time of a window, so the least of each is
-// its work, and the answer holds the least of each window. The growth is scale times the work of
-// the large window over the work of the small one: about scale for work in proportion to the
-// input, and about scale times scale for work for each pair of units.
-//
-// small and large each build the input of one run, which is not the code under test, and return
-// the run: Growth builds each run of a window before the window opens. A run that changes its input,
-// as a write into a document does, gets a fresh input from each call, and Again is the small or
-// large of a run that changes nothing.
-//
-// The work of a window is the work of the caller's own code: the user CPU time of the thread that
-// runs the window (ThreadUser), on which onThread holds it. It leaves out the time that the kernel
-// spends for that thread: its system calls, its page faults, and the reclaim of memory before each
-// page that a machine or a cgroup short of memory gives, which grows with the memory that other
-// processes hold and not with the caller's work. It leaves out a wait for a core, the collector's
-// work on another thread, the work that the call hands to another goroutine, and the work of
-// another process that the call waits for, such as a database server: a test of such a call bounds
-// that work in another way, such as by the count of the statements that it sends to the server.
-// The work that the call does in user mode on its own thread is in it, the share of the
-// collector's work that an allocation does there among it.
-//
-// Growth refuses a reading that measures nothing, with an error that says why: a sample whose two
-// readings are of two threads, and a window whose least is no time or shorter than MinWindow
-// (ErrShortWindow), of which the split of the thread's time by the ticks of the scheduler is no
-// small part.
-func Growth(samples, scale int, small, large func() (run func())) (growth float64, smallWindow, largeWindow time.Duration, err error) {
-	inputs := []func() func(){small, large}
-	runs := []int{scale, 1}
-	names := []string{"smaller", "larger"}
-	least := make([]time.Duration, len(inputs))
-	for sample := range samples {
-		for index, input := range inputs {
-			window := make([]func(), runs[index])
-			for run := range window {
-				window[run] = input()
-			}
-			runtime.GC()
-			took, from, to := onThread(ThreadUser, func() {
-				for _, run := range window {
-					run()
-				}
-			})
-			if from != to {
-				return 0, 0, 0, fmt.Errorf("cputest: the %s window started on thread %d and ended on thread %d, so its two readings are of two threads",
-					names[index], from, to)
-			}
-			if sample == 0 || took < least[index] {
-				least[index] = took
-			}
-		}
-	}
-	for index, took := range least {
-		switch {
-		case took <= 0:
-			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window reads %v, no time, so it measures no work", names[index], took)
-		case took < MinWindow:
-			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window lasts %v, %w", names[index], took, ErrShortWindow)
-		}
-	}
-	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1], nil
-}
-
-// ErrShortWindow is Growth's refusal of a window shorter than MinWindow.
-var ErrShortWindow = fmt.Errorf("under the %v that a window lasts so that the split of a thread's time by the ticks of the scheduler is a small part of it: give each window more work", MinWindow)
-
-// Again is the small or large of Growth for run, a run that changes nothing that it reads: each
-// run of a window is run itself.
-func Again(run func()) func() func() {
-	return func() func() { return run }
 }
 
 // OnThread runs op with the calling goroutine locked to its OS thread and returns the CPU time,
@@ -239,4 +143,56 @@ func measure(resolution time.Duration, batch func(runs int) (time.Duration, erro
 		// average still lands the next window past it.
 		runs = max(runs*2, int(int64(runs)*int64(want)*5/(int64(took)*4))+1)
 	}
+}
+
+// Growth is how many times the work of large grows over the work of small, where the input of
+// large is scale times the input of small: about scale for work in proportion to the input, and
+// about scale times scale for work for each pair of units. Each side is timed on the thread clock
+// (MeasureThread), so its work is that of the goroutine that runs it, user and system, the page
+// faults of its allocation among it. A wait for a core is not in it, nor the collector's mark
+// workers, the work that a run hands to another goroutine or the work of another process that it
+// waits for, such as a database server: a test of such a call bounds that work in another way, such
+// as by the count of the statements that it sends to the server.
+//
+// small and large each build the input of one run, which is not the code under test, and return
+// the run, which does its work on the calling goroutine. A run that changes its input, as a write
+// into a document does, gets a fresh input from each call, and Again is the small or large of a run
+// that changes nothing. A unit of small is scale runs of it and a unit of large one run, so that for
+// work in proportion to the input the two windows last about as long, and a load of the machine
+// that comes and goes reaches both alike. MeasureThread builds every run of a window before the
+// window opens, and Growth collects the heap then (runtime.GC), so that neither window pays for the
+// garbage of the other. Each side is measured samples times, the two in turn; a busy machine only
+// adds to a side's time, so the least of each is its work. smallWork is the work of scale runs of
+// small, and largeWork of one run of large.
+func Growth(samples, scale int, small, large func() (run func())) (growth float64, smallWork, largeWork time.Duration) {
+	var least [2]time.Duration
+	for sample := range samples {
+		for side, unit := range [2]struct {
+			input func() func()
+			runs  int
+		}{{small, scale}, {large, 1}} {
+			took := MeasureThread(func(units int) func() {
+				runs := make([]func(), units*unit.runs)
+				for index := range runs {
+					runs[index] = unit.input()
+				}
+				runtime.GC()
+				return func() {
+					for _, run := range runs {
+						run()
+					}
+				}
+			})
+			if sample == 0 || took < least[side] {
+				least[side] = took
+			}
+		}
+	}
+	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1]
+}
+
+// Again is the small or large of Growth for run, a run that changes nothing that it reads: each
+// run of a window is run itself.
+func Again(run func()) func() func() {
+	return func() func() { return run }
 }
