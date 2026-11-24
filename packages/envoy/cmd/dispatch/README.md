@@ -2769,6 +2769,26 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
+Migration `20261124124112_after_merge_states` adds what the results read needs to say whether a result's commit holds the merge of the work, which of two merges is the newer, and which deploy a check of a live system counts results of.
+It gives `pull_request_heads` the column `merge_commit_sha`, not null and defaulted `''`, and the nullable `merged_at`: the commit that merged the pull request and the time GitHub merged it.
+A write stores both for a merged row alone, from the `pull_request` envelope or from GitHub's answer for the pull request, and a write that carries neither keeps what the row holds (`delivery.UpsertPullRequestHead`); an open row stores neither, since GitHub's `merge_commit_sha` of an open pull request is its test merge.
+A read orders an issue's merges by `merged_at`, newest first and a row with no time last (`delivery.Attributor.MergeOfIssue`, `MergeIn`, `delivery.LandingOf`), and not by `event_at`, which a later edit of an older pull request moves.
+`delivery.AttributionRuleVersion` is 6, so the reconcile's rule arm offers each stored merged row once more, at most `delivery.RejudgedHeadsPerPass` a pass, and its refresh writes both columns from GitHub's answer.
+`pull_request_heads_merged_head_ref`, partial on `state = 'merged'` and keyed `(lower(repo), head_ref)`, answers which merged pull requests had one branch as their head, which is how a merge into an integration branch is followed to the default branch.
+`commit_holds` keeps GitHub's answer whether one commit's history holds one merge commit, keyed `(repo, commit_sha, merge_sha)` under the lowercased repository (`delivery.Branches.CommitHolds`).
+Two commits never change, so a no is kept for good as a yes is, and a read that failed is kept nowhere.
+`deploys` is the record of deploys: the commit (`commit_sha`) of a repository (`repo`, lowercased) that a program (`program`, 1 to 64 characters of `a-z0-9-`) runs since `deployed_at`, with `recorded_by` naming who wrote it.
+A row's `source` is `delivery_run`, one row for each production run of the delivery timeline (`deploys_run`, unique on `source` and `run_id`), or `route`, a deploy posted to Dispatch.
+The current deploy of a program is its row of the latest `deployed_at`, then the higher `id` (`deploys_newest`).
+`check_results` gains `check_subject` and `check_program`, not null and defaulted `''`: the check's `subject` and `program` as the record route read them.
+They decide no answer; they bound which open issues a recorded deploy is announced on, and `check_results_live` holds the rows that name a subject.
+No build of this release lets an author write either attribute, so no stored result names one and nothing is backfilled.
+The rename pass writes `commit_holds.repo` and `deploys.repo` (below).
+Each new column has a constant default or none, so it rewrites no row, and each ALTER holds ACCESS EXCLUSIVE on its table for the catalog write alone; each `create index` on an existing table holds `SHARE` on it while it reads it, inside the runner's one transaction.
+The release before it neither reads nor writes any of it and names its columns in each insert, so it rolls beside this one; its census answers `0`.
+Rolling Dispatch back past it is an image rollback alone.
+`20261124124112_after_merge_states.down.sql` is the by-hand script that also takes the schema back, run with no process of this release serving: it loses every stored hold, deploy, merge commit, merge time and mark, and deletes the migration's version row, so the next boot of this release applies it again.
+
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
@@ -2951,8 +2971,8 @@ It gives that one value, which nothing changes after the read (`refs.Renames`), 
 A read that fails is logged at ERROR and counted as a failure of the pass below, and the server then serves with no pairs.
 
 Before it serves, the boot writes the new name of each pair in place of the old name in every stored repository field of Dispatch (`store.RewriteRenamedRepositories`, a boot task bounded at 30 s).
-It writes fourteen lines of fields in this order, each line in one transaction:
-`issues.repo`, `projects.default_repo`, `check_results.commit_repo`, `issue_external_links.url`, `pull_request_heads.repo` and `.url`, `branch_commits.repo`, `delivery_pull_requests.repo`, `.url` and `.attribution_cited_issues`, `delivery_runs.repo` and `.url` with `delivery_run_jobs.repo`, `delivery_run_warnings.repo`, `delivery_changes.repo`, `delivery_settings.deploy_repo` and `.excluded_repos`, `delivery_reconcile_progress.scope`, `architecture_sources.repo` and `ci_reconcile_passes.cursor_repository`.
+It writes sixteen lines of fields in this order, each line in one transaction:
+`issues.repo`, `projects.default_repo`, `check_results.commit_repo`, `issue_external_links.url`, `pull_request_heads.repo` and `.url`, `branch_commits.repo`, `commit_holds.repo`, `deploys.repo`, `delivery_pull_requests.repo`, `.url` and `.attribution_cited_issues`, `delivery_runs.repo` and `.url` with `delivery_run_jobs.repo`, `delivery_run_warnings.repo`, `delivery_changes.repo`, `delivery_settings.deploy_repo` and `.excluded_repos`, `delivery_reconcile_progress.scope`, `architecture_sources.repo` and `ci_reconcile_passes.cursor_repository`.
 A name matches when its lower case is the pair's old name.
 A URL matches when its host is `github.com` or `www.github.com` and its first two path segments are the old `owner/name` in any case, and the pass writes the new `owner/name` there and keeps every other character.
 A scope of the delivery reconcile's progress matches where it holds the old name as a token.
