@@ -314,15 +314,17 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 //
 //   - None for a spent copy (Spent). A refusal and a supersession spend a copy at once. A send
 //     spends it once a role of the pod it was sent to registers (store.Store.RecordPodRegistration):
-//     from then on a role may have changed that workspace, and the launcher's own record of the
-//     restore it ran lives in the process that ran it, so a roles container that restarts on the
-//     pod's own disk comes back with that record gone, and a copy sent again there would `jj edit`
-//     back to its head over the role's work. Until a role registers no role of that pod has run,
-//     so a pod, or its roles container, that ends first leaves the copy unspent for the next ask,
-//     the restarted container's or the next pod's, and that ask is decided by every rule here, as
-//     the first send was. The attempt is recorded before any slice leaves the daemon, so a send
-//     that fails halfway, a restore that fails and a restore whose report never arrived all leave
-//     the same row.
+//     from then on a role may have changed that workspace, and a copy sent again there would
+//     `jj edit` back to its head over the role's work. Until a role registers no role of that pod
+//     has run, so a pod, or its roles container, that ends first leaves the copy unspent for the
+//     next ask, the restarted container's or the next pod's, and that ask is decided by every rule
+//     here, as the first send was. The restarted container's launcher then reads the records the
+//     launcher before it left on the pod's own disk (internal/launcher's bundleRestore): it
+//     restores the copy where its container restarted before the pod's first role start or while
+//     a restore was cut off in the middle, and where a restore ended there it refuses the copy and
+//     sends that restore's report. The attempt is recorded before any slice leaves the daemon, so
+//     a send that fails halfway, a restore that fails and a restore whose report never arrived all
+//     leave the same row.
 //   - None spent by the pod the work came off (Source). Every start of every role asks for its
 //     pod (sandbox's launchers.start), and that pod goes on starting roles — a release stops them
 //     and a role relaunched before the teardown starts again, and a cadence copies a pod that is

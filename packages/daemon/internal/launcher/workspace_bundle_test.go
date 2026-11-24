@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -229,7 +230,9 @@ func TestTheRestOfASequenceThatBeganBeforeTheFirstStartIsRefusedAfterIt(t *testi
 
 // A start that cannot record the workspace in use is refused, so no role ever works a workspace
 // that a later launcher, finding no record, could restore a bundle over. The failure is one root
-// meets too: the record's path resolves through a .jj that is a regular file. Once it clears, a
+// meets too: the record's path resolves through a .jj that is a regular file. The launcher reads
+// the record of a restore through that .jj first, so the refusal names that record as unreadable,
+// which counts as a restore cut off and starts no role either. Once it clears, a
 // new launcher over the workspace, which nothing has worked, takes the bundle the take left
 // unspent and restores it. This test calls no skip, and no helper it calls skips: jj and git are
 // required before the fixture, whose own skip is for a missing one.
@@ -278,8 +281,8 @@ func TestAStartWhoseWorkspaceCannotBeMarkedIsRefusedAndTheUnspentBundleRestoresA
 			t.Fatalf("generation %d's start on a workspace that could not be marked answered %#v, and its child %d ran; want the start refused and the child never ran",
 				generation, got, pid)
 		}
-		if !strings.Contains(got.Error, "mark the workspace") || !strings.Contains(got.Error, ws) {
-			t.Fatalf("generation %d's start answered %#v, want a refusal naming the mark of %s", generation, got, ws)
+		if !strings.Contains(got.Error, "could not be read") || !strings.Contains(got.Error, ws) || !strings.Contains(got.Error, "the roles do not start") {
+			t.Fatalf("generation %d's start answered %#v, want a refusal naming the unreadable record of %s", generation, got, ws)
 		}
 		if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("generation %d's marker %s is there (%v); want the child never ran", generation, marker, err)
@@ -323,6 +326,223 @@ func TestAStartWhoseWorkspaceCannotBeMarkedIsRefusedAndTheUnspentBundleRestoresA
 	if inUse, err := workspace.InUse(ws); !inUse || err != nil {
 		t.Fatalf("after the restore InUse = %t, %v; want true", inUse, err)
 	}
+}
+
+// A roles container that restarts after its restore ended, before any connection carried the
+// report, comes back with a launcher process of its own over the same disk. That process holds
+// nothing of the one before in memory, but the restore's record on the disk holds the report
+// (workspace.RecordRestore), so it owes the same report, and it still refuses every slice of the
+// bundle sent again, since the in-use record is there too. Once a connection has carried the
+// report (sent) the record is gone, and the launcher after that owes nothing.
+func TestALauncherRestartedAfterItsRestoreEndedStillOwesTheReportAndRefusesTheBundle(t *testing.T) {
+	frames, err := shimwire.SplitWorkspaceBundle("restore-restarted", 11, manySlices())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := newWorkspace(t)
+	env := []string{"LEGION_WORKSPACE=" + dir}
+	first := newBundleRestore(refusingStarter(t), dir)
+	for _, frame := range frames {
+		if got := first.receive(frame); !got.OK {
+			t.Fatalf("slice %d answered %#v", frame.Index, got)
+		}
+	}
+	// The workspace records no creation, so the restore ends before it starts anything, and its
+	// report says why.
+	if got, err := first.apply(context.Background(), env); got.Restored || got.Unrecorded != nil || err != nil {
+		t.Fatalf("the first launcher's apply answered %+v, %v; want a restore that failed, recorded, and no error", got, err)
+	}
+	report := first.owed()
+	if report == nil || report.ID != frames[0].ID || report.Release != 11 || report.OK || report.Error == "" {
+		t.Fatalf("the first launcher owes %+v, want the failed restore of sequence %q of release 11 with its reason", report, frames[0].ID)
+	}
+
+	// The restarted container's launcher: a restore of its own over the same disk.
+	restarted := newBundleRestore(refusingStarter(t), dir)
+	if owed := restarted.owed(); owed == nil || *owed != *report {
+		t.Fatalf("the restarted launcher owes %+v, want the first launcher's report %+v", owed, *report)
+	}
+	for _, frame := range frames {
+		if got := restarted.receive(frame); got.OK || got.Held || got.Error != workspaceInUseRefusal {
+			t.Fatalf("slice %d to the restarted launcher answered %#v; want it refused, since a restore has run on the workspace", frame.Index, got)
+		}
+	}
+	if got, err := restarted.apply(context.Background(), env); got != (restoreResult{}) || err != nil {
+		t.Fatalf("the restarted launcher's apply answered %+v, %v; want nothing and no error", got, err)
+	}
+	if err := restarted.sent(restarted.owed()); err != nil {
+		t.Fatalf("the report's send = %v", err)
+	}
+	if owed := newBundleRestore(refusingStarter(t), dir).owed(); owed != nil {
+		t.Fatalf("a launcher after a connection carried the report owes %+v, want nothing", owed)
+	}
+}
+
+// A roles container killed in the middle of its restore leaves the in-use record and the
+// restore's record begun and never ended (bundleRestore.apply). No role has run there, since none
+// starts before a restore ends, but the workspace may hold part of the restore, and the work is
+// in the daemon's database alone. So the launcher that comes back starts no role while no copy has
+// been sent again, each start refused with why, and the begun record stays for the start that
+// restores the copy.
+func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
+	dir := newWorkspace(t)
+	begun := workspace.RestoreRecord{ID: "restore-cut-off", Release: 11}
+	if err := workspace.RecordRestore(dir, begun); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.MarkInUse(dir); err != nil {
+		t.Fatal(err)
+	}
+	g := newSessionRig(t, Config{Workspace: dir})
+	// The daemon's retry is a new start, which finds the restore cut off as the first did.
+	for _, generation := range []uint64{1, 2} {
+		marker := filepath.Join(t.TempDir(), "marker")
+		command := g.childStart(generation, marker, nil)
+		command.Env = append(command.Env, "LEGION_WORKSPACE="+dir)
+		got := g.start(command)
+		if got.OK {
+			pid, _ := published(t, marker)
+			t.Fatalf("generation %d's start over a restore cut off answered %#v, and its child %d ran; want the start refused", generation, got, pid)
+		}
+		for _, want := range []string{"restore of release 11", dir, "cut off", "may hold part of it", "no copy of the work has been sent again", "the roles do not start"} {
+			if !strings.Contains(got.Error, want) {
+				t.Fatalf("generation %d's start answered %#v, want its refusal to say %q", generation, got, want)
+			}
+		}
+		if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("generation %d's marker %s is there (%v); want the child never ran", generation, marker, err)
+		}
+	}
+	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record != begun {
+		t.Fatalf("after the refused starts the restore's record is %+v, %t, %v; want it begun as it was, %+v", record, ok, err, begun)
+	}
+	if g.restored != nil {
+		t.Fatalf("the launcher reported %#v, want no report of a restore that never ended", g.restored)
+	}
+}
+
+// A record of a restore that cannot be read counts as a restore cut off, not as none: counted as
+// none, the roles would start on a workspace no restore may have put the work back into. So the
+// launcher takes a slice of the copy the daemon sends again, and a start with no copy sent again
+// runs no role and says why.
+func TestAnUnreadableRestoreRecordCountsAsARestoreCutOff(t *testing.T) {
+	dir := newWorkspace(t)
+	if err := workspace.MarkInUse(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".jj", "legion-restore"), []byte("{not a record"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := workspace.ReadRestoreRecord(dir); err == nil {
+		t.Fatal("premise: the damaged record reads without an error")
+	}
+	frames, err := shimwire.SplitWorkspaceBundle("restore-unreadable", 12, shimwire.WorkspaceBundle{Bundle: []byte("PACK the work"), Head: "f2f13454", At: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := newBundleRestore(procgroup.NoReaper, dir).receive(frames[0]); !got.OK {
+		t.Fatalf("a slice over an unreadable record answered %#v; want it taken, as over a restore cut off", got)
+	}
+	g := newSessionRig(t, Config{Workspace: dir})
+	marker := filepath.Join(t.TempDir(), "marker")
+	command := g.childStart(1, marker, nil)
+	command.Env = append(command.Env, "LEGION_WORKSPACE="+dir)
+	got := g.start(command)
+	if got.OK {
+		pid, _ := published(t, marker)
+		t.Fatalf("the start over an unreadable record answered %#v, and its child %d ran; want the start refused", got, pid)
+	}
+	for _, want := range []string{"could not be read", dir, "cut off", "no copy of the work has been sent again", "the roles do not start"} {
+		if !strings.Contains(got.Error, want) {
+			t.Fatalf("the start answered %#v, want its refusal to say %q", got, want)
+		}
+	}
+	if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the marker %s is there (%v); want the child never ran", marker, err)
+	}
+}
+
+// A roles container killed in the middle of its restore leaves what the restore had done so far:
+// the in-use record, the restore's record begun, and its temporary branches, the git refs and,
+// once `jj git import` has run, jj's bookmarks of them. The launcher that comes back takes the
+// copy the daemon sends again, since no role has run there (fence), clears those branches
+// (clearRestoreBranches) and restores the copy to its end: the workspace holds what a clean
+// restore leaves, and the record holds the restore ended, the report the daemon is owed.
+func TestARestoreCutOffInTheMiddleIsRunAgainToItsEndByTheNextLauncher(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	saved := f.bundleWorkspaceOne()
+
+	// What a clean restore leaves, in a pod's workspace of its own.
+	clean := f.secondPod("ws-clean")
+	if notice := f.restoreInto(clean, saved, 1); !strings.Contains(notice, "is restored") {
+		t.Fatalf("the clean restore's notice is %q", notice)
+	}
+	want := f.restoredState(clean)
+
+	ws := f.secondPod("ws-cut-off")
+	frames, err := shimwire.SplitWorkspaceBundle("restore-"+ws, bundleRelease, saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The killed launcher's restore, as far as its `jj git import`: the records apply writes
+	// before it, the unbundle, a temporary branch per saved head and jj's bookmarks of them.
+	if err := workspace.RecordRestore(ws, workspace.RestoreRecord{ID: frames[0].ID, Release: bundleRelease}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.MarkInUse(ws); err != nil {
+		t.Fatal(err)
+	}
+	body := filepath.Join(t.TempDir(), "saved.bundle")
+	if err := os.WriteFile(body, saved.Bundle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := f.GitDir(ws)
+	f.Run(ws, "git", "--git-dir="+gitDir, "bundle", "unbundle", body)
+	for index, tip := range saved.Tips {
+		f.Run(ws, "git", "--git-dir="+gitDir, "update-ref", restoreRefHeadPrefix+strconv.Itoa(index), tip)
+	}
+	f.Run(ws, "jj", "git", "import", "-R", ws)
+	if listed := f.Run(ws, "jj", "bookmark", "list", "-R", ws, "--ignore-working-copy", "-T", `if(remote, "", name ++ "\n")`); !strings.Contains(listed, restoreRefPrefix+"0") {
+		t.Fatalf("premise: the killed restore's bookmarks are not in the workspace:\n%s", listed)
+	}
+
+	// The restarted container's launcher, sent the copy again.
+	restarted := newBundleRestore(procgroup.NoReaper, ws)
+	for _, frame := range frames {
+		if got := restarted.receive(frame); !got.OK || got.Held != (frame.Index == len(frames)-1) {
+			t.Fatalf("slice %d after the cut-off restore answered %#v; want it taken, since no role has run on the workspace", frame.Index, got)
+		}
+	}
+	env := mergeEnv(os.Environ(), append(append([]string{}, f.Env...), "LEGION_WORKSPACE="+ws))
+	got, err := restarted.apply(context.Background(), env)
+	if err != nil || !got.Restored || got.Unrecorded != nil || !strings.Contains(got.Notice, "is restored") {
+		t.Fatalf("the restore over the cut-off one answered %+v, %v; want the saved work restored and recorded", got, err)
+	}
+	f.requireRestored(ws, saved)
+	if state := f.restoredState(ws); state != want {
+		t.Fatalf("the restore over the cut-off one left the workspace\n%s\nwant it as a clean restore leaves one\n%s", state, want)
+	}
+	ended := workspace.RestoreRecord{ID: frames[0].ID, Release: bundleRelease, Ended: true, OK: true}
+	if record, ok, err := workspace.ReadRestoreRecord(ws); !ok || err != nil || record != ended {
+		t.Fatalf("the restore's record is %+v, %t, %v; want %+v", record, ok, err, ended)
+	}
+}
+
+// restoredState is what a restore leaves in workspace, as one string a test compares across two
+// pods' workspaces: every commit jj shows but the working copies, with its description, every
+// local bookmark with its commit, and this workspace's working-copy commit. The working copies are
+// left out because each pod's clone has a default workspace whose working-copy commit is that
+// clone's own; the restored workspace's is the last line.
+func (f *bundleFixture) restoredState(workspace string) string {
+	f.t.Helper()
+	log := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all() ~ working_copies()", "--no-graph",
+		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
+	bookmarks := f.Run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
+		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
+	head := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+	return "commits:\n" + log + "bookmarks:\n" + bookmarks + "working copy: " + head
 }
 
 // The launcher's command loop ends its connection on a frame type it does not know, so the bundle

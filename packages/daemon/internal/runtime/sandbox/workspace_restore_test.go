@@ -663,12 +663,14 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 }
 
 // The line of a closed copy names the newer copy and what this pod's ask did with it, which is not
-// always a send. Here the newer copy is this pod's own: its first role start could not read the
-// store, so it started on what was pushed with nothing of its ask recorded, worked on, and was
-// copied, and the release bundle of the pod before it was never restored. The pod's next role
-// start is sent neither: its own copy is its workspace's work, and the bundle is closed all the
-// same, since a pod that restored it would put it over the newer work. Its line says the newer
-// one was answered nothing here rather than naming no copy at all.
+// always a send. Here the newer copy is this pod's own, and the release bundle of the pod before
+// it was never restored: its first role start could not read the store, so the start failed and
+// nothing of its ask was recorded (restoreWorkspace holds a start whose take fails). The daemon
+// lets no role work past such a take, so the copy of this pod's own that a cadence would take had
+// its roles worked is written by hand. The pod's next role start is sent neither: its own copy is
+// its workspace's work, and the bundle is closed all the same, since a pod that restored it would
+// put it over the newer work. Its line says the newer one was answered nothing here rather than
+// naming no copy at all.
 func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *testing.T) {
 	st := bundleStore(t)
 	ctx := context.Background()
@@ -686,7 +688,10 @@ func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *te
 	}
 	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
 	spec := workerSpec(t)
-	g.spawn(spec)
+	g.launcher(spec.Claim)
+	if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "could not be taken") {
+		t.Fatalf("the start whose take failed answered %v; want it failed with the take's error", err)
+	}
 	pod := string(g.pod(SandboxName(spec.Claim)).UID)
 	if frames := g.sent(spec.Claim); countOf(frames, shimwire.TypeLauncherBundle) != 0 {
 		t.Fatalf("the pod whose take failed was sent %v, want no slice", frameTypes(frames))

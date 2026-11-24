@@ -374,12 +374,15 @@ func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 //
 // WorkspaceBundleSend is the attempt: the store records podUID against the copy before answering
 // the body, and the copy is spent once a role of that pod registers
-// (store.Store.RecordPodRegistration), after which no body of it is answered again. A launcher
-// holds its record of the restore it ran in memory, so a roles container that restarts comes back
-// to the pod's own disk with that record gone; once a role has registered there, the workspace can
-// hold work past the copy, and the daemon's record is what keeps the copy from being applied over
-// it. A pod, or its roles container, that ends before any role registered leaves the copy unspent,
-// and the next call, the restarted container's or the next pod's, decides it again.
+// (store.Store.RecordPodRegistration), after which no body of it is answered again: once a role
+// has registered, the workspace can hold work past the copy, and the daemon's record is what keeps
+// the copy from being sent there again. A pod, or its roles container, that ends before any role
+// registered leaves the copy unspent, and the next call, the restarted container's or the next
+// pod's, decides it again. The restarted container's launcher restores what it is sent only where
+// its container restarted before the pod's first role start or while a restore was cut off in the
+// middle; where a restore ended on the pod's disk, it refuses the copy and sends that restore's
+// report, which it reads off the records the launcher before it left there (internal/launcher's
+// bundleRestore).
 //
 // WorkspaceBundleLeftForNextPod is nothing sent and nothing recorded, of a copy written after
 // this pod first asked: the pod has been working since that ask, so the copy is not applied over

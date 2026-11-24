@@ -134,9 +134,13 @@ func TestAnUnspentCopyIsSentToThePodAfterAPodWhereNoRoleRegistered(t *testing.T)
 }
 
 // A copy sent to a pod whose roles container restarts before any role registered is sent again
-// to that pod: the launcher's record of the restore it ran died with the container, and no role
-// has touched the workspace since, so the restore runs again over the same disk. The send is the
-// same copy under the same restore id, which is what the launcher's slice sequence is named by.
+// to that pod: no role has touched the workspace, and the store, which cannot tell how far the
+// pod's launcher got, leaves that to the launcher. That is the launcher's half: the restarted
+// container's launcher restores the copy where its container restarted before the pod's first
+// role start or while a restore was cut off in the middle, and where a restore ended on the disk
+// it refuses the copy and sends that restore's report (internal/launcher's bundleRestore). The
+// send is the same copy under the same restore id, which is what the launcher's slice sequence is
+// named by.
 func TestAnUnspentCopyIsSentAgainToARestartedContainerOfItsPod(t *testing.T) {
 	s := migratedStore(t)
 	for i, kind := range unspentCopyKinds {

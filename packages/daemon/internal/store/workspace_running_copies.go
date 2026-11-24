@@ -368,8 +368,9 @@ var (
 // refused or superseded copy is spent from then on, and a sent one once a role of this pod
 // registers (heldCopy). It is one transaction because the choice is one decision: made as separate
 // statements it could close the older copy and then fail to take the newer, leaving the store
-// half-changed and the pod given neither. A failure anywhere in it leaves every row as it was, the
-// first ask's included.
+// half-changed and the pod given neither. A failure that did not commit leaves every row as it
+// was, the first ask's included; one whose outcome stays unknown may have recorded them
+// (askWorkspaceCopies).
 //
 // project is the token of the daemon whose pod asks (claim.ProjectToken), and an issue's copies
 // are project's only where project records the issue (issues.project, the Dispatch key the token
@@ -465,7 +466,7 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 		return bundleTake, runningTake, nil
 	})
 	if errors.Is(err, ErrCommitOutcomeUnknown) {
-		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: the attempt of each copy to this pod and the pod's first ask may be recorded, and the work stays in the database", issue, podUID, err)
+		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: the attempt of each copy to this pod and the pod's first ask may be recorded, and each copy stays owed to the pod until a role of it registers", issue, podUID, err)
 	}
 	if err != nil {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s to restore: %w", issue, podUID, err)
@@ -488,13 +489,13 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 // a copy the pod's kept volume holds (dropCopy), and the take of every other (takeCopy). A failure
 // that did not commit leaves every row as it was, the first ask's included, and is answered
 // unwrapped, so the caller names the act that failed. It runs until one run commits
-// (transactUntilCommitted): a rerun after a commit whose reply was lost reads the attempt that run
-// recorded, and sends the copy again while no role of the pod has registered (heldCopy). A run
-// whose outcome stays unknown (ErrCommitOutcomeUnknown) may have recorded the attempt and the
-// pod's first ask. The copy then stays unspent until a role of the pod registers, so a start of
-// the pod's roles before that asks again and is sent it; after it no pod is sent the copy, and its
-// work stays in the database. Only a committed refusal, supersession or drop answers a pod nothing
-// at once.
+// (transactUntilCommitted): where a commit's reply is lost, the store reads whether that run
+// committed and answers with that run's own ask, and it runs the body again only after a run the
+// store says did not commit, which recorded nothing. A run whose outcome stays unknown at ctx's end
+// (ErrCommitOutcomeUnknown) may have recorded the attempt and the pod's first ask. The copy then
+// stays owed to the pod, unspent until a role of it registers, and the pod's start, which that
+// error holds (internal/runtime/sandbox's restoreWorkspace), asks again and is sent it. A committed
+// refusal or supersession spends a copy at once, and a committed drop deletes it.
 func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID string,
 	decide func(ctx context.Context, tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
 ) (runtime.WorkspaceRestore, error) {
@@ -646,8 +647,12 @@ func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time
 // registration on a role runs there and may change the workspace, and a second restore of the
 // copy there would move that work back. Until then the copy stays unspent, so a pod, or its roles
 // container, that ends before any role of it registered leaves the copy for the next start of the
-// issue: that pod's restarted container, whose launcher holds no record of the restore it ran and
-// whose workspace no role has touched since, or the pod after it.
+// issue: that pod's restarted container, whose workspace no role has touched since, or the pod
+// after it. What the restarted container's launcher does with the copy is its own half, read off
+// the records the launcher before it left on the pod's disk (internal/launcher's bundleRestore):
+// it restores the copy where its container restarted before the pod's first role start or while
+// a restore was cut off in the middle, and refuses it after a restore ended there, sending that
+// restore's report instead.
 //
 // The daemon calls it before it answers a registration of a role in that pod, the first and every
 // one after it (internal/supervise's register and reregister, through Deps.PodRegistered), so no
@@ -696,8 +701,10 @@ func (s *Store) RecordPodRegistration(ctx context.Context, issue, podUID string)
 // stands with registered_at null (RecordPodRegistration). Such a pod's roles ran nothing, so its
 // restarted container and the pod after it are sent the copy again, and the decision is made
 // again for that ask, every rule of it (runtime.DecideWorkspaceRestore); a send records the new
-// pod (takeCopy). Every other attempt spends the copy: a refusal and a supersession, a send to a
-// pod where a role registered, and a send to a pod whose row is gone.
+// pod (takeCopy). The restarted container's launcher restores what it is sent only where no
+// restore ended on that disk before (RecordPodRegistration). Every other attempt spends the copy:
+// a refusal and a supersession, a send to a pod where a role registered, and a send to a pod whose
+// row is gone.
 func heldCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue string) (runtime.WorkspaceCopyHeld, error) {
 	var held runtime.WorkspaceCopyHeld
 	err := tx.QueryRow(ctx, fmt.Sprintf(`select c.at, c.written_at,

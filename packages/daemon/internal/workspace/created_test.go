@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -214,6 +215,167 @@ func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
 		var pathErr *fs.PathError
 		if ok || !errors.As(err, &pathErr) || pathErr.Path != path {
 			t.Errorf("Created after .jj was moved = %t, %v; want a refusal naming %s", ok, err, path)
+		}
+	})
+}
+
+// The restore record is how a launcher restarted over the workspace's disk knows what the one
+// before it did: a restore begun and cut off, or ended with a report the daemon is still owed.
+// RecordRestore writes it whole over the one before, ReadRestoreRecord reads back what was
+// written, and RemoveRestoreRecord takes it off, so a workspace that never had one and one whose
+// report reached the daemon both read as none. A record that is not one the launcher wrote is
+// refused by name rather than read as a report.
+func TestTheRestoreRecordIsReadAsItWasWrittenUntilItIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	if record, ok, err := ReadRestoreRecord(dir); ok || err != nil {
+		t.Fatalf("ReadRestoreRecord of a directory with no .jj = %+v, %t, %v; want none and no error", record, ok, err)
+	}
+	if err := RemoveRestoreRecord(dir); err != nil {
+		t.Fatalf("RemoveRestoreRecord of a directory with no .jj = %v, want nil", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if record, ok, err := ReadRestoreRecord(dir); ok || err != nil {
+		t.Fatalf("ReadRestoreRecord of a fresh .jj = %+v, %t, %v; want none and no error", record, ok, err)
+	}
+
+	begun := RestoreRecord{ID: "restore-INFRA-1117-11", Release: 11}
+	ended := RestoreRecord{ID: begun.ID, Release: begun.Release, Ended: true, Error: "the released workspace's saved work was not restored (a reason)"}
+	for _, want := range []RestoreRecord{begun, ended} {
+		if err := RecordRestore(dir, want); err != nil {
+			t.Fatalf("RecordRestore(%+v) = %v", want, err)
+		}
+		if got, ok, err := ReadRestoreRecord(dir); !ok || err != nil || got != want {
+			t.Fatalf("ReadRestoreRecord after RecordRestore(%+v) = %+v, %t, %v", want, got, ok, err)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".jj", restoreTemp)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the write left its temporary file behind (%v)", err)
+		}
+	}
+	if err := RemoveRestoreRecord(dir); err != nil {
+		t.Fatalf("RemoveRestoreRecord = %v", err)
+	}
+	if record, ok, err := ReadRestoreRecord(dir); ok || err != nil {
+		t.Fatalf("ReadRestoreRecord after RemoveRestoreRecord = %+v, %t, %v; want none", record, ok, err)
+	}
+	if err := RemoveRestoreRecord(dir); err != nil {
+		t.Fatalf("a second RemoveRestoreRecord = %v, want nil: there is nothing to remove", err)
+	}
+
+	for name, body := range map[string]string{
+		"not JSON":                   "begun\n",
+		"no slice sequence":          "{}\n",
+		"over the record's own size": `{"id":"x","error":"` + strings.Repeat("a", restoreRecordLimit) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, ".jj", restoreFile)
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok, err := ReadRestoreRecord(dir); ok || err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("ReadRestoreRecord = %+v, %t, %v; want a refusal naming %s", got, ok, err, path)
+			}
+		})
+	}
+}
+
+// The restore record is on the issue's volume, which every agent of the issue can write, so a link
+// or a directory planted at its name is never taken for the record: a link is not followed, read
+// or written through, and a directory is refused by every call. A .jj that is a link is refused
+// before the record is read, written or removed, as for the in-use record.
+func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
+	fresh := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	record := RestoreRecord{ID: "restore-INFRA-1117-11", Release: 11, Ended: true, OK: true}
+
+	t.Run("a link at the record's name", func(t *testing.T) {
+		dir := fresh(t)
+		// The link names a record a launcher could have written, so only a read that follows it
+		// would answer one.
+		elsewhere := fresh(t)
+		if err := RecordRestore(elsewhere, record); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(elsewhere, ".jj", restoreFile)
+		planted, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, ".jj", restoreFile)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := ReadRestoreRecord(dir); ok || !errors.Is(err, syscall.ELOOP) {
+			t.Fatalf("ReadRestoreRecord of a link = %+v, %t, %v; want ELOOP, the link not followed", got, ok, err)
+		}
+		begun := RestoreRecord{ID: "restore-INFRA-1117-12", Release: 12}
+		if err := RecordRestore(dir, begun); err != nil {
+			t.Fatalf("RecordRestore over a link = %v", err)
+		}
+		if got, ok, err := ReadRestoreRecord(dir); !ok || err != nil || got != begun {
+			t.Fatalf("after RecordRestore over a link ReadRestoreRecord = %+v, %t, %v; want the record written in the link's place", got, ok, err)
+		}
+		if err := RemoveRestoreRecord(dir); err != nil {
+			t.Fatalf("RemoveRestoreRecord = %v", err)
+		}
+		if after, err := os.ReadFile(target); err != nil || string(after) != string(planted) {
+			t.Fatalf("the link's target reads %q (%v) after the write and the remove, want it as it was, %q", after, err, planted)
+		}
+	})
+
+	t.Run("a directory at the record's name", func(t *testing.T) {
+		dir := fresh(t)
+		path := filepath.Join(dir, ".jj", restoreFile)
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := ReadRestoreRecord(dir); ok || err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("ReadRestoreRecord of a directory = %+v, %t, %v; want a refusal of what is not a regular file", got, ok, err)
+		}
+		if err := RecordRestore(dir, record); err == nil {
+			t.Fatal("RecordRestore over a directory succeeded, want it refused")
+		}
+		if err := RemoveRestoreRecord(dir); err == nil {
+			t.Fatal("RemoveRestoreRecord of a directory succeeded, want it refused")
+		}
+		if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+			t.Fatalf("the directory at the record's name is gone or changed (%v)", err)
+		}
+	})
+
+	t.Run("a .jj that is a link", func(t *testing.T) {
+		dir, target := t.TempDir(), t.TempDir()
+		if err := os.Symlink(target, filepath.Join(dir, ".jj")); err != nil {
+			t.Fatal(err)
+		}
+		if err := RecordRestore(dir, record); !errors.Is(err, errLinkedJJ) {
+			t.Errorf("RecordRestore through a linked .jj = %v, want errLinkedJJ", err)
+		}
+		if _, err := os.Lstat(filepath.Join(target, restoreFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the record was written through the link into %s (%v)", target, err)
+		}
+		if err := os.WriteFile(filepath.Join(target, restoreFile), []byte(`{"id":"planted","ended":true,"ok":true}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := ReadRestoreRecord(dir); ok || !errors.Is(err, errLinkedJJ) {
+			t.Errorf("ReadRestoreRecord through a linked .jj = %+v, %t, %v; want errLinkedJJ", got, ok, err)
+		}
+		if err := RemoveRestoreRecord(dir); !errors.Is(err, errLinkedJJ) {
+			t.Errorf("RemoveRestoreRecord through a linked .jj = %v, want errLinkedJJ", err)
+		}
+		if _, err := os.Lstat(filepath.Join(target, restoreFile)); err != nil {
+			t.Errorf("the record planted in %s was removed through the link (%v)", target, err)
 		}
 	})
 }

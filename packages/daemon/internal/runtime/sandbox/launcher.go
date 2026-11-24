@@ -403,10 +403,14 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// The newer of the two copies of this issue's workspace the daemon holds goes over next: the
 	// launcher holds it and restores it into the workspace before it runs the role's command, so
 	// the restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). A restore that fails or outruns its own bound
-	// does not stop the start, but it runs under the start's context, so one slow enough to reach
-	// that context's deadline costs the start as well (bundleRestoreBound).
-	d.restoreWorkspace(ctx, token, podUID)
+	// included (internal/launcher's bundleRestore). A copy owed to the pod that could not be taken
+	// or put in the launcher's hands fails the start, so no role starts on what was pushed while
+	// the copy waits; a restore the launcher holds and then fails, and a slice it refuses, do not.
+	// The hop runs under the start's context, so one slow enough to reach that context's deadline
+	// costs the start as well (bundleRestoreBound).
+	if err := d.restoreWorkspace(ctx, token, podUID); err != nil {
+		return fmt.Errorf("launcher %s start generation %d: %w", token, command.Generation, err)
+	}
 	answer, _, err := d.requestSession(ctx, session, command, command.ID)
 	if err != nil {
 		return err

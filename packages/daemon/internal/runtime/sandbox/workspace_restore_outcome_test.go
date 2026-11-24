@@ -194,70 +194,99 @@ func TestABundleTakeWhoseOutcomeStaysUnknownLeavesTheCopyUnspentUntilARoleRegist
 	}
 }
 
-// The restored bundle's confirmation runs on the launcher's one report of a restore, so a
-// confirmation whose outcome was unknown waits for the store's answer rather than leaving the row
-// to hold the pod: the bundle's row goes, and its work stays as the restoring pod's own copy.
-func TestARestoredBundleKeepWhoseReplyIsLostKeepsIt(t *testing.T) {
-	st := bundleStore(t)
-	saved := savedWorkspaceBundle()
-	saveReleaseBundle(t, st, saved)
-	const podUID = "pod-that-restored-the-bundle"
-	if take, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID); err != nil ||
-		take.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the take of the bundle for %s = %+v, %v; want it sent", podUID, take, err)
+// A restored copy's confirmation runs on the launcher's one report of a restore, so it runs until
+// one run commits, for either kind of copy: a confirmation whose reply was lost waits for the
+// store's answer, and one that rolled back runs again, rather than leaving a release bundle's row
+// to hold the pod or a running copy owed to a pod that already holds its work. Each row ends with
+// the work kept as the restoring pod's own running copy.
+func TestARestoredCopyKeepIsKeptWhateverBecameOfItsFirstCommit(t *testing.T) {
+	kinds := []struct {
+		name      string
+		statement string
+		// save stores the copy, takes it for podUID and answers the keep of it, with what the
+		// row the keep leaves must hold.
+		save func(t *testing.T, st *store.Store, podUID string) (keep func(context.Context, *store.Store) error, kept func(t *testing.T))
+	}{
+		{"release bundle", "delete from workspace_bundles", func(t *testing.T, st *store.Store, podUID string) (func(context.Context, *store.Store) error, func(*testing.T)) {
+			saved := savedWorkspaceBundle()
+			saveReleaseBundle(t, st, saved)
+			if take, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID); err != nil ||
+				take.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+				t.Fatalf("the take of the bundle for %s = %+v, %v; want it sent", podUID, take, err)
+			}
+			return func(ctx context.Context, s *store.Store) error {
+					return s.KeepRestoredWorkspaceBundle(ctx, testTree, podUID, saved.Release)
+				}, func(t *testing.T) {
+					if _, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || held {
+						t.Fatalf("the store holds the bundle = %t (%v), want its row gone", held, err)
+					}
+					var source string
+					if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid from workspace_running_copies where issue = $1`, testTree).Scan(&source); err != nil || source != podUID {
+						t.Fatalf("the running copy's source = %q (%v), want %s: the work stays as the restoring pod's own copy", source, err, podUID)
+					}
+				}
+		}},
+		{"running copy", "update workspace_running_copies", func(t *testing.T, st *store.Store, podUID string) (func(context.Context, *store.Store) error, func(*testing.T)) {
+			saveRunningCopy(t, st, runningWorkspaceCopy("pod-the-running-copy-came-off"))
+			take, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID)
+			if err != nil || take.Running.Take != runtime.WorkspaceBundleSend {
+				t.Fatalf("the take of the running copy for %s = %+v, %v; want it sent", podUID, take, err)
+			}
+			restoreID := take.Running.Bundle.Release
+			return func(ctx context.Context, s *store.Store) error {
+					return s.KeepRestoredRunningWorkspaceCopy(ctx, testTree, podUID, restoreID)
+				}, func(t *testing.T) {
+					var source string
+					var id int64
+					var attempt *string
+					if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid, restore_id, attempt_pod_uid from workspace_running_copies where issue = $1`, testTree).
+						Scan(&source, &id, &attempt); err != nil {
+						t.Fatalf("read the running copy: %v", err)
+					}
+					if source != podUID || id == restoreID || attempt != nil {
+						t.Fatalf("the running copy's source = %q, restore id %d (sent as %d), attempt %v; want %s, a new id and no attempt: the work stays as the restoring pod's own copy", source, id, restoreID, attempt, podUID)
+					}
+				}
+		}},
 	}
-	faulted, fault := faultedBundleStore(t, st)
-	fired := fault.Cut("delete from workspace_bundles", testdb.CutAfterCommitRefusing)
-	met := releaseAfter(fault, fired)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := faulted.KeepRestoredWorkspaceBundle(ctx, testTree, podUID, saved.Release); err != nil {
-		t.Fatalf("the restored bundle's confirmation = %v, want nil", err)
+	cuts := []struct {
+		name string
+		// arm cuts the keep's statement and answers whether the cut met the keep's COMMIT.
+		arm func(t *testing.T, fault *testdb.CommitFault, statement string) (met func() bool)
+	}{
+		{"whose reply is lost", func(t *testing.T, fault *testdb.CommitFault, statement string) func() bool {
+			return releaseAfter(fault, fault.Cut(statement, testdb.CutAfterCommitRefusing)).Load
+		}},
+		{"that rolled back", func(t *testing.T, fault *testdb.CommitFault, statement string) func() bool {
+			fired := fault.Cut(statement, testdb.CutBeforeCommit)
+			return func() bool {
+				select {
+				case <-fired:
+					return true
+				default:
+					return false
+				}
+			}
+		}},
 	}
-	if !met.Load() {
-		t.Fatal("the armed fault met no COMMIT of the confirmation")
-	}
-	if _, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || held {
-		t.Fatalf("the store holds the bundle = %t (%v), want its row gone", held, err)
-	}
-	var source string
-	if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid from workspace_running_copies where issue = $1`, testTree).Scan(&source); err != nil || source != podUID {
-		t.Fatalf("the running copy's source = %q (%v), want %s: the work stays as the restoring pod's own copy", source, err, podUID)
-	}
-}
-
-// The restored running copy's confirmation runs on the same one report, so a confirmation whose
-// outcome was unknown waits for the store's answer too: the copy becomes the restoring pod's own,
-// under a new restore id, with no attempt left on it.
-func TestARestoredRunningCopyKeepWhoseReplyIsLostKeepsIt(t *testing.T) {
-	st := bundleStore(t)
-	saveRunningCopy(t, st, runningWorkspaceCopy("pod-the-running-copy-came-off"))
-	const podUID = "pod-that-restored-the-running-copy"
-	take, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID)
-	if err != nil || take.Running.Take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the take of the running copy for %s = %+v, %v; want it sent", podUID, take, err)
-	}
-	restoreID := take.Running.Bundle.Release
-	faulted, fault := faultedBundleStore(t, st)
-	fired := fault.Cut("update workspace_running_copies", testdb.CutAfterCommitRefusing)
-	met := releaseAfter(fault, fired)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := faulted.KeepRestoredRunningWorkspaceCopy(ctx, testTree, podUID, restoreID); err != nil {
-		t.Fatalf("the restored running copy's confirmation = %v, want nil", err)
-	}
-	if !met.Load() {
-		t.Fatal("the armed fault met no COMMIT of the confirmation")
-	}
-	var source string
-	var id int64
-	var attempt *string
-	if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid, restore_id, attempt_pod_uid from workspace_running_copies where issue = $1`, testTree).
-		Scan(&source, &id, &attempt); err != nil {
-		t.Fatalf("read the running copy: %v", err)
-	}
-	if source != podUID || id == restoreID || attempt != nil {
-		t.Fatalf("the running copy's source = %q, restore id %d (sent as %d), attempt %v; want %s, a new id and no attempt: the work stays as the restoring pod's own copy", source, id, restoreID, attempt, podUID)
+	for _, kind := range kinds {
+		for _, cut := range cuts {
+			t.Run(kind.name+" "+cut.name, func(t *testing.T) {
+				st := bundleStore(t)
+				keep, kept := kind.save(t, st, "pod-that-restored-the-copy")
+				faulted, fault := faultedBundleStore(t, st)
+				met := cut.arm(t, fault, kind.statement)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := keep(ctx, faulted); err != nil {
+					t.Fatalf("the restored %s's confirmation = %v, want nil", kind.name, err)
+				}
+				if !met() {
+					t.Fatal("the armed fault met no COMMIT of the confirmation")
+				}
+				kept(t)
+			})
+		}
 	}
 }
 
@@ -285,5 +314,65 @@ func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.
 	}
 	if _, kept, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || kept {
 		t.Fatalf("the store holds the bundle = %t (%v), want it dropped", kept, err)
+	}
+}
+
+// A take of the issue's copies that fails holds the role's start, for either kind of copy: the
+// start fails with the take's error and sends the launcher no launcher_start, so no role starts on
+// what was pushed while a copy is owed; the copy is left as it was, and the next launch, whose take
+// the store answers, sends it and starts the role. A role started beside the failed take would
+// register and spend the copy, and a running copy would then be replaced by the next copy of its
+// pod's workspace, which never held the work.
+func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *testing.T) {
+	for _, kind := range []struct {
+		name string
+		save func(t *testing.T, st *store.Store) runtime.WorkspaceBundle
+		of   runtime.WorkspaceCopyKind
+	}{
+		{"release bundle", func(t *testing.T, st *store.Store) runtime.WorkspaceBundle {
+			saved := savedWorkspaceBundle()
+			saveReleaseBundle(t, st, saved)
+			return saved
+		}, runtime.WorkspaceCopyReleaseBundle},
+		{"running copy", func(t *testing.T, st *store.Store) runtime.WorkspaceBundle {
+			saved := runningWorkspaceCopy("pod-the-running-copy-came-off")
+			saveRunningCopy(t, st, saved)
+			return saved
+		}, runtime.WorkspaceCopyRunning},
+	} {
+		t.Run(kind.name, func(t *testing.T) {
+			st := bundleStore(t)
+			saved := kind.save(t, st)
+			faulted, _ := faultedBundleStore(t, st)
+			faulted.Close()
+			g := newRig(t, nil, withOptions(func(o *Options) {
+				o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
+			}))
+			spec := workerSpec(t)
+			g.launcher(spec.Claim)
+			if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "could not be taken") {
+				t.Fatalf("the start whose take failed answered %v; want it failed with the take's error", err)
+			}
+			sent := g.sent(spec.Claim)
+			if slices.ContainsFunc(sent, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }) {
+				t.Fatalf("the start whose take failed sent the launcher %v; want no launcher_start", frameTypes(sent))
+			}
+
+			again := newRig(t, nil, withOptions(func(o *Options) {
+				o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
+			}))
+			again.spawn(spec)
+			var body []byte
+			frames := again.sent(spec.Claim)
+			for _, frame := range frames {
+				if slice, ok := frame.(shimwire.LauncherBundle); ok {
+					body = append(body, slice.Payload...)
+				}
+			}
+			read, err := shimwire.ParseWorkspaceBundle(body)
+			if err != nil || !bytes.Equal(read.Bundle, saved.Bundle) {
+				t.Fatalf("the next launch sent %v; want the %s it was owed (%v)", frameTypes(frames), kind.of, err)
+			}
+		})
 	}
 }

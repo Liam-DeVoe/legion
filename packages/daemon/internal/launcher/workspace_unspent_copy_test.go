@@ -1,41 +1,87 @@
 package launcher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The daemon sends a copy again to a pod whose roles container restarted before any role of the
-// pod registered (store's heldCopy): the restarted container's launcher is a new process, which
-// holds no record of the restore the first one ran, over the same disk. A restore that ran to its
-// end deletes its temporary branches, so the second restore of the same bundle runs as the first
-// did and leaves the workspace holding the same work: the same commits, the same bookmarks and the
-// working copy on the saved head.
-func TestAnUnspentCopyRestoredAgainByARestartedContainerLeavesTheWorkAsTheFirstRestoreDid(t *testing.T) {
+// pod registered (store's heldCopy), and the restarted container's launcher is a new process over
+// the same disk. Where the first launcher's restore ran to its end, that disk holds the in-use
+// record the pod's first role start wrote and the restore's record with its report, which no
+// connection carried before the container restarted. So the restarted launcher refuses every
+// slice of the copy sent again, the workspace stays as the first restore left it, and the new
+// launcher's first connection carries the first restore's report, read off the disk: the report
+// the daemon keeps the copy as the pod's own on.
+func TestALauncherRestartedAfterItsRestoreEndedRefusesTheCopySentAgainAndSendsTheFirstReport(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	f := newBundleFixture(t)
 	f.workOne()
 	saved := f.bundleWorkspaceOne()
-	workspace := f.secondPod("ws-restarted")
-
-	if notice := f.restoreInto(workspace, saved, 1); !strings.Contains(notice, "is restored") {
-		t.Fatalf("the first restore's notice is %q", notice)
+	ws := f.secondPod("ws-restarted")
+	frames, err := shimwire.SplitWorkspaceBundle("restore-"+ws, bundleRelease, saved)
+	if err != nil {
+		t.Fatal(err)
 	}
-	f.requireRestored(workspace, saved)
-	first := f.workspaceState(workspace)
 
-	// The restarted container: a launcher process of its own, sent the same bundle.
-	if notice := f.restoreInto(workspace, saved, 1); !strings.Contains(notice, "is restored") {
-		t.Fatalf("the restarted container's restore of the same bundle answered %q, want it restored", notice)
+	// The first launcher, whose container is killed after its restore ended and before any
+	// connection carried the report: it never had one.
+	first := newBundleRestore(procgroup.NoReaper, ws)
+	for _, frame := range frames {
+		if got := first.receive(frame); !got.OK {
+			t.Fatalf("slice %d to the first launcher answered %#v", frame.Index, got)
+		}
 	}
-	f.requireRestored(workspace, saved)
-	if again := f.workspaceState(workspace); again != first {
-		t.Fatalf("the second restore left the workspace\n%s\nwant it as the first left it\n%s", again, first)
+	env := mergeEnv(os.Environ(), append(append([]string{}, f.Env...), "LEGION_WORKSPACE="+ws))
+	if got, err := first.apply(context.Background(), env); err != nil || !got.Restored {
+		t.Fatalf("the first restore answered %+v, %v; want the saved work restored", got, err)
+	}
+	f.requireRestored(ws, saved)
+	restored := f.workspaceState(ws)
+	report := first.owed()
+	if report == nil || report.ID != frames[0].ID || report.Release != bundleRelease || !report.OK {
+		t.Fatalf("the first launcher owes %+v, want the restore of sequence %q of release %d that put the work back", report, frames[0].ID, bundleRelease)
+	}
+
+	// The restarted container: a launcher process of its own, sent the same copy.
+	g := newSessionRig(t, Config{Workspace: ws})
+	for _, frame := range frames {
+		if got, ok := g.answer(frame).(shimwire.LauncherBundleResult); !ok || got.OK || got.Held || got.Error != workspaceInUseRefusal {
+			t.Fatalf("slice %d to the restarted launcher answered %#v; want it refused, since a restore has run on the workspace", frame.Index, got)
+		}
+	}
+	if g.restored == nil || g.restored.ID != report.ID || g.restored.Release != report.Release || g.restored.OK != report.OK {
+		t.Fatalf("the restarted launcher reported %#v, want the first launcher's report %+v", g.restored, *report)
+	}
+	if again := f.workspaceState(ws); again != restored {
+		t.Fatalf("after the copy was sent again the workspace is\n%s\nwant it as the first restore left it\n%s", again, restored)
+	}
+	// The connection carried the report, so the record that held it is gone.
+	if record, ok, err := workspace.ReadRestoreRecord(ws); ok || err != nil {
+		t.Fatalf("after the report was carried the restore's record is %+v, %t, %v; want none", record, ok, err)
+	}
+	// A role starts there on what the first restore put back, and nothing is restored again.
+	marker := filepath.Join(t.TempDir(), "marker")
+	command := g.childStart(1, marker, nil)
+	command.Env = append(command.Env, append(f.Env, "LEGION_WORKSPACE="+ws)...)
+	if result := g.start(command); !result.OK {
+		t.Fatalf("the restarted launcher's start answered %#v", result)
+	}
+	published(t, marker)
+	g.stop(1)
+	if again := f.workspaceState(ws); again != restored {
+		t.Fatalf("after a role started the workspace is\n%s\nwant it as the first restore left it\n%s", again, restored)
+	}
+	if strings.Contains(g.stderr.String(), "released workspace's saved work") {
+		t.Fatalf("the restarted launcher wrote a restore notice, want none: it restored nothing\n%s", g.stderr.String())
 	}
 }
 
@@ -53,7 +99,7 @@ func TestAnUnspentCopySentTwiceToOneLiveLauncherIsAppliedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := newRig(t)
+	g := newSessionRig(t, Config{Workspace: workspace})
 	sendAndStart := func(generation uint64) {
 		t.Helper()
 		for _, frame := range frames {

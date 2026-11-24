@@ -117,7 +117,7 @@ The older is closed unsent:
 the daemon marks it spent and sends its body to no pod, because a copy left open could still be sent to a later pod whose workspace already holds the descendants of the work the newer copy put back.
 A tie goes to the release bundle, which was taken while the roles were idle.
 The bytes of a closed copy stay in the database for an operator.
-The copy a pod is sent is spent once a role of that pod registers, as a release bundle is ([Idle release](#idle-release)): a pod, or its `roles` container, that ends before then leaves it for the pod's restarted container or the pod after it, and a pod where a role registered is never sent it again.
+The copy a pod is sent is spent once a role of that pod registers, as a release bundle is ([Idle release](#idle-release)): a pod, or its `roles` container, that ends before then leaves it for the pod's restarted container, which restores it only if the pod's first role start had not run or that start's restore was cut off in the middle, or for the pod after it, and a pod where a role registered is never sent it again.
 
 Every time the restore's choice between the two copies compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn that choice; the drop of the copies a kept volume holds, which a pod of a kept Sandbox asks first, compares a copy's time with the API server's clock (below).
 [The times the restore compares](#the-times-the-restore-compares) names each of them in one table, with the clock and the statement that set it and the rule that reads it.

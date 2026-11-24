@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,42 +11,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
 
-// The workspace's records — its creation moment and its in-use mark — live in its own .jj
-// directory, on the issue's volume, which every agent of the issue can write. So each record is
-// read and written through the one descriptor openJJ answers, never by its path: a .jj swapped for
-// a link once it is open reaches no other directory.
+// The workspace's records — its creation moment, its in-use mark and the record of the restore the
+// launcher ran on it — live in its own .jj directory, on the issue's volume, which every agent of
+// the issue can write. So each record is read and written through the one descriptor openJJ
+// answers, never by its path: a .jj swapped for a link once it is open reaches no other directory.
 
 // errLinkedJJ is the refusal of a workspace whose .jj is a symbolic link (openJJ).
 var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 
-// openJJ opens the .jj directory of the workspace at dir with O_DIRECTORY|O_NOFOLLOW, so a .jj
-// that is a symbolic link is refused with errLinkedJJ and one that is no other directory with
-// ENOTDIR. A link there would carry the records into a directory off the workspace's disk: a
-// record read there says nothing of this workspace, and one written there can be lost at a
-// container restart while the workspace keeps its work. Every read and write of a record goes
-// through the open directory (openat, fstatat), so nothing after this open reads .jj by its path
-// again. held, when set, runs once the directory is open and before the record is read or
-// written: a test's seam for a .jj swapped in that window.
+// openJJ opens the .jj directory of the workspace at dir, refusing a .jj that is a symbolic link
+// with errLinkedJJ and one that is no other directory with ENOTDIR. A link there would carry the
+// records into a directory off the workspace's disk: a record read there says nothing of this
+// workspace, and one written there can be lost at a container restart while the workspace keeps
+// its work. The entry is opened itself with O_PATH|O_NOFOLLOW, which reads through no link, and
+// its kind is read off that descriptor with fstat; only then is the directory opened for reading,
+// through that same descriptor (openat of "."). An open of the path with O_DIRECTORY|O_NOFOLLOW
+// would refuse a link on Linux, but gVisor, which issue pods run under, follows a link to a
+// directory there. Every read and write of a record goes through the open
+// directory (openat, fstatat), so nothing after this open reads .jj by its path again. held, when
+// set, runs once the directory is open and before the record is read or written: a test's seam
+// for a .jj swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	jj, err := os.OpenFile(path, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-		// The open refused it: Linux answers a link opened with O_DIRECTORY|O_NOFOLLOW ENOTDIR, as
-		// it does a file, and other kernels ELOOP. The Lstat only says which the refusal was.
-		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
-			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
-		}
-	}
+	entry, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	defer unix.Close(entry)
+	var stat unix.Stat_t
+	if err := unix.Fstat(entry, &stat); err != nil {
+		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
+	}
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
+	case unix.S_IFLNK:
+		return nil, fmt.Errorf("%w: %s", errLinkedJJ, path)
+	default:
+		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
+	}
+	fd, err := unix.Openat(entry, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
 	}
 	if held != nil {
 		held()
 	}
-	return jj, nil
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 // openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
@@ -197,4 +212,169 @@ func inUse(dir string, held func()) (bool, error) {
 	default:
 		return false, fmt.Errorf("read the in-use record: %w", &fs.PathError{Op: "fstatat", Path: filepath.Join(jj.Name(), inUseFile), Err: err})
 	}
+}
+
+// restoreFile is where the launcher records the one restore of a saved workspace copy it runs on
+// the workspace (RecordRestore), beside inUseFile in the workspace's own .jj directory: jj never
+// snapshots it, so the record is never committed, and it goes with the workspace, so a launcher
+// restarted over the same disk reads it and a workspace created again holds none.
+const restoreFile = "legion-restore"
+
+// restoreTemp is the name a write of the record is made under before it is renamed over
+// restoreFile, so a reader finds the record before the write or the one after it, whole.
+const restoreTemp = restoreFile + ".tmp"
+
+// restoreRecordLimit bounds how much of the record ReadRestoreRecord reads, and what
+// RecordRestore writes: the report an ended record holds goes to the daemon as one frame, so a
+// record over the frame limit holds no report the launcher could send.
+const restoreRecordLimit = shimwire.MaxFrameBytes
+
+// RestoreRecord is the launcher's record of a restore of a saved workspace copy into the
+// workspace: the slice sequence the copy arrived under (ID) and the release whose save it is.
+// One not Ended is a restore begun, and, read by a launcher that did not begin it, one cut off
+// before it ended: the launcher writes it before the restore runs and replaces it with the ended
+// one before any role starts, so no role has run on a workspace whose record has not ended. An
+// Ended record holds the restore's outcome, OK and Error, which with ID and Release are the
+// fields of shimwire.LauncherRestored the daemon reads, under that frame's JSON names: the report
+// the daemon is owed until a connection carries it, when the record is removed
+// (RemoveRestoreRecord).
+type RestoreRecord struct {
+	ID      string `json:"id"`
+	Release int64  `json:"release"`
+	Ended   bool   `json:"ended"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+}
+
+// RecordRestore records record on the disk of the workspace at dir, replacing the record there
+// before, until RemoveRestoreRecord takes it off. It opens .jj (openJJ), refusing a .jj that is a
+// symbolic link, writes the record as JSON to a file of its own in that directory, created with
+// O_CREAT|O_EXCL|O_NOFOLLOW after whatever was at its name is unlinked, syncs the file and renames
+// it over the record, so a reader finds the old record or the new one whole, never a part, and
+// nothing planted at either name is written through. Then it syncs the directory, so the record is
+// on the disk before RecordRestore returns. A directory at the record's name is refused by the
+// rename.
+func RecordRestore(dir string, record RestoreRecord) error {
+	body, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("write the restore's record: %w", err)
+	}
+	body = append(body, '\n')
+	if len(body) > restoreRecordLimit {
+		return fmt.Errorf("write the restore's record: its %d bytes are over the record's %d", len(body), restoreRecordLimit)
+	}
+	jj, err := openJJ(dir, nil)
+	if err != nil {
+		return fmt.Errorf("write the restore's record: %w", err)
+	}
+	defer jj.Close()
+	if err := unlinkIn(jj, restoreTemp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("write the restore's record: %w", err)
+	}
+	file, err := openIn(jj, restoreTemp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("write the restore's record: %w", err)
+	}
+	_, err = file.Write(body)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		if renameErr := unix.Renameat(int(jj.Fd()), restoreTemp, int(jj.Fd()), restoreFile); renameErr != nil {
+			err = &fs.PathError{Op: "renameat", Path: filepath.Join(jj.Name(), restoreFile), Err: renameErr}
+		}
+	}
+	if err != nil {
+		_ = unlinkIn(jj, restoreTemp)
+		return fmt.Errorf("write the restore's record: %w", err)
+	}
+	if err := jj.Sync(); err != nil {
+		return fmt.Errorf("sync the restore record's directory: %w", err)
+	}
+	return nil
+}
+
+// ReadRestoreRecord is the record RecordRestore wrote on the disk of the workspace at dir. ok is
+// false when it holds none: no workspace is there, no restore ran on it, or the report of the one
+// that ran has reached the daemon. The record is on the issue's volume, which every agent of the
+// issue can write, so it is read through .jj's descriptor (openJJ), opened without following a
+// link or blocking on a special file and read only up to restoreRecordLimit, and anything but a
+// regular file holding one record that names its slice sequence is refused, naming the file. The
+// caller counts a refused record as none.
+func ReadRestoreRecord(dir string) (record RestoreRecord, ok bool, err error) {
+	jj, err := openJJ(dir, nil)
+	if errors.Is(err, fs.ErrNotExist) {
+		return RestoreRecord{}, false, nil
+	}
+	if err != nil {
+		return RestoreRecord{}, false, fmt.Errorf("read the restore's record: %w", err)
+	}
+	defer jj.Close()
+	path := filepath.Join(jj.Name(), restoreFile)
+	file, err := openIn(jj, restoreFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return RestoreRecord{}, false, nil
+	}
+	if err != nil {
+		return RestoreRecord{}, false, fmt.Errorf("read the restore's record: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return RestoreRecord{}, false, fmt.Errorf("read the restore's record %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s is not a regular file (%s)", path, info.Mode().Type())
+	}
+	body, err := io.ReadAll(io.LimitReader(file, restoreRecordLimit+1))
+	if err != nil {
+		return RestoreRecord{}, false, fmt.Errorf("read the restore's record %s: %w", path, err)
+	}
+	if len(body) > restoreRecordLimit {
+		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s is over its %d bytes", path, restoreRecordLimit)
+	}
+	if err := json.Unmarshal(body, &record); err != nil {
+		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s holds no record: %w", path, err)
+	}
+	if record.ID == "" {
+		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s names no slice sequence", path)
+	}
+	return record, true, nil
+}
+
+// RemoveRestoreRecord takes the record RecordRestore wrote off the disk of the workspace at dir,
+// and syncs .jj so the removal is on the disk before it returns. It unlinks the record through
+// .jj's descriptor (openJJ), so a link at the record's name is removed and never followed, and a
+// directory there is refused. A workspace or a record that is not there is nothing to remove.
+func RemoveRestoreRecord(dir string) error {
+	jj, err := openJJ(dir, nil)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove the restore's record: %w", err)
+	}
+	defer jj.Close()
+	if err := unlinkIn(jj, restoreFile); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("remove the restore's record: %w", err)
+	}
+	if err := jj.Sync(); err != nil {
+		return fmt.Errorf("sync the restore record's directory: %w", err)
+	}
+	return nil
+}
+
+// unlinkIn unlinks name in the open directory jj, the entry itself and never what a link there
+// names. A directory at name is refused (EISDIR). The file's name is only used for diagnostics.
+func unlinkIn(jj *os.File, name string) error {
+	if err := unix.Unlinkat(int(jj.Fd()), name, 0); err != nil {
+		return &fs.PathError{Op: "unlinkat", Path: filepath.Join(jj.Name(), name), Err: err}
+	}
+	return nil
 }

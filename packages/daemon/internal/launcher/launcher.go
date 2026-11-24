@@ -347,14 +347,19 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// the install with `the served check could not be run: waitid: no child processes` (or, under
 	// gVisor, `wait: no child processes` or `waitid: no such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
+	// A record of an earlier launcher's restore that could not be read (newBundleRestore) is
+	// logged once, as the launcher's own line: the role's in this form, which has no other log.
 	if cfg.RolesDir == "" {
-		return []*manager{{
+		m := &manager{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
 			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, restore: restore, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
-		}}, nil
+		}
+		restore.logUnread(m.logf)
+		return []*manager{m}, nil
 	}
 	log := &roleLog{stdout: redact.Writer(cfg.Stdout), stderr: redact.Writer(cfg.Stderr)}
+	restore.logUnread(log.linef)
 	managers := make([]*manager, 0, len(cfg.Roles))
 	for _, role := range cfg.Roles {
 		file := filepath.Join(cfg.RolesDir, role, RoleLauncherDir, LauncherTokenFile)
@@ -895,7 +900,8 @@ func (m *manager) state() error {
 // reportRestore tells the daemon what became of the bundle it sent this pod, when a report is
 // owed and this role has a connection to carry it: the daemon keeps the saved work in its
 // database until one arrives, so a report that cannot be written now is left for the next
-// connection of any role of the pod (serve) rather than dropped.
+// connection of any role of the pod (serve), or of a launcher restarted over the same disk
+// (newBundleRestore), rather than dropped.
 func (m *manager) reportRestore() {
 	report := m.restore.owed()
 	if report == nil {
@@ -911,7 +917,9 @@ func (m *manager) reportRestore() {
 		m.logf("launcher: the restore's outcome did not reach the daemon (%v); the next connection reports it again", err)
 		return
 	}
-	m.restore.sent(report)
+	if err := m.restore.sent(report); err != nil {
+		m.logf("launcher: %v", err)
+	}
 }
 
 // start runs command's generation. ctx is the container's: once it has ended (the container's
@@ -1018,13 +1026,17 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// a workspace that is half restored. Every other role's start waits here for this one. A
 	// restore that fails still starts the role, with a notice of what was lost in the log. A start
 	// whose workspace cannot be recorded in use is refused, so no role works a workspace that a
-	// later launcher, finding no record, could restore a bundle over.
+	// later launcher, finding no record, could restore a bundle over; so is a start over a restore
+	// cut off in the middle whose copy has not arrived again (bundleRestore.apply).
 	outcome, err := m.restore.apply(ctx, env)
 	if err != nil {
 		return abandon(err)
 	}
 	if outcome.Notice != "" {
 		m.logf("launcher: %s", outcome.Notice)
+	}
+	if outcome.Unrecorded != nil {
+		m.logf("launcher: the restore's report could not be recorded on the workspace's disk, so a launcher restarted before a connection carries it does not send it: %v", outcome.Unrecorded)
 	}
 	m.reportRestore()
 	env = mergeEnv(env, []string{

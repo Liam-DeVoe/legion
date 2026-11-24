@@ -8,6 +8,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -159,11 +160,18 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 const keptVolumeHoldsLine = "launcher bundle: this pod's kept volume holds the workspace the saved workspace copy came off, so the copy is dropped and the pod is sent nothing of it"
 
 // keptVolumeDropFailedLine is the warning a drop of the copies a pod's kept volume holds that
-// failed is logged with (restoreWorkspace). The pod is sent nothing, and the next start of the
-// issue asks again. A drop that did not commit left every copy as it was; a drop whose outcome is
-// unknown (store.ErrCommitOutcomeUnknown) may have dropped them, which loses no work, since the
-// pod's kept volume holds it.
-const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspace copies that this pod's kept volume may hold failed, so the pod is sent nothing and the next start asks again"
+// failed is logged with (restoreWorkspace). No role of the pod starts: the start fails with the
+// drop's error, and the next launch asks again. A drop that did not commit left every copy as it
+// was; a drop whose outcome is unknown (store.ErrCommitOutcomeUnknown) may have dropped them, which
+// loses no work, since the pod's kept volume holds it.
+const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspace copies that this pod's kept volume may hold failed, so no role of the pod starts until a launch asks again"
+
+// takeFailedLine is the warning a take of the issue's saved copies that failed is logged with
+// (restoreWorkspace), a store error or an outcome still unknown at the hop's bound. No role of the
+// pod starts: the start fails with the take's error, and the next launch takes again. Where the
+// outcome is unknown the take may have recorded an attempt to this pod, which leaves the copy owed
+// to the pod until a role of it registers.
+const takeFailedLine = "launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so no role of the pod starts until a launch takes them"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
 // launcher: the bundle the issue's last idle release saved, and the copy the daemon took while
@@ -185,10 +193,20 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // (bundleFrames), so no restore moves `legion/<KEY>` or `legion/<KEY>-rescue` off what GitHub
 // holds.
 //
-// Nothing here stops a role. A slice the launcher refuses, a body that did not arrive as it was
-// sent, a store that cannot be read and a connection that fails are each logged and left: a pod
-// that never starts is worse than one whose workspace holds only what was pushed, and the
-// launcher writes the agent its own notice of what was lost (internal/launcher's restoreWorkspace).
+// A copy the daemon owes the pod and has not put in the launcher's hands holds the start: a drop
+// of the copies a kept volume holds that failed, a take that failed, a take whose outcome stayed
+// unknown at the hop's bound, a copy that could not be sliced, a slice that did not reach the
+// launcher or was answered with another frame, and a sequence the launcher took whole without
+// holding it are each this hop's error. The start then sends no launcher_start and fails with that
+// error, and the supervisor's next launch asks again, which a sent copy is still owed to, since no
+// role of the pod has registered. A role that started on what was pushed while a copy waits would
+// register, spend that copy and, for a running copy, have the next copy of its workspace replace
+// the issue's only running copy, losing the work; held, the roles start once the copy is restored,
+// or once a take answers that no copy is owed this pod. A copy that keeps failing fails each
+// launch with its reason until the claim reaches its launch-failure limit, and the copy stays in
+// the database. A slice the launcher refuses is the launcher's answer, which holds nothing: its
+// workspace is in use, or it works none, and the launcher writes the agent its own notice of what
+// was lost (internal/launcher's restoreWorkspace).
 //
 // The take records the pod this send is for before it answers the body, and the copy is spent once
 // a role of this pod registers (store.Store.RecordPodRegistration), after which the take answers
@@ -196,10 +214,17 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // replaces this one and a third pod after an eviction are each sent nothing, and no copy is ever
 // applied over work a running pod's roles have done since it was taken. Before any role of this
 // pod registered no role of it ran, so a pod, or its roles container, that ends then leaves the
-// copy unspent: the restarted container's first role start, or the next pod's, asks again, the
-// store decides again, and the copy it sends is restored over the workspace no role has touched.
-// The work itself stays in the database; a release bundle no pod restored holds the issue's pod
-// (workflow.IdleHoldBundleUnrestored) until the issue's work is over, and a running copy holds
+// copy unspent: the restarted container's first role start, or the next pod's, asks again, and the
+// store decides again. The next pod restores the copy it is sent into a workspace of its own. The
+// restarted container's launcher reads the records the one before it left on the pod's disk
+// (internal/launcher's bundleRestore): one restarted before the pod's first role start restores
+// the copy over a workspace nothing has touched; one restarted after a restore ended refuses every
+// slice, its workspace holding what that restore put back, and sends that restore's report, kept
+// on the disk until a connection carries it, to restoreReported; and one restarted while a restore
+// was cut off in the middle, which no role ran beside, takes the copy sent again and restores it,
+// and starts no role until it does.
+// A release bundle no pod restored holds the issue's pod (workflow.IdleHoldBundleUnrestored) until
+// the issue's work is over, and keeps its work in the database till then; a running copy holds
 // none, the disk it was taken off being where its work is.
 //
 // Whose attempt it is the session's own pod decides, and the store decides it: the pod a copy was
@@ -225,10 +250,9 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // drops is logged by name, and an older copy it closes beside a newer one dropped is logged as a
 // closed copy is. A drop that deletes no copy leaves the take to run as for any pod: a copy taken
 // before the Sandbox was created came off an earlier volume, which a reset or a change of the
-// disk's shape replaced, and the take restores it. A drop that fails is logged and the pod is
-// sent nothing, as a take that fails, and the next start asks again: a failure that did not
-// commit left the rows as they were, and one whose outcome is unknown may have dropped the copies
-// the volume holds.
+// disk's shape replaced, and the take restores it. A drop that fails holds the start, as a take
+// that fails does, and the next launch asks again: a failure that did not commit left the rows as
+// they were, and one whose outcome is unknown may have dropped the copies the volume holds.
 // The drop runs at a role's start, after the pod's launcher connected, and that launcher runs
 // after both init containers of the pod. So a kept volume whose init failed never drops the copy
 // its reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the
@@ -247,20 +271,20 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // skipping where its launcher process holds the copy now. Nothing a hop waits on waits on another
 // start: the drop and the take are the store's, the slices are answered by the launcher's frame
 // loop, and the report of a restore is read there too (restoreReported), outside any turn.
-func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
+func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) error {
 	if d.saved == nil || d.restored == nil {
-		return
+		return nil
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
 	// did. A launcher that never arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
-		return
+		return nil
 	}
 	issue := session.issue
 	if held, ok := d.holdsCopy(issue, session); ok {
 		d.log.Info(alreadyHeldLine, "issue", issue, "launcher", token, "pod", podUID, "restore", held.restore)
-		return
+		return nil
 	}
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
@@ -269,34 +293,33 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		if err != nil {
 			d.log.Warn(keptVolumeDropFailedLine,
 				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
-			return
+			return fmt.Errorf("the drop of the saved workspace copies of %s that the kept volume of pod %s may hold failed, so no role of the pod starts until a launch asks again: %w", issue, podUID, err)
 		}
 		// A drop that deleted a copy leaves nothing the take could send this pod: a copy taken
 		// since the Sandbox was made is deleted, and an older one beside it is closed.
 		if dropped.ReleaseBundle.Take == runtime.WorkspaceBundleHeldByVolume || dropped.Running.Take == runtime.WorkspaceBundleHeldByVolume {
 			d.logCopyTakes(session, token, dropped)
-			return
+			return nil
 		}
 	}
 	restore, err := d.saved(restoring, issue, podUID)
 	if err != nil {
-		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so the pod starts on what was pushed; where the take's outcome is unknown it may have recorded an attempt to this pod, which no pod is sent again once a role of this pod registers, and the work stays in the daemon's database",
-			"issue", issue, "launcher", token, "pod", podUID, "error", err)
-		return
+		d.log.Warn(takeFailedLine, "issue", issue, "launcher", token, "pod", podUID, "error", err)
+		return fmt.Errorf("the saved workspace copies of %s could not be taken for the restore of pod %s, so no role of the pod starts until a launch takes them: %w", issue, podUID, err)
 	}
 	d.logCopyTakes(session, token, restore)
 	// The offered copy, when its take is a send, is the only one this hop goes on with: the
 	// decision sends no other.
 	offered := restore.Of(restore.Offered)
 	if offered.Take != runtime.WorkspaceBundleSend || len(offered.Bundle.Bundle) == 0 {
-		return
+		return nil
 	}
 	kind, bundle := restore.Offered, offered.Bundle
 	frames, withheld, err := bundleFrames(issue, bundle)
 	if err != nil {
-		d.log.Warn("launcher bundle: the saved workspace copy could not be sliced, so the pod starts on what was pushed",
+		d.log.Warn("launcher bundle: the saved workspace copy could not be sliced, so no role of the pod starts",
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At, "error", err)
-		return
+		return fmt.Errorf("the saved workspace copy of %s taken at %s could not be sliced for pod %s, so no role of the pod starts: %w", issue, bundle.At, podUID, err)
 	}
 	if len(withheld) > 0 {
 		d.log.Info(withheldBranchLine, "issue", issue, "launcher", token, "copy", kind,
@@ -305,20 +328,20 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	for _, frame := range frames {
 		answer, _, err := d.request(restoring, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
-			d.log.Warn("launcher bundle: a slice of the saved workspace copy did not reach the launcher, so the pod starts on what was pushed",
+			d.log.Warn("launcher bundle: a slice of the saved workspace copy did not reach the launcher, so no role of the pod starts until a launch sends the copy again",
 				"issue", issue, "launcher", token, "copy", kind, "slice", frame.Index, "slices", frame.Count, "error", err)
-			return
+			return fmt.Errorf("slice %d of %d of the saved workspace copy of %s did not reach the launcher of pod %s, so no role of the pod starts until a launch sends the copy again: %w", frame.Index, frame.Count, issue, podUID, err)
 		}
 		result, ok := answer.(shimwire.LauncherBundleResult)
 		if !ok {
-			d.log.Warn("launcher bundle: the launcher answered a bundle slice with another frame, so the pod starts on what was pushed",
+			d.log.Warn("launcher bundle: the launcher answered a bundle slice with another frame, so no role of the pod starts until a launch sends the copy again",
 				"issue", issue, "launcher", token, "copy", kind, "slice", frame.Index, "answer", answer.FrameType())
-			return
+			return fmt.Errorf("the launcher of pod %s answered slice %d of the saved workspace copy of %s with a %s frame, so no role of the pod starts until a launch sends the copy again", podUID, frame.Index, issue, answer.FrameType())
 		}
 		if !result.OK {
-			d.log.Warn("launcher bundle: the launcher refused a slice of the saved workspace copy, so the pod starts on what was pushed",
+			d.log.Warn("launcher bundle: the launcher refused a slice of the saved workspace copy, so this send restores nothing and the pod starts on its workspace as it is: what was pushed, or in a restarted roles container what its first restore put back",
 				"issue", issue, "launcher", token, "copy", kind, "slice", frame.Index, "slices", frame.Count, "error", result.Error)
-			return
+			return nil
 		}
 		if !result.Held {
 			continue
@@ -336,10 +359,11 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
 			"bytes", len(bundle.Bundle), "slices", len(frames), "restore", bundle.Release)
-		return
+		return nil
 	}
-	d.log.Warn("launcher bundle: the launcher took every slice of the saved workspace copy without holding the whole",
+	d.log.Warn("launcher bundle: the launcher took every slice of the saved workspace copy without holding the whole, so no role of the pod starts until a launch sends the copy again",
 		"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At, "slices", len(frames))
+	return fmt.Errorf("the launcher of pod %s took every slice of the saved workspace copy of %s without holding the whole, so no role of the pod starts until a launch sends the copy again", podUID, issue)
 }
 
 // logCopyTakes logs what one ask of session's pod did to each copy of its issue's workspace, the
@@ -388,8 +412,11 @@ func (d *launchers) logCopyTakes(session *launcherSession, token claim.Token, re
 // the push copy needs a push. The store sources the kept copy to this session's pod, so that pod's
 // own later asks are answered nothing and the pod after it is offered the work, and a second end
 // from outside before any turn of this pod still restores it (store.KeepRestoredWorkspaceCopy).
-// The session's pod is the pod the report is of: a launcher process lives in its pod, and one that
-// restarts there holds no report.
+// The session's pod is the pod whose disk the reported restore wrote: a launcher process lives in
+// its pod, and one that restarts there sends the report the one before it kept on that disk
+// (internal/launcher's newBundleRestore). That record can be an earlier pod's, left on a kept
+// volume; the keep reads the copy's attempt, so it keeps nothing for a pod the copy was not sent
+// to.
 //
 // The restore id the slices carried is the whole of what the keep reads of the copy, and all this
 // hop knows of it: a launcher keeps its report until some connection carries it (internal/launcher's
