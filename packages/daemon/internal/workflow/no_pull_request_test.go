@@ -24,16 +24,6 @@ func rootWithNoPullRequest(t *testing.T, pool *pgxpool.Pool, words ...string) re
 	return root
 }
 
-// productionChecksOf is the number of production checks the store holds of key.
-func productionChecksOf(t *testing.T, pool *pgxpool.Pool, key string) int {
-	t.Helper()
-	var n int
-	if err := pool.QueryRow(t.Context(), "select count(*) from production_checks where issue = $1", key).Scan(&n); err != nil {
-		t.Fatalf("count the production checks of %s: %v", key, err)
-	}
-	return n
-}
-
 // A task whose issue has no pull request has no merge: its retro's end makes it done, with its
 // task done, no merger started, Dispatch's status done queued once, and no production check, which
 // opens only on a merged pull request. With a pull request record, the retro's end moves the issue
@@ -67,8 +57,8 @@ func TestATaskWithNoPullRequestIsDoneWhenItsRetroEnds(t *testing.T) {
 		if done != 1 {
 			t.Fatalf("%s's retro queued %d status writes of done, want one", root.Key, done)
 		}
-		if n := productionChecksOf(t, pool, root.Key); n != 0 {
-			t.Fatalf("%s holds %d production checks, want none: no pull request merged", root.Key, n)
+		if check := productionCheck(t, pool, root.Key); check != nil {
+			t.Fatalf("%s holds the production check %+v, want none: no pull request merged", root.Key, check)
 		}
 	})
 

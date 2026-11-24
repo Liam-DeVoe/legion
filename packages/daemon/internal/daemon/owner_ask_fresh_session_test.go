@@ -39,7 +39,7 @@ func TestAnAskToTheOwnerRecordsWhomItReachedAsAnOwnerStepDoes(t *testing.T) {
 			r.started(t, "step", 1, true)
 			r.relaunched(t, ownerHoldLaunch, tc.session)
 			r.askedOf(t, r.owner, phase.Reviewing)
-			if err := r.sent(t, mergeForwardAsk(r.owner, phase.Reviewing)); err != nil {
+			if err := r.told(t, mergeForwardAsk(r.owner, phase.Reviewing)); err != nil {
 				t.Fatalf("the ask to the owner = %v", err)
 			}
 			if got := r.published(); len(got) != 1 {

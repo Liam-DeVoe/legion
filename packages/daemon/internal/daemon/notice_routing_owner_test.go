@@ -23,21 +23,14 @@ func TestAnOwnerStepGoesToTheArchitectOfItsIssue(t *testing.T) {
 		return i
 	}
 	tree := record.TreeByKey([]record.Issue{issue("LEGION-1", ""), issue("LEGION-2", "LEGION-1"), issue("LEGION-3", "LEGION-2")})
-	architect := func(key string) claim.Token {
-		t.Helper()
-		token, err := claim.NewToken(project, key, claim.RoleArchitect)
-		if err != nil {
-			t.Fatalf("NewToken(%s): %v", key, err)
-		}
-		return token
-	}
-	runs := func(token claim.Token) bool { return token == architect("LEGION-1") || token == architect("LEGION-2") }
+	root, sub := mustClaimToken(t, "LEGION-1", claim.RoleArchitect), mustClaimToken(t, "LEGION-2", claim.RoleArchitect)
+	runs := func(token claim.Token) bool { return token == root || token == sub }
 	for _, tc := range []struct {
 		kind record.NoticeKind
 		want claim.Token
 	}{
-		{record.OwnerStepNotice, architect("LEGION-3")},
-		{"phase-finished", architect("LEGION-2")},
+		{record.OwnerStepNotice, mustClaimToken(t, "LEGION-3", claim.RoleArchitect)},
+		{"phase-finished", sub},
 	} {
 		got, err := noticeArchitect(project, tree, tree["LEGION-3"], record.Notice{Kind: tc.kind, Phase: "implementing"}, runs)
 		if err != nil || got != tc.want {

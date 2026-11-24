@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -41,21 +41,8 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 		now: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), pub: &holderPublisher{}, logged: &syncBuffer{}}
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
 		Title: "LEGION-1", Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
-	roles := stepplan.BuiltinRoles()
-	steps := make([]record.PlanStep, 0, len(words))
-	for i, word := range words {
-		role, key, _ := strings.Cut(word, ":")
-		steps = append(steps, record.PlanStep{Issue: "LEGION-1", Generation: 1, Task: "a", Position: i + 1, Role: role, AgentKey: key, Type: roles[role].Type})
-	}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		version := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: r.owner, GivenAt: r.now}
-		task := record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
-			State: record.TaskRunning, Place: place}
-		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
-			return err
-		}
-		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+		return putPlannedIssue(t, ctx, tx, r.records, issue, place, r.now, words...)
 	}); err != nil {
 		t.Fatalf("seed LEGION-1: %v", err)
 	}
@@ -67,33 +54,66 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 	return r
 }
 
+// putPlannedIssue writes issue in tx and the plan its architect gave at given: version 1, its one
+// task a running at place, whose steps are words (`role` or `role:key`), each of its built-in
+// role's type, with their agents named as a plan's are (record.NameAgents).
+func putPlannedIssue(t *testing.T, ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue, place record.TaskPlace, given time.Time,
+	words ...string) error {
+	t.Helper()
+	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: mustClaimToken(t, issue.Key, claim.RoleArchitect), GivenAt: given}
+	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+		State: record.TaskRunning, Place: place}
+	roles := stepplan.BuiltinRoles()
+	steps := make([]record.PlanStep, 0, len(words))
+	for i, word := range words {
+		role, key, _ := strings.Cut(word, ":")
+		steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: "a", Position: i + 1, Role: role, AgentKey: key,
+			Type: roles[role].Type})
+	}
+	if err := records.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+}
+
 // started counts a start of LEGION-1's place kind/at and leaves its run open, as a start does
-// (record.Store.RaiseStepStarts), and ends it where ended, as an end does (EndStepStart).
+// (record.Store.RaiseStepStarts), and ends it where ended (ended).
 func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
 	t.Helper()
 	ctx := context.Background()
 	place := record.StepPlace{Task: "a", Kind: kind, Place: at}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
+		_, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
 			return record.StepRecord{Task: "a", Kind: kind, Step: at, Agent: string(r.owner), Generation: 1, StartedAt: new(r.now)}
-		}); err != nil {
-			return err
-		}
-		if ended {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", place)
-			return err
-		}
-		return nil
+		})
+		return err
 	}); err != nil {
 		t.Fatalf("start LEGION-1's %s %d: %v", kind, at, err)
 	}
+	if ended {
+		r.ended(t, kind, at)
+	}
 }
 
-// told runs one notice of LEGION-1 through the executor as the runner does, and deletes the row
-// where the executor finished it, as the runner does. It answers the executor's error.
-func (r *ownerHoldRig) told(t *testing.T, notice record.Notice) error {
+// ended ends the open run of LEGION-1's place kind/at, as an end does (record.Store.EndStepStart).
+func (r *ownerHoldRig) ended(t *testing.T, kind string, at int) {
 	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", record.StepPlace{Task: "a", Kind: kind, Place: at})
+		return err
+	}); err != nil {
+		t.Fatalf("end LEGION-1's %s %d: %v", kind, at, err)
+	}
+}
+
+// told runs one row of LEGION-1 holding payload, a notice or a merge-forward message, through the
+// executor as the runner does, and deletes the row where the executor finished it, as the runner
+// does. It answers the executor's error.
+func (r *ownerHoldRig) told(t *testing.T, payload record.OutboxPayload) error {
+	t.Helper()
+	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", payload, r.now))
 	err := r.runner.execute(context.Background(), row)
 	if err == nil {
 		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
@@ -116,31 +136,12 @@ func (r *ownerHoldRig) published() []string {
 // ownerStepStale is the line the executor logs for an owner-step that finished undelivered.
 const ownerStepStale = "outbox owner-step finished undelivered: its step no longer runs"
 
-// staleLines is each line of logged, a JSON log, that ownerStepStale is the message of, decoded.
-func staleLines(t *testing.T, logged string) []map[string]any {
-	t.Helper()
-	var lines []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(logged), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
-		}
-		if entry["msg"] == ownerStepStale {
-			lines = append(lines, entry)
-		}
-	}
-	return lines
-}
-
 // staleUnread fails the test unless logged holds one line of a stale owner-step: the executor
 // decided the step no longer runs. What the slot was asked is each test's own check (slotCalls),
 // so no attribute of the line that depends on the order of the executor's reads is asserted.
 func staleUnread(t *testing.T, logged, of string) {
 	t.Helper()
-	if lines := staleLines(t, logged); len(lines) != 1 {
+	if lines := loggedMessages(t, logged, ownerStepStale); len(lines) != 1 {
 		t.Fatalf("the log holds %d lines of %s, want one:\n%s", len(lines), of, logged)
 	}
 }
@@ -169,12 +170,7 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the retro's notice while it runs published %v, want one", got)
 		}
-		if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(context.Background(), tx, "LEGION-1", retro.StepPlace())
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		if err := r.told(t, notice); err != nil {
 			t.Fatalf("the retro's notice after it ended = %v, want it finished", err)
 		}
@@ -300,25 +296,10 @@ func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
 // The control: the write-back that waited for nothing let the notice publish before the write,
 // and wrote the slot for step 3's App, which step 3's owner-step wrote again.
 func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
-	slotRow := func(t *testing.T, r *ownerHoldRig) record.OutboxRow {
-		t.Helper()
-		return leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
-			Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
-	}
-	finish := func(t *testing.T, r *ownerHoldRig, row record.OutboxRow) {
-		t.Helper()
-		if err := r.runner.execute(context.Background(), row); err != nil {
-			t.Fatalf("row %d = %v", row.ID, err)
-		}
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish row %d: %v", row.ID, err)
-		}
-	}
-
 	t.Run("the notice after the write-back", func(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "reviewer")
 		r.started(t, "step", 1, true)
-		slot := slotRow(t, r)
+		slot := r.slotCredentialRow(t)
 		notice := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer,
 			Phase: phase.Reviewing, Summary: "approved"}, r.now))
 		if err := r.runner.execute(context.Background(), notice); !errors.Is(err, errNoticeWaits) {
@@ -327,12 +308,12 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 		if got := r.published(); len(got) != 0 {
 			t.Fatalf("the notice published %v before the write-back ran, want nothing", got)
 		}
-		finish(t, r, slot)
+		r.ran(t, slot, fmt.Sprintf("row %d", slot.ID))
 		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "WriteSlotCredential" {
 			t.Fatalf("the write-back asked the runtime %q of the owner's slot, want one write", calls)
 		}
 		notice.LeaseToken = leaseOutboxRow(t, r.pool, notice.ID)
-		finish(t, r, notice)
+		r.ran(t, notice, fmt.Sprintf("row %d", notice.ID))
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the notice after the write-back published %v, want one", got)
 		}
@@ -342,7 +323,7 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 3}, "implementer:owner", "reviewer", "implementer:owner")
 		r.started(t, "step", 1, true)
 		r.started(t, "step", 3, false)
-		finish(t, r, slotRow(t, r))
+		r.writtenBack(t)
 		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
 			t.Fatalf("the write-back with step 3 running asked the runtime %q, want nothing: step 3's owner-step writes its App", calls)
 		}
@@ -377,19 +358,20 @@ func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPla
 	}
 }
 
-// writtenBack runs one supervise slot_credential of the owner's claim, the write of its slot back
-// to its own App that the end of an act the owner did as another role queues, and deletes the row
+// slotCredentialRow is one supervise slot_credential of the owner's claim, the write of its slot
+// back to its own App that the end of an act the owner did as another App queues, leased as the
+// runner leases a row before it executes it.
+func (r *ownerHoldRig) slotCredentialRow(t *testing.T) record.OutboxRow {
+	t.Helper()
+	return leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
+		Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
+}
+
+// writtenBack runs one slot_credential row of the owner's claim (slotCredentialRow) and deletes it
 // once the executor finished it, as the runner does.
 func (r *ownerHoldRig) writtenBack(t *testing.T) {
 	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
-		Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
-	if err := r.runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("the slot_credential row = %v", err)
-	}
-	if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-		t.Fatalf("finish the slot_credential row: %v", err)
-	}
+	r.ran(t, r.slotCredentialRow(t), "the slot_credential row")
 }
 
 // The owner's retro of a task whose last step of the type implementation is the owner's is done as
@@ -436,12 +418,7 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 
 		r.rt.ScriptSlotHolds(nil)
 		row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
-		if err := r.runner.execute(ctx, row); err != nil {
-			t.Fatalf("the retro's owner-step once the slot holds the implement App = %v", err)
-		}
-		if _, err := r.pool.Exec(ctx, "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish the published row: %v", err)
-		}
+		r.ran(t, row, "the retro's owner-step once the slot holds the implement App")
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the retro's owner-step published %v once the slot holds the implement App, want one", got)
 		}
@@ -451,12 +428,7 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 		r.writtenBack(t)
 		asked(t, r, want, "after a write-back of step 1's end ran during the retro, which must write nothing,")
 
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", retro.StepPlace())
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		r.writtenBack(t)
 		asked(t, r, append(want, "WriteSlotCredential"), "after the retro's write-back ran in merging,")

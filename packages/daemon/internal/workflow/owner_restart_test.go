@@ -19,11 +19,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ownerAtItsStep records LEGION-208's tree with its child LEGION-209 at step 1 of its plan
-// `implementer:owner reviewer`: the step started, which opened its run and told the child's own
-// architect its owner-step, that notice gone (delivered, or finished undelivered), and the child's
-// own architect's claim failed.
-func ownerAtItsStep(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Issue {
+// childAtOwnersStep records LEGION-208's tree with its child LEGION-209 at step 1 of its plan
+// `implementer:owner reviewer` and starts that step, which opens its run and tells the child's own
+// architect its owner-step. The start runs as the promotion's does, with no boot pass before it: a
+// boot pass would open the step's uncounted run first, and the start would then find it running.
+func childAtOwnersStep(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Issue {
 	t.Helper()
 	stepRoot(t, pool, phase.Implementing)
 	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
@@ -35,6 +35,16 @@ func ownerAtItsStep(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Iss
 		}
 		return engine.StartStepRecord(ctx, tx, *issue)
 	})
+	return child
+}
+
+// ownerAtItsStep records LEGION-208's tree with its child LEGION-209 at step 1 of its plan
+// `implementer:owner reviewer`: the step started, which opened its run and told the child's own
+// architect its owner-step, that notice gone (delivered, or finished undelivered), and the child's
+// own architect's claim failed.
+func ownerAtItsStep(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Issue {
+	t.Helper()
+	child := childAtOwnersStep(t, pool, engine)
 	if told := ownerSteps(t, pool, child.Key); len(told) != 1 {
 		t.Fatalf("the child's step start told %+v, want one owner-step on the child", told)
 	}
@@ -114,9 +124,7 @@ func TestAChildsOwnArchitectThatFailsAtItsOwnStepIsStartedAgainAndToldTheStep(t 
 		if got := architectStartsOf(t, pool, child.Key); len(got) != 0 {
 			t.Fatalf("the child's architect starts after its failure at the reviewer's step = %#v, want none: the next phase start brings it back", got)
 		}
-		if got, want := lastWorkerDied(t, pool, child.Key), "LEGION-209's own architect failed, and its notices come to you until it runs again. "+
-			"The daemon starts it again at LEGION-209's next phase start. "+
-			"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"; got != want {
+		if got, want := lastWorkerDied(t, pool, child.Key), childArchitectFailed; got != want {
 			t.Fatalf("the worker-died's reason = %q, want %q", got, want)
 		}
 	})
@@ -210,16 +218,7 @@ func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(
 func TestTheOperatorsRetryOfAnOwnerWhoseStepIsStillQueuedTellsNothingMore(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
-	stepRoot(t, pool, phase.Implementing)
-	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
-	seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
-	factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := engine.store.Issue(ctx, tx, child.Key)
-		if err != nil {
-			return err
-		}
-		return engine.StartStepRecord(ctx, tx, *issue)
-	})
+	child := childAtOwnersStep(t, pool, engine)
 	seedIssuesArchitect(t, pool, child.Key, supervise.StateFailed, "")
 	ownerFailed(t, pool, engine, child.Key, 1)
 	startsRan(t, pool, child.Key)

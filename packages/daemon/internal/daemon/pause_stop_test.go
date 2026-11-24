@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -419,19 +420,24 @@ func (r *pauseRig) releasedAt(role claim.Role, serving uint64) supervise.Claim {
 	return c
 }
 
-// wantBackstopOf fails unless LEGION-208 has exactly one backstop, of role, where armed, and none
-// otherwise.
+// wantBackstopOf fails unless LEGION-208's backstops are one of role, where armed, and none
+// otherwise, fired or not.
 func (r *pauseRig) wantBackstopOf(role claim.Role, armed bool) {
 	r.t.Helper()
-	want := 0
+	rows, err := r.pool.Query(r.ctx, `select role from pod_wake_backstops where issue = $1 order by role`, pauseIssue)
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	var want []string
 	if armed {
-		want = 1
+		want = []string{string(role)}
 	}
-	if got := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = $2`, pauseIssue, string(role)); got != want {
-		r.t.Fatalf("the %s's backstops = %d, want %d", role, got, want)
-	}
-	if got := r.count(`select count(*) from pod_wake_backstops where issue = $1`, pauseIssue); got != want {
-		r.t.Fatalf("backstops of %s = %d, want %d", pauseIssue, got, want)
+	if !slices.Equal(got, want) {
+		r.t.Fatalf("the backstops of %s are of %q, want %q", pauseIssue, got, want)
 	}
 }
 

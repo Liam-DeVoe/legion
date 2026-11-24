@@ -8,8 +8,6 @@ import {
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
@@ -32,8 +30,10 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  planRatingLoneRefusal,
   pluginBuildOf,
   readBuild,
+  recordFrom,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
@@ -931,24 +931,14 @@ export function createLegionTool(deps: {
               planRating as number | undefined,
               planReason as string | undefined
             );
-            if (lone === "rating") {
-              throw new Error(
-                "complete_step names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together"
-              );
-            }
-            if (lone === "reason") {
-              throw new Error(
-                `complete_step names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`
-              );
-            }
+            if (lone !== undefined) throw new Error(planRatingLoneRefusal(operation, lone));
             // Retried whole while the daemon restarts: the record, the report and a fresh grant are
             // read again on each attempt, and a repeat after a report that landed finds its step no
             // longer running (OWNER_STEP_NOT_RUNNING) and changes nothing.
             await retryWhileDaemonRestarts(
               "complete_step",
               async () => {
-                const record = await client.record(issue);
-                if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
+                const record = await recordFrom(client, issue);
                 // The report is of the place the issue stands at, as a completion's is; a phase
                 // that runs no step of the owner's asks for none, and the daemon says where the
                 // task stands (OWNER_STEP_NOT_RUNNING).

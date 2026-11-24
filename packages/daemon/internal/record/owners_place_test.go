@@ -21,8 +21,8 @@ func TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt(t *testing.T) {
 		atWork bool
 	}{
 		{"accepting with no plan rows", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Accepting}, true, false},
-		{"acceptance:owner", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Accepting, StepRole: "acceptance", PlaceRole: claim.RoleArchitect}, true, false},
-		{"acceptance with no key", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Accepting, StepRole: "acceptance", PlaceRole: "acceptance"}, false, true},
+		{"acceptance:owner", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Accepting, StepRole: claim.RoleAcceptance, PlaceRole: claim.RoleArchitect}, true, false},
+		{"acceptance with no key", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Accepting, StepRole: claim.RoleAcceptance, PlaceRole: claim.RoleAcceptance}, false, true},
 		{"implementer:owner", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, StepRole: claim.RoleImplementer, PlaceRole: claim.RoleArchitect}, true, true},
 		{"the owner's retro", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Retro, PlaceRole: claim.RoleArchitect}, true, true},
 		{"implementer", Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, StepRole: claim.RoleImplementer, PlaceRole: claim.RoleImplementer}, false, true},

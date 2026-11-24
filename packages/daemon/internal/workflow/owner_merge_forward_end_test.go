@@ -20,13 +20,10 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
-	owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
 	seedStepsPlan(t, pool, root.Key, root.Generation, words...)
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	if words[0] == "implementer:owner" {
-		if result := applyFacts(t, pool, engine)("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-			t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-		}
+		ownerReportsStep1(t, pool, engine, root.Key)
 	} else {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	}
@@ -98,7 +95,6 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, issue := askedAtReview(t, tc.steps...)
-			owner := claim.Token(treeRoleToken(t, issue.Key, claim.RoleArchitect))
 			before := superviseRowsOf(t, pool, issue.Key, "slot_credential")
 			if pr := recordedPR(t, pool, issue.Key); pr.MergeForward == nil || pr.MergeForward.Landed != "" || pr.State != record.PullRequestOpen ||
 				issue.Hold != nil || !record.InWorkflow(issue) {
@@ -112,11 +108,7 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 			if len(rows) != len(before)+tc.queued {
 				t.Fatalf("%s queued the slot_credential rows %+v over %+v, want %d more", tc.end, rows, before, tc.queued)
 			}
-			for _, row := range rows[len(before):] {
-				if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != issue.Key || row.Generation != issue.Generation {
-					t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, issue.Key, issue.Generation)
-				}
-			}
+			assertOwnersSlotCredentials(t, rows[len(before):], issue)
 		})
 	}
 }

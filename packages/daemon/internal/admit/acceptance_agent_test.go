@@ -14,25 +14,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// acceptance is the role of the step of the type acceptance (plan.BuiltinRoles).
-const acceptance claim.Role = "acceptance"
-
-// runAtAcceptanceStep writes key's plan of one task, a, at generation, from words (`implementer
+// runAtStep writes key's plan of one task, a, at generation, from words (such as `implementer
 // acceptance`, or `implementer acceptance:owner` for the owner's acceptance), its agents named as
-// a given plan names them (record.NameAgents), and its task running at step 2.
-func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
+// a given plan names them (record.NameAgents), and its task running at step position.
+func runAtStep(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, position int, words ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		ctx, records := context.Background(), record.NewStore()
-		project, err := claim.ProjectToken(testProject)
-		if err != nil {
-			t.Fatal(err)
-		}
-		architect, err := claim.NewToken(project, key, claim.RoleArchitect)
-		if err != nil {
-			t.Fatal(err)
-		}
-		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
+		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: ownersArchitect(t, key), GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
 		roles := plan.BuiltinRoles()
 		steps := make([]record.PlanStep, 0, len(words))
@@ -42,10 +31,10 @@ func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generatio
 		}
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)),
-			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),
+			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: position}, record.TaskRunning),
 		} {
 			if put != nil {
-				t.Fatalf("seed the acceptance step of %s: %v", key, put)
+				t.Fatalf("seed step %d of %s: %v", position, key, put)
 			}
 		}
 	})
@@ -70,17 +59,10 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 			pool := migratedPool(t)
 			const root, key = "LEGION-760", "LEGION-761"
 			seedTreeAndMember(t, pool, root, key, phase.Accepting, 1, false)
-			runAtAcceptanceStep(t, pool, key, 1, tc.words...)
-			project, err := claim.ProjectToken(testProject)
-			if err != nil {
-				t.Fatal(err)
-			}
-			token, err := claim.NewToken(project, key, acceptance)
-			if err != nil {
-				t.Fatal(err)
-			}
+			runAtStep(t, pool, key, 1, 2, tc.words...)
+			token := keyedToken(t, key, claim.Agent(claim.RoleAcceptance))
 			inTx(t, pool, func(tx pgx.Tx) {
-				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: acceptance, Claim: token,
+				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleAcceptance, Claim: token,
 					Entry: seededEntry, EntryTask: seededEntryTask(key), EntryRaisedAt: fixedNow}); err != nil {
 					t.Fatalf("record the acceptance's phases row of %s: %v", key, err)
 				}
@@ -95,7 +77,7 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 				}
 				return
 			}
-			if want := (convergeStart{role: acceptance, task: seededEntryTask(key), entry: seededEntry}); len(starts) != 1 ||
+			if want := (convergeStart{role: claim.RoleAcceptance, task: seededEntryTask(key), entry: seededEntry}); len(starts) != 1 ||
 				(convergeStart{role: starts[0].role, task: starts[0].task, entry: starts[0].entry}) != want {
 				t.Fatalf("the start rows of %s = %+v, want the one start of its agent of acceptance carrying the work of entry %d: that agent holds no claim, so it was given nothing", key, starts, seededEntry)
 			}

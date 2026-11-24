@@ -20,17 +20,9 @@ import (
 // coderDeployment is Legion's own roles of a step, coder, a role of the deployment of the type
 // implementation, and checker, one of the type testing.
 func coderDeployment() plan.Deployment {
-	roles := plan.BuiltinRoles()
-	roles["coder"] = plan.RoleDef{Name: "coder", Type: plan.TypeImplementation}
-	roles["checker"] = plan.RoleDef{Name: "checker", Type: plan.TypeTesting}
-	return plan.Deployment{Roles: roles}
-}
-
-// seedCoderRetro writes the plan `coder checker` of key at generation 1 with its task running at
-// its retro, which the coder does: the store reads key's running role at the retro as the coder.
-func seedCoderRetro(t *testing.T, h *harness, key string) {
-	t.Helper()
-	seedCoderAt(t, h, key, record.TaskPlace{Kind: record.PlaceRetro})
+	d := checkerDeployment()
+	d.Roles["coder"] = plan.RoleDef{Name: "coder", Type: plan.TypeImplementation}
+	return d
 }
 
 // seedCoderAt writes the plan `coder checker` of key at generation 1 with its task running at at.
@@ -81,7 +73,7 @@ func TestTheRetroOfARoleOfTheDeploymentIsReported(t *testing.T) {
 			h, _, facts := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
 				Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Deployment: coderDeployment()})
 			seedIssueAt(t, h, key, phase.Retro)
-			seedCoderRetro(t, h, key)
+			seedCoderAt(t, h, key, record.TaskPlace{Kind: record.PlaceRetro})
 			seedPullRequest(t, h, key, headSHA)
 			seedEntry(t, h, key, tc.role, 1)
 			worker := newLiveClaim(t, h, key, tc.role)

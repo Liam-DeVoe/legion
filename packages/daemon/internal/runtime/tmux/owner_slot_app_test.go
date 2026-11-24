@@ -37,7 +37,7 @@ func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 	}{
 		{"", review, "once its owner's step ended"},
 		{claim.RoleImplementer, implement, "while its owner does the implementer step again"},
-		{"acceptance", review, "while its owner does the accepting step"},
+		{claim.RoleAcceptance, review, "while its owner does the accepting step"},
 	} {
 		g.acting.Store(tick.acting)
 		g.refreshGitHubCredentials(ctx)

@@ -852,6 +852,23 @@ func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 	}
 }
 
+// newOwnerWakeRig is the rig with LEGION-208 at step 1 of `implementer:owner tester`, the owner's
+// own step, which the gate's opening started, and the owner's released claim serving no run. It
+// answers the rig and the owner's claim.
+func newOwnerWakeRig(t *testing.T) (wakeRig, claim.Token) {
+	t.Helper()
+	rig := newWakeRig(t)
+	owner := wakeToken(t, claim.RoleArchitect)
+	setWakeIssuePhase(t, rig.pool, phase.Admitted)
+	seedTreeLifecycle(t, rig.pool, "LEGION-208")
+	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
+	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
+		t.Fatalf("leave the owner's claim serving no run: %v", err)
+	}
+	return rig, owner
+}
+
 // R2 at the owner's own place: a step of the key owner is the owner's work, so a settlement on the
 // head of the issue's pull request wakes the owner's released claim, the issue's own architect,
 // with the settlement's task, as it wakes a released worker at a worker's step. On
@@ -866,16 +883,8 @@ func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 // the owner's place and so wakes nobody, while the role message the owner is sent in its place
 // finishes undelivered, since its claim is released (the outbox's roleMessage).
 func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
-	rig := newWakeRig(t)
-	owner := wakeToken(t, claim.RoleArchitect)
-	setWakeIssuePhase(t, rig.pool, phase.Admitted)
-	seedTreeLifecycle(t, rig.pool, "LEGION-208")
-	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
-	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	rig, owner := newOwnerWakeRig(t)
 	assertWalksAt(t, rig.pool, rig.engine, "LEGION-208", phase.Implementing, stepPlace(1))
-	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
-		t.Fatalf("leave the owner's claim serving no run: %v", err)
-	}
 
 	rig.apply("settled", settlement("head1", "build"))
 
@@ -894,15 +903,7 @@ func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
 // owner's released claim (record.OwnerClaim), whatever run its claim served last, with the
 // backstop's task.
 func TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
-	rig := newWakeRig(t)
-	owner := wakeToken(t, claim.RoleArchitect)
-	setWakeIssuePhase(t, rig.pool, phase.Admitted)
-	seedTreeLifecycle(t, rig.pool, "LEGION-208")
-	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
-	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
-		t.Fatalf("leave the owner's claim serving no run: %v", err)
-	}
+	rig, owner := newOwnerWakeRig(t)
 	rig.apply("backstop", armBackstop(t, rig.pool, owner, claim.RoleArchitect, wakeAt.Add(-time.Minute)))
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop, "backstop")

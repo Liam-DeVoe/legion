@@ -148,13 +148,13 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, nil, "implementer", "tester", "reviewer", "acceptance:owner")
 		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 
-		if notices := ownerSteps(t, pool, root.Key); len(notices) != 1 || notices[0].Role != "acceptance" || notices[0].Phase != phase.Accepting {
+		if notices := ownerSteps(t, pool, root.Key); len(notices) != 1 || notices[0].Role != claim.RoleAcceptance || notices[0].Phase != phase.Accepting {
 			t.Fatalf("the approval told %+v, want one owner-step of the acceptance", notices)
 		}
 		if starts := stepStartsAt(t, pool, root.Key, "step", 4); len(starts) != 1 || starts[0].Agent != owner {
 			t.Fatalf("the start records of step 4 = %+v, want one naming the owner", starts)
 		}
-		if starts := roleStartsOf(t, pool, root.Key, "acceptance"); len(starts) != 0 {
+		if starts := roleStartsOf(t, pool, root.Key, claim.RoleAcceptance); len(starts) != 0 {
 			t.Fatalf("the approval wrote starts of the role acceptance %+v, want none", starts)
 		}
 	})
@@ -233,6 +233,16 @@ func ownersReport(key string, claimed claim.Token, role claim.Role, step int, ha
 		Summary: "implemented", Commit: stepHead, HandoffRecord: handoff, HandoffVersion: 1}
 }
 
+// ownerReportsStep1 applies the owner's report of step 1 of key's task a through engine, under the
+// claim of key's own architect, failing the test on a refusal.
+func ownerReportsStep1(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+	t.Helper()
+	owner := claim.Token(treeRoleToken(t, key, claim.RoleArchitect))
+	if result := applyFacts(t, pool, engine)("step-1", ownersReport(key, owner, claim.RoleImplementer, 1, "implement-"+key)); result.Refusal != nil {
+		t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
+	}
+}
+
 // The engine takes the owner's report of a step only for the step that runs, read in the fact's
 // own transaction: on `implementer:owner tester:owner`, the owner's report of step 1 moves the
 // task to step 2, the tester's step, which the owner does too; the same report of step 1 sent
@@ -255,9 +265,7 @@ func TestTheEngineTakesTheOwnersReportOnlyForTheStepThatRuns(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		apply := applyFacts(t, pool, engine)
 
-		if result := apply("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-			t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-		}
+		ownerReportsStep1(t, pool, engine, root.Key)
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
 
 		result := apply("step-1-again", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208-again"))
