@@ -198,7 +198,7 @@ func TestPauseCommands(t *testing.T) {
 
 		state := d.succeed("state")
 		lines := stateLines(state, "paused: ")
-		want := "paused: " + pauseLine + "; waits on 1 role — LEGION-208 implementer"
+		want := "paused: " + pauseLine + "; waits on 1 claim — LEGION-208 implementer"
 		if len(lines) != 1 || lines[0] != want {
 			t.Fatalf("legion state while paused printed %q among\n%s\nwant the one line %q", lines, state, want)
 		}
@@ -291,7 +291,7 @@ func TestThePausedLineNamesTwoClaimsOfOneRoleApart(t *testing.T) {
 		`"waitsOn":[` + stop("implementer", "implementer") + `,` + stop("implementer-2", "implementer") + `,` +
 		stop("reviewer", "tester") + `],"held":[]}`
 	lines := stateLines(plainStateOf(t, "{"+daemon+","+paused+"}"), "paused: ")
-	want := "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; waits on 3 roles — " +
+	want := "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; waits on 3 claims — " +
 		"LEGION-208 implementer, LEGION-208 implementer (claim legion-legion-legion-208-implementer-2), " +
 		"LEGION-208 tester (claim legion-legion-legion-208-reviewer)"
 	if len(lines) != 1 || lines[0] != want {

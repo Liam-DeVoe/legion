@@ -4,7 +4,6 @@ import {
   isStepRole,
   LEGION_ROLES,
   type LegionStepRole,
-  parseRoleToken,
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -148,37 +147,39 @@ const pauseActorWords = (session: string | undefined): string =>
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
   `pause ${id} since ${since} by ${by}: ${reason}`;
 
-/** The name of the agent a claim token of an issue ends in, read with the project the token
- * itself names (`parseRoleToken`), and undefined for a token that names no agent of an issue, the
- * controller's among them: the Go daemon's `claim.Token.Cut`. */
-function agentOfToken(token: string): string | undefined {
-  const parsed = parseRoleToken(token.split("-")[1] ?? "", token);
-  return parsed === undefined || "controller" in parsed ? undefined : parsed.role;
-}
-
-/** A claim of `issue` on `role` whose token is `token` as the summary names it, in the words
- * `legion state` names it (`api.ClaimName` in `packages/daemon/internal/api/state.go`): `<issue>
- * <role>` for the claim of an agent named for its role, and for a claim served without its token,
- * and `<issue> <role> (claim <token>)` for every other claim — a second agent of one role such as
- * `implementer-2`, or the agent of another role's name that holds the role for a step — so two
- * claims of one role on one issue read apart. */
-function claimName(issue: string, role: string, token: string | undefined): string {
-  const agent = token === undefined ? undefined : agentOfToken(token);
-  return agent === undefined || agent === role
-    ? `${issue} ${role}`
-    : `${issue} ${role} (claim ${token})`;
+/** The pause line's name of a claim of `issue` on `role` whose token is `token`, by the rule the
+ * issue lines name a claim by (`stateSummary`): its issue and role, and its token beside them where
+ * the issue and the role do not reach it, so a tool reaches it by its token alone. The issue and the
+ * role reach the claim `fresh_session` and `compact` act on when they name the two: the claim the
+ * issue's `architect` or `workers` shows for the role, and, where the state shows none or shows it
+ * without its token, the role's own claim, whose token ends in the issue and the role. So a second
+ * agent of one role such as `implementer-2` beside the claim that works the role's step is named
+ * with its token, and so is the role's own claim while a second agent works it; a claim served
+ * without its token is named by its issue and role. */
+function pausedClaimName(
+  state: LegionState,
+  issue: string,
+  role: string,
+  token: string | undefined
+): string {
+  const served = state.issues[issue];
+  const shown = (role === "architect" ? served?.architect : served?.workers?.[role]?.claim)?.token;
+  const reached =
+    shown === undefined ? token?.endsWith(`-${issue.toLowerCase()}-${role}`) : token === shown;
+  return token === undefined || reached ? `${issue} ${role}` : `${issue} ${role} (claim ${token})`;
 }
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
  * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
- * controller and an operator read the same words. The times are not the same text: `legion
+ * controller and an operator read the same words, but for the token beside a claim, which this line
+ * gives by the summary's rule (`unreachedToken`). The times are not the same text: `legion
  * state` prints each at whole seconds, and this line prints the daemon's own string. While the
  * project is paused: the pause, since when, by whom and why, the claims whose stop it still waits
- * on, each by its name (`claimName`), and how many rows it holds, which `legion state` leaves to
- * its JSON. While the project runs after a pause has ended: that pause, then when and by whom it
- * was ended. The state carries one of the two at most, and neither before the project's first
- * pause, when the summary has no such line.
+ * on, each by its issue and role and, where they do not reach it, its token, and how many rows it
+ * holds, which `legion state` leaves to its JSON. While the project runs after a pause has ended:
+ * that pause, then when and by whom it was ended. The state carries one of the two at most, and
+ * neither before the project's first pause, when the summary has no such line.
  *
  * Each field is taken off the pause it belongs to, under the state's own names, which
  * `LEGION_ANSWER_READS` declares as `paused.id`, `paused.by|0.kind` and
@@ -187,11 +188,13 @@ function claimName(issue: string, role: string, token: string | undefined): stri
 function pauseSummary(state: LegionState): string | undefined {
   const paused = state.paused;
   if (paused !== undefined) {
-    const roles = paused.waitsOn.map((stop) => claimName(stop.issue, stop.role, stop.claim));
+    const claims = paused.waitsOn.map((stop) =>
+      pausedClaimName(state, stop.issue, stop.role, stop.claim)
+    );
     const waitsOn =
-      roles.length === 0
-        ? "no role"
-        : `${roles.length} ${roles.length === 1 ? "role" : "roles"} — ${roles.join(", ")}`;
+      claims.length === 0
+        ? "no claim"
+        : `${claims.length} ${claims.length === 1 ? "claim" : "claims"} — ${claims.join(", ")}`;
     const rows = paused.held.length;
     const holds = rows === 0 ? "no row" : `${rows} ${rows === 1 ? "row" : "rows"}`;
     const by = pauseActorWords(paused.by.kind === "controller" ? paused.by.session : undefined);
@@ -241,7 +244,7 @@ function wakesWaitingSummary(state: LegionState): string | undefined {
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
 const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
-  "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
+  "when, by whom and why, the claims whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
   "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
@@ -311,7 +314,8 @@ function stateSummary(state: LegionState): string {
       const gate = issue.designGate;
       lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
     }
-    // Each claim with its label and what ends its line: the token of a claim `workers` does not show.
+    // Each claim with its label and what ends its line: the token of a claim `workers` does not
+    // show, the one rule the pause's line names a claim by too (`pausedClaimName`).
     const claims: Array<readonly [string, SummaryClaim, string]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
     // Each worker of the issue's map: Legion's six in their workflow order, then each role of the

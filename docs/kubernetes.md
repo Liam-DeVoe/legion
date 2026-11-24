@@ -7531,10 +7531,10 @@ Where its issue's pod was released before the wake, that report still ends the r
 **What the state and the log show.**
 While the project is paused, `GET /legion/v1/state` carries `paused`: the pause's `id`, `since`, `by` and `reason`, then `waitsOn`, each claim whose stop the pause still waits on, and `held`, each row that the pause holds, with its kind, its issue, its claim where the row names one, and the seconds it has waited.
 While the project runs after a pause has ended, the state carries `lastPause` instead, the last pause with its `endedAt` and `endedBy`.
-`legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …`, which ends `waits on no role` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
+`legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> claims — <ISSUE> <role>, …`, which ends `waits on no claim` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
 A claim of an agent not named for its role, such as a second agent of one role, `implementer-2`, is named there with its token beside its issue and role: `<ISSUE> <role> (claim <token>)`.
 `<who>` is `the controller (session <id>)` or `the operator`.
-The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds.
+The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds, but names a claim with its token where its issue and role do not reach it, as its issue lines do: the issue and the role reach the claim the issue's `workers` shows for the role, which `fresh_session` and `compact` act on when they name the two. So while `implementer-2` works the step, `read_state` names it `<ISSUE> implementer` and the role's own claim `<ISSUE> implementer (claim <token>)`.
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
 A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/shaping.go`).
 
