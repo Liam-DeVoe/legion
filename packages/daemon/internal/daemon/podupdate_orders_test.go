@@ -95,18 +95,23 @@ package daemon
 //     round waits for the operator whatever its bound (heldByOperator), so only P's own going ends
 //     it.
 //
-// The others are left out on purpose. A member released through a chain of two releases, or on
-// a kept volume, is held at two ends, the read through the tester's process and P going on its
-// own: it is named by the same case of the predicate as the member released once, whose rows
-// cover every end, and only the way its work came to P's disk differs. A released member whose
-// session is forgotten is held where P goes, on its own or recreated. The sweep's replacement
-// through a waiting claim and a launch's replacement name it on the issue as P's going does
-// (lostClaims), and a launch's line names it too, but the line of the sweep's replacement names a
-// claim the round passed over only where it has a session (notWaitedFor); and the replacement
-// through the tester's process names it nowhere, on its line or on the issue, since it reads only
-// the claims with a session (notWaitedFor, notAskedToPush).
+// The others are left out on purpose. A member the daemon suspended before the release and never
+// resumed (daemonStoppedHeld) is held where P goes, on its own or recreated: a daemon's suspension
+// does not hold the round, so the sweep or a launch can replace P over it, and it is named there by
+// the same case of the predicate as the member released once (releasedRestored), whose rows cover
+// every end. A member released through a chain of two releases, or on a kept volume, is held at
+// two ends, the read through the tester's process and P going on its own: it is named by the same
+// case of the predicate as the member released once, whose rows cover every end, and only the way
+// its work came to P's disk differs. A released member whose session is forgotten is held where P
+// goes, on its own or recreated. The sweep's replacement through a waiting claim and a launch's
+// replacement name it on the issue as P's going does (lostClaims), and a launch's line names it
+// too, but the line of the sweep's replacement names a claim the round passed over only where it
+// has a session (notWaitedFor); and the replacement through the tester's process names it
+// nowhere, on its line or on the issue, since it reads only the claims with a session
+// (notWaitedFor, notAskedToPush).
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1285,11 +1290,7 @@ func (r *podUpdateRig) wakeFor(role claim.Role) supervise.RequestRuleResume {
 // as the outbox's start of the role's phase makes it; and a wake (wakeFor) of a claim that stands
 // released.
 func (r *podUpdateRig) resumeOf(role claim.Role, kind memberKind) supervise.Event {
-	by := kind.takenOverBy()
-	if by == "" {
-		by = kind.stoppedBeforeRelease()
-	}
-	switch by {
+	switch cmp.Or(kind.takenOverBy(), kind.stoppedBeforeRelease()) {
 	case supervise.SuspendedByOperator:
 		return supervise.RequestResume{Claim: r.tokens[role]}
 	case supervise.SuspendedByDaemon:

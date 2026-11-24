@@ -708,7 +708,7 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 // with no process that waits on none, is weighed as any claim is. A claim the daemon suspended is
 // passed over and waited for by nobody (roundAsks, dispatch://INFRA-4109 R1), and named where an
 // agent of it registered in the round's pod. Where the round's pod took an idle release's work
-// (released, the store's record the end reads once), every claim with a session or a pod in its
+// (tookRelease, the store's record the end reads once), every claim with a session or a pod in its
 // set is named as one whose work may be on that pod's disk, wherever its agents registered, since
 // the release's bundle holds the whole workspace the roles share; a claim with neither is named
 // nothing there either. A claim with no session that waits on another pod is no way to this
@@ -734,8 +734,8 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	}
 	for name, tc := range map[string]struct {
 		claim supervise.Claim
-		// released is whether the round's pod took an idle release's work (roundPodTookRelease).
-		released                                               bool
+		// tookRelease is whether the round's pod took an idle release's work (roundPodTookRelease).
+		tookRelease                                            bool
 		posted, waiting, lost, unwaited, waitingLost, notAsked bool
 	}{
 		"it waits on the round's pod, with a session registered there": {
@@ -749,7 +749,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 		"it waits on the round's pod, with a session registered in another pod only": {
 			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), elsewhere), posted: true},
 		"it waits on the round's pod, with a session registered in another pod only, and the pod took a release's work": {
-			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), elsewhere), released: true,
+			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), elsewhere), tookRelease: true,
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with a session, and its set unknown": {
 			claim:  registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), unknown),
@@ -757,12 +757,12 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 		"it waits on the round's pod, with no session, registered nowhere": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), posted: true},
 		"it waits on the round's pod, with no session, registered nowhere, and the pod took a release's work": {
-			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), released: true, posted: true},
+			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), tookRelease: true, posted: true},
 		"it waits on the round's pod, with no session, registered there before": {
 			claim:  registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), inPod),
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with no session, registered in another pod only, and the pod took a release's work": {
-			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), elsewhere), released: true,
+			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), elsewhere), tookRelease: true,
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with no session, and its set unknown": {
 			claim:  registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), unknown),
@@ -779,14 +779,14 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 		"it is suspended and waits on no pod, registered in another pod only": {
 			claim: released(elsewhere), posted: true},
 		"it is suspended and waits on no pod, registered in another pod only, and the pod took the release's work": {
-			claim: released(elsewhere), released: true, posted: true, lost: true, notAsked: true},
+			claim: released(elsewhere), tookRelease: true, posted: true, lost: true, notAsked: true},
 		"it runs in the round's pod, registered there": {
 			claim:  registeredIn(runningIn(t, claim.RoleImplementer, podUpdatePod, round), inPod),
 			posted: true, waiting: true, lost: true},
 		"it has no session, no process and waits on no pod, registered nowhere": {
 			claim: queued(supervise.RegisteredPods{})},
 		"it has no session, no process and waits on no pod, registered nowhere, and the pod took a release's work": {
-			claim: queued(supervise.RegisteredPods{}), released: true},
+			claim: queued(supervise.RegisteredPods{}), tookRelease: true},
 		"it has no session, no process and waits on no pod, and its set unknown": {
 			claim: queued(unknown), lost: true},
 	} {
@@ -799,10 +799,10 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			}{
 				{"postedClaims", postedClaims(group, round), tc.posted},
 				{"waitingClaims", waitingClaims(group, round, clock), tc.waiting},
-				{"lostClaims", lostClaims(group, round, tc.released), tc.lost},
-				{"unwaitedOnThePod", unwaitedOnThePod(group, round, tc.released), tc.unwaited},
-				{"lostWaitingClaims", lostWaitingClaims(group, round, tc.released), tc.waitingLost},
-				{"notAskedToPush", notAskedToPush(group, round, clock, tc.released), tc.notAsked},
+				{"lostClaims", lostClaims(group, round, tc.tookRelease), tc.lost},
+				{"unwaitedOnThePod", unwaitedOnThePod(group, round, tc.tookRelease), tc.unwaited},
+				{"lostWaitingClaims", lostWaitingClaims(group, round, tc.tookRelease), tc.waitingLost},
+				{"notAskedToPush", notAskedToPush(group, round, clock, tc.tookRelease), tc.notAsked},
 			} {
 				if named := len(check.got) == 1; named != check.want {
 					t.Errorf("%s names %v, want the claim named: %t", check.reader, namesOf(check.got), check.want)

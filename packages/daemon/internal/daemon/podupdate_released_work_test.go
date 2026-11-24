@@ -7,7 +7,6 @@ package daemon
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +58,10 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	rig.signal(tester, "c0ffee")
 
 	rig, refusals = rig.restarted()
+	// The restarted daemon's read answers true on a failed read too, so the store is read itself.
+	if took, err := rig.st.PodTookWorkspaceBundle(rig.ctx, podUpdateIssue, podUpdatePod); err != nil || !took {
+		t.Fatalf("after the restart the store reads that pod %s took a release's work: %t (%v), want the record of the take before the restart", podUpdatePod, took, err)
+	}
 	if !rig.s.roundPodTookRelease(rig.ctx, podUpdateIssue, podUpdateRound) {
 		t.Fatalf("the restarted daemon reads that pod %s took no release's work, want the store's record of the take before the restart", podUpdatePod)
 	}
@@ -83,14 +86,7 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	if len(lost) != 1 {
 		t.Fatalf("the round's end was logged %+v, want one line that the members that had not answered lost what they had not pushed", lost)
 	}
-	var named []string
-	for _, role := range lost[0]["lost"].([]any) {
-		named = append(named, role.(string))
-	}
-	slices.Sort(named)
-	if want := []string{string(implementer), string(reviewer)}; !slices.Equal(named, want) {
-		t.Fatalf("the end's line names %v as having lost what they had not pushed, want %v", named, want)
-	}
+	wantField(t, lost[0], "lost", implementer, reviewer)
 	messages := rig.messages()
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written %q, want one message that its pod went", messages)

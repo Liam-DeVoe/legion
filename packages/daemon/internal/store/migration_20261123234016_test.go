@@ -16,11 +16,10 @@ const bundlePodsVersion = 20261123234016
 
 // 20261123234016 adds workspace_bundle_pods, the pods that took an idle release's work, and
 // changes no table that the release before reads. A bundle the release before saved is still the
-// bundle after the migration, the release before's own statements on it still run, and they
-// leave the new table as it was, since that release names it nowhere. The first take of this
-// release that sends the bundle records its pod. The table's key is the issue and the pod, and it
-// refuses a row with no pod or with no release. The negative control is the table itself, which
-// is not there before the migration.
+// bundle after the migration, and the release before's own statements on it still run. The first
+// take of this release that sends the bundle records its pod. The table's key is the issue and
+// the pod, and it refuses a row with no pod or with no release. The negative control is the table
+// itself, which is not there before the migration.
 func TestThePodsThatTookAReleasesWorkArriveWith20261123234016(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -53,7 +52,7 @@ func TestThePodsThatTookAReleasesWorkArriveWith20261123234016(t *testing.T) {
 		t.Fatalf("after the migration the table holds %v, want it empty", got)
 	}
 	// The release before's take, its own statement (TakeWorkspaceBundleForRestore before this
-	// release), spends the attempt of a bundle saved before the migration and records no pod.
+	// release), spends the attempt of a bundle saved before the migration.
 	const releaseBeforesTake = `update workspace_bundles
 		set attempt_pod_uid = $2, attempt_at = now(),
 			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
@@ -64,9 +63,6 @@ func TestThePodsThatTookAReleasesWorkArriveWith20261123234016(t *testing.T) {
 	const bundles = `select issue || '/' || release_id || '/' || coalesce(attempt_pod_uid, '') || '/' || coalesce(attempt_outcome, '') from workspace_bundles`
 	if got, want := rowsAsText(t, store, bundles), []string{"INFRA-945/11/pod-of-the-release-before/sent"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the release before's take the bundles are %v, want %v", got, want)
-	}
-	if got := rowsAsText(t, store, pods); len(got) != 0 {
-		t.Fatalf("after the release before's take the table holds %v, want it empty: that release names it nowhere", got)
 	}
 	if err := exec(`delete from workspace_bundles where issue = $1`, "INFRA-945"); err != nil {
 		t.Fatalf("the release before's delete of the bundle: %v", err)

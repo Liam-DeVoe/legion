@@ -117,8 +117,8 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // dropReleasedWork), which is what the launcher's notice tells the roles.
 //
 // A take that sends the bundle records in its own transaction that the pod of podUID took the
-// release's work (workspace_bundle_pods, holdReleasedWork): its disk holds the whole shared
-// workspace's work once the launcher restores it, before any role starts, and the confirmed
+// release's work (workspace_bundle_pods, recordWorkspaceBundlePod): its disk holds the whole
+// shared workspace's work once the launcher restores it, before any role starts, and the confirmed
 // restore deletes the bundle's row. A take refused as older than the save, and one that found no
 // bundle, record no pod.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
@@ -148,13 +148,11 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		if err != nil {
 			return err
 		}
-		if outcome == "sent" {
-			if err := holdReleasedWork(ctx, tx, issue, podUID, b.Release); err != nil {
-				return err
-			}
-		}
 		found = true
-		return nil
+		if outcome != "sent" {
+			return nil
+		}
+		return recordWorkspaceBundlePod(ctx, tx, issue, podUID, b.Release)
 	})
 	if !found && err == nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
@@ -250,11 +248,12 @@ func (s *Store) DeleteWorkspaceBundlePods(ctx context.Context, issue string) err
 	return nil
 }
 
-// holdReleasedWork records, in tx, that the pod of podUID took the work issue's release saved:
-// the take that sent it the bundle or the drop of a bundle its kept volume holds, each in its own
-// transaction (PodTookWorkspaceBundle). It is an upsert on the issue and the pod, so a run of that
-// transaction again finishes, and it keeps the latest release and time.
-func holdReleasedWork(ctx context.Context, tx pgx.Tx, issue, podUID string, release int64) error {
+// recordWorkspaceBundlePod records, in tx, that the pod of podUID took the work issue's release
+// saved: the take that sent it the bundle or the drop of a bundle its kept volume holds, each
+// running it in its own transaction (TakeWorkspaceBundleForRestore, DropHeldWorkspaceBundle). It
+// is an upsert on the issue and the pod, so a second take or drop for the same issue and pod does
+// not fail its transaction, and it keeps the latest release and time.
+func recordWorkspaceBundlePod(ctx context.Context, tx pgx.Tx, issue, podUID string, release int64) error {
 	_, err := tx.Exec(ctx, `insert into workspace_bundle_pods (issue, pod_uid, release_id, at) values ($1, $2, $3, now())
 		on conflict (issue, pod_uid) do update set release_id = excluded.release_id, at = excluded.at`,
 		issue, podUID, release)
@@ -312,9 +311,9 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // a run that committed deleted the row, so a second run would answer that nothing was dropped.
 //
 // A drop that deletes the bundle records in its own transaction that the pod of podUID took the
-// release's work (workspace_bundle_pods, holdReleasedWork): the pod mounts the volume the work was
-// taken off, so its disk holds that work as a restored pod's does. A drop that deletes nothing
-// records no pod.
+// release's work (workspace_bundle_pods, recordWorkspaceBundlePod): the pod mounts the volume the
+// work was taken off, so its disk holds that work as a restored pod's does. A drop that deletes
+// nothing records no pod.
 func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
 	if err := dropAsk.check(project, issue, podUID, keptSince); err != nil {
 		return runtime.WorkspaceBundle{}, false, err
@@ -335,11 +334,8 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, pod
 		if err != nil {
 			return err
 		}
-		if err := holdReleasedWork(ctx, tx, issue, podUID, held.Release); err != nil {
-			return err
-		}
 		dropped = true
-		return nil
+		return recordWorkspaceBundlePod(ctx, tx, issue, podUID, held.Release)
 	})
 	if err != nil {
 		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)
