@@ -352,13 +352,21 @@ async function startWorker(options: {
     },
     bootOrder: () => bootOrder,
     async handOverOf(summary) {
-      const files = (await readdir(sessions, { recursive: true })).filter((file) =>
-        file.endsWith(".jsonl")
-      );
-      if (files.length !== 1) throw new Error(`want one transcript under ${sessions}: ${files}`);
-      const written = (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-        .split("\n")
-        .filter((line) => line.includes('"envoy-message"') && line.includes(summary));
+      // Oh My Pi writes the card's entry to the transcript apart from the listener's receipt and
+      // the task's model request, which the cases wait on, so the read waits for a whole line
+      // carrying the card: a line still being written has no newline after it yet.
+      const written = await until(`the transcript's card carrying ${summary}`, async () => {
+        const files = (await readdir(sessions, { recursive: true })).filter((file) =>
+          file.endsWith(".jsonl")
+        );
+        if (files.length > 1) throw new Error(`want one transcript under ${sessions}: ${files}`);
+        if (files.length === 0) return undefined;
+        const lines = (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
+          .split("\n")
+          .slice(0, -1)
+          .filter((line) => line.includes('"envoy-message"') && line.includes(summary));
+        return lines.length === 0 ? undefined : lines;
+      });
       if (written.length !== 1) throw new Error(`want one card carrying ${summary}: ${written}`);
       return CardEntrySchema.parse(JSON.parse(written[0] ?? "")).details.handOver;
     },
