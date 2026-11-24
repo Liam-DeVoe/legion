@@ -274,8 +274,8 @@ var (
 	// is sent as stored.
 	openAPILegionWaitingOn = map[string]any{
 		"type": "object",
-		"description": "what the issue waits on from a person, the Legion daemon's waitingOn " +
-			"object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+		"description": "what the issue waits on from a person, in the shape GET " +
+			"/api/v1/issues/{key}/legion answers it",
 		"properties": map[string]any{
 			"kind": map[string]any{
 				"type":        "string",
