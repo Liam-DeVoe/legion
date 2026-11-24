@@ -381,7 +381,7 @@ request's run in progress. Take the label off once the run it was added for pass
 later push would run the slow suites again, unless a `ci_check` of the issue names one of them,
 which reads `skipped` on a pull request without the label.
 
-The suites are go-envoy-held's legs, one or more each; the jobs after it carry the five split
+The suites are go-envoy-held's legs, one or more each; the jobs after it carry the six split
 ones' old names. dispatch-two-builds-same, a merge group's alone, takes the defaults: an include
 entry would add back what the exclude takes out (.github/actions/go-envoy-held/<leg>).
 
@@ -684,7 +684,7 @@ inside it. That package's tests are where the rest of the time is.
 A job split into legs keeps its old check-run name on a job of its own, which needs the legs'
 job, runs under their gate and passes only when each of its own legs' newest record passed
 (.github/scripts/leg-verdict.sh): a failure in another suite's leg leaves it passing. daemon-go
-carries go-daemon's plain legs' name and daemon-go-race its race legs'; envoy-go,
+carries go-daemon's plain legs' name and daemon-go-race its race legs'; envoy-go, envoy-go-race,
 envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers and dispatch-memory
 carry the old check-run names of go-envoy-held's split suites the same way. The legs of a split
 job are named `<name> (<i>/<n>)`, each index from 1 to n once (check-ci-layout.sh's rule 34), so
@@ -1146,13 +1146,38 @@ say why the document service runs alone.
 
 api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
 runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
-746.718 s. The packages
-left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
-there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
-and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
-a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
-package apart also reads its seconds as its own job's, and leaves the others' numbers
-standing when one is red.
+746.718 s. Running a heavy package apart also reads its seconds as its own job's, and leaves
+the others' numbers standing when one is red.
+
+The packages left in envoy-go-race share one go test, split by test name between two legs,
+envoy-go-race (1/2) and (2/2): .github/scripts/go-test-split.sh gives each test to one leg by a
+hash of its name, so each leg runs about half of each package. The envoy-go-race carrier keeps
+the old check-run name, `envoy-go-race / envoy-go-race`. The packages shared one leg while the
+heaviest of them were the bus, at 286.931 s, and the listener, at 365.787 s (run 40926978371).
+In run 45396964994 that leg took 22.6 minutes, and in run 45401400508 22.2, past the 22 a leg is
+held to: in the first, the listener took 1,088 s of the race step's 1,233 s, and it runs its
+tests one at a time (their times add up to 1,082 s).
+
+Each leg's time is predicted from the first run's log. The sums of the listener's test times give
+leg 1 at most 617.4 s of the package and leg 2 at most 493.4 s, each with the package's 14.9 s
+of start and end. No other package's share is longer: each package's time, scaled by its share
+of its tests' times, is at most 291 s in a leg (delivery's in leg 2). Before the listener's
+share starts, the step lists the tests (go-test-split.sh compiles the race binaries to list
+them) and starts the go test: at most 2 x 144.4 s, the run's own compile up to the listener's
+start, once for the listing and once for the go test, whose build is then cached (the API legs'
+go test ran its first test 2.3 s after their listing ended). Leg 1: 3.3 s before the log
+starts, 53.1 s of set-up, 288.7 s, 617.4 s, 2.6 s of upload and report and 2.0 s of report and
+clean-up, 967.2 s or 16.1 minutes. Leg 2 also runs the forced-order steps, 62.8 s in that run:
+3.3 + 53.1 + 288.7 + 493.4 + 2.6 + 62.8 + 2.0 = 906.1 s, 15.1 minutes. Run 45401400508's log, read
+the same way, gives 946.1 s and 883.1 s, 15.8 and 14.7 minutes (its listener's shares 610.9 s
+and 487.4 s, its compile up to the listener 137.0 s), so the timeouts below take the first run's.
+
+The race step's -timeout is 21 minutes in both legs: the smallest whole minute at which the
+step's slowest package, the listener's share in leg 1, takes at most 50 % of it (2 x 617.4 s is
+20.6 minutes). Each leg's timeout-minutes is its predicted time plus that -timeout plus 6
+minutes, rounded up: 16.1 + 27 gives 44 for leg 1, and 15.1 + 27 gives 43 for leg 2. Both are
+above the retry's floor, the leg's time with one more run of each of its 10 longest tests
+(419.6 s and 419.0 s) and 3 minutes: 26.1 and 25.1 minutes.
 
 envoy-go-race-api's tests drive the Dispatch store, so its job carries the lane's Postgres
 service.
@@ -1200,6 +1225,37 @@ job of this lane installs it. It runs under -race because a read that walks a li
 without its lock races the room's peers, which no ordinary run shows
 (TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:39,
 LEGION-499).
+
+Its two legs, envoy-go-race-docs (1/2) and (2/2), split its tests by go-test-split.sh's hash, and
+the hash gave leg 2 more of their time. The package runs its tests one at a time, so a leg's time
+is its tests' time and a rest it repeats (set-up, the listing's compile, the go test's start and
+end, the upload and the report). A test's time here is its `--- PASS` time, or, for the three
+parallel tests, which wait for the end of the run, the time from the test before it to its own
+end. In run 45396964994 leg 1 took 1,084 s, 978.0 s of them tests, and leg 2 1,295 s, 1,169.1 s
+of them tests; in run 45401400508 leg 1 took 1,095 s (985.5 s) and leg 2 1,320 s (1,195.0 s). So
+the legs' times add up to 2,379 s and 2,415 s, and the best two legs can do is 1,189.5 s and
+1,207.5 s each, 19.8 and 20.1 minutes. Leg 2's rest holds 15 to 16 s that storetest's end takes
+after its last test, which leg 1's does not.
+
+The race step skips three render-reuse tests the hash gives leg 2, and leg 1 alone runs them in a
+go test of their own: TestRenderReuseADocumentOutsideTheSchema (47.5 s and 49.2 s),
+TestRenderReuseANilOriginCommitCreditsNoOne (37.0 s and 38.1 s) and
+TestRenderReuseARecoveredReplicaRendersThePublish (15.5 s and 16.1 s), 100.0 s and 103.5 s. That
+go test adds 18.2 s to leg 1: 2.3 s to start on the build the step before it cached (the
+envoy-go-race-api legs' go test ran its first test 2.3 s after their listing), 14.6 s for the
+store template its first test migrates (the longest first test of a leg in those runs) and
+1.3 s to end, as leg 1's go test ends. Leg 1: 1,084 + 100.0 + 18.2 = 1,202.2 s, 20.0 minutes,
+and 1,095 + 103.5 + 18.2 = 1,216.7 s, 20.3 minutes. Leg 2: 1,295 - 100.0 = 1,195.0 s, 19.9
+minutes, and 1,320 - 103.5 = 1,216.5 s, 20.3 minutes. Where that go test ends as slowly as leg
+2's, 15 s later, leg 1 takes 20.3 and 20.5 minutes.
+
+The timeouts follow the race lane's rule (#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it).
+Leg 1's race step: 2 x 986.3 s, its go test in run 45401400508, is 32.9 minutes, so -timeout
+33m; its moved tests' go test: 2 x (103.5 + 14.6 + 16.2) s is 4.5 minutes, so 5m; leg 2's race
+step: 2 x (1,210.6 - 103.5) s is 36.9 minutes, so 37m. timeout-minutes: 20.5 + 33 + 6 = 59.5, so
+60, and 20.3 + 37 + 6 = 63.3, so 64. Both are above the retry's floor, the leg's time with one
+more run of each of its 10 longest tests and 3 minutes: 32.4 and 33.5 minutes. The legs' earlier
+27 and 31 were below theirs (29.5 and 35.9 minutes in run 45401400508).
 
 ## The cleanup detector run of the document service
 

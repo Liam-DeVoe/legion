@@ -515,7 +515,7 @@ A name no hook of that version reports is refused before anything is built, so a
 It fails, naming the package, when a package declares no `TestForcedOrder` test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL` line).
 `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`.
 `forced-order.test.sh` holds it to six of those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`, an empty `-C`, an empty `-jsonfile`, a module that replaces nats-server), with the fixture package `internal/testnats/hooktest/testdata/skiponly`.
-The `envoy-go-race` leg of `ci.yaml`'s `go-envoy-held` job runs that test, then the script on `./internal/testnats/hooktest/` twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`.
+The `envoy-go-race (2/2)` leg of `ci.yaml`'s `go-envoy-held` job runs that test, then the script on `./internal/testnats/hooktest/` twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`.
 The last plain leg of its `daemon-go` job runs it with `-C packages/daemon` and no `-server`.
 So when `go.mod` moves to a nats-server with no hooks, both unversioned steps fail until the hooks are ported.
 Each leg counts the 10 minutes in its time budget.

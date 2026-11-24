@@ -99,9 +99,10 @@ check "the memory sampler written before a go command is no wrapper of it: it is
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
 echo "case: the two steps whose lines this harness exists for are read as their actions write them"
-# envoy-go-docs-finalizers holds two: its legs' share of the package, and its corpus tests on the
-# leg's shard of the corpus.
-for expected in ".github/actions/go-envoy-held/envoy-go-race-docs/action.yml 1" ".github/actions/go-envoy-held/envoy-go-docs-finalizers/action.yml 2"; do
+# envoy-go-race-docs holds two: its legs' share of the package, less three tests, and those three
+# tests in leg 1. envoy-go-docs-finalizers holds two: its legs' share of the package, and its
+# corpus tests on the leg's shard of the corpus.
+for expected in ".github/actions/go-envoy-held/envoy-go-race-docs/action.yml 2" ".github/actions/go-envoy-held/envoy-go-docs-finalizers/action.yml 2"; do
   read -r file count <<<"$expected"
   found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(steps.ROOT / sys.argv[1]).read_text())

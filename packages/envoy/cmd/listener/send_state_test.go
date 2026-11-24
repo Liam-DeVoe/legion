@@ -70,7 +70,7 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 
 // backgroundReadsHeld is how long a quiet rig's listener connection sends nothing of its own
 // (newQuietKnownSessionRig): longer than any run of a row, which every lane that runs the package
-// bounds by its -timeout (30m in envoy-go-race).
+// bounds by its -timeout (21m in the envoy-go-race legs).
 const backgroundReadsHeld = time.Hour
 
 // newQuietKnownSessionRig is newKnownSessionRig on a listener connection that, once the rig is

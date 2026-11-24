@@ -1,17 +1,24 @@
-name: envoy-go-race
+name: envoy-go-race, one leg's share
 description: >-
-  The envoy-go-race leg of ci.yaml's go-envoy-held job, which carries that old check-run name:
-  delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the
-  NATS credentials, the NATS auth service and the sign-in code flow under the race detector, on the
-  job's Postgres (DISPATCH_TEST_DATABASE_URL, which the job gives every step). The leg runs on
-  ubuntu-24.04-arm. The step's -timeout 30m fires before the leg's timeout-minutes cancels it, so
-  a hung test prints the dump that names it: about 1 minute of setup, up to 5 minutes to compile
-  the race binaries, then the step's own 30 minutes. natscred and the NATS auth service add two
-  test binaries to that compile and two packages, natscallout and natsgrant, which measured 28 s
-  and 46 s under -race on a dev box, where cmd/listener took 785 s here (run 43875539224); the
-  sign-in code flow (internal/oidc) adds one test binary and one package, whose run under -race
-  took 11 s on a dev box, all of it in-process against oidctest's issuer.
+  The steps of the envoy-go-race legs of ci.yaml's go-envoy-held job: delivery, the store, the
+  bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS
+  auth service and the sign-in code flow under the race detector, their tests split between the
+  legs at run time by .github/scripts/go-test-split.sh, so each test, one added later included,
+  runs in exactly one leg; and, in the last leg alone, the forced-order tests. ci.yaml's
+  envoy-go-race job carries the old check-run name `envoy-go-race / envoy-go-race` and passes only
+  when every leg passed (.github/scripts/leg-verdict.sh). The legs run on ubuntu-24.04-arm, on the
+  job's Postgres (DISPATCH_TEST_DATABASE_URL, which the job gives every step). Each leg's
+  timeout-minutes (ci.yaml) is its predicted time plus the race step's -timeout of 21 minutes plus
+  6, rounded up: 16.1 + 27 gives 44 for leg 1, and 15.1 + 27 gives 43 for leg 2, whose time holds
+  the forced-order steps; the notes the why: line below names predict each leg's time from run
+  45396964994.
 inputs:
+  part:
+    description: This leg's number, 1 to `legs`; the last leg also runs the forced-order tests.
+    required: true
+  legs:
+    description: How many legs run the race tests.
+    required: true
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
@@ -44,14 +51,24 @@ runs:
       run: |
         # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
         nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "$POSTGRES_CONTAINER" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
+    # go-test-split.sh lists the packages' tests under -race, as this step builds them, and keeps
+    # this leg's share by a hash of each test's name; the share is the -run, 69 KB of names in leg
+    # 1 and 67 KB in leg 2, about half of the 131,072 bytes Linux takes in one argument.
+    # cmd/listener runs its tests one at a time: its 1088 s in run 45396964994 set the one leg's
+    # 22.6 minutes, and the sums of its tests' times there give leg 1 at most 617 s of it and leg 2
+    # at most 493 s. The -timeout is the smallest whole minute that holds the slowest package of
+    # either leg's share at 50 % of it: 2 x 617 s is 20.6 minutes, so 21. It fires before the
+    # leg's timeout-minutes cancels it, so a hung test prints the dump that names it.
     - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
       shell: bash
       working-directory: packages/envoy
-      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-envoy-go-race-race.json --packages "./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/" -- -count=1 -race -timeout 30m
+      run: |
+        run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" -race ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-race-${{ inputs.part }}-race.json" --packages "./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/" -- -count=1 -race -timeout 21m -run "$run"
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:
-        name: go-envoy-held-envoy-go-race-race
+        name: go-envoy-held-envoy-go-race-${{ inputs.part }}-race
     - name: Report the service's peak connections
       if: always()
       shell: bash
@@ -65,36 +82,40 @@ runs:
           echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
         fi
 
-    # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder test
-    # of the packages named, built with -tags odatrace and -race against a nats-server whose own
-    # code carries the hold points internal/testnats/hooks.go drives. The script's own test runs
-    # first: scripts/forced-order.test.sh holds it to refusing a package whose every forced-order
-    # test skips, a -drop name that is no hook point, an empty -server, an empty -C, an empty
-    # -jsonfile and a module whose go.mod replaces nats-server. The first forced-order step names
-    # no version, so it hooks the nats-server the workspace links, which the hub runs; when go.mod
-    # moves to a version internal/testnats/testdata/hooked has no hooks for, the script refuses it
-    # and the step fails until the hooks are ported. The second step hooks v2.10.29. The script
-    # also fails a package that declares no such test. Each compiles a hooked nats-server and the
-    # packages above it under the detector, up to 5 minutes, and runs under the script's -timeout
-    # of 10 minutes; the script's own test compiles one more hooked build, of a fixture with one
-    # test that skips, up to 5 minutes (ci.yaml's leg timeout counts the three).
+    # The forced-order tests (packages/envoy/scripts/forced-order.sh), in the last leg alone: every
+    # TestForcedOrder test of the packages named, built with -tags odatrace and -race against a
+    # nats-server whose own code carries the hold points internal/testnats/hooks.go drives. The
+    # script's own test runs first: scripts/forced-order.test.sh holds it to refusing a package
+    # whose every forced-order test skips, a -drop name that is no hook point, an empty -server, an
+    # empty -C, an empty -jsonfile and a module whose go.mod replaces nats-server. The first
+    # forced-order step names no version, so it hooks the nats-server the workspace links, which
+    # the hub runs; when go.mod moves to a version internal/testnats/testdata/hooked has no hooks
+    # for, the script refuses it and the step fails until the hooks are ported. The second step
+    # hooks v2.10.29. The script also fails a package that declares no such test. Each compiles a
+    # hooked nats-server and the packages above it under the detector, up to 5 minutes, and runs
+    # under the script's -timeout of 10 minutes; the script's own test compiles one more hooked
+    # build, of a fixture with one test that skips, up to 5 minutes. The three took 63 s in run
+    # 45396964994, which the last leg's timeout-minutes (ci.yaml) counts.
     - name: Test forced-order.sh's refusals
+      if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
       run: scripts/forced-order.test.sh
     - name: Forced-order tests on the hooked nats-server the module links
+      if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
       run: scripts/forced-order.sh -jsonfile go-envoy-held-envoy-go-race-forced-order.json ./internal/testnats/hooktest/
-    - if: always()
+    - if: always() && inputs.part == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-held-envoy-go-race-forced-order
     - name: Forced-order tests on the hooked nats-server v2.10.29
+      if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
       run: scripts/forced-order.sh -server 2.10.29 -jsonfile go-envoy-held-envoy-go-race-forced-order-v2.json ./internal/testnats/hooktest/
-    - if: always()
+    - if: always() && inputs.part == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-held-envoy-go-race-forced-order-v2

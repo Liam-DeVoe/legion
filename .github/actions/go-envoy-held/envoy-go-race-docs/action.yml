@@ -3,7 +3,8 @@ description: >-
   The steps of the envoy-go-race-docs legs of ci.yaml's go-envoy-held job: the document service
   under the race detector, its tests split between the legs at run time by
   .github/scripts/go-test-split.sh, so each test, one added later included, runs in exactly one
-  leg. ci.yaml's envoy-go-race-docs job carries the old check-run name
+  leg; three tests the split gives leg 2 run in leg 1 instead, by name, to even the two legs'
+  times. ci.yaml's envoy-go-race-docs job carries the old check-run name
   `envoy-go-race-docs / envoy-go-race-docs` and passes only when every leg passed
   (.github/scripts/leg-verdict.sh). The legs run on ubuntu-24.04-arm. DISPATCH_TEST_DATABASE_URL,
   which the job gives every step, is load-bearing: this package's TestMain is storetest.Main
@@ -66,12 +67,28 @@ runs:
     # highest sample. -count=1 because the leg restores the Go build cache above, and a cached pass
     # must not stand in for a run. go-test-split.sh lists the package's tests under -race and keeps
     # this leg's share.
+    #
+    # The package runs its tests one at a time, and the split gave leg 2 more of their time: 1,169 s
+    # and 1,195 s of tests to leg 1's 978 s and 986 s in runs 45396964994 and 45401400508 (each
+    # test's time from its log, the wait of a parallel test included). So the -skip below takes
+    # three render-reuse tests out of the split, and leg 1 alone runs them, in a go test of their
+    # own in the next step: 100 s and 104 s of tests in those runs, which with that go test's start,
+    # the store template its first test migrates and its end (18 s) give legs of 20.0 and 19.9
+    # minutes and of 20.3 and 20.3 minutes (.github/ci-notes/ci.md says the arithmetic).
     - name: Race-test the document service
       shell: bash
       working-directory: packages/envoy
       run: |
         run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" -race ./internal/dispatch/docs/)
-        RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory --jsonfile "go-envoy-held-envoy-go-race-docs-${{ inputs.part }}-race.json" --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout "${{ inputs.go-timeout }}" -run "$run"
+        RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory --jsonfile "go-envoy-held-envoy-go-race-docs-${{ inputs.part }}-race.json" --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout "${{ inputs.go-timeout }}" -run "$run" -skip '^(TestRenderReuseADocumentOutsideTheSchema|TestRenderReuseANilOriginCommitCreditsNoOne|TestRenderReuseARecoveredReplicaRendersThePublish)$'
+    # The three tests the step above skips, in leg 1 alone, under the same sampler and limit. By
+    # those runs' times their go test takes at most 134 s (their 104 s, the template's 15 s and an
+    # end of up to 16 s), under 50 % of its -timeout of 5 minutes.
+    - name: Race-test the three document service tests leg 1 takes from leg 2
+      if: inputs.part == '1'
+      shell: bash
+      working-directory: packages/envoy
+      run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory --jsonfile go-envoy-held-envoy-go-race-docs-1-race-moved.json --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout 5m -run '^(TestRenderReuseADocumentOutsideTheSchema|TestRenderReuseANilOriginCommitCreditsNoOne|TestRenderReuseARecoveredReplicaRendersThePublish)$'
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:

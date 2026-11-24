@@ -245,8 +245,8 @@ AUDITED_SCRIPTS = {
     # -count=1 -tags odatrace -race -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'` of
     # them in a copy of the workspace that links that copy (`env GOWORK=…`); -server picks the
     # hooked version and changes no flag of the command. Its `go test -list` first runs no test.
-    # go-daemon's last plain leg passes the first argument list below, the envoy-go-race leg of
-    # go-envoy-held the other two.
+    # go-daemon's last plain leg passes the first argument list below, the last envoy-go-race leg
+    # of go-envoy-held the other two.
     "packages/envoy/scripts/forced-order.sh": AuditedScript(
         module="packages/envoy",
         commands={
