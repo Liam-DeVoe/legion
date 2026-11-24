@@ -61,16 +61,16 @@ func (r subOwnersRows) queue(kind, payload string) error {
 }
 
 // 20261124023617 lets a task stand at its parts and at its report (record.PlaceParts,
-// record.PlaceReported), each at position 0, keeps the parts whose join GitHub refused
-// (record.PlanTask.PartsConflicts), and lets the outbox queue the join of a task's parts
-// (parts_join). Before it the store refuses a task at its parts and a parts_join row, each by its
-// check (SQLSTATE 23514), named. After it both are taken, while a task at its parts at position 1
-// is still refused, by the place check, and so is an act of no kind and a row of no kind. Every
-// kind 20261123072431 named is still queued, since the migration writes the list whole. A task the
-// upgrade finds holds no part whose join conflicted, and one that holds one reads back with that
-// part alone, beside no need whose join conflicted. A carried plan keeps it with the task's place,
-// and a plan started from its start holds none. The record moves a task to either act at position
-// 0 (MoveTask) and refuses either at a position from 1. The control is the store before the
+// record.PlaceReported), each at position 0, and keeps the parts whose join GitHub refused
+// (record.PlanTask.PartsConflicts). Before it the store refuses a task at its parts, by the
+// running kind's check (SQLSTATE 23514), named. After it such a task is taken, while a task at its
+// parts at position 1 is still refused, by the place check, and so is an act of no kind. The
+// outbox check is still the one 20261123072431 wrote: every kind it named is queued, and a row of
+// parts_join, a kind no executor runs, is refused, as is a row of no kind. A task the upgrade
+// finds holds no part whose join conflicted, and one that holds one reads back with that part
+// alone, beside no need whose join conflicted. A carried plan keeps it with the task's place, and a
+// plan started from its start holds none. The record moves a task to either act at position 0
+// (MoveTask) and refuses either at a position from 1. The control is the store before the
 // migration: there the test fails on its second write, the task at its parts.
 func TestTheStoreHoldsATaskAtItsParts(t *testing.T) {
 	ctx := context.Background()
@@ -80,9 +80,6 @@ func TestTheStoreHoldsATaskAtItsParts(t *testing.T) {
 	rows.plan()
 	if err := rows.standAt("f", record.PlaceParts, 0); !refusedByCheck(err, "plan_tasks_running_kind_check") {
 		t.Fatalf("a task at its parts before the migration = %v, want the running kind's check to refuse it (23514)", err)
-	}
-	if err := rows.queue("parts_join", "{}"); !refusedByCheck(err, "outbox_kind_check") {
-		t.Fatalf("a parts_join row before the migration = %v, want the kind check to refuse it (23514)", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
@@ -100,13 +97,15 @@ func TestTheStoreHoldsATaskAtItsParts(t *testing.T) {
 	if err := rows.standAt("h", "review", 0); !refusedByCheck(err, "plan_tasks_running_kind_check") {
 		t.Fatalf("a task at an act of no kind = %v, want the running kind's check to refuse it (23514)", err)
 	}
-	for _, kind := range append(append([]string{}, taskCopiesKinds...), "task_pull_requests_close", "task_copy_remove", "parts_join") {
+	for _, kind := range append(append([]string{}, taskCopiesKinds...), "task_pull_requests_close", "task_copy_remove") {
 		if err := rows.queue(kind, "{}"); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	if err := rows.queue("nope", "{}"); !refusedByCheck(err, "outbox_kind_check") {
-		t.Fatalf("a row of a kind that is none = %v, want the kind check to refuse it (23514)", err)
+	for _, kind := range []string{"parts_join", "nope"} {
+		if err := rows.queue(kind, "{}"); !refusedByCheck(err, "outbox_kind_check") {
+			t.Fatalf("a %s row after the migration = %v, want the kind check to refuse it (23514): no executor runs it", kind, err)
+		}
 	}
 
 	var found []string
@@ -180,14 +179,14 @@ const (
 )
 
 // The way back the header of 20261124023617 gives lets the release before read the store again. It
-// deletes each parts_join row, and each notice and controller notice of the three kinds that
-// release decodes no row of (parts-done, report-refused, merge-returned), and no other row. It
-// stands each task at its parts or at its report at no act: a running or a held one stopped for
-// the reason the header names, with no hold and no wait of its step, and a stopped or a done one
-// in its state, with its reason; a task at a step keeps its place. Then the store refuses a task at
-// its parts and a parts_join row again, the column is gone, and the version row with it, so the
-// roll-forward runs the migration again, which takes both. The control is the block without its
-// update of the tasks: the check it writes again then refuses the tasks at their parts.
+// deletes each notice and controller notice of the three kinds that release decodes no row of
+// (parts-done, report-refused, merge-returned), and no other row. It stands each task at its parts
+// or at its report at no act: a running or a held one stopped for the reason the header names,
+// with no hold and no wait of its step, and a stopped or a done one in its state, with its reason;
+// a task at a step keeps its place. Then the store refuses a task at its parts again, the column is
+// gone, and the version row with it, so the roll-forward runs the migration again, which takes
+// such a task. The control is the block without its update of the tasks: the check it writes again
+// then refuses the tasks at their parts.
 func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) {
 	ctx := context.Background()
 	block := wayBackOf(t, subOwnersVersion, "the sub-owners")
@@ -229,7 +228,6 @@ func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) 
 				}
 			}
 			for _, row := range []struct{ kind, payload string }{
-				{"parts_join", `{"generation": 1, "task": "f"}`},
 				{"notice", `{"kind": "parts-done"}`},
 				{"notice", `{"kind": "report-refused"}`},
 				{"controller_notice", `{"kind": "merge-returned"}`},
@@ -270,9 +268,6 @@ func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) 
 			if err := rows.standAt("p", record.PlaceParts, 0); !refusedByCheck(err, "plan_tasks_running_kind_check") {
 				t.Fatalf("a task at its parts after the way back = %v, want the running kind's check to refuse it (23514)", err)
 			}
-			if err := rows.queue("parts_join", "{}"); !refusedByCheck(err, "outbox_kind_check") {
-				t.Fatalf("a parts_join row after the way back = %v, want the kind check to refuse it (23514)", err)
-			}
 			if err := rows.exec(`update plan_tasks set parts_conflicts = '{}'`); err == nil || !strings.Contains(err.Error(), "does not exist") {
 				t.Fatalf("a write of plan_tasks.parts_conflicts after the way back = %v, want the column gone", err)
 			}
@@ -285,9 +280,6 @@ func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) 
 			}
 			if err := rows.standAt("p", record.PlaceParts, 0); err != nil {
 				t.Fatalf("a task at its parts after the roll-forward: %v", err)
-			}
-			if err := rows.queue("parts_join", "{}"); err != nil {
-				t.Fatalf("a parts_join row after the roll-forward: %v", err)
 			}
 		})
 	}

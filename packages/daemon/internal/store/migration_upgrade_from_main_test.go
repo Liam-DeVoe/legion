@@ -147,9 +147,9 @@ import (
 // tables at each read), and restate 20261121165047's kinds with task_pull_requests_close
 // (migration_20261122122826_test.go).
 // The removal of a removed task's working copy (20261123072431) stands above every other version
-// of this list that writes outbox_kind_check but the sub-owners: it touches no table but the
-// outbox's check, and restates 20261122122826's kinds with task_copy_remove
-// (migration_20261123072431_test.go).
+// of this list that writes outbox_kind_check: it touches no table but the outbox's check, and
+// restates 20261122122826's kinds with task_copy_remove, so that list is the last word of
+// outbox_kind_check now (migration_20261123072431_test.go).
 // The production check of each merge (20261123154051) stands above every other version of this
 // list but the base a task's start fixed and the sub-owners, so an upgrade applies it just before
 // them: it keys production_checks by the issue and the moment the check opened and adds
@@ -163,8 +163,8 @@ import (
 // The sub-owners (20261124023617) stand above every other version of this list, so an upgrade
 // applies them last, and they need the plan's table: they write the running kind's check of
 // `plan_tasks` again with parts and reported, add `plan_tasks.parts_conflicts` at a default every
-// row reads as no part whose join conflicted, and restate 20261123072431's kinds with parts_join,
-// so that list is the last word of outbox_kind_check now (migration_20261124023617_test.go).
+// row reads as no part whose join conflicted, and touch no outbox_kind_check
+// (migration_20261124023617_test.go).
 // The branch of a pending delivery (20261122131321) is applied after all of these and touches no
 // outbox_kind_check: it adds pending_task_deliveries.branch at its default, the empty string, on
 // every row it finds, so it needs no row of its own here (migration_20261122131321_test.go).

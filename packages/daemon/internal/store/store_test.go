@@ -1090,16 +1090,16 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926, dispatch://INFRA-4374's
 // 20261119003157 (conflict_confirm and merge_forward), the copies of a plan's tasks'
 // 20261121165047 (task_branch), the pull requests by task's 20261122122826
-// (task_pull_requests_close), the removal of a removed task's working copy's 20261123072431
-// (task_copy_remove) and the sub-owners' 20261124023617 (parts_join) do: the case of a database
-// main migrated applies a version left out of the list before the list's own rewrites of that
-// check, which do not name the later kind, so the row seeded of that kind fails the upgrade. So
-// does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. So does a migration that changes a table a version of the list creates, as
-// 20261117213545 adds a column to 20261117034837's plan_steps, and 20261123221142 adds one to its
-// plan_tasks: left out, it is applied as main's,
-// before that table exists; and one that replaces an index a version of the list creates, as
+// (task_pull_requests_close) and the removal of a removed task's working copy's 20261123072431
+// (task_copy_remove) do: the case of a database main migrated applies a version left out of the
+// list before the list's own rewrites of that check, which do not name the later kind, so the row
+// seeded of that kind fails the upgrade. So does one that reads a column a version of the list
+// adds, as t-e-54's 20261116144907 reads claims.abandoned_session (20261029121200): applied before
+// that version, it fails on the missing column. So does a migration that changes a table a version
+// of the list creates, as 20261117213545 adds a column to 20261117034837's plan_steps, and
+// 20261123221142 and the sub-owners' 20261124023617 each change its plan_tasks: left out, it is
+// applied as main's, before that table exists; and one that replaces an index a version of the
+// list creates, as
 // 20261122074350 replaces 20261105183200's pod_resumes_one_open_per_role. Any other version left
 // out makes the cases below weaker, never red, which is why the comment says where the list comes
 // from.

@@ -36,9 +36,6 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
-	// OutboxKindPartsJoin joins the branch of each part of a task with a sub-owner into the
-	// task's branch on GitHub, once its sub-owner reported the task.
-	OutboxKindPartsJoin OutboxKind = "parts_join"
 	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
 	// other tasks once the pull request of the task that merges has merged, that of a task a later
 	// version of the plan removed, and those of an earlier run at the first step of a run started
@@ -135,7 +132,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindPartsJoin, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},

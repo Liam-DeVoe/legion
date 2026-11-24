@@ -270,7 +270,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindPartsJoin}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -298,6 +298,27 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	}
 	if kinds := LaneKinds("fast"); kinds != nil {
 		t.Errorf("LaneKinds of a lane that is not one = %v, want nil", kinds)
+	}
+}
+
+// Every kind a lane runs has a case in the decoder (DecodeOutboxPayload): a payload type it reads
+// a row of that kind into. A row of a kind with none fails to decode at every attempt, and the
+// rows queued after it on its issue's lane wait behind it. The kinds are read from the lanes
+// themselves (OutboxLanes, LaneKinds), so a kind a later change adds to a lane is held too. The
+// fault it catches is a kind in a lane and in the store's check before its payload and its decoder
+// (its control: parts_join back in the lifecycle lane, which it names).
+func TestEveryKindOfALaneHasACaseInTheDecoder(t *testing.T) {
+	kinds := 0
+	for _, lane := range OutboxLanes() {
+		for _, kind := range LaneKinds(lane) {
+			kinds++
+			if _, err := decodeOutboxJSON(OutboxRow{Kind: kind, Payload: json.RawMessage(`{}`)}); err != nil && strings.Contains(err.Error(), "unknown kind") {
+				t.Errorf("%s runs on the %s lane, and DecodeOutboxPayload has no case of it, so a row of it fails at every attempt: %v", kind, lane, err)
+			}
+		}
+	}
+	if kinds == 0 {
+		t.Fatalf("the lanes hold no kind, so this test read nothing")
 	}
 }
 
@@ -333,9 +354,6 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// issue's branch row makes the issue's, and launches no role and hands none a task: the
 		// start that waits for it is a supervise start, which the pause holds.
 		OutboxKindTaskBranch: "",
-		// The join of a task's parts merges branches on GitHub as the implement App, as a task's
-		// branch row does, and launches no role and hands none a task.
-		OutboxKindPartsJoin: "",
 		// The close of the other tasks' pull requests after the issue's merge writes GitHub as the
 		// implement App and launches no role and hands none a task.
 		OutboxKindTaskPullRequestsClose: "",
