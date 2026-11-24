@@ -31,13 +31,25 @@ review_round LEGION-208`,
     ],
     { env: { ...process.env, PLAN: db.plan ? "1" : "0", TASK: db.task, PHASES: db.phases } }
   );
-  return { exit: result.exitCode, round: result.stdout.toString(), stderr: result.stderr.toString() };
+  return {
+    exit: result.exitCode,
+    round: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
 }
 
 test("review_round reads the round on the plan's task for an issue with plan rows", () => {
-  expect(reviewRound({ plan: true, task: "2", phases: "0" })).toEqual({ exit: 0, round: "2", stderr: "" });
+  expect(reviewRound({ plan: true, task: "2", phases: "0" })).toEqual({
+    exit: 0,
+    round: "2",
+    stderr: "",
+  });
 });
 
 test("review_round reads the round on the implementer's phases row for an issue with no plan rows", () => {
-  expect(reviewRound({ plan: false, task: "2", phases: "1" })).toEqual({ exit: 0, round: "1", stderr: "" });
+  expect(reviewRound({ plan: false, task: "2", phases: "1" })).toEqual({
+    exit: 0,
+    round: "1",
+    stderr: "",
+  });
 });
