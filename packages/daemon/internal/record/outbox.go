@@ -1125,12 +1125,14 @@ func NoticePerClaim(kind NoticeKind) bool {
 // one live claim (store's Pause), which stops its process and keeps its session, phase and task as
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
 // and does nothing once that pause has ended; "slot_credential" writes the slot of the owner of
-// the issue's task back to the App of the owner's own role, which the end of every step and retro
-// whose start named an architect queues (workflow's ownerSlotCredential), and stops nothing: it
+// the issue's task back to the App of the owner's own role, which the end of each act the owner
+// did as another role queues: a step whose start named an architect, the owner's retro of its own
+// implementation step, and a merge forward asked of the owner (workflow's ownerSlotCredential and
+// mergeForwardWriteBack). It stops nothing: it
 // writes only where the slot holds that App as the record stands when the row runs
-// (runtime.SlotRole), and nothing where the owner's next step of another App, or its retro of its
-// own implementation step, runs already, whose owner-step writes the slot for that App (the
-// daemon's slotCredential). The runtime judges the App again as it
+// (runtime.SlotRole), and nothing where the owner's next act of another App, a step, its retro of
+// its own implementation step or a merge forward asked of it, runs already, whose own row writes
+// the slot for that App (the daemon's slotCredential). The runtime judges the App again as it
 // writes, in the one order of the slot's writes (runtime.SlotCredentials), so a step begun since
 // the row read the record gets its own App. A daemon of a release before it refuses the op, and
 // its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back below the release
@@ -2013,8 +2015,8 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // agent's own step, in the phase the row names (implementing on today's steps), it also says that
 // the agent's own assignment there and its completion stand: the act starts no phase entry there.
 //
-// The hold gives why the daemon acted, and tells the worker that the agent of the task's last
-// implementation step is asked to merge
+// The hold gives why the daemon acted, and tells the worker that the agent of the task's
+// implementation step, the agent the ask goes to, is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
 // writing the workspace now (the merger also: not to merge the pull request or put it in the merge
 // queue), not to complete its phase at the old head but at the new head the daemon names, to keep
@@ -2032,11 +2034,12 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // other worker is, with no approval to wait for. The review names both heads and the phase,
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
-// completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the agent that does the retro in retro, the merger in
-// merging; the architect alone in accepting). The agent asked is the agent of the task's last step
-// of the type implementation before the issue's place: the owner where that step's key is owner,
-// and the implementer for a run with no plan rows.
+// completion, and then to tell what it decided: in retro to the architect and the agent that does
+// the retro, in merging to the architect and the merger, each on the topic of the claim that works
+// its step, and in every other phase, accepting among them, to the architect alone, on its role
+// topic, whoever works that phase. The agent asked is the agent of the task's last step of the type
+// implementation at or before the issue's place, else the task's last such step: the owner where
+// that step's key is owner, and the implementer for a run with no plan rows.
 //
 // A message that covers another (Covers, mergeForwardOrder) also says what that one asked: the
 // ask that covers the hold says that the agent also works the step the issue stands in, so it
@@ -2067,7 +2070,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			merger = " Do not merge the pull request, and do not put it in the merge queue."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
-			" The agent of the task's last implementation step is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
+			" The agent of the task's implementation step is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
 			" The issue stays in %s. Stop writing the workspace now.%s"+
 			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+

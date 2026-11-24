@@ -58,7 +58,8 @@ own plan (one whose key is `owner`), the step's role; at its retro where the tas
 implementation step is its own, that step's role; and while a merge forward the daemon asked of it
 has not ended, the implementer, since that merge is the implementer's act.
 Everywhere else, and always while the issue is held, it is the architect's own App, and the end of
-each such act writes that App back.
+each such act writes that App back, but for a linger of its tree or a rename collision that deletes
+its pull request record, after which the architect's next launch writes it.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
@@ -206,10 +207,9 @@ repository requires, stays in `reviewing`), since the reviewer reads the code co
 GitHub before it approves
 ([review signalling](#review-signalling)); a review step that no review on GitHub decides, on an
 issue with no pull request or the architect's own, ends by its reported verdict. What a red check
-does is reach the architect that owns
-the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+does is reach the architect that owns the issue, the worker of the issue's current phase and the
+agent of the task's implementation step, as one message naming each check and its conclusion; and
+hold the merge, where GitHub applies the base branch's own required checks.
 
 ### The plan of an issue
 
@@ -499,7 +499,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  current phase and the agent of the task's implementation step, whose code the checks ran on,
+  and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for those roles to decide on — re-run a check that failed on

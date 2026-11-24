@@ -722,8 +722,9 @@ type launchGitHubCredential struct {
 }
 
 // mintGitHubCredential mints spec's claim the GitHub credential of the role its pane works as
-// (runtime.SlotRole: spec's role, or the step's while the architect does a step of its own or the
-// retro of one) for the repository spec names, the one its write token reaches. The controller's
+// (runtime.SlotRole: spec's role, or the role the architect acts as: the step's while it does a
+// step of its own or the retro of one, and the implementer while a merge forward asked of it has
+// not ended) for the repository spec names, the one its write token reaches. The controller's
 // is asked for by owner instead
 // (Options.ControllerCredential), the one function a controller's bundle is made from here, by
 // this launch and by the refresh of the pane it opens (refreshGitHubCredentials): it works no
@@ -740,10 +741,11 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	// The pane holds the App of the step its claim does now (runtime.SlotRole): the claim's stored
-	// role, the spec's role, which the machine builds from it, unless the runtime's ActsAs gives
-	// another, the step's role while the architect does a step of its own or the retro of one. The
-	// controller's is its own.
+	// The pane holds the App of the role its claim acts as now (runtime.SlotRole): the claim's
+	// stored role, the spec's role, which the machine builds from it, unless the runtime's ActsAs
+	// gives another, the step's role while the architect does a step of its own or the retro of one,
+	// and the implementer while a merge forward asked of it has not ended. The controller's is its
+	// own.
 	role := spec.Role
 	var err error
 	if role != claim.RoleController {

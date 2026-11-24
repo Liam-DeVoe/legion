@@ -137,9 +137,11 @@ review App otherwise, and a role the deployment defines in `roles` works as the 
 (a step whose key is `owner`), its slot works as the App of that step's role, the implement App at
 an implementer step. The retro of a task whose last implementation step is the architect's own
 acts as the implement App, as that step did. A merge forward is the implementer's act: where the
-task's implementer step is the architect's own (`implementer:owner`), the daemon asks the
-architect to merge the base forward, in any phase, and its slot works as the implement App until
-that ask ends. The ask ends when its merge lands, when a move into `implementing` or the issue's
+agent of the task's implementation step is the architect (a step of the type implementation whose
+key is `owner`, such as `implementer:owner`), the daemon asks the architect to merge the base
+forward, in any phase, and its slot works as the implement App until
+that ask ends. The ask ends when its merge lands, when a move into the implementation step, a new
+generation of the issue (a child set back to `todo`, or an adoption into a tree) or the issue's
 leave of the workflow clears it, when the pull request closes or merges, and when the issue is
 held or its task stopped. Everywhere else, and always while the issue is held, the architect's
 slot works as its own App, the review App. Where the App of the architect's act is not its own
@@ -157,7 +159,9 @@ review a landed merge forward asks of a `reviewer:owner`, until the slot holds t
 again, after the architect's retro of its own implementation step or after the landing, since
 GitHub refuses an approval from the pull request's author. The end of each of these acts writes
 the architect's own App back into the slot, unless its next act of another App already runs, and
-the next notice to the architect waits for that write.
+the next notice to the architect waits for that write. The linger of the issue's tree, and a
+rename collision that deletes its pull request record, write nothing: the architect's next launch
+writes its own App.
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and

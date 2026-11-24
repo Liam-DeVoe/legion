@@ -128,8 +128,9 @@ func storeOwner(g *rig) {
 // WriteSlotCredential writes the implement App's token into the slot's Secret; while the slot's
 // launcher reads the review App's token in its hosts.yml, SlotHoldsCredential answers a wait,
 // having asked the launcher once for the default owner's hosts.yml and the digest of the implement
-// App's token; once the launcher reads the implement App's, it answers nil. Once the step ended,
-// the write puts the review App's back. A launcher whose hello says it answers no check is sent
+// App's token; once the launcher reads the implement App's, it answers nil. Once ActsAs gives the
+// architect no other role, as when its step ended and no other act of the owner's runs, the write
+// puts the review App's back. A launcher whose hello says it answers no check is sent
 // none: the write still happens, and the answer is runtime.ErrAwaitsPodUpdate, which only the pod's
 // update round or its release ends.
 func TestASlotSaysWhenItsFilesHoldTheCredential(t *testing.T) {

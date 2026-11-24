@@ -170,9 +170,11 @@ func (w Walk) workerAt(place record.TaskPlace) (record.Worker, bool) {
 // task where it stands at place (workPlace of the role implementer): the last step of the type
 // implementation (record.PlanStep.Type) at or before place, and where none stands there - a task
 // sent back to a step before every step of that type, or a place its line does not hold - the
-// task's last step of that type, whose agent made the head the task stands on. That agent runs the
-// retro (AgentAt), is asked to merge the base forward (mergeForward) and is told what CI said of its
-// head (tellChecks), each on the claim the start of its step names (Engine.implementationAgent).
+// task's last step of that type, whose agent made the head the task stands on. That agent is asked
+// to merge the base forward (mergeForward) and is told what CI said of its head (tellChecks), each
+// on the claim the start of its step names (Engine.implementationAgent). At the retro, which stands
+// past every step, it is the task's last step of that type, whose agent runs the retro (AgentAt,
+// record.PlaceWorker); at a step it can be an earlier step of that type, whose agent need not.
 // A walk with no plan rows names its implementer's step. ok is false for a task with no step of
 // that type.
 func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, bool) {

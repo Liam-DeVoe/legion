@@ -104,7 +104,9 @@ type Options struct {
 	RoleApps appauth.RoleApps
 	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
-	// files. Optional: nil gives every pane its claim's stored role.
+	// files. Optional: nil gives every pane the role SlotRole's caller reads, the role of the step a
+	// launch is for, and at a refresh the role the pane was launched as, else the claim's stored
+	// role.
 	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch

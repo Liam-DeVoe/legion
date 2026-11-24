@@ -32,13 +32,13 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No plan or plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | None of this type: no pull request or merge, you do the retro, and a failed step naming none stops the task. Otherwise the last such step's agent does the retro, and a failed step returns to the first before it unless it names an earlier one. |
+| `implementer` | implementation | `implementing` | None of this type: no new pull request, you do the retro, and a failed step naming none stops the task. Otherwise the last such step's agent does the retro, and a failed step returns to the first before it unless it names an earlier one. |
 | `tester` | testing | `testing` | Only the steps that record results against the checks record them, and nobody runs them again. |
 | `reviewer` | review | `reviewing` | No review: where the base requires one, the merger waits and tells you. With no pull request, it ends its step by its verdict. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro. |
 | `acceptance` | review | `accepting` | No fresh reading of the whole work. With it, a fresh agent reads the evidence and ends the step by its verdict. |
 
-Without `acceptance:owner`, a reviewer step approves, or passes with no pull request, only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.
+Without `acceptance:owner`, a reviewer step approves, or passes by its verdict, only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.
 A `ci_check` that reads `absent` moves nothing back either: the retro sends it to you as a finding.
 One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check.
 So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires.

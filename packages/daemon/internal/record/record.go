@@ -2446,9 +2446,9 @@ type Store interface {
 	// (Postgres.OwnerStepPending).
 	OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error)
 	// SlotWritePending says whether the outbox still holds a supervise slot_credential row of the
-	// claim token queued before the row before (workflow's ownerSlotCredential): the write of an
-	// owner's slot back to its own App, which a later notice to that claim waits for (the daemon's
-	// deliverNotice).
+	// claim token queued before the row before (workflow's ownerSlotCredential and
+	// mergeForwardWriteBack): the write of an owner's slot back to its own App, which a later notice
+	// to that claim waits for (the daemon's deliverNotice).
 	SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error)
 	// MergeForwardAskPending says whether the outbox still holds a merge-forward ask of issue's
 	// head head to the claim token, so an ask told again is never queued behind the one it repeats
