@@ -681,11 +681,9 @@ func (r *Runtime) synced() bool {
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
 // running Observe. A pod is named after its Sandbox, so one name finds both. An event of a Sandbox
-// drops what is kept of this runtime's write to that name (taken) once the store no longer holds
-// the object the write took, or shows a release's record on it: the informer writes its store
-// before it hands the event on, so the store read here is never older than the event. The event's
-// own object is read too, because the store may already have moved past the version that shows
-// the record, as a launch that took the record off again moves it.
+// drops what is kept of this runtime's write to that name once the store shows it (dropCaughtUp):
+// the informer writes its store before it hands the event on, so the store read there is never
+// older than the event.
 func (r *Runtime) notify(obj any) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
@@ -704,15 +702,8 @@ func (r *Runtime) notify(obj any) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if took, held := r.taken[name]; held && event != nil {
-		u, err := r.storedObject(name)
-		switch {
-		case err != nil:
-		case u == nil || u.GetUID() != took.uid:
-			delete(r.taken, name)
-		case took.released && (recordsRelease(u, took.uid) || recordsRelease(event, took.uid)):
-			delete(r.taken, name)
-		}
+	if event != nil {
+		r.dropCaughtUp(name, event)
 	}
 	close(r.changed)
 	r.changed = make(chan struct{})
@@ -1422,8 +1413,8 @@ func (r *Runtime) controllerOwned(ctx context.Context, name string) (bool, error
 }
 
 // deleteFenced deletes s once, fenced to the object the caller read, and
-// forgets its launchers' credentials and records that this runtime's delete
-// took it (noteDeleted). Its caller holds the pod's launch turn.
+// forgets its launchers' credentials and keeps that this runtime's delete
+// took it (noteTaken). Its caller holds the pod's launch turn.
 // One already gone is gone; a conflict keeps its replacement for the next
 // orphan sweep. Deletion is foreground, so a Sandbox and the volume it owns
 // remain until garbage collection has removed the volume. The session-volume
@@ -1440,11 +1431,11 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	switch {
 	case err == nil:
 		r.forgetLauncherCredentials(name)
-		r.noteDeleted(name, uid)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 		r.log.Info(msg, append([]any{"sandbox", name, "uid", uid}, attrs...)...)
 	case apierrors.IsNotFound(err):
 		r.forgetLauncherCredentials(name)
-		r.noteDeleted(name, uid)
+		r.noteTaken(name, sandboxTaken{uid: uid})
 	case apierrors.IsConflict(err):
 		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
 			append([]any{"sandbox", name, "uid", uid, "error", err}, attrs...)...)

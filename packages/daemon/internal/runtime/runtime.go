@@ -280,9 +280,7 @@ type IssueSuspender interface {
 // It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
 // Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
 // Sandbox already gone (deleted by hand or by an earlier teardown), or a kept Sandbox an earlier
-// release already released. The release of a pod no claim owns records a pod release only for
-// true, so its teardown that found nothing is never counted as one; the idle release records its
-// own either way, since its stops suspended the roles a wake pairs with that record.
+// release already released, which runs no pod and owns no Secret.
 type IssueReleaser interface {
 	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (released bool, err error)
 }

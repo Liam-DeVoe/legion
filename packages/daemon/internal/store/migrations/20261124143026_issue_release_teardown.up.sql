@@ -1,0 +1,21 @@
+-- 20261124143026_issue_release_teardown.up.sql — a release's mark says what its teardown found
+-- (dispatch://INFRA-3149).
+--
+-- What this changes: issue_releases gains teardown, what the teardown of the release of a pod no
+-- role can use has met of the runtime so far: '' before any attempt of it reached the runtime,
+-- 'reached' once an attempt is about to ask the runtime's release (written before it asks), and
+-- 'took_nothing' once the first attempt that asked found no Sandbox to release. The teardown
+-- records no pod release for a release that took nothing, and it tells that from a retry of a
+-- release whose earlier attempt took the pod and then failed, or whose daemon died, before its
+-- record: such a retry finds no Sandbox either, and the mark says 'reached'. The outbox counts no
+-- attempt a daemon died in (outbox.attempts), so the count cannot tell the two apart.
+--
+-- Why a column with a default: every mark standing reads '', which is what it is, since no
+-- teardown of this release has reached the runtime for it, and the release in flight keeps its
+-- mark. The check names the three words, so a mark that says anything else is refused.
+--
+-- There is no down file: migrations here are forward-only. An earlier release names its columns in
+-- every read and write of issue_releases, so it reads and writes the table as it did and records a
+-- release whatever its teardown found, as it always did; a rollback needs nothing put back.
+alter table issue_releases add column teardown text not null default ''
+  check (teardown in ('', 'reached', 'took_nothing'));

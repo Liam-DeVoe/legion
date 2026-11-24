@@ -7937,6 +7937,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
   A teardown that finds no Sandbox of the issue to release, one another hand deleted after the release was marked or a kept Sandbox an earlier release already released, takes nothing and says so (`ReleaseIssue` answers false).
   The release of a pod no claim owns then logs `outbox: the release found no Sandbox of the issue to release and released nothing` in place of its release line and records no release; it still ends the pod's hold under a pause, runs the end of the pod and clears the release's mark.
+  So a Sandbox another hand deleted after the release was marked leaves no release record, though its pod went away.
+  Took nothing is a fact of the release and not of one attempt of its teardown: the mark notes when an attempt is about to ask the runtime and when the first attempt that asked found nothing (`issue_releases.teardown`), so a retry of a teardown whose earlier attempt took the pod and then failed, or whose daemon stopped, before its record finds no Sandbox and still records the release once, and a retry of a teardown that found nothing records none.
   The idle release logs its release line and records its release either way, because its stops suspended the roles that a wake brings back, and that wake is measured against the release's record.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.

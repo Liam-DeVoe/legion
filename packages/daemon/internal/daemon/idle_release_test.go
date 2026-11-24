@@ -54,8 +54,9 @@ type releaseRuntime struct {
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
 	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
 	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
-	// before the pass it wants to read that answer, or before the drain whose teardown should
-	// find no Sandbox to release (ReleaseIssue's false).
+	// before the pass it wants to read that answer, or before a teardown that should find no
+	// Sandbox to release (ReleaseIssue's false), as the retried teardowns of
+	// TestARetriedTeardownOfAPodNoClaimOwnsRecordsWhatTheReleaseDid do.
 	sandboxName string
 	sandboxGone bool
 	// beforeAuthorize runs inside each teardown, before it asks the store: the pod lock is held

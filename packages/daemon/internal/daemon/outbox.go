@@ -209,6 +209,7 @@ type outboxTrees interface {
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
+	NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown store.ReleaseTeardown) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
@@ -3477,15 +3478,20 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // cancelled this release has already resumed what it suspended, and a release that finished
 // left the pod gone and its bundle waiting for the pod that replaces it.
 //
-// A teardown of the release of a pod no role can use whose runtime released no Sandbox took
-// nothing, and the runtime's own answer says so (runtime.IssueReleaser's false), not a read made
-// before it: the Sandbox was deleted by hand or by an earlier teardown of this daemon's, or is a
-// kept Sandbox an earlier release already released. Such a teardown records no pod release and
+// A teardown of the release of a pod no role can use that took nothing records no pod release and
 // logs no release line, which would count one release twice, and logs instead that it found no
 // Sandbox to release; it still ends the pause's hold on the pod, runs the end of the pod and
-// clears the mark, which are owed whoever took the pod. The idle release's teardown records its
-// release and logs its line either way: that release suspended roles, and the wake that brings
-// them back pairs with its record (store.LatestPodRelease).
+// clears the mark, which are owed whoever took the pod. Took nothing is a fact of the release, not
+// of one attempt: the runtime's own answer says it found no Sandbox (runtime.IssueReleaser's
+// false), not a read made before it, and no earlier attempt of the release reached the runtime.
+// The mark notes an attempt before it asks the runtime (store.TeardownReached), so a retry of a
+// release whose earlier attempt took the pod and then failed, or whose daemon died, before its
+// record finds no Sandbox and still records the release; and it notes the first attempt's empty
+// answer (store.TeardownTookNothing), so a retry of a release that took nothing records none. The
+// outbox counts no attempt a daemon died in, so the note is the mark's and not the row's count.
+// The idle release's teardown records its release and logs its line whatever the runtime
+// answered: that release suspended roles, and the wake that brings them back pairs with its record
+// (store.LatestPodRelease).
 func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload record.IssueRelease) error {
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")
@@ -3542,6 +3548,15 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
 		return err
 	}
+	// What earlier attempts of this release met of the runtime, as the mark notes it. The release
+	// of a pod no role can use notes an attempt before it asks, so a retry knows the pod may have
+	// gone with an attempt that failed, or whose daemon died, before its record.
+	met := first.Teardown
+	if decision.SuspendsNoRole && met == store.TeardownNotReached {
+		if err := r.trees.NoteReleaseTeardown(ctx, r.project, row.Issue, first.Release, store.TeardownReached); err != nil {
+			return err
+		}
+	}
 	released, err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize)
 	if err != nil {
 		return err
@@ -3555,13 +3570,20 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
-	// tookNothing is a release of a pod no role can use whose runtime released no Sandbox: it
-	// suspended nothing and took nothing, so nothing of it is a release.
-	tookNothing := decision.SuspendsNoRole && !released
+	// took is whether this release took the pod: the runtime took a Sandbox now, or an earlier
+	// attempt reached the runtime and nothing since says that attempt found none.
+	took := released || met == store.TeardownReached
+	if decision.SuspendsNoRole && !took && met == store.TeardownNotReached {
+		// The first attempt that asked found no Sandbox: noted before anything below can fail, so
+		// a retry reads this release as one that took nothing.
+		if err := r.trees.NoteReleaseTeardown(ctx, r.project, row.Issue, first.Release, store.TeardownTookNothing); err != nil {
+			return err
+		}
+	}
 	// The pod is gone, whichever act took it: the hold a project's pause had on it holds nothing
 	// now (decision 13 of dispatch://INFRA-3759).
 	gone := "a release's teardown deleted the pod"
-	if tookNothing {
+	if decision.SuspendsNoRole && !took {
 		gone = "a release's teardown found the pod already gone"
 	}
 	if err := r.podDeleted(ctx, row.Issue, gone); err != nil {
@@ -3578,15 +3600,15 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// suspended no claim, and a claim an earlier idle release left `released` must keep the
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
-		if tookNothing {
+		if took {
+			r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
+				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
+				"sandbox", sandboxName, "claims", claims)
+			r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
+		} else {
 			r.log.Info("outbox: the release found no Sandbox of the issue to release and released nothing",
 				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "claims", claims)
-			return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 		}
-		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
-			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
-			"sandbox", sandboxName, "claims", claims)
-		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
 		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 	}
 	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",

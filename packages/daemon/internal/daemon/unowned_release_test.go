@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -967,4 +969,123 @@ func heldSecrets(api *issueSandboxAPI, name string) []string {
 		}
 	}
 	return held
+}
+
+// podEndFaults is the release's store with the end of a pause's hold on the pod refused once
+// (outbox.podDeleted), the first act of a teardown after the runtime answered; fail runs at that
+// refusal. Every other call reaches the real store.
+type podEndFaults struct {
+	outboxTrees
+	fail    func()
+	refused bool
+}
+
+func (s *podEndFaults) EndPausePodHold(ctx context.Context, project, issue string, end store.PausePodHoldEnd, at time.Time) (bool, error) {
+	if !s.refused {
+		s.refused = true
+		if s.fail != nil {
+			s.fail()
+		}
+		return false, errors.New("the pause's hold on the pod cannot be read")
+	}
+	return s.outboxTrees.EndPausePodHold(ctx, project, issue, end, at)
+}
+
+// Whether the release of a pod no claim owns took the pod is a fact of the release, not of one
+// attempt of its teardown. An attempt that took the pod and then failed before its record leaves
+// its retry with no Sandbox to take, and the release is recorded all the same: once when the
+// attempt failed and was counted, and once when its daemon died in it, which the outbox counts as
+// no attempt (record.QueuedSupervise.Attempts), so the mark's own note says the teardown reached
+// the runtime (store.TeardownReached). A release whose first attempt found no Sandbox and then
+// failed records nothing on its retry: the mark notes that it took nothing
+// (store.TeardownTookNothing), which a count of attempts cannot say, since the retry is counted.
+func TestARetriedTeardownOfAPodNoClaimOwnsRecordsWhatTheReleaseDid(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// gone is the runtime that holds no Sandbox of the issue any more (releaseRuntime.sandboxGone).
+	gone := func(rig *idleRig) {
+		rig.rt.mu.Lock()
+		defer rig.rt.mu.Unlock()
+		rig.rt.sandboxGone = true
+	}
+	for _, tc := range []struct {
+		name string
+		// before runs once the release is marked, before its teardown's first attempt, and fail
+		// where that attempt fails, after the runtime has answered.
+		before, fail func(rig *idleRig)
+		// died leaves the failed attempt as a daemon that died in it leaves its row: not counted.
+		died bool
+		// note is what the mark says of the teardown after the failed attempt.
+		note store.ReleaseTeardown
+		// records is how many releases the retry leaves recorded, and line the one line it logs.
+		records int
+		line    string
+	}{
+		{name: "an attempt that took the pod and failed before its record", fail: gone,
+			note: store.TeardownReached, records: 1, line: idleRigUnownedTeardown},
+		{name: "an attempt that took the pod and whose daemon died before its record", fail: gone, died: true,
+			note: store.TeardownReached, records: 1, line: idleRigUnownedTeardown},
+		{name: "an attempt that found no Sandbox and failed after the runtime's answer", before: gone,
+			note: store.TeardownTookNothing, records: 0, line: idleRigUnownedFoundNothing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			var logs syncBuffer
+			rig.runner.log = jsonLogger(&logs)
+			faults := &podEndFaults{outboxTrees: rig.st}
+			if tc.fail != nil {
+				faults.fail = func() { tc.fail(rig) }
+			}
+			rig.runner.trees = faults
+			rig.stoppedImplementer(t, false)
+			if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Contains(queued, "issue_release") {
+				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+			}
+			if tc.before != nil {
+				tc.before(rig)
+			}
+
+			if err := rig.runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the teardown once: %v", err)
+			}
+			if !faults.refused {
+				t.Fatal("the teardown never reached the end of the pod's hold, so no attempt failed after the runtime's answer")
+			}
+			var attempts int
+			var note string
+			if err := rig.pool.QueryRow(ctx, `select o.attempts, r.teardown from outbox o join issue_releases r on r.issue = o.issue
+				where o.issue = $1 and o.kind = 'issue_release'`, rig.issue.Key).Scan(&attempts, &note); err != nil {
+				t.Fatalf("read the failed teardown and its mark: %v", err)
+			}
+			if attempts != 1 || store.ReleaseTeardown(note) != tc.note {
+				t.Fatalf("after the failed attempt the teardown has %d attempts and its mark says %q, want 1 and %q", attempts, note, tc.note)
+			}
+			// The row due again, as its backoff leaves it; a daemon that died in the attempt
+			// counted none, since only a run's retry counts one.
+			if tc.died {
+				attempts = 0
+			}
+			if _, err := rig.pool.Exec(ctx, `update outbox set attempts = $2, next_at = now() - interval '1 minute'
+				where issue = $1 and kind = 'issue_release'`, rig.issue.Key, attempts); err != nil {
+				t.Fatalf("make the teardown due again: %v", err)
+			}
+			rig.drain(t)
+
+			if rig.marked(t) {
+				t.Fatal("the retried teardown left its mark behind, so it never finished")
+			}
+			if releases := rig.records(t).Releases; len(releases) != tc.records {
+				t.Fatalf("releases recorded = %+v, want %d", releases, tc.records)
+			}
+			for _, line := range []string{idleRigUnownedTeardown, idleRigUnownedFoundNothing} {
+				want := 0
+				if line == tc.line {
+					want = 1
+				}
+				if got := loggedMessages(t, logs.String(), line); len(got) != want {
+					t.Fatalf("the teardown logged %d lines %q, want %d", len(got), line, want)
+				}
+			}
+		})
+	}
 }

@@ -72,9 +72,9 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 // its delete, or its release's record on a kept Sandbox. The API answers a write before the watch
 // carries it to the store, and what the runtime keeps of the write answers for the store until it
 // does. What is kept names the object by uid: a Sandbox made again under the same name answers
-// present. The store and what is kept are read under one hold of mu, which notify holds while it
-// drops what the store has caught up with, so no read pairs a store that has moved on with an
-// entry about to go.
+// present. The store and what is kept are read under one hold of mu (storedTaken), which notify
+// holds while it drops what the store has caught up with, so no read pairs a store that has moved
+// on with an entry about to go.
 //
 // It is the informer's store and never an API call: the idle pass asks this of every pod of the
 // project on every tick, and a read per pod against the API server would cost the apiserver a
@@ -88,14 +88,7 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	r.mu.Lock()
-	u, err := r.storedObject(name)
-	var took sandboxTaken
-	var kept bool
-	if err == nil && u != nil {
-		took, kept = r.taken[name]
-	}
-	r.mu.Unlock()
+	u, took, kept, err := r.storedTaken(name)
 	if err != nil || u == nil {
 		return "", false
 	}
@@ -106,6 +99,16 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// releasedKept is whether u is a kept Sandbox an earlier release already released: Suspended,
+// owning the issue's kept volume (storedOwnsKeptVolume) and carrying that release's record with its
+// own uid (recordsRelease). It runs no pod and owns no Secret, so nothing of it is a release's to
+// take: IssueSandbox answers it absent, and a release finds nothing of it to release (endIssuePod).
+// It reads u in place, with no decode.
+func releasedKept(u *unstructured.Unstructured) bool {
+	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")
+	return mode == modeSuspended && recordsRelease(u, u.GetUID()) && storedOwnsKeptVolume(u)
 }
 
 // IssueKeepsVolume satisfies runtime.IssueVolumeReader: whether the issue's next launch keeps the

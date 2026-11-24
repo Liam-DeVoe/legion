@@ -71,7 +71,7 @@ func (r *Runtime) treeSandboxes(ctx context.Context, tree string) ([]*unstructur
 
 // deleteSandbox deletes object with foreground propagation, fenced to its UID and resourceVersion,
 // forgets its launchers' credentials once the API has accepted the delete, keeps that this
-// runtime's delete took it (noteDeleted), and waits until the API no longer has it. Every delete is
+// runtime's delete took it (noteTaken), and waits until the API no longer has it. Every delete is
 // foreground: the Sandbox owns its role Secrets by owner reference — and an issue Sandbox that owns
 // an `issue` claim template also the PVC that the template made: a kept volume (keptVolume), or the
 // disk of the release before the pod-owned disk — and foreground propagation has garbage collection
@@ -101,7 +101,7 @@ func (r *Runtime) deleteSandbox(ctx context.Context, object *unstructured.Unstru
 		return fmt.Errorf("delete Sandbox %s: %w", name, err)
 	}
 	r.forgetLauncherCredentials(name)
-	r.noteDeleted(name, uid)
+	r.noteTaken(name, sandboxTaken{uid: uid})
 	return r.awaitSandboxDeleted(ctx, name)
 }
 
@@ -113,28 +113,36 @@ type sandboxTaken struct {
 	released bool
 }
 
-// noteDeleted keeps that this runtime's delete took the Sandbox name of uid (taken), once the API
-// has accepted the delete or answered the object already gone. It keeps nothing where the
-// informer's store no longer holds that object: the store has caught up, and the event that told
-// it has already run, or is about to run, the notify that would drop what is kept, so an entry
-// kept then would outlive it. Both reads are under mu, which notify holds for its own.
-func (r *Runtime) noteDeleted(name string, uid types.UID) {
+// noteTaken keeps what one of this runtime's writes took from the Sandbox name (taken), once the
+// API has answered that write: a delete accepted or answered already gone, or a release's record
+// patched on. It keeps nothing the store has caught up with (caughtUp): the event that told the
+// store has already run, or is about to run, the notify that would drop it, so an entry kept then
+// would outlive it. Both reads are under mu, which notify holds for its own.
+func (r *Runtime) noteTaken(name string, took sandboxTaken) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if u, err := r.storedObject(name); err == nil && u != nil && u.GetUID() == uid {
-		r.taken[name] = sandboxTaken{uid: uid}
+	if !r.caughtUp(name, took, nil) {
+		r.taken[name] = took
 	}
 }
 
-// noteReleased keeps that this runtime's release wrote its record that the Secrets are deleted on
-// the Sandbox name of uid, which it kept (taken), once the API has answered that patch. It keeps
-// nothing where the store no longer holds that object, or already shows the record, for the reason
-// noteDeleted gives: IssueSandbox reads such a stored Sandbox absent of itself.
-func (r *Runtime) noteReleased(name string, uid types.UID) {
+// storedTaken is the Sandbox name as the store holds it, nil for none, and what is kept of this
+// runtime's write to it (taken), both read under one hold of mu, so notify cannot drop the entry
+// between the two reads (IssueSandbox).
+func (r *Runtime) storedTaken(name string) (*unstructured.Unstructured, sandboxTaken, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if u, err := r.storedObject(name); err == nil && u != nil && u.GetUID() == uid && !recordsRelease(u, uid) {
-		r.taken[name] = sandboxTaken{uid: uid, released: true}
+	u, err := r.storedObject(name)
+	took, held := r.taken[name]
+	return u, took, held, err
+}
+
+// dropCaughtUp drops what is kept of this runtime's write to the Sandbox name (taken) once the
+// store, or event, the Sandbox object of the informer event notify is handling, shows it
+// (caughtUp). Its caller holds mu.
+func (r *Runtime) dropCaughtUp(name string, event *unstructured.Unstructured) {
+	if took, held := r.taken[name]; held && r.caughtUp(name, took, event) {
+		delete(r.taken, name)
 	}
 }
 
@@ -147,6 +155,23 @@ func (r *Runtime) forgetTaken(name string) {
 	delete(r.taken, name)
 }
 
+// caughtUp is whether the store shows what took did to the Sandbox name: it holds no object of
+// took's uid, or, for a release's record, the object of that uid carries it, as the store or event
+// (an informer event's object, nil for none) shows it. event is read too because the store may
+// already have moved past the version that showed the record, as a launch that took it off again
+// moves it. A store that cannot be read has not caught up, for every caller alike. Its caller
+// holds mu.
+func (r *Runtime) caughtUp(name string, took sandboxTaken, event *unstructured.Unstructured) bool {
+	u, err := r.storedObject(name)
+	switch {
+	case err != nil:
+		return false
+	case u == nil || u.GetUID() != took.uid:
+		return true
+	}
+	return took.released && (recordsRelease(u, took.uid) || recordsRelease(event, took.uid))
+}
+
 // recordsRelease is whether u is the object of uid and carries a release's record, with its own
 // uid, that its Secrets are deleted (secretsReleasedAnnotation), read in place.
 func recordsRelease(u *unstructured.Unstructured, uid types.UID) bool {
@@ -155,16 +180,6 @@ func recordsRelease(u *unstructured.Unstructured, uid types.UID) bool {
 	}
 	record, _, _ := unstructured.NestedString(u.Object, "metadata", "annotations", secretsReleasedAnnotation)
 	return record != "" && record == string(uid)
-}
-
-// releasedKept is whether u is a kept Sandbox an earlier release already released: Suspended,
-// owning the issue's kept volume (storedOwnsKeptVolume) and carrying that release's record with its
-// own uid (recordsRelease). It runs no pod and owns no Secret, so nothing of it is a release's to
-// take: IssueSandbox answers it absent, and a release finds nothing of it to release (endIssuePod).
-// It reads u in place, with no decode.
-func releasedKept(u *unstructured.Unstructured) bool {
-	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")
-	return mode == modeSuspended && recordsRelease(u, u.GetUID()) && storedOwnsKeptVolume(u)
 }
 
 // deleteStoredSandbox deletes the Sandbox name as the API holds it now, in the foreground, and

@@ -90,7 +90,7 @@ func (a *issueSandboxAPI) holdWatches(release <-chan struct{}, hold func(resourc
 func heldReleaseRecord(resource string, event kubeEvent) bool {
 	meta, _ := event.Object["metadata"].(map[string]any)
 	annotations, _ := meta["annotations"].(map[string]any)
-	return resource == "sandboxes" && event.Type == "MODIFIED" && annotations["legion.dev/secrets-released"] != nil
+	return resource == "sandboxes" && event.Type == "MODIFIED" && annotations[secretsReleased] != nil
 }
 
 // kubeEvent is one watch event: its type and the object it carries.

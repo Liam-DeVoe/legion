@@ -631,6 +631,20 @@ func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) er
 	return nil
 }
 
+// NoteReleaseTeardown notes on the mark of release, issue's release, what its teardown has met of
+// the runtime (ReleaseTeardown). A mark that is gone, or that belongs to another release, takes
+// nothing: that release is over, and its teardown reads it so.
+func (s *Store) NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown ReleaseTeardown) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update issue_releases set teardown = $4 where project = $1 and issue = $2 and id = $3`,
+			project, issue, release, string(teardown))
+		return err
+	}); err != nil {
+		return fmt.Errorf("note the teardown of the release of %s: %w", issue, err)
+	}
+	return nil
+}
+
 // deleteIssueRelease forgets the mark of issue's release in the caller's transaction. One mark,
 // one delete, whichever runs it.
 func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) error {
