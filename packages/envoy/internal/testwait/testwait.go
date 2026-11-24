@@ -44,8 +44,9 @@
 // wait in TestMain, which has no t: it takes its deadline from the -timeout flag and the process's
 // start, and returns an error where the others fail the test. InHelper and ReceiveInHelper are
 // InMain and Receive for a helper whose callers hand it no t, such as clocktest's fake, and name
-// that helper where InMain names TestMain. A wait inside a testing/synctest bubble takes Bubbled's
-// t, since the bubble's own t refuses to name a deadline.
+// that helper where InMain names TestMain. A wait inside a testing/synctest bubble takes the t
+// Bubble hands its function, since the bubble's own t refuses to name a deadline: Bubble names
+// what was left of the test's deadline as the bubble began, past the bubble's start on its clock.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends

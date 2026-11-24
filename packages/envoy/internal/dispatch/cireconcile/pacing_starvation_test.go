@@ -283,7 +283,7 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 // A rate limit GitHub answers as the pass's own bound falls, before the pass has reached a head,
 // leaves the floor as it was: the limit ended that pass, not its pace. GitHub answers the first
 // head's check runs with an exhausted limit, and the client writes that limit to the shared
-// ledger on a context of its own, bounded by githubapp's limitRecordTimeout on the clock the
+// ledger on a context of its own, bounded by githubapp.LimitRecordTimeout on the clock the
 // stand-in's client bounds that write on (fakeGitHub.recordClock), while this test holds the
 // ledger against writes. Once that write waits on the ledger's lock, which the database's own lock
 // table shows, the test moves the passes' clock to the pass's bound, so the bound falls during the

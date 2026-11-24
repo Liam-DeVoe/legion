@@ -11,13 +11,45 @@ import (
 
 // reservationHeld is the span a read that must wait is read after (testwait.Idle), and
 // reservationHeldWhy is why: callBudget arms no timer, and the reservation a read waits behind is
-// held across the other read's GitHub calls.
+// held across the other read's whole attribution read (readAttributionInputs reserves before
+// fetchAttributionFacts and settles after it), so the span is the longest that read can take on
+// the bounds the product puts on it. Its token asks make at most attributionTokenCalls calls, one
+// attempt each, and each of its maxAttributionCalls pages (the pull request, then up to
+// maxCommitPages commit pages) is read through readGitHubPage, whose githubPageAttempts attempts
+// take up to pageHeld. Each attempt and each token call is bounded by githubapp.RequestTimeout,
+// the client's own bound on a call (Client.requestTimeout), which cmd/dispatch leaves at that.
+// After a call GitHub answers with a rate limit, githubapp.Client.request writes that limit to
+// the shared ledger, for up to githubapp.LimitRecordTimeout, before the call returns. githubapp
+// reads an answer as a limit only on a 403 or a 429 (rateLimitAt), which readGitHubPage does not
+// ask again (retryGitHubPage) and which ends the read: Client.installation and Client.token
+// return the limit, and fetchPullRequestPayload and fetchCommitMessagesWithToken fail on every
+// status but 200 they do not handle. So a read makes that write at most once, and the span counts
+// it once. The read of the limit in force that Client.send makes before each call is a database
+// statement no bound of the product's covers, and the span does not count it.
 const (
-	reservationHeld    = maxAttributionCalls * githubapp.RequestTimeout
-	reservationHeldWhy = "callBudget arms no timer, and the read a reserve waits behind holds its reservation across " +
-		"up to maxAttributionCalls GitHub calls, each of whose attempts githubapp.RequestTimeout bounds, so for " +
-		"maxAttributionCalls times that bound when each call answers at its first attempt's deadline: a reserve that " +
-		"gave up at a bound of its own shorter than that would give up while that read is still inside its calls"
+	// attributionTokenCalls is the most GitHub calls fetchAttributionFacts' token asks make in one
+	// read: githubapp.Client.RepositoryToken calls GitHub only to look the repository's
+	// installation up (Client.installation) when no lookup is cached, and to mint the
+	// installation's token (Client.token) when no token is cached. A lookup stays cached for
+	// githubapp's installationsCacheTTL (10 min) and a minted token until githubapp's
+	// tokenExpirySlack before its hour ends, both longer than reservationHeld, so a read that asks
+	// for a token before each page makes each of the two calls at most once.
+	attributionTokenCalls = 2
+	// pageHeld is the longest readGitHubPage takes on one page: githubPageAttempts attempts of up
+	// to githubapp.RequestTimeout each, and after every attempt but the last a wait of
+	// githubPageRetryWait times the attempt just made (waitBeforeRetry), which add up to
+	// githubPageRetryWait times 1 + 2 + ... + (githubPageAttempts-1).
+	pageHeld = githubPageAttempts*githubapp.RequestTimeout +
+		githubPageAttempts*(githubPageAttempts-1)/2*githubPageRetryWait
+	reservationHeld = attributionTokenCalls*githubapp.RequestTimeout + maxAttributionCalls*pageHeld +
+		githubapp.LimitRecordTimeout
+	reservationHeldWhy = "callBudget arms no timer, and the read a reserve waits behind holds its reservation across its " +
+		"whole fetchAttributionFacts: attributionTokenCalls token calls (the installation lookup and the mint) and " +
+		"maxAttributionCalls pages, each read through readGitHubPage in up to githubPageAttempts attempts with " +
+		"githubPageRetryWait times the attempt just made between them, each call and attempt bounded by " +
+		"githubapp.RequestTimeout, and at most one write of a rate limit GitHub answered to the shared ledger, " +
+		"bounded by githubapp.LimitRecordTimeout, since such an answer ends the read: a reserve that gave up at a " +
+		"bound of its own shorter than that would give up while that read is still inside its calls"
 )
 
 // TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent: a read that does not fit while another
@@ -83,9 +115,18 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 		const reads, cost, used, allowance = 10, 6, 2, 20
 		budget := newCallBudget(allowance)
 		gate := make(chan struct{})
+		// open opens the gate once, below or as the row ends: a row that failed while granted
+		// reads still waited on the gate would otherwise leave them blocked in the bubble once the
+		// test goroutine had ended, which synctest.Test ends in a panic rather than in the row's
+		// failure.
+		open := sync.OnceFunc(func() { close(gate) })
 		// Each read reports its reservation's answer the moment reserve returns.
 		answered := make(chan bool, reads)
 		var wg sync.WaitGroup
+		defer func() {
+			open()
+			wg.Wait()
+		}()
 		for range reads {
 			wg.Add(1)
 			go func() {
@@ -123,7 +164,7 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 		default:
 		}
 
-		close(gate)
+		open()
 		wg.Wait()
 		close(answered)
 		granted, refused := held, 0

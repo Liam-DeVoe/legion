@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -323,14 +322,17 @@ func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
 // warned and on one that warned once of a foreign holder after the watch began and then said
 // nothing.
 //
-// Wait runs in a synctest bubble, through the t a wait takes there (testwait.Bubbled), so its asks
+// Wait runs in a synctest bubble, through the t a wait takes there (testwait.Bubble), so its asks
 // at the shared wait's pace pass on the bubble's clock and cost no time: its first ask reads the
 // once-warned horizon's warning, and every ask after it reads the horizon's silence. The result is
 // sent only once the bubble has idled silenceSpan past the watch's start (testwait.Idle), so Wait
 // asks the watch (Watch.Failure) at every pace through that much silence, timed from the watch's
 // start and from the warning it read. A silence bound shorter than silenceSpan in Wait, Poll or
 // Failure fails the row by name: main's 3 s Base and Extension among them, which main's poll loop
-// judged at every ask (verdictOf) and a merge of main could bring back into Poll.
+// judged at every ask (verdictOf) and a merge of main could bring back into Poll. A Wait that never
+// returned the result fails by name too: the bubble's t names what was left of the row's deadline
+// as the bubble began, past the bubble's start, so Wait gives up the shared wait's margin before
+// that on the bubble's clock, which its asks move at the shared wait's pace.
 //
 // Wait runs on the test goroutine, so Idle and the send run on a goroutine of their own; Idle's why
 // is never empty, so it fails nothing there. The test goroutine waits for that goroutine to end
@@ -350,8 +352,7 @@ func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			outer := t
-			synctest.Test(t, func(t *testing.T) {
+			testwait.Bubble(t, func(t testing.TB) {
 				arrived, ended := make(chan string, 1), make(chan struct{})
 				go func() {
 					defer close(ended)
@@ -359,9 +360,9 @@ func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
 						"which a merge of main could bring back into Poll: the result comes %v into the silence, past it", silenceSpan))
 					arrived <- "the result"
 				}()
-				defer testwait.Receive(testwait.Bubbled(t, outer), "the goroutine that sends the result to end", ended)
+				defer testwait.Receive(t, "the goroutine that sends the result to end", ended)
 				what := fmt.Sprintf("a result sent once the horizon had said nothing for %v", silenceSpan)
-				if got := Wait(testwait.Bubbled(t, outer), what, arrived, saying(row.logged), "dispatch_test_ab", nil); got != "the result" {
+				if got := Wait(t, what, arrived, saying(row.logged), "dispatch_test_ab", nil); got != "the result" {
 					t.Fatalf("Wait answered %q; want the result", got)
 				}
 			})

@@ -8,7 +8,7 @@ import (
 
 // This file holds the shared wait's forms for a testing/synctest bubble: Idle, the proof of an
 // absence there (the package doc's "Proving an absence") for code that a timer of its own may let
-// act late, and Bubbled, the t a wait of this package takes inside a bubble.
+// act late, and Bubble, which runs a bubble whose t a wait of this package takes.
 
 // Idle proves an absence in a synctest bubble past a timer of the code's own: d is the caller's
 // span, which outlasts that timer, and why names the timer and says why d outlasts it; an empty
@@ -36,23 +36,39 @@ func Idle(t testing.TB, d time.Duration, why string) {
 	synctest.Sleep(d)
 }
 
-// Bubbled is t, the *testing.T that synctest.Test hands its function, with the Deadline of outer,
-// the test that started the bubble, for a wait of this package to take inside the bubble, where
-// t's own Deadline panics. outer's deadline is on the real clock, and the bubble's clock starts at
-// midnight UTC 2000-01-01, so a wait in the bubble gives up only once the bubble's clock has run
-// decades. A wait that asks at the package's pace (Until, Eventually) asks until its fact comes,
-// as under -timeout 0, and one whose fact never comes holds the test until go test's alarm ends
-// the binary. A Receive whose value never comes gives up, naming what it waited for, once nothing
-// else in the bubble can run, since the bubble's clock then moves to its timer. Under -timeout 0
-// outer names no deadline, and no wait in the bubble has a timer.
-func Bubbled(t, outer *testing.T) testing.TB {
-	return bubbled{T: t, outer: outer}
+// Bubble runs f in a testing/synctest bubble (synctest.Test) started on t, and hands f the
+// bubble's own t with a Deadline that a wait of this package takes inside the bubble, where the
+// bubble's t panics on Deadline. Before the bubble starts, Bubble reads on the real clock how much
+// of t's deadline is left; the t f takes names the moment that much past the bubble's start, on
+// the bubble's clock, which starts at midnight UTC 2000-01-01. So a wait in the bubble gives up the
+// margin before that moment and fails naming what it waited for: a wait that asks at the
+// package's pace (Until, Eventually) moves the bubble's clock by the pace between two asks while
+// nothing else in the bubble runs, and a Receive whose value never comes gives up once nothing
+// else in the bubble can run, since the bubble's clock then moves to its timer.
+//
+// The bubble's clock moves only while every goroutine of the bubble is durably blocked, and then
+// at once to the next timer due. In a bubble whose goroutines spend their time durably blocked,
+// its waits among them, that clock runs ahead of the real one, and a wait there gives up before
+// the test binary's deadline comes. One whose goroutines hold its clock still for long, by running
+// or by blocking where they are not durably blocked (a network socket, a system call, a
+// sync.Mutex), reaches its give-up later on the real clock, and go test's alarm can come first.
+// Under -timeout 0 t names no deadline, neither does the t f takes, and no wait in the bubble has
+// a timer.
+func Bubble(t *testing.T, f func(t testing.TB)) {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	left := time.Until(deadline)
+	synctest.Test(t, func(t *testing.T) {
+		f(bubbled{T: t, deadline: time.Now().Add(left), bounded: bounded})
+	})
 }
 
-// bubbled is what Bubbled returns: t with outer's Deadline.
+// bubbled is the t Bubble hands its function: the bubble's own t, with the Deadline Bubble named
+// on the bubble's clock.
 type bubbled struct {
 	*testing.T
-	outer *testing.T
+	deadline time.Time
+	bounded  bool
 }
 
-func (b bubbled) Deadline() (time.Time, bool) { return b.outer.Deadline() }
+func (b bubbled) Deadline() (time.Time, bool) { return b.deadline, b.bounded }

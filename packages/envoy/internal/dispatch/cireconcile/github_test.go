@@ -41,7 +41,7 @@ type fakeGitHub struct {
 	// time GitHub takes over it (everyQueryTakes) and which stamps each query's start and end.
 	clock *clocktest.Fake
 	// recordClock is the clock the stand-in's client bounds each write of a limit GitHub answered
-	// on (githubapp's limitRecordTimeout; limitClock): a fake of its own, which only a row that
+	// on (githubapp.LimitRecordTimeout; limitClock): a fake of its own, which only a row that
 	// holds the shared ledger against that write moves.
 	recordClock *clocktest.Fake
 	// held names each request the stand-in holds back (hold, holdQuery), and each write the
@@ -452,7 +452,7 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 // the write of that limit to the shared ledger on (githubapp.WithRateLimitClock). Its moment is
 // passes', the clock the stand-in stamps a limit's reset on, so the wait the client reads is the
 // reset less that moment, exactly. Its deadlines are the embedded Fake's, recordClock, so the
-// write's bound (githubapp's limitRecordTimeout, five seconds) falls only where a row that holds
+// write's bound (githubapp.LimitRecordTimeout, five seconds) falls only where a row that holds
 // the ledger moves recordClock. On passes it would fall at every move a row makes past it while
 // the write is in flight -- to a wait the pass armed, or to the pass's own bound -- and end a write
 // the row never held: a limit GitHub answered as the pass's bound fell would then not reach the

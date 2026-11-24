@@ -31,12 +31,12 @@ const formerLeakBound = 30 * time.Second
 // the hold.
 const leakCheckHoldEnded = "docs: the leak check's child lets its shut-down service go"
 
-// The end-of-run leak check (reportLeakedServices) fails a run for a service its test never shut
-// down, and waits for a service its test shut down until the collector has freed it, through the
-// shared wait (testwait.InMain), with no bound of its own: under the race detector on a loaded
-// runner a shut-down service has stayed reachable past the 30 s the check once gave every service
-// (formerLeakBound), with no goroutine, finalizer or cleanup holding it, and the run failed for a
-// test that had shut its service down. Each case runs this binary again with one test
+// The end-of-run leak check (reportLeakedServices) fails a run at once for a service no Shutdown
+// of which ever started, and waits for a service its test shut down until the collector has freed
+// it, through the shared wait (testwait.InMain), with no bound of its own: under the race detector
+// on a loaded runner a shut-down service has stayed reachable past the 30 s the check once gave
+// every service (formerLeakBound), with no goroutine, finalizer or cleanup holding it, and the run
+// failed for a test that had shut its service down. Each case runs this binary again with one test
 // (TestLeakCheckChild) and reads the check's exit code and its lines, each after the one before
 // it:
 //   - one service shut down and then held past formerLeakBound, counted from the check's own
@@ -44,8 +44,10 @@ const leakCheckHoldEnded = "docs: the leak check's child lets its shut-down serv
 //     waits for in between cannot shorten it: the child writes leakCheckHoldEnded as it lets the
 //     service go, and the check counts no service alive after that line, so it waited the hold
 //     out and passed;
-//   - one service never shut down: the check fails it by the name of the test that built it,
-//     once the shared wait gives up at the child's deadline less testwait's margin.
+//   - one service never shut down, in a child under -timeout 0, where the shared wait has no end:
+//     the check fails it by the name of the test that built it, from its state, without waiting,
+//     so the child exits on its own. A check that waited for it would hold the child until this
+//     test's own wait gave up (testwait.Context), which fails the case by name.
 func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing.T) {
 	if !storetest.Available() {
 		t.Skip("DISPATCH_TEST_DATABASE_URL is unset, so the child builds no service and nothing here is tested")
@@ -61,10 +63,9 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 			leakCheckHoldEnded,
 			"docs: 1 services built, 0 still alive after",
 		}},
-		{child: "never-shut-down", timeout: "3m", wantExit: 1, want: []string{
-			"testwait: TestMain: gave up waiting for every service the tests built to end and be let go",
+		{child: "never-shut-down", timeout: "0", wantExit: 1, want: []string{
 			"docs: 1 services built, 1 still alive after",
-			"docs: a service built by docs.TestLeakCheckChild is still alive: its Shutdown never finished",
+			"docs: a service built by docs.TestLeakCheckChild is still alive: its Shutdown never started",
 			"docs: a service still alive fails this run",
 		}},
 	} {

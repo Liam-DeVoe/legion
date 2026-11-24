@@ -301,6 +301,29 @@ func TestIdleHoldsItsSpanAndWaitsForWhatItsEndWoke(t *testing.T) {
 	})
 }
 
+// Bubble hands its function a t whose deadline is what was left of the test's deadline as the
+// bubble began, that far past the bubble's start on the bubble's clock, so a wait in the bubble
+// gives up the margin before that moment (GiveUpAt). What was left is read on the real clock just
+// before Bubble and just after it returns, and the span the bubble's t names lies between the two.
+// Under -timeout 0 the test names no deadline, and neither does the bubble's t.
+func TestBubbleNamesWhatWasLeftOfTheDeadlinePastItsStart(t *testing.T) {
+	deadline, bounded := t.Deadline()
+	before := time.Until(deadline)
+	var named time.Duration
+	var has bool
+	Bubble(t, func(t testing.TB) {
+		end, ok := GiveUpAt(t)
+		named, has = end.Add(margin).Sub(time.Now()), ok
+	})
+	after := time.Until(deadline)
+	switch {
+	case has != bounded:
+		t.Fatalf("a wait in a bubble names a deadline: %t, want %t, as the test that started the bubble does", has, bounded)
+	case bounded && (named > before || named < after):
+		t.Fatalf("a wait in a bubble gives up the margin before %v past the bubble's start, want what was left of the test's deadline as the bubble began, between %v and %v", named, after, before)
+	}
+}
+
 // Quiet fails naming what yielded and the value, and a close counts as yielding.
 func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 	sent := make(chan string, 1)
@@ -320,9 +343,12 @@ func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 // Under a short -timeout every wait gives up 30 s before the deadline, before Go's alarm: it writes
 // its line to stderr and fails the test with the same text, which carries the wait's last reading
 // where it has one. A wait that starts once the margin has passed, a wait in a cleanup included,
-// asks once and fails. The until wait's readings each carry their count and the child logs how
-// many it read, so the parent wants the last read to name that count: the reading it read last,
-// whatever pace the child's asks kept on a loaded machine.
+// asks once and fails, and so does one in a testing/synctest bubble (Bubble), whose clock starts
+// in 2000: it gives up at what was left of the test's deadline past the bubble's start, not at the
+// real clock's deadline, which the bubble's clock asking at the package's pace would reach only
+// decades on. The until wait's readings each carry their count and the child logs how many it
+// read, so the parent wants the last read to name that count: the reading it read last, whatever
+// pace the child's asks kept on a loaded machine.
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	stdout, stderr := runChildMeantToFail(t, "TestTheWaitsGiveUpChild", childTimeout)
 	asked := regexp.MustCompile(`the reading was asked (\d+) time\(s\)`).FindStringSubmatch(stdout)
@@ -342,6 +368,7 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 		"testwait: " + name + "span: gave up waiting for the end of a 1h0m0s span (a span past the margin)" + ending,
 		"testwait: TestMain: gave up waiting for a condition TestMain waits for" + ending,
 		"testwait: a helper: gave up waiting for a send no one makes to a helper" + ending,
+		"testwait: " + name + "until_in_a_bubble: gave up waiting for a reading in a bubble that never holds" + ending + "; last read: the bubble's reading",
 	})
 	if !strings.Contains(stdout, "the condition was asked 1 time(s)") {
 		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", stdout)
@@ -418,6 +445,11 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 		if _, err := ReceiveInHelper("a helper", "a send no one makes to a helper", make(chan int)); err != nil {
 			t.Fatal(err)
 		}
+	})
+	t.Run("until in a bubble", func(t *testing.T) {
+		Bubble(t, func(t testing.TB) {
+			Until(t, "a reading in a bubble that never holds", func() (string, bool) { return "the bubble's reading", false })
+		})
 	})
 }
 
@@ -526,8 +558,9 @@ func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 // its give-up fails the subtest, as main's send 100 ms on the real clock failed a span under that.
 // The sender also ends with the bubble's test (t.Context), so a Receive that gave up leaves no
 // goroutine asleep in the bubble, which synctest.Test would end in a panic rather than in the
-// subtest's failure. Receive reads the deadline of the test that started the bubble (Bubbled). It
-// runs only when the parent re-executes this binary.
+// subtest's failure. Receive takes the t Bubble hands its function, which names no deadline when
+// the test that started the bubble names none. It runs only when the parent re-executes this
+// binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
@@ -569,8 +602,7 @@ func TestNoDeadlineChild(t *testing.T) {
 		}
 	})
 	t.Run("receive", func(t *testing.T) {
-		outer := t
-		synctest.Test(t, func(t *testing.T) {
+		Bubble(t, func(t testing.TB) {
 			sent := make(chan string, 1)
 			go func() {
 				synctest.Wait()
@@ -580,7 +612,7 @@ func TestNoDeadlineChild(t *testing.T) {
 				case <-t.Context().Done():
 				}
 			}()
-			if got := Receive(Bubbled(t, outer), "a value sent an hour after the wait began", sent); got != "the value sent an hour after the wait began" {
+			if got := Receive(t, "a value sent an hour after the wait began", sent); got != "the value sent an hour after the wait began" {
 				t.Errorf("under -timeout 0 Receive returned %q, want the value sent an hour after it began to wait", got)
 			}
 		})

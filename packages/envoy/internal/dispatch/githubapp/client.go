@@ -95,13 +95,13 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // (Client.requestTimeout).
 const RequestTimeout = 20 * time.Second
 
-// limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
+// LimitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
 // is one statement, which a healthy database answers in milliseconds, as the outbox's own
 // records are bounded (outbox's recordTimeout).
-const limitRecordTimeout = 5 * time.Second
+const LimitRecordTimeout = 5 * time.Second
 
 // limitRecordContext is the context a limit GitHub answered is written to the shared ledger
-// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout on
+// under: the caller's values without its deadline or its cancel, bounded by LimitRecordTimeout on
 // the client's limitClock, the real clock in a deployment.
 // GitHub's answer is a fact about the App's budget whatever time its caller has left. A caller
 // out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off, and
@@ -113,7 +113,7 @@ const limitRecordTimeout = 5 * time.Second
 // lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
 // with it.
 func (c *Client) limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return c.limitClock.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
+	return c.limitClock.WithTimeout(context.WithoutCancel(ctx), LimitRecordTimeout)
 }
 
 // ResponseTooLargeError reports a response that did not fit inside a caller's configured limit.
