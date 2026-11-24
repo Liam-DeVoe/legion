@@ -1176,6 +1176,10 @@ func stepRunRow(issue record.Issue, rows []record.PhaseRow, now record.PhaseRow,
 		row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
 		return row, false, nil
 	}
+	if found == record.RowOfNoStep {
+		row.StepTask, row.StepPlace = task, place
+		return row, true, nil
+	}
 	if agent != "" {
 		project, err := claim.ProjectToken(issue.Project)
 		if err != nil {
