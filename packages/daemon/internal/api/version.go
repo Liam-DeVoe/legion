@@ -3542,7 +3542,7 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 252: the plugin's state schema and phase list drop what no daemon serves. The state schema of
+// 261: the plugin's state schema and phase list drop what no daemon serves. The state schema of
 // `packages/contracts/src/legion-api.ts` no longer declares `slot.lentTo` or `admission.free`,
 // which no daemon has written (both came with a widening of contract 12's schemas that changed no
 // daemon), and pi-legion's `read_state` summary no longer prints them. The phase `integrating`
@@ -3550,10 +3550,12 @@ package api
 // `contract-shapes.json` carry, and the plugin's `LEGION_WORKFLOW_PHASES`: `phase.All` has never
 // held it, no constraint on an issue's `phase` or `held_from` has ever admitted it, and no
 // transition sets it. No answer this daemon serves moves, so nothing is served down: a reader
-// below 252 admits a value this daemon never writes, and a reader at 252 is served every value it
+// below 261 admits a value this daemon never writes, and a reader at 261 is served every value it
 // admits. (This entry took 252 when main declared 232, read at d27405712c: a reading of all 481
 // open heads that ended at 2026-11-24T12:55:40Z found 251 declared by #5307 as the highest, and
-// 246 to 250 are held for another tree's work, so this entry took 252, the lowest number above
-// both. Read main's own number and every open head again at the next merge rather than from this
+// 246 to 250 were held for another tree's work. #4540 then declared 252 and pushed it first, and
+// 253 to 260 are held or declared by other changes, so this entry moved to 261, the lowest number
+// above them, which a reading of every open head made just before this commit's push found free.
+// Read main's own number and every open head again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 252
+const DaemonAPIVersion = 261
