@@ -72,15 +72,16 @@ func TestMigrationPlanEarlierGivers(t *testing.T) {
 // docs/kubernetes.md rolls back the plan tables in one psql session for each project whose daemon
 // rolls back on a shared database, a session that stops at its first error (ON_ERROR_STOP), and
 // runs the way back of the givers of a plan version in that session with the plan tables' block.
-// Here both projects of one database roll back, LEGION and then OTHER, each in a session of its
-// own that runs the givers' block and then the plan tables' block. LEGION's session drops the
-// column and the tables; OTHER's finds no table, and must still run every statement, or its own
-// rows of the plan tables' block stand, which the release before fails at every attempt. After
-// both, no plan table, no column and neither migration's version row stands.
+// Here both projects of one database roll back, LEGION and then OTHER, each running the givers'
+// block and then the plan tables' block, and each stopping at its first error, as its session
+// would. LEGION's run drops the column and the tables; OTHER's finds no table, and must still run
+// every statement, or its own rows of the plan tables' block stand, which the release before fails
+// at every attempt. After both, no plan table, no column and neither migration's version row
+// stands.
 //
 // The fault it catches is a statement of the givers' way back that errors when it runs again once
 // the table is gone (its control: `alter table issue_plans drop column if exists earlier_givers;`,
-// the block of the release before this change, under which OTHER's session stops with relation
+// the block of the release before this change, under which OTHER's run stops with relation
 // "issue_plans" does not exist).
 func TestThePlanWayBacksRunOnceForEachProjectOfADatabase(t *testing.T) {
 	ctx := context.Background()
@@ -91,20 +92,14 @@ func TestThePlanWayBacksRunOnceForEachProjectOfADatabase(t *testing.T) {
 	givers := wayBackOf(t, planEarlierGiversVersion, "the givers of a plan version")
 	plans := ownerStepsWayBack(t)
 	for _, project := range []string{"LEGION", "OTHER"} {
-		conn, err := store.Pool().Acquire(ctx)
-		if err != nil {
-			t.Fatalf("open the session of %s: %v", project, err)
-		}
 		for _, block := range []struct{ name, sql string }{
 			{"the way back of the givers of a plan version", givers},
 			{"the way back of the plan tables", strings.ReplaceAll(plans, "<PROJECT>", project)},
 		} {
-			if _, err := conn.Exec(ctx, block.sql, pgx.QueryExecModeSimpleProtocol); err != nil {
-				conn.Release()
-				t.Fatalf("the session of %s stops at %s: %v", project, block.name, err)
+			if _, err := store.Pool().Exec(ctx, block.sql, pgx.QueryExecModeSimpleProtocol); err != nil {
+				t.Fatalf("the rollback of %s stops at %s: %v", project, block.name, err)
 			}
 		}
-		conn.Release()
 	}
 	var tables, column, versions bool
 	if err := store.Pool().QueryRow(ctx, `select to_regclass('issue_plans') is not null or to_regclass('plan_tasks') is not null
