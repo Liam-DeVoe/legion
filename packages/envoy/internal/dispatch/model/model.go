@@ -72,12 +72,12 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// Projects are the projects the credential may use, sorted: a personal token's
-	// agent_tokens.projects (personalTokenActor), or a broker token's list (brokerTokenActor:
-	// the one project of a token an operator's entry mapped to it, or the list a token acting as
-	// its person traded for). Empty is a credential that names none. What a list decides is
-	// access.CredentialCovers': for a full member's credential, and one that names no person, only
-	// which private projects it reaches; for a restricted member's, every project it reaches.
+	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
+	// it is empty for every credential here: a later slice sets it from a personal token's
+	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
+	// What a list decides is access.CredentialCovers': for a full member's credential, and one
+	// that names no person, only which private projects it reaches; for a restricted member's,
+	// every project it reaches.
 	Projects []string
 	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
@@ -88,12 +88,6 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
-	// NamedProject is the one project a broker token an operator's entry mapped to one project
-	// may write (ciphertoken.ProjectScopeNamed). Nothing in this tree sets or reads it: a later
-	// slice sets it beside Projects when it resolves such a token, and reads it as the write scope
-	// such a token had before projects could be private. Empty for every credential here.
-	// A fact of the request, never written to a row or an answer.
-	NamedProject string `json:"-"`
 	// ProjectScope is a broker-issued token's project scope as the broker answered it
 	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
 	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
@@ -211,7 +205,7 @@ const (
 // it - every credential's but a broker token's, whose list is answered only while some project is
 // private or its person is a restricted member, as before projects could be private - and nil
 // otherwise: which projects it would see were its person to see them, which tells a read whether
-// the credential read a project before a change took it away, and which whoami answers as projects.
+// the credential read a project before a change took it away. A later slice's whoami answers it.
 type Viewer struct {
 	Person, Session string
 	Restricted      bool
