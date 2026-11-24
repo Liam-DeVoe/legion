@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/src/dispatch-api*.ts declaredShapesUnchanged reads each version's module and the generated module it re-exports (contractsOf: dispatch-api.ts and dispatch-api.generated.ts, dispatch-api-v2.ts and dispatch-api-v2.generated.ts), runtime-relative to the repository root (repositoryRoot)
+
 import (
 	"bytes"
 	"cmp"
