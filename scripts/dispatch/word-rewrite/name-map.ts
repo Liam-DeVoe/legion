@@ -370,6 +370,10 @@ const RELEASE_NAMES: readonly (readonly [string, string, boolean?])[] = [
     "TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn",
     "TestTheBootsReplayMovesARelaunchItsReportDelayedLaterToTheReplaysTurn",
   ],
+  [
+    "TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive",
+    "TestABacklogIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive",
+  ],
   // packages/daemon/internal/workflow
   ["parkedRootView", "labelledRootView"],
   ["handsOverParkedAtTheMerge", "handsOverInBacklogAtTheMerge"],
