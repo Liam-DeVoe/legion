@@ -491,7 +491,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 // release's pod leaves the issue's stored names on the old name and logs one kept line that names
 // the issue and says the runtime keeps its volume. With the new name written, the next pod would
 // make a fresh workspace under the new name, the runtime would drop the saved bundle, since the
-// kept volume holds that work (runtime.HeldWorkspaceBundleDrop), and the work would stay under the
+// kept volume holds that work (runtime.KeptPodStart), and the work would stay under the
 // old name. A later pass writes such an issue once no kept volume is left: here, once the runtime
 // keeps no volume of the issue, as after the teardown of its close (SuspendIssue), the next pod end
 // writes the new name, and its issues line counts one row written and none left. Control: the same

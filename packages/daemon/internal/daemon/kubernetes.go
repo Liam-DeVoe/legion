@@ -638,11 +638,13 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
-		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
-		// mounts the volume the work was taken off. The runtime asks this drop first for such a
-		// pod, and the store deletes the bundle the take would answer, without its body, so the
-		// pod is sent nothing and the bundle holds the issue's pod no longer.
-		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project)
+		// Each role's start in a pod whose Sandbox owns the issue's kept volume records that pod
+		// with its volume, which the issue's update round reads, and no role starts there until
+		// it is recorded. Where that Sandbox was created before the save, the pod mounts the
+		// volume the work was taken off, so the same call deletes the bundle the take would
+		// answer, without its body: the pod is sent nothing and the bundle holds the issue's pod
+		// no longer.
+		opts.KeptPodStart = keptPodStart(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -696,16 +698,17 @@ func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspac
 	}
 }
 
-// heldWorkspaceBundle is st's drop of a release's saved work that the kept volume of a pod of
-// project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
-// project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
-// project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
-// record is another project's daemon's, and a pod of this daemon drops none of it. Each call for
-// an issue that project records also records the pod with its kept volume, which the issue's
-// update round reads (store.Store.PodHoldsEarlierWork).
-func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
+// keptPodStart is st's record of a role's start in a pod of project whose Sandbox owns the
+// issue's kept volume, which drops a release's saved work that volume already holds, in the shape
+// the runtime calls it (runtime.KeptPodStart). project is the runtime's project token
+// (sandbox.Options.Project). It follows the take's project rule (store.Store.StartKeptPod): a
+// bundle of an issue that project does not record is another project's daemon's, and a pod of this
+// daemon drops none of it and records no pod of it. Each call for an issue that project records
+// records the pod with its kept volume, which the issue's update round reads
+// (store.Store.PodHoldsEarlierWork).
+func keptPodStart(st *store.Store, project string) runtime.KeptPodStart {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)
+		return st.StartKeptPod(ctx, project, issue, podUID, keptSince)
 	}
 }
 

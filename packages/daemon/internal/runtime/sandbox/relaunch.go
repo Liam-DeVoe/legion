@@ -516,7 +516,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), session, command); err != nil {
+	// The saved workspace goes to the pod's launcher before the role's start, and a pod of a kept
+	// volume is recorded with it first (restoreWorkspace). A record the store could not write
+	// refuses this launch before its Start frame goes out, as the leak check's refusal does, so no
+	// role runs in a pod of a kept volume the issue's update round has no record of; nothing was
+	// issued, so nothing is stopped.
+	if err := r.launchers.restoreWorkspace(starting, spec.Claim, string(pod.UID)); err != nil {
+		return fail("record its pod with its kept volume", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, session, command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
@@ -601,7 +609,9 @@ func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
 // unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
 // launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
-// refuses that launch before its Start is built.
+// refuses that launch before its Start is built. Nor does a launch whose pod of a kept volume the
+// store could not record: restoreWorkspace refuses it before its Start is sent
+// (runtime.KeptPodUnrecorded).
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
 // same connection, so the launcher handles it once it has handled the Start. It runs with its own

@@ -3609,22 +3609,20 @@ func unansweredMembers(group []supervise.Claim, round string) []supervise.Claim 
 //     found no session does, has none and ran there.
 //   - the disk of round's pod holds work from before the pod (earlierWork), and c has a session or
 //     a pod in its set. That disk holds the workspace that every role of the issue shares, as an
-//     earlier pod left it: an idle release saved that workspace's unpushed work as a bundle and
-//     the pod restored it before any role started in it, or the pod mounts the kept volume the
-//     work was taken off, or the pod mounts a kept volume that an earlier pod of the issue
-//     mounted, with no release at all (store.PodHoldsEarlierWork). So the work of any role an
-//     agent of which had run can be on that pod's disk, whether or not an agent of it registered
-//     there, whatever suspended it since and whatever it runs now: a role the daemon or the
-//     operator took over or suspended, a woken role whose launch the wake pacing parks, a role
-//     whose own launch replaced the pod, and a role that was suspended already at the release,
-//     whose work was in the shared workspace all the same. The store holds the record, so a daemon
-//     restart between the take or the drop and the end keeps it. An end over such a pod may name a
-//     role whose work the pod does not hold, which is the cost of reading the pod rather than each
-//     role (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd, and for the kept
-//     volume dispatch://INFRA-4425/comment/65c8b607-a452-4d88-9bcd-624fd7ab8b27). A claim with no
-//     session and an empty set never had an agent anywhere, as one refused for the pod with no
-//     session, so no work of it can be on any disk, and it is not named. A project pause's stop
-//     keeps the pod and saves no bundle, so no pod takes a release's work from it.
+//     earlier pod left it, in each case in which the store marks the pod; store.PodHoldsEarlierWork
+//     names those cases. So the work of any role an agent of which had run can be on that pod's
+//     disk, whether or not an agent of it registered there, whatever suspended it since and
+//     whatever it runs now: a role the daemon or the operator took over or suspended, a woken role
+//     whose launch the wake pacing parks, a role whose own launch replaced the pod, and a role that
+//     was suspended already at an idle release, whose work was in the shared workspace all the
+//     same. The store holds the record, so a daemon restart between the write of the mark and the
+//     end keeps it. An end over such a pod may name a role whose work the pod does not hold, which
+//     is the cost of reading the pod rather than each role
+//     (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd, and for the kept volume
+//     dispatch://INFRA-4425/comment/65c8b607-a452-4d88-9bcd-624fd7ab8b27). A claim with no session
+//     and an empty set never had an agent anywhere, as one refused for the pod with no session, so
+//     no work of it can be on any disk, and it is not named. A project pause's stop keeps the pod
+//     and saves no bundle, so no pod takes a release's work from it.
 //   - c's set is unknown (supervise.RegisteredPods.Unknown): a machine built over a stored claim
 //     that shows a session it held, now or abandoned, cannot say where each earlier agent of c
 //     registered (supervise's bootRegisteredPods). An end names every member that had not answered
@@ -3641,15 +3639,13 @@ func workOnRoundPod(c supervise.Claim, round string, earlierWork bool) bool {
 }
 
 // roundPodHoldsEarlierWork is whether the disk of the pod of round, a round of issue, holds work
-// from before the pod, as the store marks it (store.PodHoldsEarlierWork): a restore sent it an
-// idle release's bundle, or it mounts the kept volume a release's work was taken off, or it mounts
-// a kept volume that an earlier pod of the issue mounted. Each end of the round reads it as it
-// ends the round, and hands the answer to every reader of workOnRoundPod that end makes
-// (replacePodForRound, replaceIssuePodForRound, endRoundWhosePodWent). A read that fails must not
-// hide a loss, so it answers true, as if the disk held such work, and the error is logged, unless
-// the daemon's own stop cut the read short, which is no fault of the store's: the end then names
-// every member with a session or a pod that had not answered, as an earlier release named every
-// member.
+// from before the pod, as the store marks it (store.PodHoldsEarlierWork, which names the cases in
+// which it does). Each end of the round reads it as it ends the round, and hands the answer to
+// every reader of workOnRoundPod that end makes (replacePodForRound, replaceIssuePodForRound,
+// endRoundWhosePodWent). A read that fails must not hide a loss, so it answers true, as if the
+// disk held such work, and the error is logged, unless the daemon's own stop cut the read short,
+// which is no fault of the store's: the end then names every member with a session or a pod that
+// had not answered, as an earlier release named every member.
 func (s *supervision) roundPodHoldsEarlierWork(ctx context.Context, issue, round string) bool {
 	pod := strings.TrimPrefix(round, supervise.PodRoundPrefix)
 	holds, err := s.supervisor.store.PodHoldsEarlierWork(ctx, issue, pod)

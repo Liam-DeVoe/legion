@@ -414,13 +414,16 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
-	// HeldWorkspaceBundle drops the bundle an issue's last release saved where the pod's own kept
-	// volume holds that work already (runtime.HeldWorkspaceBundleDrop): the pod's Sandbox owns the
-	// issue's kept volume and was created before the save. At each role start the runtime asks it
-	// before the take, and only for a pod of such a Sandbox (launchers.restoreWorkspace). When it
-	// drops the bundle, the runtime sends that pod nothing. A runtime given none takes the bundle
-	// for every pod as SavedWorkspaceBundle answers it.
-	HeldWorkspaceBundle runtime.HeldWorkspaceBundleDrop
+	// KeptPodStart is a role's start in a pod whose Sandbox owns the issue's kept volume
+	// (runtime.KeptPodStart): it records the pod with its volume for the issue's update round, and
+	// drops the bundle an issue's last release saved where that volume holds the work already,
+	// since the Sandbox was created before the save. At each role start in a pod of such a Sandbox
+	// the runtime asks it before the take, whether or not the issue has a bundle, beside the pair
+	// above (launchers.restoreWorkspace). When it drops the bundle, the runtime sends that pod
+	// nothing; when it fails, the runtime refuses the role's start (runtime.KeptPodUnrecorded). A
+	// runtime given none records no pod and takes the bundle for every pod as SavedWorkspaceBundle
+	// answers it.
+	KeptPodStart runtime.KeptPodStart
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its

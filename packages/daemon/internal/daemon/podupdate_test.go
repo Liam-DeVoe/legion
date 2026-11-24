@@ -619,18 +619,18 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 }
 
 // launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
-// role runs, where the issue's Sandbox owns a kept volume (keptSince): the drop of a bundle that the
-// volume holds, which records pod with its volume whatever it drops (sandbox's
-// launchers.restoreWorkspace, store.DropHeldWorkspaceBundle). It answers whether the drop deleted a
-// bundle, and false, having asked nothing, where the issue's pods have volumes of their own.
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the start of a role in a pod
+// of a kept volume, which records pod with its volume and drops a bundle that volume holds
+// (sandbox's launchers.restoreWorkspace, store.StartKeptPod). It answers whether the call deleted
+// a bundle, and false, having asked nothing, where the issue's pods have volumes of their own.
 func (r *podUpdateRig) launcherStarts(pod string) bool {
 	r.t.Helper()
 	if r.keptSince.IsZero() {
 		return false
 	}
-	_, dropped, err := r.st.DropHeldWorkspaceBundle(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince)
+	_, dropped, err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince)
 	if err != nil {
-		r.t.Fatalf("the launcher of pod %s asked the store's drop at a role's start: %v", pod, err)
+		r.t.Fatalf("the launcher of pod %s asked the store to record its start in a pod of the kept volume: %v", pod, err)
 	}
 	return dropped
 }
