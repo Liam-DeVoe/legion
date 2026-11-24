@@ -24,11 +24,11 @@ import (
 // newClaimsCommand is the operator's hand on the daemon's claims, one command per operator route
 // (internal/api/operator.go). retry relaunches a failed claim: an architect on its session with
 // fresh budgets, a phase worker through its issue's held phase; with --failed, every failed claim.
-// compact shortens a running claim's session and sends it whatever task it owes again, which is
-// what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
-// the tree's close, through its root claim, for a tree no workflow issue backs: the root, then
-// every other claim of the tree. stop retires one claim, and waits out a stop the daemon holds for
-// the report of a turn its take has ended (claimsStop).
+// compact shortens a running claim's session and writes again the task it owes, which the claim
+// takes: what a claim whose provider keeps refusing its session reaches for before a fresh one.
+// close is the tree's close, through its root claim, for a tree no workflow issue backs: the
+// root, then every other claim of the tree. stop retires one claim, and waits out a stop the
+// daemon holds for the report of a turn its take has ended (claimsStop).
 func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "claims", Short: "the operator's hand on the daemon's claims"},
 		claimsCommand("spawn", "create a claim on a role of an issue and launch it", claimsSpawn, stdout, stderr),
@@ -37,7 +37,7 @@ func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
 		claimsCommand("stop", "stop a claim's agent, once the report of a turn its take has ended comes", claimsStop, stdout, stderr),
 		claimsCommand("retry", "retry a failed claim, or every failed claim; a claim with no process whose launch waits its paced turn launches now", claimsRetry, stdout, stderr),
-		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
+		claimsCommand("compact", "compact a claim's Oh My Pi session and write again the task it owes, for it to take", claimsCompact, stdout, stderr),
 		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
 		claimsCommand("release-names", "free the names of a claim's other sessions once the secrets broker carries nothing of them", claimsReleaseNames, stdout, stderr),
 		claimsCommand("close", "close a tree no workflow issue backs, through its root claim", claimRequest("close"), stdout, stderr),
@@ -402,10 +402,10 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 	return err
 }
 
-// claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
-// task it owes again: what a claim whose provider keeps refusing its session reaches for before a
-// fresh session, since the session, its workspace and everything the worker knows of its issue
-// stay where they are (api's compact).
+// claimsCompact compacts --claim's Oh My Pi session and has the daemon write again whatever task
+// the claim owes, which the claim takes: what a claim whose provider keeps refusing its session
+// reaches for before a fresh session, since the session, its workspace and everything the worker
+// knows of its issue stay where they are (api's compact).
 //
 // The request carries no deadline of its own, as no `legion claims` request does: a compaction
 // is a model call over the whole transcript, and the daemon bounds it at ten minutes

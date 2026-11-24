@@ -424,7 +424,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "probe_interval_seconds", RequiredBy: "no",
-			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, and the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline.",
+			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline, and, at that deadline, a relaunch or an operator's stop held for a take's report that the store or the runtime refused.",
 			Positive:    &positiveKey{Value: 30, Duration: func(c *Config) *time.Duration { return &c.ProbeInterval }},
 		},
 	}

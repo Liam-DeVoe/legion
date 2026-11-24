@@ -236,9 +236,10 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The controller's `compact`: the claim on `role` of `issue` has its Oh My Pi session
-   * compacted and is then sent the task it owes again, the effect `legion claims compact` runs
-   * for an operator. The answer says whether the session was compacted and, when it was not,
-   * why; the claim came back and whatever task it owes went again either way. */
+   * compacted and then takes again the task it owes, which the daemon writes again, the effect
+   * `legion claims compact` runs for an operator. The answer says whether the session was
+   * compacted and, when it was not, why; the claim came back and whatever task it owes was written
+   * again either way. */
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;

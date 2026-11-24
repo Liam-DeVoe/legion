@@ -1709,7 +1709,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **`workflow: a ready worker that finished its last task in this session is given nothing; its own reminder wakes it`** at Info, with the `claim`, the `task` it finished and its `session`, is a phase worker relaunched under its session — a death, a stale plugin, a displacement, a cancelled idle release — after it finished the last task written to it in that session.
   The daemon writes it no resume task, which would only ask it to do again what it did, and the session's own resume reminder wakes a worker whose phase is still open.
   **`workflow: the boot resumes a suspended claim that finished its last task in this session with no task; its own reminder wakes it`** is the same rule at the boot's resume of a claim a rule suspended.
-  A claim never written a task, and one whose session is new since it finished, is sent the resume task as before.
+  A claim never written a task, and one whose session is new since it finished, is written the resume task as before.
   Nothing to do.
 - **`workflow: the cutover owes a merger its merging task`** at Info, with the `issue`, whether its merger was `stopped` and whether the start `needsSlot`, is the boot's one-time repair of a merger the `awaiting_merge` cutover left: the daemon queues the merger's merging task, and, where the cutover left the merger stopped, posts on the issue that it did.
   Nothing to do.

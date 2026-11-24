@@ -1890,12 +1890,12 @@ const (
 // of the role with it, and the launcher reports that generation's exit. The daemon reads that as
 // the role's process gone, as it reads every exit a role's process makes on its own: it takes
 // back the task the turn was running, charges one launch failure, and relaunches the same
-// session, which is sent that task again, or fails the claim where the launch failures have
+// session, which takes that task again, or fails the claim where the launch failures have
 // reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
 // agent's may end alone, which is why the note says what follows only of the agent.
 const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
 	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
-	"The daemon then starts the same session again and sends again any task that the turn was running. " +
+	"The daemon then starts the same session again, and the session takes again any task that the turn was running. " +
 	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
