@@ -179,8 +179,8 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
 		t.Error("the Legion board shows no unowned P0 list, so a P0 write must not mark it by itself")
 	}
-	// The Legion board is the one view that shows its daemon's state, which the sampler's read of
-	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
+	// The Legion board shows its daemon's state, which the sampler's read of that daemon marks by
+	// the board's project (dirtyLegionProject), so the board names its project.
 	if board := deliveryLiveKinds[legionBoardView].reads; board != viewReadsLegion || !board.namesProject() {
 		t.Error("the Legion board does not read its project's daemon, so the sampler's read of that daemon marks no board")
 	}

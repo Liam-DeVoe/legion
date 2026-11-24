@@ -23,7 +23,9 @@ import (
 // before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
 // head was committed and is final before the reads that follow it (those P0 issues, each view's
 // recompute) run, and every event above it arrives on the feed. The listener's connection
-// (onConnected) catches the change log up after its LISTEN for the same reason.
+// (onConnected) catches the change log up after its LISTEN for the same reason, and marks every
+// Legion view, which a notification lost before that LISTEN would otherwise leave stale until
+// the next one came, with no bound (dirtyLegionViews).
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
 	var held, open bool
@@ -58,6 +60,7 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 			h.catchUp(g)
 		case <-g.connected:
 			h.catchUp(g)
+			h.dirtyLegionViews(g)
 			h.note(deliveryHubNote{what: "connected"})
 		case done := <-g.barrier:
 			h.catchUp(g)
@@ -346,8 +349,9 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
 // view's answer: the view's population, or its ancestors, names the issue, or the view shows the
 // unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
-// list, so only the first rule reaches it; an evals view does neither, so no issue write reaches
-// it (its unowned-p0 count is a stored row, whose rewrite the change log carries).
+// list, so only the first rule reaches it; a legion_issue view names no issue, and an evals view
+// neither names one nor shows the list, so no issue write reaches either (an evals view's
+// unowned-p0 count is a stored row, whose rewrite the change log carries).
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
@@ -496,7 +500,8 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read
 		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),
-		// and an evals view by the eval kinds above.
+		// a legion_issue view by a read of its project's daemon or a write of one of its runs
+		// (workflowstore.RunsChannel), and an evals view by the eval kinds above.
 		return view.spec.classes().reads == viewReadsDelivery && view.touchedByDeliveryRow(change, now)
 	}
 }

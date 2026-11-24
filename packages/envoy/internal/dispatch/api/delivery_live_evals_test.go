@@ -365,7 +365,7 @@ func TestAP0WriteAndTheSamplerMarkNoEvalsView(t *testing.T) {
 		t.Errorf("a P2's write marks %v, want %v", got, want)
 	}
 	clean()
-	hub.dirtyLegionBoard(g, "INFRA")
+	hub.dirtyLegionProject(g, "INFRA")
 	if got, want := dirty(), map[string]bool{"board": true, "evals": false, "timeline": false}; !reflect.DeepEqual(got, want) {
 		t.Errorf("the sampler's read of INFRA's daemon marks %v, want %v", got, want)
 	}
