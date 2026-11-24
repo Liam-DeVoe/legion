@@ -5920,17 +5920,40 @@ here_grep() {
     git -C "$root" grep -q "$how" -- "$pattern" "$commit" -- "${specs[@]}" 2>/dev/null
 }
 
+# tree_listing <repo root> <commit>; prints the file that holds the paths the commit tracks,
+# each ending with a NUL, as git ls-tree -r -z lists them (the rule above), which paths_at,
+# paths_below and form 7 of the symbol grammar match a cited path against with grep -z. Each
+# listing is written once per run, into this run's scratch, under the sha256 of the root and
+# the commit together, since a commit one clone holds can be missing from another. git writes
+# it to <file>.part, which is renamed into place only when git exits 0, so a listing that
+# failed or was ended part way is never read, and the next reader lists the commit again. It
+# prints nothing and returns 1 when git cannot list the commit in that root. grep reads the
+# listing and the shell never does: bash reads a list split at NUL bytes from a pipe one byte
+# at a time, which took 4 s a call over a tree of 13,500 paths.
+tree_listing() {
+    local file
+    file="$(printf '%s\0%s' "$1" "$2" | sha256sum)"
+    file="$RUN_SCRATCH/tree-${file%% *}"
+    if [ ! -e "$file" ]; then
+        git -C "$1" ls-tree -r -z --name-only "$2" >"$file.part" 2>/dev/null &&
+            mv -f -- "$file.part" "$file" || return 1
+    fi
+    printf '%s' "$file"
+}
+
 # paths_at <repo root> <commit> <pathspec>
 #
 # The paths a citation names, at one commit. A citation writes a path, a directory, a
 # glob such as `*.py`, or several of those separated by a comma or by the word "and".
 # Each is read here, so a citation of a set of files resolves when the commit holds at
 # least one path of every part it names, each read by the rule above (cited_regex): so
-# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216).
+# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216). Every part is matched
+# against the run's one listing of the commit (tree_listing), so the rows of a run list
+# each commit once, and a commit git cannot list, or one that tracks no path, resolves no
+# citation.
 paths_at() {
-    local root="$1" commit="$2" spec="$3" part names=()
-    mapfile -d '' -t names < <(git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null)
-    [ "${#names[@]}" -gt 0 ] || return 1
+    local root="$1" commit="$2" spec="$3" part listing
+    listing="$(tree_listing "$root" "$commit")" && [ -s "$listing" ] || return 1
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
@@ -5941,7 +5964,7 @@ paths_at() {
         case "$part" in
         *' '*) continue ;;
         esac
-        printf '%s\0' "${names[@]}" | grep -zqE "$(cited_regex "$part")" || return 1
+        grep -zqE "$(cited_regex "$part")" "$listing" || return 1
     done < <(printf '%s\n' "$spec" | sed 's/ and /\n/g; s/,/\n/g')
     # A citation whose every part is written in words, such as "20 pyproject.toml files
     # under backend/", names a set a reader reads rather than a path, and the gate holds
@@ -6017,17 +6040,18 @@ symbol_file() {
 # paths_below <repo root> <commit> <path>...; prints each path the commit tracks that one of
 # the paths a citation names, as resolve_symbol holds them, a glob written :(glob)<glob>,
 # names by the rule above paths_at (cited_regex), the path itself or one below it, each
-# ending with a NUL, as git ls-tree -z lists it, so that a file's name is looked for where the
-# citation points and nowhere else in the tree. It prints nothing and returns 1 when no path
-# does.
+# ending with a NUL, as the run's one listing of the commit (tree_listing) holds it, so that a
+# file's name is looked for where the citation points and nowhere else in the tree. It prints
+# nothing and returns 1 when no path does.
 paths_below() {
-    local root="$1" commit="$2" path regex=""
+    local root="$1" commit="$2" path regex="" listing
     shift 2
     for path in "$@"; do
         regex="$regex${regex:+|}($(cited_regex "${path#':(glob)'}"))"
     done
     [ -n "$regex" ] || return 1
-    git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null | grep -zE "$regex"
+    listing="$(tree_listing "$root" "$commit")" || return 1
+    grep -zE "$regex" "$listing"
 }
 
 # module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
@@ -6585,7 +6609,7 @@ resolve_symbol() {
     fi
     # here: the file each part is read against, the paths the citation names until a part
     # names a file of its own; here_name: how a failure names it.
-    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest digit
+    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest digit listing
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
@@ -6715,18 +6739,21 @@ resolve_symbol() {
         esac
         # 7: a path, a directory or a glob the commit holds, read from the root or below a
         # directory or a glob the citation names, where that directory or glob is read (the
-        # rule above paths_at), and never as text.
+        # rule above paths_at), against the run's one listing of the commit (tree_listing),
+        # and never as text.
         case "$form" in
         path)
             paths_at "$root" "$commit" "$part" && continue
             held=1
-            for path in "${pathspec[@]}"; do
-                case "$path" in
-                ':(glob)'*) path="${path#':(glob)'}" ;;
-                *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
-                esac
-                git -C "$root" ls-tree -r -z --name-only "$commit" 2>/dev/null | grep -zqE "$(cited_regex "$path" "${part%/}")" && held=0 && break
-            done
+            if listing="$(tree_listing "$root" "$commit")"; then
+                for path in "${pathspec[@]}"; do
+                    case "$path" in
+                    ':(glob)'*) path="${path#':(glob)'}" ;;
+                    *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
+                    esac
+                    grep -zqE "$(cited_regex "$path" "${part%/}")" "$listing" && held=0 && break
+                done
+            fi
             [ "$held" -eq 0 ] && continue
             ;;
         esac
