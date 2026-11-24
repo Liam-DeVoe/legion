@@ -868,14 +868,10 @@ negative_no_repo() {
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
   local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
+  # lib/multi-repo-none-note.jq: the daemon's latest repository note is the none-note, and a message
+  # its author deleted is no note.
   local latest_is_none
-  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
-    [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and ((.payload.body | startswith("Legion did not admit this issue:"))
-        or (.payload.body | startswith("Legion did not move this issue off "))))]
-    | sort_by(.seq) | last
-    | if . == null then false else (.payload.body | startswith($none + "\n\n<!-- legion-outbox:")) end
-  ' "$events_file")
+  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" -f "$script_dir/lib/multi-repo-none-note.jq" "$events_file")
   [ "$latest_is_none" = "true" ] || ok=0
 
   summary "negative-no-repo-$key" "issues has($key): $has
@@ -960,19 +956,10 @@ negative_repo_edit() {
   # full stop, where X is Dispatch's spelling, so only X is compared case-insensitively.
   opening="Legion did not move this issue off $b_repo: "
   lead=" Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on "
-  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" \
-    --arg lead "$lead" --arg x "$repo_x" '
-    def closing:
-      (($lead | length) + ($x | length) + 1) as $n
-      | length >= $n
-        and (.[-$n:] as $t
-          | ($t | startswith($lead)) and ($t | endswith("."))
-            and (($t[($lead | length):-1] | ascii_downcase) == $x));
-    any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and (.payload.body | startswith($opening))
-      and (.payload.body | contains("\n\n<!-- legion-outbox:"))
-      and (.payload.body | split("\n\n<!-- legion-outbox:")[0] | closing))
-  ' "$events_file")
+  # lib/multi-repo-kept-note.jq: the daemon posted the note, and a message its author deleted is no
+  # note.
+  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" --arg lead "$lead" --arg x "$repo_x" \
+    -f "$script_dir/lib/multi-repo-kept-note.jq" "$events_file")
   [ "$has_note" = "true" ] || ok=0
 
   summary "negative-repo-edit-$child" "baseline: repo=$b_repo last_seq=$b_last_seq

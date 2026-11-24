@@ -562,17 +562,16 @@ func (i *slowInstallations) InstalledUnder(ctx context.Context, role appauth.App
 // root's move moves every child that inherits its repository, reads that repository once: the
 // first issue's preparation reads both Apps' installations and GitHub's name and default branch,
 // every other issue of the pass takes that read, and each is corrected onto GitHub's spelling and
-// default branch from it. The pass runs within one bound (appMintAttempt, two seconds here), and
+// default branch from it. The pass runs within one bound (the App-call attempt bound, callBounds, two seconds here), and
 // GitHub answers each installation read of the repository in a tenth of a second: read once per
 // issue, one after another, the reads would use the bound up two thirds of the way through the
 // issues, and every read after it would fail on the expired context. The follow is asked for as a
 // boot's listing asks for it (requestFollow).
 func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
-	attempt := appMintAttempt
-	appMintAttempt = 2 * time.Second
-	t.Cleanup(func() { appMintAttempt = attempt })
+	calls := productionAppCalls()
+	calls.attempt = 2 * time.Second
 	installs := &slowInstallations{installations: &installations{}, wait: 100 * time.Millisecond}
-	w, client, github := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	w, client, github := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
 	keys := make([]string, 15)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("LEGION-%d", 1051+i)
@@ -592,7 +591,7 @@ func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
 		t.Errorf("the follow read %s's name and default branch %d times for %d issues, want once", strangerRepo, reads, len(keys))
 	}
 	if !applied {
-		t.Fatalf("the follow never committed: each of its passes ran out of its bound of %s", appMintAttempt)
+		t.Fatalf("the follow never committed: each of its passes ran out of its bound of %s", calls.attempt)
 	}
 	for _, key := range keys {
 		onStranger(t, w, key, "trunk")
@@ -610,12 +609,11 @@ func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
 // issue onto GitHub's spelling and default branch.
 func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain(t *testing.T) {
 	quickInstallReads(t)
-	attempt := appMintAttempt
-	appMintAttempt = 500 * time.Millisecond
-	t.Cleanup(func() { appMintAttempt = attempt })
+	calls := productionAppCalls()
+	calls.attempt = 500 * time.Millisecond
 	installs := &slowInstallations{installations: &installations{}}
 	installs.hang.Store(true)
-	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
 	keys := []string{"LEGION-1071", "LEGION-1072", "LEGION-1073"}
 	for i, key := range keys {
 		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
@@ -660,14 +658,13 @@ func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain
 // again every time and ahead of them. Once GitHub answers, the next pass completes the follow.
 func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testing.T) {
 	quickInstallReads(t)
-	attempt := appMintAttempt
-	appMintAttempt = 500 * time.Millisecond
-	t.Cleanup(func() { appMintAttempt = attempt })
+	calls := productionAppCalls()
+	calls.attempt = 500 * time.Millisecond
 	const refusedRepo = "lambda/gadgets"
 	installs := &slowInstallations{installations: &installations{}}
 	installs.setMissing(true, "review "+refusedRepo)
 	installs.hang.Store(true)
-	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
 	const anchored, answered, refused, cut = "LEGION-1081", "LEGION-1082", "LEGION-1083", "LEGION-1084"
 	for i, key := range []string{anchored, answered, refused, cut} {
 		recordCorrectionRoot(t, w.pool, w.records, key, key, i)

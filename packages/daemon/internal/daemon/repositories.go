@@ -564,7 +564,7 @@ var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time
 var recoveryHoldBound = defaultHoldWarnEvery
 
 // installReadAttempt bounds one read of GitHub or Dispatch a preparation or the rename pass makes:
-// as long as any one GitHub call the boot waits for (appMintAttempt), so a GitHub that answers
+// as long as any one GitHub call the boot waits for (appCallBounds.attempt), so a GitHub that answers
 // slowly is still answered for, while a read GitHub has not answered by then is a read that did
 // not answer, and a repository GitHub hangs on is read again later rather than holding up the
 // rest. It bounds each installation read (readInstallations), each webhook App check
@@ -576,7 +576,7 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // Nothing bounds the refresher's preparation as a whole: it prepares repositoryReads repositories
 // at once, so its preparation of n repositories, four reads each, takes at most
 // ceil(n / repositoryReads) × 4 of these. The follow pass bounds all its reads together
-// (appMintAttempt, followListing), which is why it reads each repository once (readCorrection).
+// (callBounds().attempt, followListing), which is why it reads each repository once (readCorrection).
 var installReadAttempt = 15 * time.Second
 
 // repositoryReads is how many repositories the refresher prepares at once.
@@ -850,11 +850,11 @@ func (w *workflowRuntime) prepareAtStart(ctx context.Context) {
 
 // recordedRepositories is each distinct repository a record of the project names, as the record
 // keeps GitHub's spelling of it (record.Issue.GitHubRepo, repositoriesOf), sorted, read in one
-// read-only transaction bounded by appMintAttempt; a record that keeps no GitHub spelling is passed
+// read-only transaction bounded by the App-call attempt bound (callBounds); a record that keeps no GitHub spelling is passed
 // by, and one whose spelling is no <owner>/<name> refuses the read, as it refuses the boot
 // (heardAtBoot).
 func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -1086,7 +1086,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 	w.heardMu.Lock()
 	defer w.heardMu.Unlock()
-	publish, cancel := context.WithTimeout(ctx, appMintAttempt)
+	publish, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var recorded []ghrepo.Repository
 	err := store.TransactWith(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -1138,7 +1138,7 @@ func (w *workflowRuntime) heldDue() time.Time {
 
 // rereadHeldBranches is the refresher's fifth job: each default branch held through a rate limit
 // whose limit has ended by now (heldThroughLimit) is read again (defaultBranches.Named, bounded by
-// appMintAttempt), and one GitHub's limit refuses again is held again, which names it once more
+// the App-call attempt bound, callBounds), and one GitHub's limit refuses again is held again, which names it once more
 // (Named, onHold).
 func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time) {
 	w.heldMu.Lock()
@@ -1151,7 +1151,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 	}
 	w.heldMu.Unlock()
 	for _, read := range due {
-		attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+		attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 		_, err := w.defaultBranches.Named(attempt, read.repo)
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -1171,7 +1171,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 // request made before it starts; a read that fails is logged and run again on installReadRetry.
 func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 	before := w.repositories.liveNames()
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(ctx context.Context, tx pgx.Tx) error {
 		return w.refreshCacheRepositories(ctx, tx)
 	})
@@ -1326,7 +1326,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		return
 	}
 	names := slices.Sorted(maps.Keys(repos))
-	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
 	// todo is each repository, lowercased, that an unrecorded todo issue of the listing that
@@ -2148,7 +2148,7 @@ func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Reposi
 	slices.SortFunc(heard, func(a, b ghrepo.Repository) int {
 		return strings.Compare(strings.ToLower(a.String()), strings.ToLower(b.String()))
 	})
-	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), appMintAttempt)
+	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.callBounds().attempt)
 	defer cancel()
 	if err := w.updateSubscription(update, heard); err != nil {
 		return err
@@ -3029,7 +3029,7 @@ func (w *workflowRuntime) requestFollowOf(key string) {
 // owed follows are of follow what Dispatch resolves them to: every recorded issue once a boot's
 // listing asked for it (followEvery), and otherwise each issue followOwed names. It takes them,
 // and the count of follows asked for, in one step under followMu, so whatever is asked for after
-// it is owed to the next pass. The pass reads within one bound (appMintAttempt) whatever number
+// it is owed to the next pass. The pass reads within one bound (callBounds().attempt) whatever number
 // of issues it moves, which is why it reads GitHub once per repository (readCorrection).
 //
 // A pass that fails is logged and owes again everything it took (oweFollows), so the refresher
@@ -3072,7 +3072,7 @@ func (w *workflowRuntime) followRecorded(ctx context.Context) {
 		w.oweFollows(false, left)
 		w.log.Warn("workflow: the follow of Dispatch's resolution left recorded issues unread, its bound having cut it short or GitHub "+
 			"not having answered for the repository they move onto; it wrote what it read, and its next pass reads them again",
-			"left", len(left), "bound", appMintAttempt.String())
+			"left", len(left), "bound", w.callBounds().attempt.String())
 		return
 	}
 	w.followApplied.Store(follows)
@@ -3115,14 +3115,14 @@ func (w *workflowRuntime) followReasons() []string {
 // record is prepared as an event's is (prepareRecorded), outside the transaction, and the pass
 // reads GitHub at most once per repository whatever number of issues move onto it (followReads).
 //
-// The reads are bounded as one (appMintAttempt). A pass whose bound ends while it prepares stops
+// The reads are bounded as one (callBounds().attempt). A pass whose bound ends while it prepares stops
 // at the issue it was preparing: a read the bound cut short answered for the bound, not for
 // GitHub, so it is no refusal and leaves no repository unread (correctionReads), and that issue
 // and every one after it are left owed (left) for the next pass to read. An issue whose
 // correction's reads GitHub did not answer is left owed too (correctionRead.unanswered), while the
 // pass goes on to the next: its correction would write nothing, and the next pass reads it
 // again, until GitHub answers. The corrections the pass prepared, whose reads GitHub answered,
-// are written all the same; the write is bounded on its own (appMintAttempt), since the reads'
+// are written all the same; the write is bounded on its own (callBounds().attempt), since the reads'
 // bound has ended by then. With only set (the issues the follows owed are of, which
 // followRecorded hands on), the pass prepares those issues alone; nil prepares every one.
 //
@@ -3144,7 +3144,7 @@ func (w *workflowRuntime) followReasons() []string {
 // records are read first, so a project the workflow records no issue of asks Dispatch for no
 // listing.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
-	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
+	reading, cancelReads := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancelReads()
 	var issues []record.Issue
 	if err := store.TransactWith(reading, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -3190,7 +3190,7 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 	if len(follow) == 0 {
 		return left, nil
 	}
-	writing, cancelWrite := context.WithTimeout(ctx, appMintAttempt)
+	writing, cancelWrite := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancelWrite()
 	if err := store.Transact(writing, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
