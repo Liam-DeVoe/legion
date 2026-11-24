@@ -7,14 +7,16 @@
 #   exit: 0 printed, 1 the tree holds no contract (it names why), 2 a usage error
 #
 # The number is the greatest of packages/contracts/fixtures/daemon-api/released-contracts.json,
-# the numbered entries frozen at the cutover to entry files (api.LastNumberedContract, L), plus
-# the count of entry fixtures under packages/contracts/fixtures/daemon-api/contracts/, which holds
-# one for each entry and nothing else; an absent directory is no entry. A tree from before that
-# cutover has no released-contracts.json, and its number is version.go's
-# `const DaemonAPIVersion = <n>` line. The merge order changes no build's own number, only which
-# entry each number names, so this reads no history: given no <rev> it reads files alone and
-# works in a tree with no .git, as the worker image's plugin stage is. Given a <rev> it reads that
-# commit's objects, never the working tree.
+# the frozen part of SupportedContracts, the numbered entries from ServingFloor up
+# (api.LastNumberedContract, L, is its greatest), plus the count of entry fixtures under
+# packages/contracts/fixtures/daemon-api/contracts/: the names there that match
+# ^[0-9]{14}_.+\.json$, an absent directory counting none. Another name there is no entry
+# fixture, and TestEveryEntryHasOneFixture refuses it, so it is not counted here. A tree from
+# before the cutover to entry files has no released-contracts.json, and its number is
+# version.go's `const DaemonAPIVersion = <n>` line. The merge order changes no build's own
+# number, only which entry each number names, so this reads no history: given no <rev> it reads
+# files alone and works in a tree with no .git, as the worker image's plugin stage is. Given a
+# <rev> it reads that commit's objects, never the working tree.
 #
 # Run from anywhere: scripts/daemon-contract.sh [<rev>]
 set -euo pipefail
@@ -41,8 +43,14 @@ die() {
 
 # greatest <where>: the greatest number of the released-contracts.json read on standard input.
 greatest() {
-  jq -er 'if type == "array" and length > 0 and all(.[]; type == "number") then max else empty end' ||
-    die "${released} of $1 is no array of contract numbers"
+  jq -er 'if type == "array" and length > 0 and all(.[]; type == "number" and . == floor) then max else empty end' ||
+    die "${released} of $1 is no JSON list of integers"
+}
+
+# count_fixtures: counts the paths read on standard input, one a line, whose names are entry
+# fixtures'.
+count_fixtures() {
+  awk '{ sub(/^.*\//, "") } /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_.+[.]json$/ { n++ } END { print n + 0 }'
 }
 
 # constant <where>: the number of the `const DaemonAPIVersion = <n>` line read on standard input.
@@ -57,7 +65,7 @@ if [[ $# == 1 ]]; then
   rev=$(git -C "$root" rev-parse --verify --quiet "${1}^{commit}") || die "$1 names no commit of ${root}"
   if git -C "$root" cat-file -e "${rev}:${released}" 2>/dev/null; then
     last=$(git -C "$root" cat-file blob "${rev}:${released}" | greatest "$1")
-    count=$(git -C "$root" ls-tree --name-only "$rev" "${fixtures}/" | awk '/[.]json$/ { n++ } END { print n + 0 }')
+    count=$(git -c core.quotePath=false -C "$root" ls-tree --name-only "$rev" -- "${fixtures}/" | count_fixtures)
     echo $((last + count))
   else
     git -C "$root" cat-file blob "${rev}:${version}" 2>/dev/null | constant "$1"
@@ -65,8 +73,9 @@ if [[ $# == 1 ]]; then
 elif [[ -f "$root/$released" ]]; then
   last=$(greatest 'the working tree' <"$root/$released")
   shopt -s nullglob
-  entries=("$root/$fixtures"/*.json)
-  echo $((last + ${#entries[@]}))
+  names=("$root/$fixtures"/*)
+  count=$(printf '%s\n' ${names[@]+"${names[@]}"} | count_fixtures)
+  echo $((last + count))
 elif [[ -f "$root/$version" ]]; then
   constant 'the working tree' <"$root/$version"
 else
