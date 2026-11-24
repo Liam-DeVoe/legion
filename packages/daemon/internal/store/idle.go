@@ -516,9 +516,10 @@ type ReleaseCancelled struct {
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the claim BackstopTarget names, read once for the cancel, its backstop,
-// which the record arms only where the stop owes no launch. That claim is the owner at a step or a
-// retro of its own other than its acceptance. Elsewhere it is the claim of the place's worker
-// serving the issue's generation: at step a keyed agent's claim works the step beside the role's
+// which the record arms only where the stop owes no launch. Which claim that is, is the rule every
+// path that arms a backstop reads (pods.BackstopClaim): the owner at a step or a retro of its own
+// other than its acceptance, whatever run it served last; elsewhere the claim of the place's worker
+// serving the issue's generation, so at step a keyed agent's claim works the step beside the role's
 // own claim, which gets none. A wake taken since is left open: it is the launch the role is owed,
 // and its start row runs at the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
@@ -539,7 +540,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if target != "" && worker != "" && r.token == worker && (target == claim.RoleArchitect || r.serving == standing.generation) {
+		if pods.BackstopClaim(target, worker, r.token, r.serving, standing.generation) {
 			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Claim: r.token, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {

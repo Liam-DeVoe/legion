@@ -396,17 +396,14 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 }
 
 // BackstopClaim says whether released, a claim a release of issue's pod left released, is the one
-// a backstop is armed for, by every path that arms one (R5): the release (the daemon's
-// armBackstops), a pause's stop of a released claim (the daemon's projectPause.stopTx) and a cancel
-// of a release while the project is paused (store.ReleaseCancelPause.BackstopTarget, which states
-// the same rule in its own transaction). role and token are the claim BackstopTargetAt reads: the
-// owner's, the architect's backstop, whatever run it served last, and a worker's where it serves
-// the issue's run. podBackstopDue wakes the same claim when the backstop comes due.
+// a backstop is armed for: pods.BackstopClaim, the one rule every path that arms one reads (R5),
+// for released's token and run and issue's generation. role and token are the claim
+// BackstopTargetAt reads: the owner's, the architect's backstop, whatever run it served last, and a
+// worker's where it serves the issue's run. The daemon's armBackstops and projectPause.stopTx ask
+// it here, and the store's cancel of a release while the project is paused asks pods.BackstopClaim
+// itself. podBackstopDue wakes the same claim when the backstop comes due.
 func BackstopClaim(issue record.Issue, role claim.Role, token claim.Token, released supervise.Claim) bool {
-	if role == "" || token == "" || released.Token != token {
-		return false
-	}
-	return role == claim.RoleArchitect || released.ServingGeneration == issue.Generation
+	return pods.BackstopClaim(role, token, released.Token, released.ServingGeneration, issue.Generation)
 }
 
 // BackstopTarget is who a backstop of issue's pod is armed for, as a role and, where one claim is
