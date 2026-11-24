@@ -151,10 +151,13 @@ func UnnamedAgents(earlier, named []PlanStep, held ...KeyName) []UnnamedAgent {
 
 // KeyName is one name a key held on an issue (KeyNames): the lasting record of every name a key's
 // agent held, which no later plan's write or deletion removes, since the name's claim records that
-// key's session in every later generation.
+// key's session in every later generation. Generation is the latest generation whose steps gave
+// the key that name, which says whether a row with no key that shows the name came before the key
+// held it or after (workflow's handedBefore).
 type KeyName struct {
-	Name     claim.Agent
-	AgentKey string
+	Name       claim.Agent
+	AgentKey   string
+	Generation uint64
 }
 
 // earlierKeyNames is the name each key but the owner's held, read newest first: the name of the

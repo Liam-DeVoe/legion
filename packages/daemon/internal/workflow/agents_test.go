@@ -108,6 +108,45 @@ func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	}
 }
 
+// A row with no key that shows a key's name says the default steps handed that name on before
+// only where it is no older than the key's hold of the name. Generation 1 ran the default steps,
+// whose tester took the name tester; generation 2's owner gave key k that name, and those rows went
+// when generation 3's first step passed over that owner's plan, so only the lasting record keeps
+// k's hold, at generation 2. Generation 3's default tester takes the name from key k for the first
+// time: it is handed on, not handed before, so its claim leaves k's session and the issue is told.
+// The control: key k held the name at generation 1 and the default steps took it at generation 2,
+// so generation 3's tester was handed it before.
+func TestADefaultStepIsHandedAKeysNameAnEarlierDefaultRunShowedBeforeTheKeyHeldIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		earlier []record.PlanStep
+		held    record.KeyName
+		before  bool
+	}{
+		{"the default rows are older than the key's hold", []record.PlanStep{
+			{Issue: "LEGION-208", Generation: 1, Task: defaultTask, Position: 1, Role: "tester", Agent: "tester"},
+			{Issue: "LEGION-208", Generation: 1, Task: defaultTask, Position: 2, Role: "reviewer", Agent: "reviewer"},
+		}, record.KeyName{Name: "tester", AgentKey: "k", Generation: 2}, false},
+		{"the control: the default rows came after the key's hold", []record.PlanStep{
+			{Issue: "LEGION-208", Generation: 1, Task: "a", Position: 1, Role: "tester", AgentKey: "k", Agent: "tester"},
+			{Issue: "LEGION-208", Generation: 2, Task: defaultTask, Position: 1, Role: "tester", Agent: "tester", LeaveSession: "ses-key-k"},
+			{Issue: "LEGION-208", Generation: 2, Task: defaultTask, Position: 2, Role: "reviewer", Agent: "reviewer"},
+		}, record.KeyName{Name: "tester", AgentKey: "k", Generation: 1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := returnEngine()
+			engine.cfg.DefaultSteps = []plan.Step{{Role: "tester"}, {Role: "reviewer"}}
+			_, _, steps, handed := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 3}, tc.earlier, []record.KeyName{tc.held})
+			if len(handed) != 1 || handed[0].Name != "tester" || handed[0].Holder != "k" || handed[0].before != tc.before {
+				t.Fatalf("the default steps handed on %+v, want key k's name tester handed on with before %t", handed, tc.before)
+			}
+			if steps[0].Agent != "tester" {
+				t.Fatalf("the default tester is named %q, want tester", steps[0].Agent)
+			}
+		})
+	}
+}
+
 // A name a key held stays that key's after a later version drops the key: version 1 names key k
 // tester, version 2 drops k and its step, which writes over the rows that showed k's name, and
 // version 3, whose tester step has no key, would take the name tester and so run in k's claim and
