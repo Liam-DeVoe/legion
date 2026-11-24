@@ -2100,7 +2100,7 @@ export const dispatchToolSpecs = [
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
         )
         .optional(),
       brief: z
