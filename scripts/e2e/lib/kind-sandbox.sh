@@ -101,7 +101,7 @@ kind_node_image=ghcr.io/cybermonklabs/legion/ci@sha256:a1ed56cfb0e7b93589bdf97c8
 # The local registry (registry 2.8.3), the busybox of the gVisor check pod (1.37), the NFS server
 # (nfs-provisioner v4.0.8), and PostgreSQL with pgvector.
 kind_registry_image=ghcr.io/cybermonklabs/legion/ci@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-kind_busybox_image=ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+kind_busybox_image=ghcr.io/containerd/busybox:1.36
 kind_nfs_image=ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
 kind_postgres_image=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
