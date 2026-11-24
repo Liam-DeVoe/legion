@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -1591,8 +1592,8 @@ function stateSettings(): z.ZodObject {
 // refuses and no record catches, and a row typing a key this schema does not name holds every
 // later legion.yaml change to a record no reader needs.
 test("the settings keys answers.json types at the daemon's own contract are the keys legionSettings types", () => {
-  const contract = daemonFixture("version.json").daemonApiVersion;
-  if (typeof contract !== "number") throw new Error("version.json declares no daemonApiVersion");
+  // The daemon's own contract is this tree's: L plus its count of entry fixtures.
+  const contract = daemonContract({}, import.meta.dir);
   const declaring = answerRows().filter((row) => row.typedSettings !== undefined);
   expect(declaring.map((row) => row.id)).toEqual(["state"]);
   const declared = (declaring[0]?.typedSettings ?? [])
