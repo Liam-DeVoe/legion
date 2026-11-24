@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -91,6 +92,22 @@ func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
 }
 
+// Rank orders the places of one task's line: no place first, then each step by its place, then
+// the retro, then the merge. A move back goes to a place of a lower rank, and a step that ran
+// stands at a lower rank than the place the task stands at, whatever phase each runs as: every
+// step of a role the deployment defines runs as step, so only the place tells two of them apart.
+func (p TaskPlace) Rank() int {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position
+	case PlaceRetro:
+		return math.MaxInt - 1
+	case PlaceMerge:
+		return math.MaxInt
+	}
+	return 0
+}
+
 // valid says whether p is a place a task can stand at.
 func (p TaskPlace) valid() bool {
 	switch p.Kind {
@@ -148,7 +165,7 @@ type PlanStep struct {
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
 	// gives before the step is written and nothing else writes. A step of the key owner holds
-	// none (20261117213545 named every other step a release before the column wrote).
+	// none (20261123203837 named every other step a release before the column wrote).
 	Agent claim.Agent
 }
 

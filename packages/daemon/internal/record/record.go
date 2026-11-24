@@ -617,11 +617,11 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and so does the fail of a step of the type review whose agent is not the owner; nothing
-	// else opens one — a tester's fail, the fail of a step of another type and a worker's
-	// backward move each raise Pass and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound). A review that requested changes ends one,
+	// and so does the fail of a step of the type review whose agent is not the owner. Nothing else
+	// opens one — a tester's fail, the fail of a step of another type and a worker's backward move
+	// each raise Pass. They leave this count where it stands. What review_round_cap bounds is
+	// Rounds less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -640,7 +640,7 @@ type PhaseRow struct {
 	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
 	// for it.
 	// The map starts empty when the migration lands and is never filled in from the past, so an
-	// issue already in flight reads counts that add up to less than its Rounds.
+	// issue already in flight reads counts that add up to less than its Pass.
 	BackwardMoves map[string]int
 	// CapTold is the review_round_cap value this row last posted the cap's message and its
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
@@ -1045,11 +1045,11 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
-	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the topic of the claim that works the
-	// implementer's step rather than a phase start: it names the head and the base branch of the
-	// conflict, the phase the issue stood in and stays in, why the act was needed, when it was
+	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
+	// issue keeps its phase, and the ask is a message on the topic of the claim that works the
+	// role's step rather than a phase start: it names the head and the base branch of the conflict,
+	// the role asked, the phase the issue stood in and stays in, why the act was needed, when it was
 	// asked, and, once a new head arrives, that head (MergeForward.Landed). It also keeps every
 	// merge forward that landed before it in the same stretch of work (MergeForward.Earlier).
 	//
@@ -1096,28 +1096,42 @@ type ConflictRead struct {
 	At   time.Time `json:"at"`
 }
 
-// MergeForward is the daemon's ask that the implementer merge Base forward onto Head
-// (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
-// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
-// AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
-// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review and its task has a reviewer step (workflow's
-// mergeForwardLanded), and which the merger's task and its landed message read. Earlier is every
-// merge forward that landed before this ask in the same stretch of work, oldest first: a later ask
-// replaces the one the record holds, so when the head a merge left conflicts in its turn and is
-// merged forward again, Earlier is what still names the head the first merge replaced
-// (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb of
-// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
-// with no migration of its own, and leaves it out while it is empty.
+// MergeForward is the daemon's ask that a role merge Base forward onto Head
+// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
+// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
+// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
+// held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
+// first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
+// landing asked the reviewer to read the merge, which it does when the reviewer step of the
+// issue's task already ran (workflow's mergeForwardLanded), and which the merger's task and its
+// landed message read. Earlier is every merge forward that landed before this ask in the same
+// stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
+// merge left conflicts in its turn and is merged forward again, Earlier is what still names the
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
+// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
+// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
+// empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
+	Role        claim.Role           `json:"role,omitempty"`
 	Phase       phase.Phase          `json:"phase"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
+// daemon before cybermonklabs/legion#4979 wrote, since it asked the implementer in every phase. So an
+// implementer that daemon asked in merging still merges after the upgrade, and the merger is asked
+// only by a new act (workflow's mergeForward).
+func (m MergeForward) Asked() claim.Role {
+	if m.Role == "" {
+		return claim.RoleImplementer
+	}
+	return m.Role
 }
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
@@ -1137,8 +1151,10 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
-	// them (PastReview).
+	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict where the
+	// merge comes next before merging - retro, or accepting where no step of the task follows the
+	// acceptance (classify.MergeComesNext) - waits for merging, where the merger merges the base
+	// forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1148,28 +1164,25 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is; testing, reviewing, accepting, retro and merging (in the default steps, every phase
-// after implementing up to the merge), which the issue keeps while the implementer merges
-// (dispatch://INFRA-4374 R1); and step, where a role the deployment defines runs, after the
-// implementer or before it: a step before it is asked a merge forward only when the issue holds an
-// open pull request there, as it does after a todo restarts the task or a later version of the
-// plan moves the step, and the merge forward asks nothing of an issue with none. An
-// issue that stands in none of them - admitted, awaiting_person or planning, where in the default
-// steps nothing is implemented yet, or out of the workflow - is asked for no merge forward,
-// wherever its task places the planner. They are also the phases a head move is read for a
-// conflict in, and, but implementing, where the next push of the head is read, the phases a push
-// to the base is read for (classify.MergeStateReadOwed), since that read is what can lead to the
-// ask. Both read it through StandsIn, so a hold from one of them counts as standing there.
-var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
+// MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
+// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
+// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
+// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
+// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+func MergeForwardAsker(at phase.Phase) claim.Role {
+	if at == phase.Merging {
+		return claim.RoleMerger
+	}
+	return claim.RoleImplementer
+}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base
 // (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
 // (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
 // not passed on the head, or that requires a pull request to be current with it, is a base the
-// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
-// all on a head that conflicts with its base.
+// head cannot merge into until the base is merged forward, and GitHub runs no check at all on a
+// head that conflicts with its base.
 //
 // Required is every required status-check context, each once and sorted: the contexts of each
 // `required_status_checks` rule the base's rulesets apply, then a classic protection rule's
@@ -1465,7 +1478,9 @@ const (
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
 // steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
 // DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// record keeps one DesignGate for each step a root registers, keyed by the issue and the step:
+// each step the deployment gates, and criteria where its architect registers the Verification
+// document beside a deployment that gates spec alone of the two (TreeSteps).
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1563,16 +1578,19 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
-	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
-	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
-	// reads exactly like one that never opened. Under the children-first rule a root stays at
-	// admitted while its children run, which is the state the later rule must tell from a root
-	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
-	// records.
+	// EverOpened records that the step has not held the tree's first release in this generation
+	// of the issue: a human approved the gate's document version at some point, whether or not
+	// the gate stands open now, or the step joined the tree after that release — a Verification
+	// document its architect registered as criteria once the spec had opened the tree
+	// (workflow's gateRegistered), which that release never waited on. Nothing else remembers
+	// it: classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion
+	// as both stand, and a changes request clears ApprovedVersion, so a gate that opened and was
+	// sent back reads exactly like one that never opened. Under the children-first rule a root
+	// stays at admitted while its children run, which is the state the later rule must tell from
+	// a root still waiting for its first approval. It lives on the gate row rather than on the
+	// issue because ClearTreeGeneration deletes the gate when a root is re-admitted, and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation
+	// whose release it records.
 	EverOpened bool
 }
 
@@ -1788,7 +1806,10 @@ type Carried[T any] struct {
 func Carry[T any](value T) Carried[T] { return Carried[T]{Value: value, Carried: true} }
 
 // DispatchReading is one reading of a Dispatch issue at Seq, the sequence Dispatch had run to when
-// it was read: the values it carries, and the claim it showed (ClaimSeq above zero).
+// it was read: the values it carries, and the claim it showed (ClaimSeq above zero). Applied says
+// the reading is an issue fact the daemon applies through its handlers — an issue event, or a view
+// intake let through — rather than a reading that decides nothing: a listing, the periodic turn's
+// re-read, or the release's read of the children it adopts.
 type DispatchReading struct {
 	Key, Project string
 	Seq          int64
@@ -1799,6 +1820,7 @@ type DispatchReading struct {
 	Rank         Carried[string]
 	ClaimedBy    string
 	ClaimSeq     int64
+	Applied      bool
 }
 
 // Store contains only transactional operations. The caller owns each transaction so intake can
@@ -1889,7 +1911,9 @@ type Store interface {
 	// and an older one changes nothing at all. A value the reading does not carry stays as the copy
 	// holds it, and on a new row takes its column's default at sequence 0, written by no reading.
 	// A parent of "" is Dispatch showing no parent, a value written like any other. The row's Seq
-	// becomes the highest sequence of any reading it took. The claim is fenced apart, on ClaimSeq,
+	// becomes the highest sequence of any reading it took. An applied reading (Applied) also raises
+	// the row's applied sequence to its own where that stands lower, whatever its values did, and
+	// any other reading leaves it (DispatchIssueApplied). The claim is fenced apart, on ClaimSeq,
 	// whatever the values did: a reading carrying a claim (ClaimSeq above zero) writes it only over
 	// an older claim, and one carrying none leaves the stored claim as it stands. A reading whose
 	// Seq is zero — a fact the daemon minted from its own record, which Dispatch never said — writes
@@ -1926,6 +1950,12 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchIssueApplied is the highest sequence of an issue fact of key the daemon applied (a
+	// reading PutDispatchIssue took as Applied), 0 when it applied none or the copy holds no row of
+	// key: blockers.Mirror writes every issue fact the daemon applies first, in the fact's own
+	// transaction, whether or not the daemon records the issue, and no listing or turn's re-read
+	// moves it.
+	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
@@ -1965,6 +1995,11 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in
+	// the tree, and whether it holds one. It reads the claim in any state, as SessionClaimsTree
+	// does: a suspended architect's session is still the session of its claim, and a write in
+	// Dispatch names that session.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
@@ -2112,8 +2147,9 @@ type Store interface {
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// same branch and pull request), its design gate with what its holders took of it
+	// (DesignTold), and each role's handoff, review rounds, verdict and summary. Each role keeps
+	// its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
@@ -2210,6 +2246,46 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience,
+	// as each audience took it, the credit of every confirmed delivery not yet final counted in
+	// (Postgres.TreeTold).
+	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
+	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
+	// this transaction, when issue holds no such row: the version work starts from
+	// (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
+	// RaiseTold raises issue's audience row past each of items, from its From (nil for none) to its
+	// To, as a final credit that reaches only a row that took its From, writing the row when there
+	// is none; a step items do not name keeps what the row holds (Postgres.RaiseTold).
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, items []NewsItem, at time.Time) error
+	// SettleOpening settles the gate's opening on issue's audience row as it reaches the audience
+	// now: owed, for the task that carries its news to lead with, or told by the opened role
+	// message; the row takes its next opening number either way (Postgres.SettleOpening).
+	SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// CloseOpenings settles the gate's close on every told row of tree's issues: none owes an
+	// opening, and each takes its next opening number (Postgres.CloseOpenings).
+	CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error
+	// FillTold writes each step of versions on issue's audience row where the row knows no
+	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
+	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
+	// has not begun to run at now (Postgres.DesignNewsPending).
+	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
+	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
+	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
+	// its row (Postgres.PutDesignChanges).
+	PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error
+	// DesignHistoryUnreadOf is the recorded unread review history of each of questions that has
+	// one, by question, as the rows stand; a row counts only while no reconcile of the tree that
+	// asks it is pending, which its caller weighs (DesignHistoryUnread).
+	DesignHistoryUnreadOf(ctx context.Context, tx pgx.Tx, questions []DesignHistoryQuestion) (map[DesignHistoryQuestion]DesignHistoryUnread, error)
+	// PutDesignHistoryUnread records that the review history could not answer one question,
+	// replacing the reason and time an earlier reconcile recorded of it.
+	PutDesignHistoryUnread(ctx context.Context, tx pgx.Tx, unread DesignHistoryUnread) error
+	// ClearDesignHistoryUnread deletes what the record holds of question's unread review history,
+	// once the history has answered it.
+	ClearDesignHistoryUnread(ctx context.Context, tx pgx.Tx, question DesignHistoryQuestion) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,
@@ -2662,14 +2738,28 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 // ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
 // tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
 // the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
-// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
-// issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
+// recorded issue (api's architectForIssue, register_plan, and rerun_child's childOfTree over the
+// tree it read, ArchitectOfTreeIn) and the giver of a stored plan at the issue's first step
+// (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
 // longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
 // architect costs the read of the tree.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return store.TreeIssues(ctx, tx, issue.Tree) })
+}
+
+// ArchitectOfTreeIn is ArchitectOfTree over members, the records of issue's tree that the caller
+// read already (Store.TreeIssues), so a request that judges more of the tree than its owner reads
+// the tree once (api's childOfTree).
+func ArchitectOfTreeIn(architect claim.Token, issue Issue, members []Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return members, nil })
+}
+
+// architectOfTree is the rule of ArchitectOfTree, with members the records of issue's tree, read
+// only where the architect is not the tree root's.
+func architectOfTree(architect claim.Token, issue Issue, members func() ([]Issue, error)) (bool, error) {
 	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
 	}
@@ -2684,11 +2774,11 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 	if architectOf(issue.Tree) {
 		return true, nil
 	}
-	members, err := store.TreeIssues(ctx, tx, issue.Tree)
+	tree, err := members()
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
+	return slices.ContainsFunc(tree, func(member Issue) bool { return architectOf(member.Key) }), nil
 }
 
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
@@ -2713,9 +2803,9 @@ const (
 // or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
 // human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
 // except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
-// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
-// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
-// architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
+// notice router ends the same walk at the same place (OwningArchitect), so the architect the
+// reviewer's phase-finished notice reaches is the one that may accept the issue. An architect this
+// answers true for is an architect of the issue's tree (ArchitectOfTree), since the
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.
 func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {

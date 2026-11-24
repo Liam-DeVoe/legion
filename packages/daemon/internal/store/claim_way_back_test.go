@@ -18,7 +18,7 @@ import (
 
 // planStepAgentMigrationFile is the migration whose header carries the way back of the release that
 // names each step's agent.
-const planStepAgentMigrationFile = "20261117213545_plan_step_agent.up.sql"
+const planStepAgentMigrationFile = "20261123203837_plan_step_agent.up.sql"
 
 // headerWayBackOf is the transaction the header of the embedded migration file carries between its
 // psql heredoc and the heredoc's terminator, with the comment marker and the opener's indent taken

@@ -44,7 +44,7 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 		t.Fatalf("slots = %#v, want none: the fixture seeds no row, and the pass promotes nothing that would take one for a running root", holders)
 	}
 	// The repair of a worker with no task reaches an issue standing in accepting, retro or
-	// merging, which holds no row of the cap's (record.PastReview, admit's resumeSlottedWorkers),
+	// merging, which holds no row of the cap's (record.InSlotlessPhase, admit's resumeSlottedWorkers),
 	// so this root's merger is started again. What a second promotion would write is the
 	// architect's own start, and that is what must not be here.
 	for _, started := range startsOf(t, pool, root) {

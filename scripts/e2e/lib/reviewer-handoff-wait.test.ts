@@ -6,8 +6,9 @@ import { scriptFunctions } from "./script-functions";
 // A review round ends on the reviewer's decision, whether or not the reviewer has completed (the
 // daemon's roundRejected and roundApproved, packages/daemon/internal/workflow/review.go), so the
 // issue can stand in its next phase before the reviewer's handoff record is in the daemon's state.
-// The record a round's completion names replaces the one the round before named, so until then the
-// daemon's state shows the earlier round's record. Stage 3's and Stage 4b's drivers run only live,
+// The move into reviewing empties the record the reviewer's role named before (the daemon's
+// clearHandoff, workflow/engine.go), so until the round's completion the state shows no reviewer
+// record. Stage 3's and Stage 4b's drivers run only live,
 // so this file holds their text to a bounded wait for a record other than the one the state showed
 // before the round (role_handoff_recorded under until_true, given that earlier record) on the line
 // before each check of it, and drives lib/workflow.sh's role_handoff_recorded against a stubbed

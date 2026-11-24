@@ -202,6 +202,7 @@ func (s *launchWriteRefused) PutClaim(ctx context.Context, c supervise.Claim) er
 // holds, marked as a resend of that entry, so whatever replaces the pod resumes the claim on that
 // work.
 func TestALaunchItsPodRefusesAfterItsStartRowFinishedQueuesAStartOfTheClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		deps func(*supervise.Deps)
@@ -306,6 +307,7 @@ func failingAnswers(answers **workflowRuntime, failing intake.Handler, log *slog
 // owed entry is queued. Failing for ever, the line is logged at each try, nothing reaches the
 // workflow's failure channel (failed), nothing is queued, and the daemon's stop ends the tries.
 func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
+	t.Parallel()
 	notStopped := func(t *testing.T, answers *workflowRuntime) {
 		t.Helper()
 		select {
@@ -370,6 +372,7 @@ func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T)
 // owed entry). The interleaving is driven here: the row's attempt runs (execute) and its finish
 // (settle) waits until the wake's turn has been refused and its fact has committed.
 func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnds(t *testing.T) {
+	t.Parallel()
 	r := newPodRefusalRig(t, engineAnswers, pacedTurn)
 	row := r.refusedWhileItsRowFinishes()
 	r.runner.settle(context.Background(), row, nil)
@@ -387,6 +390,7 @@ func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnd
 // phase, which the outbox finishes at the stopped step's fence, whose end would ask again, at the
 // database's speed, one row, one fact and one log line a turn, telling nobody.
 func TestAStartRowThatEndedAtAFenceQueuesARefusedClaimNoStartOfItsStoppedTask(t *testing.T) {
+	t.Parallel()
 	r := newPodRefusalRig(t, engineAnswers, nil)
 	r.refuseOnPod1()
 	if err := r.machine.Handle(context.Background(), supervise.RequestRuleResume{Claim: r.token, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
@@ -575,6 +579,7 @@ const refusedStartEndedLine = "apply the end of a start row of a claim its pod r
 // gets exactly one start. Failing for ever, the line is logged at each try; the backoff doubles up
 // to an hour (refusalRetryMost), so an operator sees it hourly. The stop ends the tries.
 func TestARefusedStartEndedTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
+	t.Parallel()
 	t.Run("failing once, then applied", func(t *testing.T) {
 		r := newPodRefusalRig(t, engineAnswers, pacedTurn)
 		failing := failingEnded(1)

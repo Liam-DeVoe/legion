@@ -1,13 +1,14 @@
 package workflow
 
 // A merge forward is asked at step as at the phases of Legion's own workers that read the head: an
-// issue whose task runs a step of a role the deployment defines, with its head confirmed in
-// conflict with its base, keeps its step, the implementer is asked to merge the base forward, and
-// the role of that step is told to hold (record.MergeForwardPhases, record.MergeForwardReaches);
-// the landing of the merge tells that role it landed. Its completion at the head the merge
-// replaced is then refused HANDOFF_HEAD_MERGED_FORWARD, naming the head the merge left, as a
-// tester's is (mergedForwardRefusal), so no step passes on code the issue no longer stands on. The
-// control is the same task's tester step, whose tester is told and refused the same way.
+// issue whose task runs a step of a role the deployment defines after the implementer, with its
+// head confirmed in conflict with its base, keeps its step, the implementer is asked to merge the
+// base forward, and the role of that step is told to hold (classify.MergeForwardStands,
+// mergeForwardWorker, record.MergeForwardReaches); the landing of the merge tells that role it
+// landed. Its completion at the head the merge replaced is then refused
+// HANDOFF_HEAD_MERGED_FORWARD, naming the head the merge left, as a tester's is
+// (mergedForwardRefusal), so no step passes on code the issue no longer stands on. The control is
+// the same task's tester step, whose tester is told and refused the same way.
 
 import (
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -74,6 +76,81 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 			}
 			if got := issuePhase(t, pool); got != tc.at {
 				t.Fatalf("after the refused completion the issue is in %s, want it still in %s", got, tc.at)
+			}
+		})
+	}
+}
+
+// A merge forward is asked at a step of a role the deployment defines only where that step stands
+// after the implementer on its task's line, as at a planner's step: before the implementer the
+// branch holds no implementation to merge the base into. The task `checker implementer linter`
+// runs two steps at step, the checker's before the implementer and the linter's after it, so its
+// line reads step at place 1 and at place 3, and only the place the task stands at tells them
+// apart (classify.MergeForwardStands and classify.MergeStateReadOwed, which the workflow hands
+// that place). At the checker's place 1 a confirmed conflict asks nothing and tells nobody, and a
+// push to the head or to the base asks no read of GitHub's merge state; at the linter's place 3 the
+// conflict asks the implementer and tells the linter to hold, the role of the running step
+// (mergeForwardWorker), and each push asks the read. A rule that reads where the issue stands from
+// its phase finds a step after the implementer on that line at either place, and fails place 1; a
+// worker read that names only Legion's own workers tells the linter nothing, and fails place 3.
+func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name  string
+		at    int
+		role  claim.Role
+		asked bool
+	}{
+		{name: "the checker's place 1, before the implementer", at: 1, role: "checker"},
+		{name: "the linter's place 3, after the implementer", at: 3, role: "linter", asked: true},
+	} {
+		seed := func(t *testing.T) *pgxpool.Pool {
+			t.Helper()
+			pool := seedConflictIssue(t, phase.Step, "in_progress", settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, "checker", "implementer", "linter")
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning)
+			})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.role, Claim: claim.Token(string(tc.role) + "-claim"), Entry: 1})
+			return pool
+		}
+		reads := []string{}
+		if tc.asked {
+			reads = []string{"LEGION-208"}
+		}
+
+		t.Run(tc.name+", a confirmed conflict", func(t *testing.T) {
+			pool := seed(t)
+			confirmsConflict(t, pool, requiresCI)
+			if got := issuePhase(t, pool); got != phase.Step {
+				t.Fatalf("after the confirmed conflict the issue is in %s, want it still at step", got)
+			}
+			if !tc.asked {
+				if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked != nil {
+					t.Fatalf("the conflict at place %d asked a merge forward %+v, want none before the implementer", tc.at, asked)
+				}
+				if told := toldWho(mergeForwardMessages(t, pool)); len(told) != 0 {
+					t.Fatalf("the conflict at place %d queued %v, want no merge-forward message", tc.at, told)
+				}
+				return
+			}
+			askedOnce(t, pool, phase.Step, "in_progress", record.ConflictCheckNotGreen, tc.role)
+		})
+		t.Run(tc.name+", a head push", func(t *testing.T) {
+			pool := seed(t)
+			asked := []string{}
+			applyRefusingNothing(t, pool, readingEngine(&asked), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", Base: "main", HeadSHA: headTwo, Before: conflictHead, Sender: "legion-implementer[bot]"})
+			if !reflect.DeepEqual(asked, reads) {
+				t.Fatalf("the head push at place %d asked reads of %v, want %v", tc.at, asked, reads)
+			}
+		})
+		t.Run(tc.name+", a base push", func(t *testing.T) {
+			pool := seed(t)
+			asked := []string{}
+			applyRefusingNothing(t, pool, readingEngine(&asked), basePushOntoMain)
+			if !reflect.DeepEqual(asked, reads) {
+				t.Fatalf("the base push at place %d asked reads of %v, want %v", tc.at, asked, reads)
 			}
 		})
 	}

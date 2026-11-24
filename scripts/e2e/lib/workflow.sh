@@ -1078,12 +1078,14 @@ role_handoff_record() {
 }
 # role_handoff_recorded ISSUE ROLE [BEFORE]: ROLE's completion of its current file-backed phase has
 # named a Dispatch handoff record (role_handoff_record prints one) other than BEFORE, the
-# `<id> <version>` role_handoff_record printed before the round began. A review round ends on the
-# reviewer's decision, whether or not the reviewer has completed (the daemon's roundRejected and
-# roundApproved, workflow/review.go), so a check of the reviewer's record first waits for it with
-# this, bounded (until_true), rather than reading it at the move the decision made; and until the
-# round's completion names its record, the daemon's state shows the record the round before named,
-# which BEFORE is, so the wait is for the record to change.
+# `<id> <version>` role_handoff_record printed before the round's review was asked for. A review
+# round ends on the reviewer's decision, whether or not the reviewer has completed (the daemon's
+# roundRejected and roundApproved, workflow/review.go), so a check of the reviewer's record first
+# waits for it with this, bounded (until_true), rather than reading it at the move the decision
+# made. The transition that starts a role on a phase empties the record the role named for its
+# previous phase (workflow's clearHandoff, engine.go), so from the move into reviewing until the
+# round's completion the state shows no reviewer record, and a BEFORE read in reviewing is empty;
+# a BEFORE read before that move is the earlier round's record, which the wait does not take.
 role_handoff_recorded() {
   local now
   now=$(role_handoff_record "$1" "$2")

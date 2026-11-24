@@ -321,7 +321,7 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
-    "A move to `step` goes to the one earlier step that runs as `step`; with two, `return_to` names the one, by its place in the task. ",
+    "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -362,7 +362,7 @@ export function legionToolDescription(host: {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
-    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
@@ -370,8 +370,8 @@ export function legionToolDescription(host: {
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
     "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-    "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. Only a completion with the verdict " +
-    "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+    "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
+    "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
     "(RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
@@ -399,7 +399,8 @@ export function legionToolDescription(host: {
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
