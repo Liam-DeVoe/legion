@@ -241,13 +241,23 @@ func BreaksPod(reasons string) bool { return Breaks(reasons) }
 // pod found before the replacement (Work), or why no read could be made (Err). The daemon records
 // it before the replacement (LaunchTakes) and tells the issue's architect what such a replacement
 // took once it is made (LaunchTook).
+//
+// Operation is the replacement's own identity, which the runtime makes for each replacement and
+// hands in both calls: the daemon's record of it is keyed by it, never by the pod, so no later
+// replacement of the same pod writes over it (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). Takes
+// is what the act takes, and Target the uid of what it takes (RecordedAct): the pod's uid for an
+// act that takes the pod, the Sandbox's uid for one that deletes the Sandbox and the kept volume it
+// owns (GPT-6.1 Sol's point 4).
 type TakenPod struct {
-	Claim  claim.Token
-	Issue  string
-	PodUID string
-	Why    string
-	Work   WorkspaceWork
-	Err    error
+	Operation string
+	Claim     claim.Token
+	Issue     string
+	PodUID    string
+	Why       string
+	Takes     Takes
+	Target    string
+	Work      WorkspaceWork
+	Err       error
 }
 
 // Tells is whether the replacement may have taken work that origin does not hold: the read found

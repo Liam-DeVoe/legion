@@ -40,8 +40,9 @@ func TestALaunchsOwnReplacementTellsTheArchitectWhatItTook(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 			holder := &launchRounds{}
 			holder.bind(rig.s.roundPodEndsAtLaunch, rig.s.recordLaunchTakes, rig.s.tellLaunchTook)
-			taken := runtime.TakenPod{Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-				Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod", Work: tc.work, Err: tc.err}
+			taken := runtime.TakenPod{Operation: "launch-op-" + tc.name, Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+				Why:   "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
+				Takes: runtime.TakesPod, Target: podUpdatePod, Work: tc.work, Err: tc.err}
 			if err := holder.takes(rig.ctx, taken); err != nil {
 				t.Fatalf("the record of what the launch takes: %v", err)
 			}

@@ -84,8 +84,9 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 		t.Parallel()
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 		lift := rig.refuseWorkspaceTaken()
-		rig.s.tellLaunchTook(rig.ctx, runtime.TakenPod{Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-			Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod", Work: roundUnpushed})
+		rig.s.tellLaunchTook(rig.ctx, runtime.TakenPod{Operation: "launch-op-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+			Why:   "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
+			Takes: runtime.TakesPod, Target: podUpdatePod, Work: roundUnpushed})
 		if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
 			t.Fatalf("the store refused every workspace-taken notice, yet the outbox holds %+v", told)
 		}
