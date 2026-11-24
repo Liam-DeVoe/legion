@@ -25,3 +25,9 @@ body: |-
   close their block or stand as one of the list's own lines, and each block's tag also steps past
   the tags in everything before it in the list. An issue's title or a token's name stays on its
   line, because each run of white space in it, a new line included, prints as one space.
+  The open-asks list (`formatOpenAsksSummary`, which claude-envoy's SessionStart hooks print into
+  the session's context) keeps each ask on its row: each run of white space in an issue's title, a
+  document's name or a question prints as one space. So does each run in a picture's name and in
+  the reason a picture is not shown, on the `Pictures:` lines Pi appends after a delivered card.
+  `cutDrawn` cuts a card to its first N characters with no block left open: a block the cut falls
+  in closes after the words that fit, and its `rest` counts the characters cut off.

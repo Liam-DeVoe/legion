@@ -4,7 +4,7 @@
 // words too, so a block's tag is chosen against them as well as against the words of every block.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { inFront, splitWordsBlocks, TextInFront, wordsBlocks } from "../words-block";
+import { cutDrawn, inFront, splitWordsBlocks, TextInFront, wordsBlocks } from "../words-block";
 
 /** A card's fields: TOON under `envoy:`. */
 const fields = "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered";
@@ -40,6 +40,37 @@ describe("wordsBlocks", () => {
     expect(() =>
       splitWordsBlocks(`envoy:\n  title: "${forging}"\n<answer>\nYes.\n</answer>`)
     ).toThrow("block <answer> has a tag the rule does not give it: <answer-1>");
+  });
+});
+
+describe("cutDrawn", () => {
+  const text = `${fields}\n${wordsBlocks(fields, [
+    { name: "answer", words: { text: "Yes.", by: "user:bob" } },
+    { name: "answer", words: { text: "0123456789", by: "user:ann", rest: 5, more: true } },
+    { name: "note", words: { text: "Later." } },
+  ])}`;
+  const words = text.indexOf("\n0123456789\n") + 1;
+
+  test("a cut inside a block's words closes it after the words that fit, its rest counting those cut off", () => {
+    expect(cutDrawn(text, words + 4)).toBe(
+      `${fields}\n<answer by="user:bob">\nYes.\n</answer>\n<answer-1 by="user:ann" rest="11" more="true">\n0123\n</answer-1>`
+    );
+    // A cut in the opening line keeps none of the words, and the block still closes.
+    expect(cutDrawn(text, words - 2)).toEndWith(
+      '\n<answer-1 by="user:ann" rest="15" more="true">\n\n</answer-1>'
+    );
+    // A cut in the closing tag keeps the block whole.
+    expect(cutDrawn(text, words + 12)).toBe(
+      text.slice(0, words + "0123456789\n</answer-1>".length)
+    );
+  });
+
+  test("a cut outside every block is the text's start, and a text that fits is itself", () => {
+    expect(cutDrawn(text, fields.length - 3)).toBe(fields.slice(0, -3));
+    const first = text.indexOf("</answer>") + "</answer>".length;
+    expect(cutDrawn(text, first)).toBe(text.slice(0, first));
+    expect(cutDrawn(text, text.length)).toBe(text);
+    expect(cutDrawn("one line with no block", 8)).toBe("one line");
   });
 });
 

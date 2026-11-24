@@ -7,3 +7,8 @@ body: |-
   for that text, so a message that holds a person's label is not read as a person's message. Each
   of Envoy's notices names on its kind line the tool whose description gives its step (`notice:
   message not shown (envoy_inbox)`).
+  A card over 96 KiB that `codex queue` takes as its start and a line naming the file holding all
+  of it is cut with no block left open (`cutDrawn`), so its words, a copy of that line among them,
+  stay inside their block and the line after the card is the plugin's. The SessionStart open-asks
+  summary keeps each ask on one line, whatever new lines an issue's title, a document's name or a
+  question holds.

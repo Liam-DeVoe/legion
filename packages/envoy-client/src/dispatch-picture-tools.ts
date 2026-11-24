@@ -273,7 +273,9 @@ export interface PicturesRead {
 }
 
 /** The line naming the picture a result shows as its `index`th image: the one shape
- *  `shownPictureAddresses` reads back from a transcript. */
+ *  `shownPictureAddresses` reads back from a transcript. The name is its uploader's words, so each
+ *  run of white space in it, a new line included, is one space: a line it started could stand as
+ *  one of the `Pictures:` lines, which Pi appends after a delivered card as its own. */
 export function shownPictureLine(
   index: number,
   address: string,
@@ -281,7 +283,7 @@ export function shownPictureLine(
   mimeType: string,
   bytes: number
 ): string {
-  return `- image ${index}: ${address} (${name}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`;
+  return `- image ${index}: ${address} (${name.replace(/\s+/g, " ")}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`;
 }
 
 // `shownPictureLine` as it starts a line, its address a versioned Dispatch address.
@@ -385,7 +387,9 @@ export function forgetShownPictures(sessionId: string): void {
  * it. Dispatch's stated size and type rule a picture out before its bytes are fetched. An address
  * in `shown`, the pictures this session was already shown, is named as shown earlier, read
  * nothing and counts toward neither limit. `shown` is only read: the result's `shown` names the
- * pictures shown here, which the caller adds once the model has them.
+ * pictures shown here, which the caller adds once the model has them. Each picture is one line:
+ * a reason names the upload by its uploader's name, or quotes Dispatch's failure, so each run of
+ * white space in it, a new line included, is one space (as in `shownPictureLine`).
  */
 export async function readPictures(
   client: DispatchClient,
@@ -400,7 +404,8 @@ export async function readPictures(
   let shownBytes = 0;
   const overBudget = `past this read's ${PICTURES_SHOWN_MAX_BYTES / 1024 / 1024} MiB of pictures; dispatch doc-read shows it`;
   for (const address of addresses) {
-    const skip = (reason: string) => lines.push(`- not shown: ${address} (${reason})`);
+    const skip = (reason: string) =>
+      lines.push(`- not shown: ${address} (${reason.replace(/\s+/g, " ")})`);
     if (shown?.has(address)) {
       skip("shown earlier this session; dispatch doc-read shows it again");
       continue;
