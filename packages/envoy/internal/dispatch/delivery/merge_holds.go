@@ -36,6 +36,12 @@ type MergedPullRequest struct {
 	AttributionRule int
 }
 
+// MergeTime is pull's row as a read orders merged pull requests by when each merged
+// (api's fillMergeTimes), as AttributedHead.MergeTime is a head's.
+func (pull MergedPullRequest) MergeTime() MergeTime {
+	return MergeTime{Repo: pull.Repo, Number: pull.Number, MergedAt: pull.MergedAt, AttributionRule: pull.AttributionRule}
+}
+
 // mergedColumns are the columns every read of merged rows here takes, in readMerged's order.
 const mergedColumns = `repo, number, base_ref, head_sha, merge_commit_sha, merged_at, attribution_rule`
 
