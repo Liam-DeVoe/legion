@@ -377,6 +377,9 @@ daemon_go_tests:
   # target .github/go-release-targets.json lists.
   - '.github/workflows/release.yaml'
   - '.github/go-release-targets.json'
+  - '.github/scripts/pg-connection-ceiling.sh'
+  - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+  - 'packages/envoy/internal/dispatch/testlimits/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
