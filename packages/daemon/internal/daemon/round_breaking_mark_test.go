@@ -114,3 +114,40 @@ func TestAKeptPodGetsARoundOverADriftThatBreaksIt(t *testing.T) {
 	rig.answerRoundOver([]string{imageDrift, podUpdateAccountDrift}, roles...)
 	rig.wantReplacedAndTold("of the kept pod once its account drifted")
 }
+
+// Spec v23 (INFRA-3118's architect, R7): a round keeps the reasons it recorded at its open
+// (dispatch://INFRA-2981 R9), so a round open when the account drifts is still a round over the
+// drift it was opened for. The round opens over a drift of the image and asks its roles; the
+// account then drifts, and the roles answer. That round's read finds the change in the working
+// copy and keeps the pod. The keep holds back no round over the account's drift: the next sweep
+// reads that drift, opens a round over it, and that round replaces the pod after its read and
+// tells the architect what it took.
+func TestARoundOverTheAccountFollowsTheKeepOfARoundOpenWhenTheAccountDrifted(t *testing.T) {
+	t.Parallel()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundChanged)
+	rig.drifts(imageDrift)
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.drifts(imageDrift, podUpdateAccountDrift)
+	for _, role := range roles {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateReasons != imageDrift {
+		t.Fatalf("the round records the reasons %q, want %q, which it was opened over: this case needs a round open before the account drifted", c.UpdateReasons, imageDrift)
+	}
+	rig.roundEndsKept("over the drift of the image it was opened for", roles...)
+	if reason, _ := rig.keptReason(); reason != pods.DeclineUnpushedWork {
+		t.Fatalf("the decline row reads %q, want %s: the round over the image keeps the pod", reason, pods.DeclineUnpushedWork)
+	}
+
+	rig.answerRoundOver([]string{imageDrift, podUpdateAccountDrift}, roles...)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateReasons != "" && !strings.HasPrefix(c.UpdateReasons, runtime.BreakingDrift) {
+		t.Fatalf("the second round records the reasons %q, want them to open on the account's", c.UpdateReasons)
+	}
+	rig.wantReplacedAndTold("of the kept pod by the round over its account")
+}
