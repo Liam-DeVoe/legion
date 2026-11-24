@@ -1331,7 +1331,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// is the sign-off's own move (accept), and its fail returns the work as a review's request
 		// for changes does, to the step its returnTo names or to the one its plan reads.
 		return intake.Result{}, e.endByVerdict(ctx, tx, *issue, row, pr, fact, returnTo, TriggerReviewRejected, func() error {
-			return e.accept(ctx, tx, *issue)
+			return e.accept(ctx, tx, *issue, pr)
 		})
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
@@ -2735,7 +2735,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err := e.recordOwnersReview(ctx, tx, *issue, pr); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.accept(ctx, tx, *issue)
+	return intake.Result{}, e.accept(ctx, tx, *issue, pr)
 }
 
 // signOffRefusal is why issue, standing in accepting, is not accepted now, nil where it is: an
@@ -2752,12 +2752,12 @@ func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 }
 
 // accept is the move of an accepted step, issue standing in accepting: on to the task's next step,
-// or to the retro, told the report of the step the acceptance accepted (acceptedRole) with the
-// pull request where it has one, and told no report where no step stands before the acceptance,
-// since none ran.
+// or to the retro, told the report of the step the acceptance accepted (acceptedRole) with pr, the
+// pull request its caller read (nil where it has none), and told no report where no step stands
+// before the acceptance, since none ran.
 // The owner's sign-off and the fresh agent of acceptance's pass both move by it, past
 // signOffRefusal.
-func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	accepted, err := e.acceptedRole(ctx, tx, issue)
 	if err != nil {
 		return err
@@ -2767,10 +2767,6 @@ func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) erro
 		if report, err = e.phaseRow(ctx, tx, issue, accepted); err != nil {
 			return err
 		}
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return err
 	}
 	return e.transition(ctx, tx, issue, TriggerSignOff, record.TaskPlace{}, report, pr, "")
 }

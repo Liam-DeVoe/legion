@@ -506,22 +506,19 @@ func (e *Engine) startOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Is
 // tellOwner queues the one notice owner-step of step, a step or a retro the owner of issue's task
 // does (standing.owner), to the owner (record.OwnerStepNotice): the step's role ("" for the retro,
 // which is no step of the plan), the phase the issue stands in, task, the text the owner is told
-// to work, and the run it tells — the step's place and the count of starts that began its run
-// (record.Notice.OwnerStep), which the daemon's executor holds the notice to, so a notice of a run
-// that ended is never delivered. It is the one writer of the notice. The start of every run of the
-// owner's tells through it (startStep), and so do the retry of the owner's step, which starts no
-// run (restart), and the telling again of a step no turn heard (tellOwedStep).
-func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, task string) error {
+// to work, and the run it tells — the step's place and starts, the count of starts that began its
+// run, as its caller read it (record.Notice.OwnerStep) — which the daemon's executor holds the
+// notice to, so a notice of a run that ended is never delivered. It is the one writer of the
+// notice. The start of every run of the owner's tells through it (startStep), and so do the retry
+// of the owner's step, which starts no run (restart), and the telling again of a step no turn
+// heard (tellOwedStep).
+func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, starts int64, task string) error {
 	role := claim.Role(step.role)
 	if step.place.Kind == record.PlaceRetro {
 		role = ""
 	}
-	run, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
-	if err != nil {
-		return err
-	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: role, Phase: issue.Phase, Reason: task,
-		OwnerStep: new(stepRun(step.place, run.Starts))})
+		OwnerStep: new(stepRun(step.place, starts))})
 }
 
 // stepRun is the run of place begun by its count of starts, as an owner-step notice names it
@@ -678,7 +675,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		if pending, err := e.store.OwnerStepPending(ctx, tx, issue.Key, stepRun(step.place, run.Starts)); err != nil || pending {
 			return err
 		}
-		return e.tellOwner(ctx, tx, issue, step, told(at))
+		return e.tellOwner(ctx, tx, issue, step, run.Starts, told(at))
 	}
 	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {

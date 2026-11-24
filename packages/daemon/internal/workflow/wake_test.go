@@ -509,7 +509,7 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 // phase reminder armed in it and which role a release arms a backstop for — and it answers none
 // where the architect works the issue's place and none for a phase no role works (the owner's own
 // backstop at its own place is TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep's). By the phase
-// alone (OpenRoleAt with no role of a plan), as for an issue with no plan rows, admitted and
+// alone (OpenRoleOf of an issue with no role of a plan), as for an issue with no plan rows, admitted and
 // accepting are the two the architect works; with plan rows a step or a retro the owner does is
 // the architect's too, and a step acceptance with no key is the fresh agent's (record.Issue.RoleAt).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
@@ -526,8 +526,8 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "done", p: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenRoleAt(tc.p, "", ""); got != tc.want {
-				t.Fatalf("OpenRoleAt(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRoleOf(record.Issue{Phase: tc.p}); got != tc.want {
+				t.Fatalf("OpenRoleOf(%s) = %q, want %q", tc.p, got, tc.want)
 			}
 		})
 	}

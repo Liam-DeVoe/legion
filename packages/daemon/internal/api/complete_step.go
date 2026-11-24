@@ -175,7 +175,7 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	completion := req.completion()
-	if refusal := stepReportRefusal(at.role, req.Step == 0, true, at.pr != nil, req.Verdict, req.Commit, issue.Key); refusal != nil {
+	if refusal := stepReportRefusal(at.role, req.Step == 0, true, req.Verdict, req.Commit, issue.Key); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}

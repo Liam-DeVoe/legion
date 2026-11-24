@@ -72,19 +72,14 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 	// place's worker (record.PlaceWorker), the plan's step's role at a step and the retro's role at
 	// the retro, at the step's own place of the task.
 	worker, _ := w.workerAt(w.Place)
-	role := worker.Role
 	var task string
-	for _, row := range rows {
-		if row.Role == role && row.StepTask == step.place.Task && row.StepPlace == step.place.Place {
-			task = row.EntryTask
-		}
+	if row, found := record.StepRowOf(rows, worker.Role, step.place.Task, step.place.Place); found == record.RowOfTheStep {
+		task = row.EntryTask
 	}
 	if task == "" {
-		at, err := e.standingPart(ctx, tx, issue, w)
-		if err != nil {
+		if task, err = e.resumeTaskOn(ctx, tx, issue, w); err != nil {
 			return owedStep{}, false, err
 		}
-		task = resumeText(issue, at)
 	}
 	return owedStep{step: step, run: runs[open], task: task}, true, nil
 }
@@ -132,7 +127,7 @@ func toldNow(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Is
 // through the one writer of the notice (tellOwner), and logs it as the fact commits. by names the
 // reader that found the step owed, for the log line.
 func (e *Engine) tellOwedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, by string) error {
-	if err := e.tellOwner(ctx, tx, issue, owed.step, owed.task); err != nil {
+	if err := e.tellOwner(ctx, tx, issue, owed.step, owed.run.Starts, owed.task); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: the owner of a step that started and has not ended is told it again",

@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // ownerStepAgain moves key's work, back at step 1 after the owner's step returned it, on to the
@@ -21,10 +22,6 @@ func ownerStepAgain(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, newHe
 	applyFacts(t, pool, engine)("push-"+newHead, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + key, HeadSHA: newHead})
 	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 }
-
-// reviewedLine is the sentence a later run of a review step is told the commit its run before
-// read in (reviewround.CommitLabel).
-func reviewedLine(sha string) string { return " Last reviewed commit: " + sha + "." }
 
 // A review step the owner does is told, at its next run, the commit its run before read, as a
 // reviewer's later round is told the commit the round before it read: for `reviewer:owner`, the
@@ -50,11 +47,11 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		if len(told) != 2 {
 			t.Fatalf("the owner was told %+v, want two owner-steps of step 2", told)
 		}
-		if !strings.Contains(told[0].Reason, reviewedLine("none")) {
-			t.Fatalf("the first owner-step = %q, want it to name no commit read (%q)", told[0].Reason, reviewedLine("none"))
+		if !strings.Contains(told[0].Reason, reviewedPartOf("none")) {
+			t.Fatalf("the first owner-step = %q, want it to name no commit read (%q)", told[0].Reason, reviewedPartOf("none"))
 		}
-		if !strings.Contains(told[1].Reason, reviewedLine("head")) {
-			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedLine("head"))
+		if !strings.Contains(told[1].Reason, reviewedPartOf("head")) {
+			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedPartOf("head"))
 		}
 	})
 
@@ -73,11 +70,11 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		if len(told) != 2 || told[1].Role != acceptanceRole {
 			t.Fatalf("the owner was told %+v, want two owner-steps of the acceptance", told)
 		}
-		if strings.Contains(told[0].Reason, "Last reviewed commit") {
+		if strings.Contains(told[0].Reason, reviewround.CommitLabel) {
 			t.Fatalf("the first owner-step = %q, want no commit read named", told[0].Reason)
 		}
-		if !strings.Contains(told[1].Reason, reviewedLine("head")) {
-			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedLine("head"))
+		if !strings.Contains(told[1].Reason, reviewedPartOf("head")) {
+			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedPartOf("head"))
 		}
 	})
 
@@ -100,7 +97,7 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 			t.Fatalf("the owner was told %+v, want two owner-steps of the tester's step", told)
 		}
 		for _, notice := range told {
-			if strings.Contains(notice.Reason, "Last reviewed commit") {
+			if strings.Contains(notice.Reason, reviewround.CommitLabel) {
 				t.Fatalf("an owner-step of the tester's step = %q, want no commit read named: the step reviews nothing", notice.Reason)
 			}
 		}

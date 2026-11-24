@@ -133,7 +133,8 @@ func (s *supervision) ownersSilent(ctx context.Context, owners []supervise.Claim
 		if !open {
 			continue
 		}
-		last, since := c.Step.LastStep(), c.Step.LastStep()
+		last := c.Step.LastStep()
+		since := last
 		if run.StartedAt.After(since) {
 			since = run.StartedAt
 		}
