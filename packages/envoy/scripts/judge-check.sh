@@ -1788,22 +1788,26 @@ k43_guidance() { # <stack name> <store suffix> <judge seconds> <guidance>
 }
 
 # k43_case asks for K1 and K2 together through the exec form, with <reason>, and answers in K43
-# what came of it: the exit status, whether the command ran, the request, its judged row's
-# verdict and calls, how many calls the stand got, and what each of those calls held.
+# what came of it: the exit status, whether the command ran, whether a request of its own was
+# written (a live grant of both keys would be reused and ask no judge), the request, its judged
+# row's verdict and calls, how many calls the stand got, and what each of those calls held. It
+# ends any grant the run made, so the next case asks afresh.
 declare -A K43
 k43_case() { # <reason>
-	local mark id
+	local mark id before grant
 	mark="$(records_count model)"
+	before="$(psql_stack -c "select coalesce(max(created_at)::text, '') from requests where record_id is not null")"
 	agent-secrets "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET" --ttl 10m --reason "$1" --wait 30s -- \
 		sh -c 'echo the-child-ran' >"$WORK_DIR/k43.out" 2>"$WORK_DIR/k43.err"
 	K43[exit]=$?
 	K43[ran]="$(grep -c 'the-child-ran' "$WORK_DIR/k43.out" || true)"
 	K43[text]="$(cat "$WORK_DIR/k43.out" "$WORK_DIR/k43.err" | tr '\n' ' ')"
-	id="$(psql_stack -c "select id from requests where record_id is not null order by created_at desc limit 1")"
+	id="$(psql_stack -c "select id from requests where record_id is not null and created_at::text > '$before' order by created_at desc limit 1")"
 	K43[id]="$id"
-	K43[rows]="$(judged_rows "$id")"
-	K43[verdict]="$(judged_field "$id" .verdict)"
-	K43[calls]="$(printf '%s' "$(judged_detail "$id")" | jq -r '[.calls[]? | .key + ":" + .verdict] | sort | join(",")')"
+	K43[new]="$([ -n "$id" ] && echo yes || echo no)"
+	K43[rows]="$( [ -n "$id" ] && judged_rows "$id" || echo 0)"
+	K43[verdict]="$( [ -n "$id" ] && judged_field "$id" .verdict)"
+	K43[calls]="$( [ -n "$id" ] && printf '%s' "$(judged_detail "$id")" | jq -r '[.calls[]? | .key + ":" + .verdict] | sort | join(",")')"
 	K43[asked]="$(($(records_count model) - mark))"
 	K43[held]="$(records model | jq -r --arg ka "$AIRLOCK_JUDGED_SECRET" --arg kb "$AIRLOCK_SECOND_JUDGED_SECRET" \
 		--arg ga "$K43_G1" --arg gb "$K43_G2" --argjson n "${K43[asked]}" '
@@ -1812,6 +1816,9 @@ k43_case() { # <reason>
 		map(if (contains($ka) and contains($ga) and (contains($gb) | not)) and (contains("\\\"name\\\":\\\"" + $kb) | not) then "K1 alone"
 			elif (contains($kb) and contains($gb) and (contains($ga) | not)) and (contains("\\\"name\\\":\\\"" + $ka) | not) then "K2 alone"
 			else "both" end) | sort | join(",") end')"
+	for grant in $(psql_stack -c "select id from grants where enrollment_id='$AIRLOCK_ENROLLMENT' and revoked_at is null"); do
+		agent-secrets revoke "$grant" >/dev/null 2>&1 || true
+	done
 	cancel_pending
 }
 
@@ -1868,17 +1875,17 @@ check_k43() {
 	EXTRA_BROKER_BIN=""
 	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 	k43_case "$reason"
-	local c_exit="${K43[exit]}" c_ran="${K43[ran]}" c_verdict="${K43[verdict]}" c_asked="${K43[asked]}" c_held="${K43[held]}"
+	local c_exit="${K43[exit]}" c_ran="${K43[ran]}" c_new="${K43[new]}" c_verdict="${K43[verdict]}" c_asked="${K43[asked]}" c_held="${K43[held]}"
 	front_backends_stack
-	control "the control is a broker built from a copy of this module's source under $tree with one change: consider asks the model once with every key's guidance in place of askEachKey. On the stack's own database, store and identities, with both fronts pointed at it and the keys retagged (exit $retagged), the request for both keys exited $c_exit, the command ran $c_ran time(s), the row says '$c_verdict', and the stand got $c_asked call(s) holding [$c_held]"
-	assert "$([ "$retagged" = 0 ] && [ "$c_exit" = 0 ] && [ "$c_ran" = 1 ] && [ "$c_verdict" = granted ] && [ "$c_asked" = 1 ] && [ "$c_held" = both ] && echo 0 || echo 1)" \
+	control "the control is a broker built from a copy of this module's source under $tree with one change: consider asks the model once with every key's guidance in place of askEachKey. On the stack's own database, store and identities, with both fronts pointed at it and the keys retagged (exit $retagged), the request for both keys (a new request: $c_new) exited $c_exit, the command ran $c_ran time(s), the row says '$c_verdict', and the stand got $c_asked call(s) holding [$c_held]; the grant it made was then ended, so the run below asks afresh"
+	assert "$([ "$retagged" = 0 ] && [ "$c_new" = yes ] && [ "$c_exit" = 0 ] && [ "$c_ran" = 1 ] && [ "$c_verdict" = granted ] && [ "$c_asked" = 1 ] && [ "$c_held" = both ] && echo 0 || echo 1)" \
 		"negative control: a judge that puts every key's guidance into one model call grants the request: the stand-in reads K1's guidance in K2's decision" \
 		"exit $c_exit, ran $c_ran, verdict '$c_verdict', $c_asked call(s) holding [$c_held]"
 
 	# --- The stack's own brokers. ---
 	k43_case "$reason"
 	observe "K1 and K2 together, at the stack's own brokers: exit ${K43[exit]}, the command ran ${K43[ran]} time(s), '${K43[text]}'; ${K43[rows]} judged row(s), verdict '${K43[verdict]}', calls [${K43[calls]}]; the stand got ${K43[asked]} call(s) holding [${K43[held]}] — $(judged_summary "${K43[id]}")"
-	assert "$([ "${K43[asked]}" = 2 ] && [ "${K43[held]}" = "K1 alone,K2 alone" ] && echo 0 || echo 1)" \
+	assert "$([ "${K43[new]}" = yes ] && [ "${K43[asked]}" = 2 ] && [ "${K43[held]}" = "K1 alone,K2 alone" ] && echo 0 || echo 1)" \
 		"the stand-in gets two calls, one holding K1 and its guidance alone and the other K2 and its guidance alone" \
 		"${K43[asked]} call(s) holding [${K43[held]}]"
 	assert "$([ "${K43[exit]}" = 77 ] && [ "${K43[ran]}" = 0 ] && contains "$AIRLOCK_SECOND_JUDGED_SECRET" "${K43[text]}" && echo 0 || echo 1)" \
