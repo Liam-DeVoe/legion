@@ -9500,3 +9500,154 @@ test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly i
   // Enter takes off.
   expect(cut, cut.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): at two widths, a project List's Move refused for two open issues and a Move with
+// only closed issues marked, each followed by another person's live update that empties the bar.
+// INFRA-3135, round 25 (the tester's, from t23's B8, which the architect ruled into this round on
+// 2026-11-24 03:2xZ: a hold that only says there is nothing to do keeps no press live). Measured in
+// builds Jobs infra-3135-h-h2-thk26 at 683f1fdf, infra-3135-h-b2-gjpk7 at 3fce6150 and
+// infra-3135-h-p8-4nhkv at ae48d8a1, the commit before a5464d6e. The reader marks two issues on
+// the project List, picks an epic in Move to epic and presses Move by Enter; Move's own press
+// leaves it held with no epic staged (`ariaDisabled={busy || epic === ""}`,
+// features/project/issues-table-page.tsx:394-397). Then bob closes or reopens the marked issues,
+// and his live update takes them off the view and empties the selection bar while Move holds the
+// focus. That going is not the reader's, so the bar hands the focus nowhere (SelectionBar.tsx,
+// "Nor does a going the reader did not cause ... leaves the focus on the body").
+// - The Move refused (400) for two open issues: at 683f1fdf the focus stays on the body in
+//   Chromium, Firefox and WebKit at 1440 and 390; at ae48d8a1 it lands on a row's checkbox
+//   (`Select MVA-4`), which a5464d6e fixed.
+// - The Move with only closed issues marked, which the List answers "Only open issues can change
+//   epic." without a write: at 683f1fdf, 3fce6150 and ae48d8a1 the bar's hand-off lands the focus
+//   on `TABLE:Project issues table`, the list's own stop, in all three engines at both widths.
+//   `moveTo` returns at that answer before any action begins a hold on what answers the press
+//   (features/project/issues-table-actions.ts:284-289), so nothing marks the press answered, and
+//   `writeOut` (components/focus-place.ts:882-883) keeps counting Move's own hold, begun after the
+//   arm, up to the 30 s write deadline: the press stays live, and the bar reads its going as the
+//   reader's (`causedByReader`).
+// The refused Move is the control: the row asserts that the closed-issues path ends where the
+// refused path ends, so it pins no landing of its own.
+test("a Move with only closed issues marked keeps no press live: a live update that empties the List's bar then lands the focus where it lands after a refused Move, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const sizes = [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ] as const;
+  /** One project per width and path: an epic and six tasks, the first two closed on the closed
+   *  path. Each task's title is its own words, since the server refuses a near copy of a title it
+   *  holds (409 POSSIBLE_DUPLICATE). */
+  const seeds: { epic: string; key: string; marked: [string, string] }[] = [];
+  const words = ["Harbor", "Lantern", "Quarry", "Meadow", "Falcon", "Copper"];
+  for (const [index, path] of ["refused", "closed", "refused", "closed"].entries()) {
+    const key = `MV${String.fromCharCode(65 + index)}`;
+    await createProject({ key, name: `Move ${path} ${index}` });
+    const epic = await createIssue({ project: key, title: `Target epic ${key}` });
+    await patchIssue(epic.key, { labels: ["epic"] });
+    const tasks: string[] = [];
+    for (const [at, word] of words.entries()) {
+      tasks.push((await createIssue({ project: key, title: `${word} ${key} task ${at}` })).key);
+    }
+    if (path === "closed") {
+      for (const task of tasks.slice(0, 2)) await patchIssue(task, { status: "done" });
+    }
+    seeds.push({ epic: `Target epic ${key}`, key, marked: [tasks[1] ?? "", tasks[0] ?? ""] });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const move = bar.getByRole("button", { exact: true, name: "Move" });
+  /** What holds the focus: its name, or "the body", and the row and the table around it. */
+  const landing = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { inRow: null, inTable: false, name: "the body" };
+      }
+      return {
+        inRow: focused.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null,
+        inTable: focused.closest("table") !== null,
+        name: `${focused.tagName}:${(focused.getAttribute("aria-label") ?? focused.textContent ?? "").trim().slice(0, 40)}`,
+      };
+    });
+  /** Marks the seed's two issues from the keyboard, the lower one first, and picks its epic. */
+  const markAndPick = async (seed: (typeof seeds)[number]) => {
+    for (const key of seed.marked) {
+      const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+      await mark.focus();
+      await page.keyboard.press("Space");
+      await expect(mark).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    await pickFromList(listTrigger(bar, "Move to epic"), seed.epic);
+    await expect(move).not.toHaveAttribute("aria-disabled", "true");
+    await move.focus();
+  };
+  /** bob's live update takes the marked issues off the view, and the bar goes with them. The
+   *  bar's hand-off runs with the commit that took it away, which two frames see done. */
+  const emptyTheBar = async (seed: (typeof seeds)[number], status: "done" | "todo") => {
+    for (const key of seed.marked) await patchIssue(key, { status }, { login: "bob" });
+    await expect(bar).toHaveCount(0);
+    await nextFrames(page);
+    await nextFrames(page);
+  };
+  const refuseUpdates = async (route: Route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    return route.fulfill({
+      body: JSON.stringify({ code: "REFUSED_FOR_THE_ROW", error: "refused for the row" }),
+      contentType: "application/json",
+      status: 400,
+    });
+  };
+  const wrong: string[] = [];
+  for (const [step, size] of sizes.entries()) {
+    await page.setViewportSize(size);
+    const where = `project List at ${size.width}x${size.height}`;
+    const refused = seeds[step * 2];
+    const closed = seeds[step * 2 + 1];
+    if (refused === undefined || closed === undefined)
+      throw new Error("the seed holds four projects");
+
+    // The control: a Move every write of which is refused. The action is answered and lets its
+    // controls go, and Move stays held with no epic staged.
+    await openIssuesTab(page, refused.key, "List");
+    await markAndPick(refused);
+    await page.route(/\/api\/v1\/issues\/[^/?]+$/, refuseUpdates);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(/Retry each failed change/).first()).toBeVisible();
+    await expect(
+      bar.getByRole("button", { exact: true, name: "Take out of epic" })
+    ).not.toHaveAttribute("aria-disabled", "true");
+    await page.unroute(/\/api\/v1\/issues\/[^/?]+$/, refuseUpdates);
+    await expect(move).toHaveAttribute("aria-disabled", "true");
+    await expect(move).toBeFocused();
+    await nextFrames(page);
+    await emptyTheBar(refused, "done");
+    // One read is the answer: the bar went two frames back, its hand-off ran with that commit,
+    // and nothing else moves the focus now.
+    const afterRefused = await landing();
+
+    // The closed path: the List answers the press without a write, and Move stays held with no
+    // epic staged, as above.
+    await openIssuesTab(page, closed.key, "List");
+    await page.goto(`/projects/${closed.key}/issues?status=done`);
+    await expect(page.locator("[data-issue-row]")).toHaveCount(2);
+    await markAndPick(closed);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(/^Only open issues can change epic\./).first()).toBeVisible();
+    await expect(move).toHaveAttribute("aria-disabled", "true");
+    await expect(move).toBeFocused();
+    await nextFrames(page);
+    await emptyTheBar(closed, "todo");
+    // One read is the answer: the bar went two frames back, its hand-off ran with that commit,
+    // and nothing else moves the focus now.
+    const afterClosed = await landing();
+
+    if (afterClosed.name !== afterRefused.name || afterClosed.inRow !== afterRefused.inRow) {
+      wrong.push(
+        `${where}: after a Move with only closed issues marked and a live update that emptied the bar, the focus is on ${afterClosed.name}${afterClosed.inTable ? " (in the table)" : ""}${afterClosed.inRow === null ? "" : ` in row ${afterClosed.inRow}`}, where after a refused Move and the same update it is on ${afterRefused.name}${afterRefused.inRow === null ? "" : ` in row ${afterRefused.inRow}`}`
+      );
+    }
+  }
+  // A hand-off that runs for a loss the reader did not cause moves a keyboard reader's place to a
+  // control they never chose.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
