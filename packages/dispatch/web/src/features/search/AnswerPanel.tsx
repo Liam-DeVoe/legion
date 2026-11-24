@@ -45,8 +45,8 @@ const FULL_ANSWER_STEP = "Ask for the full answer.";
  * state 13 and offers no step, as a run does.
  */
 function errorText(code: string): string {
-  const run = RUN_FAILURES[code];
-  const words = run === undefined ? undefined : endWords("failed", run, "", "");
+  const reason = RUN_FAILURES[code];
+  const words = reason === undefined ? undefined : endWords("failed", reason, "", "");
   if (words?.noModel === true) return words.text;
   return `${words?.text ?? "Dispatch could not write a short answer."} ${FULL_ANSWER_STEP}`;
 }

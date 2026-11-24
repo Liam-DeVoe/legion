@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { goingConversationsQuery } from "../../api/queries";
@@ -17,9 +17,11 @@ import { buildIssuePath } from "../refs/routes";
  * DEMO-46 · Open · Undo" for `FILED_NOTICE_MS`, its Undo the run's own (R6). A run that ends
  * without an issue, or that never starts, stays in the bar as a failure in words, with Try again.
  *
- * The filing is held outside the bar, so it goes on, and its notice still comes, when the person
- * closes the bar before it ends. The run is a run of History like any other, so History lists it
- * with its Undo.
+ * A filing belongs to the open of the bar it was made in (`useBarOpen`): that open alone draws
+ * it, and its filing closes that open alone. The filing is held outside the bar, so it goes on
+ * when the person closes the bar before it ends: its notice still comes, and one that filed
+ * nothing says so in the notice, since no open of the bar draws it. The run is a run of History
+ * like any other, so History lists it with its Undo.
  */
 
 /** How long the notice of a filed issue shows. */
@@ -50,26 +52,41 @@ export function filingParent(words: string, pageIssue: string): string | undefin
     : undefined;
 }
 
-/** The filing the bar shows: out, or ended with nothing filed and why, in words. `project` is the
- *  project it files in, "" where the chip names none. */
+/** One open of the bar, which each filing belongs to. */
+export type BarOpen = symbol;
+
+/** The filing the bar shows: out, or ended with nothing filed and why, in words. `open` is the
+ *  open of the bar it was made in, `context` the chip's context it was filed with, which its Try
+ *  again files with again, and `project` the project it files in, "" where the chip names none. */
 export type Filing =
-  | { readonly state: "filing"; readonly words: string; readonly project: string }
+  | {
+      readonly state: "filing";
+      readonly open: BarOpen;
+      readonly context: GoingContextInput;
+      readonly words: string;
+      readonly project: string;
+    }
   | {
       readonly state: "failed";
+      readonly open: BarOpen;
+      readonly context: GoingContextInput;
       readonly words: string;
       readonly project: string;
       readonly reason: string;
     };
 
-/** The filing the bar shows, and how many filings ended filed, which the open bar reads to close
- *  once its filing has. */
+/** The filing the bar shows, and the filing that last ended filed, which closes the open of the
+ *  bar it was made in. */
 interface FilingStore {
   readonly filing: Filing | undefined;
-  readonly filed: number;
+  readonly filed: Filing | undefined;
 }
 
-let store: FilingStore = { filed: 0, filing: undefined };
+let store: FilingStore = { filed: undefined, filing: undefined };
 const listeners = new Set<() => void>();
+
+/** The open of the bar on the screen; undefined while the bar is closed. */
+let shownOpen: BarOpen | undefined;
 
 function set(next: FilingStore): void {
   store = next;
@@ -92,6 +109,27 @@ export function useFiling(): FilingStore {
   return useSyncExternalStore(subscribe, readStore, readStore);
 }
 
+/**
+ * This open of the bar, on the screen from its mount until the bar closes. The bar draws the
+ * filing made in this open alone, so a filing of an earlier open never takes its first row; a
+ * failed filing of this open goes as the bar closes, which the person saw and closed the bar on.
+ */
+export function useBarOpen(): BarOpen {
+  const [open] = useState(() => Symbol("an open of the bar"));
+  useEffect(() => {
+    shownOpen = open;
+    return () => {
+      if (shownOpen === open) {
+        shownOpen = undefined;
+      }
+      if (store.filing?.open === open && store.filing.state === "failed") {
+        set({ ...store, filing: undefined });
+      }
+    };
+  }, [open]);
+  return open;
+}
+
 /** Lets the filing the bar shows go: a failure the person typed past. */
 export function dropFiling(): void {
   if (store.filing !== undefined) {
@@ -99,41 +137,71 @@ export function dropFiling(): void {
   }
 }
 
-/** Why a new-issue run filed nothing, from its end's reason: the words after the reason's code,
- *  which the person reads, never the code. */
+/** The near-copy gate's refusal of the create, as a new-issue run's reason carries it
+ *  (`goingNewIssueEnd`, `api/going_new_issue.go`, after `issue_create.go`'s 409): the key and the
+ *  title of the issue the new one may repeat. */
+const NEAR_COPY = /^POSSIBLE_DUPLICATE: possible duplicate of (\S+): (.*)$/su;
+
+/** A code a reason starts with: "NEW_ISSUE_NOT_FILED: ", "FORBIDDEN: ". */
+const LEADING_CODE = /^[A-Z][A-Z0-9_]*: */u;
+
+/** What a new-issue run that filed nothing says before its create's refusal, which the bar's own
+ *  "Not filed" says already. */
+const NOT_FILED_WORDS = /^the issue was not filed: */u;
+
+/** Why a new-issue run filed nothing, from its end's reason, in words the person reads after "Not
+ *  filed": never a code, nor "not filed" a second time, and the near copy by its key and title
+ *  where the create was refused as one. */
 function reasonWords(reason: string): string {
-  const words = reason.replace(/^[A-Z][A-Z0-9_]*: */u, "").trim();
+  const why = reason.replace(LEADING_CODE, "").replace(NOT_FILED_WORDS, "").trim();
+  const nearCopy = NEAR_COPY.exec(why);
+  if (nearCopy !== null) {
+    return `a near copy is filed already: ${nearCopy[1]}, ${nearCopy[2]}`;
+  }
+  const words = why.replace(LEADING_CODE, "").trim();
   return words === "" ? "Dispatch filed nothing." : words;
 }
 
 /**
  * Files `words` as one new issue, with the chip's `context`, in `project` (the chip's, for the
- * bar's words). It does nothing while another filing is out. The run's stream is read to its end,
- * whose `issue` names what was filed; History is read again once the run ends.
+ * bar's words), as a filing of `open`. It does nothing while another filing of that open is out;
+ * a filing of an earlier open still out goes on, no longer the one the bar shows. The run's
+ * stream is read to its end, whose `issue` names what was filed; History is read again once the
+ * run ends.
  */
 export async function fileNewIssue({
   context,
   login,
+  open,
   project,
   queryClient,
   words,
 }: {
   readonly context: GoingContextInput;
   readonly login: string | undefined;
+  readonly open: BarOpen;
   readonly project: string;
   readonly queryClient: QueryClient;
   readonly words: string;
 }): Promise<void> {
-  if (store.filing?.state === "filing") {
+  if (store.filing?.state === "filing" && store.filing.open === open) {
     return;
   }
-  const filing: Filing = { project, state: "filing", words };
+  const filing: Filing = { context, open, project, state: "filing", words };
   set({ ...store, filing });
-  // Each outcome is this filing's only while the store still holds it.
-  const settle = (next: FilingStore) => {
-    if (store.filing === filing) {
-      set(next);
+  // A filing that filed nothing says why in its open of the bar while that open is on the
+  // screen, and in the notice once it is not; the store lets it go once no open draws it.
+  const fail = (reason: string) => {
+    if (shownOpen === open) {
+      if (store.filing === filing) {
+        set({ ...store, filing: { ...filing, reason, state: "failed" } });
+      }
+      return;
     }
+    if (store.filing === filing) {
+      set({ ...store, filing: undefined });
+    }
+    showNotice({ ms: FILED_NOTICE_MS, text: `Not filed: ${reason}` });
   };
   let frames = STARTED_RUN;
   try {
@@ -150,7 +218,7 @@ export async function fileNewIssue({
     );
     const end = frames.end;
     if (end?.state === "done" && end.issue !== "") {
-      settle({ filed: store.filed + 1, filing: undefined });
+      set({ filed: filing, filing: store.filing === filing ? undefined : store.filing });
       showNotice({
         actions: [{ label: "Open", to: buildIssuePath({ key: end.issue, kind: "issue" }) }],
         ms: FILED_NOTICE_MS,
@@ -159,19 +227,9 @@ export async function fileNewIssue({
       });
       return;
     }
-    settle({
-      ...store,
-      filing: { ...filing, reason: reasonWords(end?.reason ?? ""), state: "failed" },
-    });
+    fail(reasonWords(end?.reason ?? ""));
   } catch (error) {
-    settle({
-      ...store,
-      filing: {
-        ...filing,
-        reason: apiErrorMessage(error, "Dispatch could not be reached."),
-        state: "failed",
-      },
-    });
+    fail(apiErrorMessage(error, "Dispatch could not be reached."));
   } finally {
     void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
   }

@@ -12,7 +12,13 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { GoingLine, Project, SearchResult, SearchResultKind } from "../../api/types";
+import type {
+  GoingContextInput,
+  GoingLine,
+  Project,
+  SearchResult,
+  SearchResultKind,
+} from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
@@ -69,7 +75,7 @@ import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
-import { dropFiling, fileNewIssue, filingParent, useFiling } from "./filing";
+import { dropFiling, fileNewIssue, filingParent, useBarOpen, useFiling } from "./filing";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -612,13 +618,14 @@ function PaletteDialog({
   onClose: () => void;
 }): ReactNode {
   const [query, setQuery] = useState("");
-  // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
-  // hits were listed when it was last decided ("" while none were). The two are one state
-  // because they are read together, to tell a fresh query's first hits - which take the head -
-  // from the same query's hits re-ranked, which never move the highlight. `left` is true while
-  // no row is highlighted because the row that was left the list (a re-rank dropped it), so the
-  // highlight stays on no row until the reader arrows; a list that simply held nothing to
-  // highlight leaves it false, so the query's first row to arrive takes the head.
+  // The highlight: the row the reader sees highlighted, held by its id, beside the search - its
+  // words and its filters - whose hits were listed when it was last decided ("" while none
+  // were). The two are one state because they are read together, to tell a fresh search's first
+  // hits - which take the head - from the same search's hits re-ranked, which never move the
+  // highlight. `left` is true while no row is highlighted because the row that was left the list
+  // (a re-rank dropped it), so the highlight stays on no row until the reader arrows; a list that
+  // simply held nothing to highlight leaves it false, so the search's first row to arrive takes
+  // the head.
   const [active, setActive] = useState<{
     readonly hits: string;
     readonly id: string | null;
@@ -667,18 +674,21 @@ function PaletteDialog({
   const login = whoAmI.data?.login;
   // The filing Enter on File as a new issue starts, which outlives this open (`filing.ts`): it is
   // the line's first row while it is out or once it failed, and the bar closes once it is filed.
+  // A filing belongs to the open it was made in: one kept from an earlier open of the bar is no
+  // row of this one, and its end closes this open of the bar no more than it draws in it.
+  const open = useBarOpen();
   const filingStore = useFiling();
-  const filing = filingStore.filing;
+  const filing = filingStore.filing?.open === open ? filingStore.filing : undefined;
   const filedSeen = useRef(filingStore.filed);
   useEffect(() => {
     if (filingStore.filed === filedSeen.current) {
       return;
     }
     filedSeen.current = filingStore.filed;
-    if (!talking) {
+    if (filingStore.filed?.open === open && !talking) {
       onClose();
     }
-  }, [filingStore.filed, onClose, talking]);
+  }, [filingStore.filed, onClose, open, talking]);
   // History's conversations, the newest first: the newest, where it is from the last hour, is
   // Continue on the empty box (design v3, Keys).
   const conversations = useQuery(goingConversationsQuery());
@@ -779,9 +789,11 @@ function PaletteDialog({
       setActive({ hits: "", id: null, left: false });
     }
   };
-  // Enter on File as a new issue, or on Try again: the filing, which the line's first row shows.
-  const fileWords = (words: string, into: string) => {
-    void fileNewIssue({ context: scope.context, login, project: into, queryClient, words });
+  // Enter on File as a new issue, or on Try again: the filing, which the line's first row shows,
+  // with the chip's context it is filed with: Try again files with the context the filing that
+  // failed was made with, whatever the chip says since.
+  const fileWords = (words: string, into: string, context: GoingContextInput) => {
+    void fileNewIssue({ context, login, open, project: into, queryClient, words });
   };
   // The line on top (R2, R9): offered for any words the bar can ask about, and for an issue's
   // key once its hit is listed above it. Its first row reads Ask, Do or File as a new issue;
@@ -816,7 +828,7 @@ function PaletteDialog({
             kind: "line",
             label: "Not filed",
             line: "failed",
-            select: () => fileWords(filing.words, filing.project),
+            select: () => fileWords(filing.words, filing.project, filing.context),
             words: filing.reason,
           };
     lineRows = lineOffered ? [first, askRow] : [first];
@@ -824,7 +836,7 @@ function PaletteDialog({
     // The filing says what it will do: the issue it files under, where the page's issue becomes
     // the parent (`filingParent`), else the project it files in.
     const parent = filingParent(searchText, scope.context.issue ?? "");
-    const filed =
+    const fileLabel =
       parent !== undefined
         ? `File as a new issue under ${parent}`
         : project === ""
@@ -833,14 +845,14 @@ function PaletteDialog({
     const first: LineRow = {
       id: LINE_OPTION_ID,
       kind: "line",
-      label: line === "file" ? filed : line === "do" ? "Do" : "Ask",
+      label: line === "file" ? fileLabel : line === "do" ? "Do" : "Ask",
       line,
       // Enter acts on the label on the screen at the moment of the key, never on a later one, and
       // the run records that line.
       select: () => {
         const pressed = enterLine();
         if (pressed === "file") {
-          fileWords(searchText, project);
+          fileWords(searchText, project, scope.context);
         } else {
           askWords(searchText, pressed);
         }
@@ -960,36 +972,45 @@ function PaletteDialog({
     ...hitRows,
     ...footSections.flatMap((section) => section.options.map((option) => option.row)),
   ];
-  // The hits the highlight is decided against: the query they answer, "" while the list holds
-  // none.
-  const listedQuery = showHits ? asked : "";
+  // The hits the highlight is decided against: the search they answer, its words and its
+  // filters, "" while the list holds none. A filter chip is another search under another key
+  // (`useTieredSearch`), so a chip's change whose answer is held already is that search's first
+  // hits, never this one's re-ranked.
+  const listedSearch = showHits ? JSON.stringify([asked, narrowed]) : "";
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
   // the rows above them, or an answer re-ranking them, leave it on that row; the line on top
   // keeps its id whatever it reads, so its label changing leaves it there too. The first hits of
   // a query send it to the head, and the head it lands on is then adopted, so a row coming back
   // does not take the highlight back from it. The head is the first row unless that is a foot
   // row - a More action, which comes last: with only foot rows listed nothing is highlighted,
-  // and Enter runs nothing until the reader arrows. A best match or Continue, which come first,
-  // take the head as they arrive until the reader arrows.
+  // and Enter runs nothing until the reader arrows. A best match or Continue take the highlight
+  // as they arrive until the reader arrows: the row they are, which a filing of this open that
+  // is still out comes above (it takes no press).
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
   // the next Enter would open a row they never chose - so nothing is highlighted, and Enter
   // does nothing, until they arrow.
-  // A list that answered this query and highlighted nothing - it held no row to highlight, a
+  // A list that answered this search and highlighted nothing - it held no row to highlight, a
   // stale empty answer among them - held no row the reader could lose, so the first row of that
-  // query to arrive takes the head (INFRA-2952).
+  // search to arrive takes the head (INFRA-2952).
   const chosen = rows.findIndex((row) => row.id === active.id);
   const held = active.id !== null || active.left;
-  const reranked = listedQuery !== "" && listedQuery === active.hits && held;
+  const reranked = listedSearch !== "" && listedSearch === active.hits && held;
   const head = rows.length > footRows ? 0 : -1;
-  const leads = !arrowed && (bestRows.length > 0 || continueRow !== undefined);
-  const activeIndex = leads ? 0 : chosen === -1 && !reranked ? head : chosen;
+  const lead = arrowed
+    ? -1
+    : bestRows.length > 0
+      ? 0
+      : continueRow === undefined
+        ? -1
+        : rows.indexOf(continueRow);
+  const activeIndex = lead !== -1 ? lead : chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
   const left = shownId === null && reranked;
-  if (shownId !== active.id || listedQuery !== active.hits || left !== active.left) {
-    setActive({ hits: listedQuery, id: shownId, left });
+  if (shownId !== active.id || listedSearch !== active.hits || left !== active.left) {
+    setActive({ hits: listedSearch, id: shownId, left });
   }
   // Focus stays in the input while the arrows move the highlight (`aria-activedescendant`), so
   // the list scrolls the highlighted row into its own view: an issue page offers more rows than
@@ -1071,7 +1092,7 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setArrowed(true);
-      setActive({ hits: listedQuery, id: rows[next]?.id ?? null, left: false });
+      setActive({ hits: listedSearch, id: rows[next]?.id ?? null, left: false });
     } else if (
       event.key === "Enter" &&
       !event.metaKey &&

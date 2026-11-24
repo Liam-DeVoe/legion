@@ -791,6 +791,40 @@ test("a first answer with no hits and a second that carries one leave that hit h
   }
 });
 
+// A filter chip is another search under another key, so the answer a chip's change brings is
+// that search's first hits, never the words' hits re-ranked, though the words are the same: an
+// answer the bar already holds for it, painted at once, still sends the highlight to its head.
+test("a chip taken off, whose search the bar already holds an answer for, highlights that answer's first hit", async () => {
+  const user = userOnFakeClock();
+  const [first, second, other] = [issueHit("LEGION-3"), issueHit("LEGION-4"), issueHit("LEGION-5")];
+  const search = spyOn(api, "search").mockImplementation((_query, request) =>
+    Promise.resolve(searchAnswer(request?.status === "in_progress" ? [other] : [first, second]))
+  );
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+
+    // The chip's search answers its one hit, which takes the highlight.
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await waitFor(() => expect(optionIds()).toEqual([optionId(other)]));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(other));
+
+    // Taken off, the chip leaves the words' own search, whose answer the bar holds: it paints at
+    // once, and its first hit takes the highlight, so Enter opens it.
+    await user.click(screen.getByRole("button", { name: "Remove Status In progress" }));
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first), optionId(second)]));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a background refresh that fails keeps the hits the query has, and the highlight on its hit", async () => {
   const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];

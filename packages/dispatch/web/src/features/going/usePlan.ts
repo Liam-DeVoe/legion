@@ -12,7 +12,7 @@ import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from 
 import type { GoingPlanAnswer } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { claimPlanRead, draftOf, newestRun, useGoingValue } from "./going-store";
-import { approvalOf } from "./plan-rows";
+import { approvable, approvalOf } from "./plan-rows";
 
 /** The target every write about the plan of `run` goes under - an answer to it, and its run's
  *  Undo - so two surfaces that write about one plan go one at a time. */
@@ -33,8 +33,10 @@ export interface PlanAnswering {
     | { readonly message: string; readonly retry: () => void; readonly retrying: boolean }
     | undefined;
   /** Approves the waiting plan with the person's ticks and edits (Enter, or Approve), naming the
-   *  version of the plan drawn, which Dispatch refuses once the plan has changed since. */
-  readonly approve: () => void;
+   *  version of the plan drawn, which Dispatch refuses once the plan has changed since. It sends
+   *  nothing where Approve is off (`approvable`): no row is ticked, or an answer is out. Answers
+   *  whether it sent the approval. */
+  readonly approve: () => boolean;
   /** Rejects the waiting plan. */
   readonly reject: () => void;
   /** Says in words what to change; the run proposes another plan in its place. */
@@ -152,13 +154,20 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
     reject.isPending ? reject.variables?.run : undefined,
     revise.isPending ? revise.variables?.plan.run : undefined,
   ];
+  const pending = shown !== undefined && out.includes(shown.run);
   return {
     approve: () => {
-      if (waiting === undefined) return;
+      if (
+        waiting === undefined ||
+        !approvable(waiting, draftOf(waiting.run, waiting.plan), pending)
+      ) {
+        return false;
+      }
       setRefused(undefined);
       approve.mutate(waiting);
+      return true;
     },
-    pending: shown !== undefined && out.includes(shown.run),
+    pending,
     plan: shown,
     refusal,
     reject: () => {

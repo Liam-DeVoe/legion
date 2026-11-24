@@ -56,7 +56,7 @@ test("each call runs with its reply's present words, and ends with its frame's p
   expect(ended.steps[0]?.running).toBe(true);
 });
 
-test("the prose beside calls is the run's working words, and the answer is the reply that called none", () => {
+test("the prose beside calls heads them, and the answer is the reply that called none", () => {
   const run = framed([
     [
       "reply",
@@ -66,17 +66,17 @@ test("the prose beside calls is the run's working words, and the answer is the r
     ["reply", { labels: [], text: "DEMO-1 has two children.", tools: [], withheld: 2 }],
   ]);
   expect(run.replies).toEqual(["DEMO-1 has two children."]);
-  expect(run.working).toBe("");
+  expect(run.callsHeader).toBe("");
   expect(run.withheld).toBe(2);
-  const working = framed([
+  const calling = framed([
     [
       "reply",
       { labels: ["Reading DEMO-1"], text: "Checking the children of DEMO-1.", tools: ["read"] },
     ],
   ]);
-  expect(working.replies).toEqual([]);
-  expect(working.working).toBe("Checking the children of DEMO-1.");
-  expect(working.withheld).toBe(0);
+  expect(calling.replies).toEqual([]);
+  expect(calling.callsHeader).toBe("Checking the children of DEMO-1.");
+  expect(calling.withheld).toBe(0);
 });
 
 test("a run recorded before calls had words has steps with no words", () => {
@@ -165,7 +165,7 @@ test("a call frame shows its call running with its present words and kind, and i
     [3, "Reading the messages of DEMO-7", "read", true],
   ]);
   // The first call frame's prose heads the calls; the second carries none, and keeps it.
-  expect(started.working).toBe("Checking DEMO-15");
+  expect(started.callsHeader).toBe("Checking DEMO-15");
   const ending = withRunFrame(started, ...ended(3));
   expect(lines(ending)).toEqual([
     ["Reading DEMO-15", true],
@@ -180,7 +180,7 @@ test("a reply after its calls' call and tool frames adds no line, and its prose 
     ["Read DEMO-15", false],
     ["Read the messages of DEMO-7", false],
   ]);
-  expect(run.working).toBe("Checking DEMO-15 and DEMO-7.");
+  expect(run.callsHeader).toBe("Checking DEMO-15 and DEMO-7.");
   expect(run.replies).toEqual([]);
   // The next model call's first call frame heads its own calls, with no prose where it wrote none.
   expect(
@@ -190,14 +190,14 @@ test("a reply after its calls' call and tool frames adds no line, and its prose 
       step: 5,
       text: "",
       tool: "find_tools",
-    }).working
+    }).callsHeader
   ).toBe("");
 });
 
 test("a tool frame before its call frame ends the call, and the late call frame changes nothing", () => {
   const run = framed([ended(2), call(2, "Checking")]);
   expect(lines(run)).toEqual([["Read DEMO-15", false]]);
-  expect(run.working).toBe("Checking");
+  expect(run.callsHeader).toBe("Checking");
 });
 
 test("a call frame of a step a cut call still runs takes its line, as the model call made again does", () => {

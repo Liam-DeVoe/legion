@@ -67,7 +67,7 @@ export interface RunFrames {
   /** The prose the model wrote beside the calls that run now, which the bar shows as their
    *  header line while they run: the first call frame's of a model call, then its reply's. It is
    *  no part of the answer. */
-  readonly working: string;
+  readonly callsHeader: string;
   /** How many tool results the run withheld from the model, as the reply that ended its turn
    *  says: the answer may miss what they hold. */
   readonly withheld: number;
@@ -90,6 +90,7 @@ export interface RunFrames {
 /** A run that has just started, with no frame yet. */
 export const STARTED_RUN: RunFrames = {
   blocks: [],
+  callsHeader: "",
   end: undefined,
   lastEnded: undefined,
   plan: undefined,
@@ -99,7 +100,6 @@ export const STARTED_RUN: RunFrames = {
   steps: [],
   waitsForPerson: false,
   withheld: 0,
-  working: "",
 };
 
 /** The texts of a frame's list field, none where it holds no list. */
@@ -206,7 +206,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       const step = numberOf(fields.step);
       // The first call frame of a model call carries the prose it wrote so far beside its calls,
       // which heads them; a later one carries none.
-      const working = typeof fields.text === "string" ? fields.text : run.working;
+      const header = typeof fields.text === "string" ? fields.text : run.callsHeader;
       const at = step === undefined ? -1 : run.steps.findIndex((known) => known.step === step);
       // A call whose tool frame came first has ended, and keeps its one line, headed by this
       // frame's prose where it has none. A step of its number that still runs is a call cut with
@@ -214,19 +214,17 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       // line.
       const held = run.steps[at];
       if (held?.running === false) {
-        return held.header === "" && working !== ""
+        return held.header === "" && header !== ""
           ? {
               ...run,
-              steps: run.steps.map((other, index) =>
-                index === at ? { ...held, header: working } : other
-              ),
-              working,
+              callsHeader: header,
+              steps: run.steps.map((other, index) => (index === at ? { ...held, header } : other)),
             }
-          : { ...run, working };
+          : { ...run, callsHeader: header };
       }
       const started: RunStep = {
         count: 0,
-        header: working,
+        header,
         id: held?.id ?? nextId(run),
         items: [],
         kind: textOf(fields.kind),
@@ -239,12 +237,12 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       };
       return {
         ...run,
+        callsHeader: header,
         state: runNext(run.state, "step").state,
         steps:
           at === -1
             ? [...run.steps, started]
             : run.steps.map((known, index) => (index === at ? started : known)),
-        working,
       };
     }
     case "reply": {
@@ -253,6 +251,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       const calls = tools.length > 0;
       return {
         ...run,
+        callsHeader: calls ? reply : "",
         replies: calls || reply === "" ? run.replies : [...run.replies, reply],
         state: runNext(run.state, "step").state,
         steps: withReplySteps(
@@ -265,7 +264,6 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         // A reply that made calls ends no turn; the one that does says whether it asks.
         waitsForPerson: calls ? run.waitsForPerson : fields.waits_for_person === true,
         withheld: typeof fields.withheld === "number" ? fields.withheld : run.withheld,
-        working: calls ? reply : "",
       };
     }
     case "tool": {

@@ -120,7 +120,7 @@ function thinking(run: RunEntry): boolean {
     shownState(run) === "working" &&
     frames.steps.length === 0 &&
     frames.replies.length === 0 &&
-    frames.working === "" &&
+    frames.callsHeader === "" &&
     frames.blocks.length === 0 &&
     frames.plan === undefined
   );

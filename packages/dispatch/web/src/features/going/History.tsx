@@ -16,7 +16,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { openConversation, shownState, titleWords, useGoingValue } from "./going-store";
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
-import { PROVIDER_REFUSED_WORDS, providerRefused, type RunState, runEnded } from "./run-states";
+import { providerRefused, providerRefusedWords, type RunState, runEnded } from "./run-states";
 
 /** How a conversation stands, as History names it by its newest run (design v3, state 11). */
 const STATE_WORDS: Readonly<Record<RunState, string>> = {
@@ -48,14 +48,14 @@ function groupOf(at: number, now: Date): HistoryGroup {
 }
 
 /** One conversation as History lists it: its title (its first question), how its newest run
- *  stands, whether the model's provider refused that run part of what it found, its group, and
- *  that run where it ended holding a write Undo can take back, or where this page undid it, whose
- *  Undo the row holds. */
+ *  stands, what the model's provider refused that run to read where it did (undefined where it
+ *  did not), its group, and that run where it ended holding a write Undo can take back, or where
+ *  this page undid it, whose Undo the row holds. */
 interface Listed {
   readonly conversation: GoingConversation;
   readonly title: string;
   readonly state: RunState;
-  readonly refused: boolean;
+  readonly refused: string | undefined;
   readonly group: HistoryGroup;
   readonly undo: string | undefined;
 }
@@ -118,7 +118,9 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         conversation,
         group: groupOf(Date.parse(conversation.newest_at), now),
         refused:
-          (state === "stopped_bound" || state === "stopped_person") && providerRefused(reason),
+          (state === "stopped_bound" || state === "stopped_person") && providerRefused(reason)
+            ? providerRefusedWords(reason)
+            : undefined,
         state,
         title: titleWords(held.at(-1)?.words ?? ""),
         // Undo is offered only while the run holds a write Undo can still take back, as
@@ -230,14 +232,14 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                       <Timestamp at={row.conversation.newest_at} />
                     </span>
                   </button>
-                  {row.refused ? (
+                  {row.refused === undefined ? null : (
                     <p
                       className={`px-2 pb-1 text-xs ${textSecondaryOnSurface}`}
                       data-testid="going-history-refused"
                     >
-                      {PROVIDER_REFUSED_WORDS}
+                      {row.refused}
                     </p>
-                  ) : null}
+                  )}
                   {row.undo === undefined ? null : (
                     <div className="px-2 pb-1">
                       {/* One run's Undo: the row names its conversation's newest run, and a newer

@@ -301,13 +301,13 @@ function LabelWords({
  *  tense with its result once it ended, or the sentence of a call that failed, in red; a slip's
  *  line is a lighter grey than an ended call's, with what the model tried, since it did nothing.
  *  The newest line of a run that works carries the run's timer right beside its words, where the
- *  eye reads it with them. */
+ *  eye reads it with them, counted from `since`, where one is given. */
 function StepLine({
+  since,
   step,
-  timer,
 }: {
+  readonly since: number | undefined;
   readonly step: RunStep;
-  readonly timer: number | undefined;
 }): ReactNode {
   const ink = step.refused ? dangerText : step.slip ? textMutedOnSurface : textSecondaryOnSurface;
   return (
@@ -325,8 +325,8 @@ function StepLine({
         <LabelWords items={step.items} label={step.label} />
         {step.running ? "…" : null}
       </span>
-      {timer === undefined ? null : (
-        <RunTimer className={textMutedOnSurface} since={timer} testId="going-step-timer" />
+      {since === undefined ? null : (
+        <RunTimer className={textMutedOnSurface} since={since} testId="going-step-timer" />
       )}
     </li>
   );
@@ -356,17 +356,17 @@ function headed(steps: readonly RunStep[]): readonly HeadedSteps[] {
 
 /** The lines of `steps`: each run of calls under its grey header line where the model wrote one,
  *  then "and N more…" for the running calls past `RUNNING_LINES`. The newest line carries the
- *  run's timer, counted from `timer`, where one is given and a call runs; a run that works with
+ *  run's timer, counted from `since`, where one is given and a call runs; a run that works with
  *  no call running - the model is writing or deciding - ends with "Thinking…" and the timer
  *  instead, so a working run never reads as idle. */
 function StepList({
   more,
+  since,
   steps,
-  timer,
 }: {
   readonly more: number;
+  readonly since: number | undefined;
   readonly steps: readonly RunStep[];
-  readonly timer: number | undefined;
 }): ReactNode {
   const callRuns = more > 0 || steps.some((step) => step.running);
   const newest = more > 0 || !callRuns ? undefined : steps.at(-1)?.id;
@@ -392,7 +392,7 @@ function StepList({
           )}
           <ol aria-label="Steps" className={`space-y-0.5 ${group.header === "" ? "" : "pl-3"}`}>
             {group.steps.map((step) => (
-              <StepLine key={step.id} step={step} timer={step.id === newest ? timer : undefined} />
+              <StepLine key={step.id} since={step.id === newest ? since : undefined} step={step} />
             ))}
           </ol>
         </div>
@@ -403,18 +403,18 @@ function StepList({
           data-testid="going-steps-more"
         >
           <span className={SHIMMER}>and {more} more…</span>
-          {timer === undefined ? null : (
-            <RunTimer className={textMutedOnSurface} since={timer} testId="going-step-timer" />
+          {since === undefined ? null : (
+            <RunTimer className={textMutedOnSurface} since={since} testId="going-step-timer" />
           )}
         </p>
       )}
-      {timer === undefined || callRuns ? null : (
+      {since === undefined || callRuns ? null : (
         <p
           className={`flex items-baseline gap-2 text-[13px] ${textSecondaryOnSurface}`}
           data-testid="going-steps-thinking"
         >
           <span className={SHIMMER}>Thinking…</span>
-          <RunTimer className={textMutedOnSurface} since={timer} testId="going-thinking-timer" />
+          <RunTimer className={textMutedOnSurface} since={since} testId="going-thinking-timer" />
         </p>
       )}
     </div>
@@ -509,12 +509,12 @@ export function StepSection({
           testId="going-steps-fold"
           words={<WorkedLine plan={planWords} steps={steps} workedMs={workedMs} />}
         />
-        {workedOpen ? <StepList more={0} steps={steps} timer={undefined} /> : null}
+        {workedOpen ? <StepList more={0} since={undefined} steps={steps} /> : null}
       </div>
     );
   }
   const lines = stepLines(steps);
-  const timer = live ? since : undefined;
+  const liveSince = live ? since : undefined;
   return (
     <div className="space-y-0.5" data-testid="going-steps-section">
       {lines.older.length === 0 ? null : (
@@ -526,9 +526,9 @@ export function StepSection({
         />
       )}
       {olderOpen ? (
-        <StepList more={0} steps={steps} timer={timer} />
+        <StepList more={0} since={liveSince} steps={steps} />
       ) : (
-        <StepList more={lines.more} steps={lines.shown} timer={timer} />
+        <StepList more={lines.more} since={liveSince} steps={lines.shown} />
       )}
     </div>
   );

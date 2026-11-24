@@ -6,7 +6,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
-import type { GoingEvent, GoingLine, GoingRun } from "../../api/types";
+import type { GoingConversation, GoingEvent, GoingLine, GoingRun } from "../../api/types";
 import { resetGoingStore } from "../going/going-store";
 import { FILED_NOTICE_MS, filingParent } from "./filing";
 import {
@@ -405,7 +405,7 @@ test("Enter on File as a new issue files the words: the line reads Filing, then 
   }
 });
 
-test("a filing that files nothing stays in the bar in words, with Try again, which files the words again", async () => {
+test("a filing that files nothing stays in the bar in words, naming a near copy, with Try again, which files the words again", async () => {
   const user = userOnFakeClock();
   createGoingRun.mockResolvedValue(newIssueRun("run-refused"));
   const { ends, stream } = holdRunStreams();
@@ -419,13 +419,17 @@ test("a filing that files nothing stays in the bar in words, with Try again, whi
     await act(async () => {
       ends[0]?.({
         offers: [],
-        reason: "NEAR_COPY: a near copy is filed already, LEGION-7",
+        reason:
+          "NEW_ISSUE_NOT_FILED: the issue was not filed: POSSIBLE_DUPLICATE: possible duplicate of LEGION-7: The dome turns by hand",
         state: "failed",
       });
     });
     await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "failed"));
-    // The reason in words, never its code, and one next step.
-    expect(lineWords()).toHaveTextContent("Not filed: a near copy is filed already, LEGION-7");
+    // The reason in words, never a code, nor "not filed" twice, and the near copy it may repeat
+    // by its key and title; then one next step.
+    expect(lineWords()).toHaveTextContent(
+      /^Not filed: a near copy is filed already: LEGION-7, The dome turns by hand$/u
+    );
     expect(lineRow()).toHaveTextContent("Try again");
     expect(footHints()).toHaveTextContent("↵ Try again · Esc Close");
     expect(screen.queryByTestId("going-notice")).toBeNull();
@@ -456,6 +460,150 @@ test("a filing Dispatch refuses to start says so in the bar, and a word typed af
     await waitFor(() => expect(lineRow()).not.toHaveAttribute("data-line", "failed"));
   } finally {
     bar.unmount();
+  }
+});
+
+/** A conversation of the last hour, which an open of the bar with an empty box offers Continue
+ *  on. */
+function recentConversation(): GoingConversation {
+  const at = new Date().toISOString();
+  return {
+    id: "c-1",
+    newest_at: at,
+    runs: [
+      {
+        ...newIssueRun("run-asked"),
+        conversation: "c-1",
+        created_at: at,
+        line: "ask",
+        state: "done",
+        words: "who looks after the comet",
+      },
+    ],
+  };
+}
+
+// A filing belongs to the open of the bar it was made in. Closed while the filing is out, the bar
+// opened again lists Continue first and highlights it, and lists no filing; the filing's end,
+// which no open of the bar draws now, says how it ended in the notice.
+test("a filing of an earlier open is no row of the next, where Continue leads, and its failure says so in the notice", async () => {
+  const user = userOnFakeClock();
+  createGoingRun.mockResolvedValue(newIssueRun("run-filing"));
+  const { ends, stream } = holdRunStreams();
+  const first = renderBar();
+  let second: { unmount: () => void } | undefined;
+  try {
+    await enterOnFile(user);
+    await waitFor(() => expect(ends).toHaveLength(1));
+    first.unmount();
+
+    (api.myGoingRuns as Mock<typeof api.myGoingRuns>).mockResolvedValue({
+      limit: 50,
+      offset: 0,
+      rows: [recentConversation()],
+      total: 1,
+    });
+    second = renderBar();
+    const box = screen.getByRole("combobox", { name: "Search" });
+    await waitFor(() =>
+      expect(box).toHaveAttribute("aria-activedescendant", "search-option-continue")
+    );
+    expect(document.getElementById("search-option-line")).toBeNull();
+
+    await act(async () => {
+      ends[0]?.({
+        offers: [],
+        reason: "NEW_ISSUE_NOT_FILED: the run proposed no issue to file",
+        state: "failed",
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-notice")).toHaveTextContent(
+        "Not filed: the run proposed no issue to file"
+      )
+    );
+    expect(document.getElementById("search-option-line")).toBeNull();
+  } finally {
+    stream.mockRestore();
+    second?.unmount();
+  }
+});
+
+// A filing's end closes the open of the bar it was made in, and no other: a filing of an earlier
+// open that files while the bar is open again says so in the notice and leaves the bar open.
+test("a filing of an earlier open that files leaves the next open of the bar open, and its notice comes", async () => {
+  const user = userOnFakeClock();
+  createGoingRun.mockResolvedValue(newIssueRun("run-filing"));
+  const { ends, stream } = holdRunStreams();
+  const first = renderBar();
+  let second: { unmount: () => void } | undefined;
+  try {
+    await enterOnFile(user);
+    await waitFor(() => expect(ends).toHaveLength(1));
+    first.unmount();
+    let closed = 0;
+    second = renderBar(undefined, () => {
+      closed += 1;
+    });
+    await act(async () => {
+      ends[0]?.({ issue: "LEGION-46", offers: ["undo"], reason: "", state: "done" });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-notice")).toHaveTextContent("Filed LEGION-46")
+    );
+    expect(closed).toBe(0);
+  } finally {
+    stream.mockRestore();
+    second?.unmount();
+  }
+});
+
+// Try again files the words again with the chip's context they were filed with: a chip moved
+// since - Tab narrows it to the block the writing cursor was in as the bar opened - is no part of
+// that filing.
+test("Try again files the failed words with the context they were filed with, whatever the chip says since", async () => {
+  const user = userOnFakeClock();
+  createGoingRun.mockResolvedValue(newIssueRun("run-refused"));
+  const { ends, stream } = holdRunStreams();
+  // The page's writing cursor, in a block of the issue's document, as the bar opens over it.
+  const page = document.createElement("div");
+  page.contentEditable = "true";
+  page.innerHTML = '<p data-block-id="b-7">The dome turns by hand.</p>';
+  document.body.append(page);
+  page.focus();
+  window.getSelection()?.collapse(page.querySelector("p")?.firstChild ?? page, 3);
+  const bar = renderBar(undefined, undefined, "/issues/LEGION-7");
+  try {
+    await typeAndPause(user, FILE_WORDS);
+    decide("file", "dispatch_issue");
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "file"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ends).toHaveLength(1));
+    const filed = createGoingRun.mock.calls[0]?.[0];
+    expect(filed?.context).toEqual({
+      block: "",
+      issue: "LEGION-7",
+      path: "/issues/LEGION-7",
+      project: "LEGION",
+    });
+    await act(async () => {
+      ends[0]?.({
+        offers: [],
+        reason: "NEW_ISSUE_NOT_FILED: the run proposed no issue to file",
+        state: "failed",
+      });
+    });
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "failed"));
+
+    await user.keyboard("{Tab}");
+    await waitFor(() => expect(screen.getByTestId("going-box-chip")).toHaveTextContent("a block"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createGoingRun).toHaveBeenCalledTimes(2));
+    expect(createGoingRun.mock.calls[1]?.[0]).toEqual(filed);
+  } finally {
+    stream.mockRestore();
+    bar.unmount();
+    page.remove();
   }
 });
 

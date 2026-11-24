@@ -207,10 +207,12 @@ test("History offers Undo only while the run holds a write Undo can still take b
   }
 });
 
-// A row whose newest run the model's provider stopped, refusing part of what it found, says so
-// under it, by its reason's code, whether or not the run offered Continue: the record holds no
-// offers, and no row offers Continue; the conversation it opens does, from the run's end frame.
-test("a row whose run the model's provider refused says so under it, and offers no Continue", async () => {
+// A row whose newest run the model's provider stopped says so under it, by its reason's code,
+// whether or not the run offered Continue: the record holds no offers, and no row offers
+// Continue; the conversation it opens does, from the run's end frame. It says what the provider
+// refused to read as the reason says it: part of what the run found, or, where the refused call
+// held nothing the run found, what the person asked.
+test("a row whose run the model's provider refused says what it refused to read, and offers no Continue", async () => {
   const read = listConversations([
     {
       id: "c-8",
@@ -235,13 +237,25 @@ test("a row whose run the model's provider refused says so under it, and offers 
         }),
       ],
     },
+    {
+      id: "c-10",
+      newest_at: new Date(now - 120_000).toISOString(),
+      runs: [
+        run("r-10", "say something rude about the comet", now - 120_000, {
+          conversation: "c-10",
+          state: "stopped",
+          stop_reason:
+            "MODEL_CONTENT_FILTER: the chat model's provider refused to read this run's model call, which held nothing the run found, only the person's words, the page and the agent's rules (jailbreak); ask in other words",
+        }),
+      ],
+    },
   ]);
   try {
     renderHistory();
     await waitFor(() =>
-      expect(screen.getAllByTestId("going-history-conversation")).toHaveLength(2)
+      expect(screen.getAllByTestId("going-history-conversation")).toHaveLength(3)
     );
-    const [refused, stopped] = screen.getAllByTestId("going-history-conversation");
+    const [refused, stopped, wordsAlone] = screen.getAllByTestId("going-history-conversation");
     expect(within(refused as HTMLElement).getByTestId("going-history-state").textContent).toBe(
       "Stopped"
     );
@@ -249,6 +263,9 @@ test("a row whose run the model's provider refused says so under it, and offers 
       "The model's provider refused to read part of what this run found"
     );
     expect(within(stopped as HTMLElement).queryByTestId("going-history-refused")).toBeNull();
+    expect(within(wordsAlone as HTMLElement).getByTestId("going-history-refused").textContent).toBe(
+      "The model's provider refused to read what you asked"
+    );
     expect(screen.queryByText(/Continue/u)).toBeNull();
     expect(screen.getByTestId("going-history").textContent ?? "").not.toMatch(/MODEL_/u);
   } finally {

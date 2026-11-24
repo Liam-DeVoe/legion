@@ -52,6 +52,7 @@ import { ItemChip } from "../refs/ItemChip";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
 import {
+  approvable,
   argumentsOf,
   broadcastSessions,
   type ChangePiece,
@@ -1034,7 +1035,8 @@ export function PlanRowView({
 /**
  * The plan's one primary button, "Approve 3 changes", which counts the rows that wait and are
  * ticked - those the page draws too - with ↵ beside it where Enter in the box approves; Discard,
- * which rejects the plan; and why Dispatch refused the last answer.
+ * which rejects the plan; and why Dispatch refused the last answer. Approve is off where Enter
+ * approves nothing (`approvable`): with no row ticked, and while an answer to the plan is out.
  */
 export function PlanControls({
   answering,
@@ -1057,7 +1059,7 @@ export function PlanControls({
           <button
             className={primaryButton}
             data-testid="going-plan-approve"
-            disabled={answering.pending || count === 0}
+            disabled={!approvable(plan, draft, answering.pending)}
             onClick={answering.approve}
             type="button"
           >

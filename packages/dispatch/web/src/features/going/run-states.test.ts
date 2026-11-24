@@ -148,9 +148,9 @@ test("a reply's tool calls show as running steps until each call's frame ends it
       tool: "call_tool",
     },
   ]);
-  // The prose beside the calls is the run's working words, no part of its answer.
+  // The prose beside the calls heads them, and is no part of the run's answer.
   expect(ended.replies).toEqual([]);
-  expect(ended.working).toBe("Reading the issue.");
+  expect(ended.callsHeader).toBe("Reading the issue.");
   expect(ended.state).toBe("working");
 });
 
@@ -225,14 +225,12 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
 // A Stop keeps what it did and says what that was, with Try again as its one next step (design
 // v3, rule 7): "kept what it did" alone said nothing of what it kept, and gave nothing to do.
 test("a Stop keeps what it did, says what that was, offers Try again, and never repeats the reason's code", () => {
-  const stopped = endWords("stopped_person", "STOPPED: its person stopped it", "standard", "");
-  expect(stopped).toEqual({
+  expect(endWords("stopped_person", "STOPPED: its person stopped it", "standard", "")).toEqual({
     action: "retry",
     continueInDeep: false,
     noModel: false,
     text: "Stopped · kept what it did",
   });
-  expect(stopped?.text).not.toContain("STOPPED");
   expect(
     endWords("stopped_person", "STOPPED: its person stopped it", "standard", "read 1 item")?.text
   ).toBe("Stopped · kept what it did: read 1 item");
@@ -250,12 +248,14 @@ test("a Stop keeps what it did, says what that was, offers Try again, and never 
   );
 });
 
-// A run the model's provider stopped - its content filter refused part of what the run found,
-// also with every result the agent could not vouch for withheld (`filterStopped`,
-// `going/agent/run.go`) - says so in words, never its code, and what the person can do: Continue,
-// or ask in other words, where its end offers Continue (a stop that offers it is
-// `stopped_bound`), else ask in other words. Continue in Deep is no help with a refusal, which
-// Deep would meet again, so it is not offered.
+// A run the model's provider stopped - its content filter refused a model call of the run, also
+// with every result the agent could not vouch for withheld (`filterStopped`,
+// `going/agent/run.go`) - says so in words, never its code: what the provider refused to read, as
+// the reason says it (part of what the run found, or, where the refused call held nothing the run
+// found, what the person asked), and what the person can do: Continue, or ask in other words,
+// where its end offers Continue (a stop that offers it is `stopped_bound`), else ask in other
+// words. Continue in Deep is no help with a refusal, which Deep would meet again, so it is not
+// offered.
 test("a stop the model's provider refused says so, with Continue where its end offers it, else Ask in other words", () => {
   const refused =
     "MODEL_CONTENT_FILTER: the chat model's provider refused to read part of what this run found, also with the 3 results it could not vouch for withheld (jailbreak); Continue starts a follow-up with a new budget, or ask in other words";
@@ -271,7 +271,7 @@ test("a stop the model's provider refused says so, with Continue where its end o
     action: undefined,
     continueInDeep: false,
     noModel: false,
-    text: "The model's provider refused to read part of what this run found. Ask in other words.",
+    text: "The model's provider refused to read what you asked. Ask in other words.",
   });
   expect(providerRefused(refused)).toBe(true);
   expect(providerRefused("CALL_BUDGET: …")).toBe(false);
@@ -315,14 +315,12 @@ test("a failure is one sentence and one action, with no code", () => {
     ],
   ];
   for (const [reason, text, action] of cases) {
-    const words = endWords("failed", reason, "standard", "read 2 items");
-    expect(words).toEqual({
+    expect(endWords("failed", reason, "standard", "read 2 items")).toEqual({
       action: action as "retry" | "new",
       continueInDeep: false,
       noModel: false,
       text,
     });
-    expect(words?.text).not.toMatch(/[A-Z]{2,}_/u);
   }
 });
 

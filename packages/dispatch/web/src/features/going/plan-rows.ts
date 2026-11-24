@@ -389,22 +389,22 @@ const REMOVING_TOOLS: Readonly<Record<string, true>> = {
   dispatch_remove_document: true,
   dispatch_resolve_ask: true,
   dispatch_resolve_comment: true,
-  dispatch_unmap_repo: true,
   dispatch_unset_legion_daemon: true,
   dispatch_unsubscribe_document: true,
   dispatch_unsubscribe_issue: true,
 };
 
 /** Whether a row closes, deletes or removes something (design v3, state 6), which the row marks
- *  in red: a tool that only removes, a release of a claim, an unfollow, a retracted result, and a
- *  change of a field that closes the issue (status done) or takes a value out (`removedValues`),
- *  given the row's `changes`. */
+ *  in red: a tool that only removes, a release of a claim, an unfollow, a retracted result, a
+ *  clear of a project's default repository (repo null), and a change of a field that closes the
+ *  issue (status done) or takes a value out (`removedValues`), given the row's `changes`. */
 export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): boolean {
   const args = argumentsOf(row);
   if (REMOVING_TOOLS[row.tool] === true) return true;
   if (row.tool === "dispatch_claim") return args.release === true;
   if (row.tool === "dispatch_follow") return args.action === "unfollow";
   if (row.tool === "dispatch_result") return args.retract !== undefined;
+  if (row.tool === "dispatch_set_default_repository") return args.repo === null;
   return changes.some((change) =>
     change.field === "status" ? change.next === "done" : removedValues(change).length > 0
   );
@@ -476,11 +476,19 @@ const TOOL_LABELS: ReadonlyMap<string, DispatchToolLabel> = new Map(
   dispatchToolSpecs.map((spec): [string, DispatchToolLabel] => [spec.name, spec.label])
 );
 
-/** A label the plan names a row by in place of its tool's: a new issue is filed, as the card's
- *  title says. */
-const ROW_LABELS: Readonly<Record<string, string>> = {
-  dispatch_issue: "File {title|{issue|a new issue}}",
-};
+/** The label the plan names a row by in place of its tool's, given the row's arguments: a new
+ *  issue is filed, as the card's title says; a project's default repository is set to the
+ *  repository the row names, or cleared where it names none (repo null), as Settings' Clear says
+ *  it, so the person reads before Approve what the press writes. Undefined for every other row,
+ *  and for one whose arguments name no repository at all, which its tool's label names. */
+function ownLabel(tool: string, args: Arguments): string | undefined {
+  if (tool === "dispatch_issue") return "File {title|{issue|a new issue}}";
+  if (tool === "dispatch_set_default_repository") {
+    if (args.repo === null) return "Clear the default repository of {project}";
+    if (typeof args.repo === "string") return "Set the default repository of {project} to {repo}";
+  }
+  return undefined;
+}
 
 /** A `{name}` of a label, with the words shown when the call leaves it out after a `|`
  *  (`dispatch-tools.ts`'s own pattern). */
@@ -517,7 +525,7 @@ export function changeLabel(
   args: Arguments,
   newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
 ): string {
-  const own = ROW_LABELS[tool];
+  const own = ownLabel(tool, args);
   if (own !== undefined) return filledLabel(own, args, newIssues);
   const label = TOOL_LABELS.get(tool);
   if (label === undefined) return "Make a change";
@@ -1202,6 +1210,14 @@ export function rowWaits(row: GoingPlanRow): boolean {
 /** How many changes the draft approves of `plan`: its waiting rows the person left ticked. */
 export function tickedCount(plan: GoingPlanAnswer, draft: PlanDraft): number {
   return (plan.rows ?? []).filter((row) => rowWaits(row) && !draft.unticked.has(row.row)).length;
+}
+
+/** Whether the person can approve `plan` with `draft` now, by Approve or by Enter in the box,
+ *  which both ask this: the plan waits, no answer to it is out (`pending`), and the draft leaves
+ *  a waiting row ticked. An approval with no row ticked runs nothing, and a second one while the
+ *  first is out names a plan that no longer waits. */
+export function approvable(plan: GoingPlanAnswer, draft: PlanDraft, pending: boolean): boolean {
+  return plan.state === "waiting" && !pending && tickedCount(plan, draft) > 0;
 }
 
 /** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): the

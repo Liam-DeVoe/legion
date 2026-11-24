@@ -164,18 +164,27 @@ const GRANT_WORDS: Readonly<Record<string, string>> = {
   TOKEN_REVOKED: "the agent token it acted with was revoked",
 };
 
-/** The code of a stop the model's provider refused: its content filter would not read part of
- *  what the run found, even with every result the agent could not vouch for withheld
+/** The code of a stop the model's provider refused: its content filter would not read a model
+ *  call of the run, even with every result the agent could not vouch for withheld
  *  (`filterStopped`, `going/agent/run.go`). */
 const CONTENT_FILTER = "MODEL_CONTENT_FILTER";
 
-/** What a stop the model's provider refused says first, wherever it is named. */
-export const PROVIDER_REFUSED_WORDS =
-  "The model's provider refused to read part of what this run found";
+/** What the reason of such a stop says where the refused call held nothing the run found, only
+ *  the person's words, the page and the agent's rules: it withheld no result, as it had none to
+ *  withhold (`filterStopped`). */
+const REFUSED_WORDS_ALONE = /held nothing the run found/u;
 
 /** Whether `reason`, a stop's, is the model's provider's refusal (`CONTENT_FILTER`). */
 export function providerRefused(reason: string): boolean {
   return reasonCode(reason) === CONTENT_FILTER;
+}
+
+/** What a stop the model's provider refused says first, wherever it is named, by what its
+ *  reason says the refused call held: the person's words alone, or part of what the run found. */
+export function providerRefusedWords(reason: string): string {
+  return REFUSED_WORDS_ALONE.test(reason)
+    ? "The model's provider refused to read what you asked"
+    : "The model's provider refused to read part of what this run found";
 }
 
 /** What a failure says, by its reason's code (`going/agent/run.go`, `api/going_agent.go`), and its
@@ -204,8 +213,9 @@ export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answe
  * Standard's time limit", with how long the model was busy where the reason says it was busy for
  * more than half the time ("· the model was busy for 52s of it"), what the run did so far
  * (`didSoFar`, "read 14 items") and Continue, with Continue in Deep below Deep. A stop the model's
- * provider refused says so and what the person can do: Continue, or ask in other words, where its
- * end offered Continue, else ask in other words. A Stop keeps what it did and says what that was,
+ * provider refused says what it refused to read, as its reason says (`providerRefusedWords`), and
+ * what the person can do: Continue, or ask in other words, where its end offered Continue, else
+ * ask in other words. A Stop keeps what it did and says what that was,
  * "Stopped · kept what it did: read 1 item", with Try again; one its grant ended says why, and
  * offers nothing a lapsed grant would refuse again. A failure is one sentence and Try again, or
  * the sentence of state 13 for a Dispatch with no answering model. Undefined for a run that has
@@ -225,7 +235,7 @@ export function endWords(
           action: "continue",
           continueInDeep: false,
           noModel: false,
-          text: `${PROVIDER_REFUSED_WORDS}. Continue, or ask in other words.`,
+          text: `${providerRefusedWords(reason)}. Continue, or ask in other words.`,
         };
       }
       const named = LEVEL_WORDS[level] ?? "its level";
@@ -247,7 +257,7 @@ export function endWords(
           action: undefined,
           continueInDeep: false,
           noModel: false,
-          text: `${PROVIDER_REFUSED_WORDS}. Ask in other words.`,
+          text: `${providerRefusedWords(reason)}. Ask in other words.`,
         };
       }
       const grant = GRANT_WORDS[code];

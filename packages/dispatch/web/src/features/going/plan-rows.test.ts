@@ -255,6 +255,25 @@ test("a row that closes, deletes or removes something is told apart from one tha
   expect(removes(newIssue(0, "North half"))).toBe(false);
 });
 
+// A project's default repository is one tool, dispatch_set_default_repository, whose repo null
+// clears it (main's #4457 replaced the map and unmap tools with it). Its row reads no field, so
+// the row says what the press writes: the repository it sets, or that it clears the default,
+// which is marked as taking something out.
+test("a default repository row names the repository it sets, and a clear says so and is marked", () => {
+  const setting = (repo: string | null) =>
+    row(0, {
+      arguments: { project: "CORE", repo },
+      class: "setting",
+      tool: "dispatch_set_default_repository",
+    });
+  const removes = (planned: GoingPlanRow) =>
+    rowRemoves(planned, rowChanges(planned, undefined, new Map()));
+  expect(rowLabel(setting("acme/infra"))).toBe("Set the default repository of CORE to acme/infra");
+  expect(removes(setting("acme/infra"))).toBe(false);
+  expect(rowLabel(setting(null))).toBe("Clear the default repository of CORE");
+  expect(removes(setting(null))).toBe(true);
+});
+
 // A preview's row that added a label replaced the issue's labels, and its red mark said "Removes"
 // and no more. A row that adds labels (labels_add) shows the labels now with those it adds, the
 // added one marked, nothing taken out; a row that takes values out names each of them.

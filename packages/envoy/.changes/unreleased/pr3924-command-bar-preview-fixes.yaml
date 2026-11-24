@@ -44,4 +44,7 @@ body: |-
   page's focus ring. Settings names the setting "Approval mode" (Ask, Auto-review), in a card like
   the other sections, says when a choice was saved, and draws radios that read in dark mode. The
   bar says a run was undone only once Dispatch's record says an undo landed; a run undone in part
-  reads "Partly undone" and offers "Undo the rest".
+  reads "Partly undone" and offers "Undo the rest". A plan row that sets a project's default
+  repository names it, and a clear says so in red. Enter approves a plan only when Approve would.
+  A filing belongs to the open of the bar it was made in, Try again files with its first context,
+  and a refused filing names the near copy.

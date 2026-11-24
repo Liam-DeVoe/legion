@@ -24,6 +24,7 @@ import {
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard, usePlanCardKeys } from "./PlanRows";
 import { BoxRow } from "./RunControls";
+import { useAsk } from "./useAsk";
 import { useOpenPlan } from "./usePlan";
 
 // The plan card of a plan that waits (design v3, state 6; spec R4, R5, R7): its title made from
@@ -326,6 +327,67 @@ test("the priority menu and the label picker edit a value, the row says Edited, 
     );
   } finally {
     listIssues.mockRestore();
+    restore();
+  }
+});
+
+/** The card under the bar's box, whose Enter in the empty box answers the plan as the bar's box
+ *  does (`useAsk`); the box says whether its last Enter took its words, as the bar reads it. */
+function AskedCard(): ReactNode {
+  const asking = useAsk({ path: "/projects/DEMO/issues" });
+  const [took, setTook] = useState<boolean>();
+  return (
+    <>
+      <PlanCard answering={asking.answering} />
+      <input
+        aria-label="Say what to change"
+        data-took={took === undefined ? undefined : String(took)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") setTook(asking.enter(""));
+        }}
+      />
+    </>
+  );
+}
+
+// Enter in the empty box stands for the card's Approve, ↵ drawn on it, and keeps its guard: with
+// no row ticked it approves nothing, as Approve is off, and while the first approval is out a
+// second Enter sends none, which Dispatch would refuse as a plan that no longer waits.
+test("Enter approves only where Approve is on: not with no row ticked, and not again while the approval is out", async () => {
+  const user = userEvent.setup();
+  const restore = await openPlan(planOf([labelsAndPriority]));
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  const approved = Promise.withResolvers<GoingPlanAnswer>();
+  approve.mockImplementation(() => approved.promise);
+  try {
+    renderWithQueries(<AskedCard />);
+    await screen.findByTestId("going-plan-card-rows");
+    const box = screen.getByRole("textbox", { name: "Say what to change" });
+    await user.click(within(drawnRow(0)).getByRole("checkbox"));
+    expect(screen.getByTestId("going-plan-approve")).toBeDisabled();
+    await user.type(box, "{Enter}");
+    expect(box).toHaveAttribute("data-took", "false");
+
+    await user.click(within(drawnRow(0)).getByRole("checkbox"));
+    await user.type(box, "{Enter}");
+    expect(box).toHaveAttribute("data-took", "true");
+    // The first approval is the one Enter sent with the row ticked: the Enter before it sent none.
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    expect(approve.mock.calls[0]?.[1]).toEqual({
+      plan: 1,
+      rows: [{ row: 0, tick: true }],
+      version: "v1",
+    });
+    await waitFor(() => expect(screen.getByTestId("going-plan-approve")).toBeDisabled());
+    await user.type(box, "{Enter}");
+    expect(box).toHaveAttribute("data-took", "false");
+
+    approved.resolve(planOf([{ ...labelsAndPriority, state: "running" }], { state: "running" }));
+    await waitFor(() => expect(screen.queryByTestId("going-plan-approve")).toBeNull());
+    expect(approve).toHaveBeenCalledTimes(1);
+  } finally {
     restore();
   }
 });

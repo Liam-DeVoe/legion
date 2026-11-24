@@ -282,7 +282,10 @@ test("a stop the model's provider refused says so, with Continue where its end o
   }
 });
 
-test("a refused stop that offers no Continue says Ask in other words, as one read from its record alone does", async () => {
+// A refused call that held nothing the run found - only the person's words, the page and the
+// agent's rules - offers no Continue, and says it was what the person asked that the provider
+// refused, never part of what the run found, which it had none of.
+test("a refused stop that offers no Continue says what was refused and Ask in other words, as one read from its record alone does", async () => {
   const reason =
     "MODEL_CONTENT_FILTER: the chat model's provider refused to read this run's model call, which held nothing the run found, only the person's words, the page and the agent's rules (jailbreak); ask in other words";
   const restore = await showRun("stopped", [["end", { offers: [], reason, state: "stopped" }]], {
@@ -291,7 +294,7 @@ test("a refused stop that offers no Continue says Ask in other words, as one rea
   try {
     const line = await screen.findByTestId("going-run-state");
     expect(line.textContent).toBe(
-      "The model's provider refused to read part of what this run found. Ask in other words."
+      "The model's provider refused to read what you asked. Ask in other words."
     );
     expect(screen.queryByTestId("going-run-bound")).toBeNull();
     expect(screen.queryByTestId("going-run-continue")).toBeNull();
@@ -305,7 +308,7 @@ test("a refused stop that offers no Continue says Ask in other words, as one rea
   const unread = await showRun("stopped", [], { run: { stop_reason: reason } });
   try {
     expect((await screen.findByTestId("going-run-state")).textContent).toBe(
-      "The model's provider refused to read part of what this run found. Ask in other words."
+      "The model's provider refused to read what you asked. Ask in other words."
     );
     expect(screen.queryByTestId("going-run-continue")).toBeNull();
   } finally {

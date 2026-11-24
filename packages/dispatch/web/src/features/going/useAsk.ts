@@ -69,8 +69,10 @@ export function useAsk(context: GoingContextInput): Asking {
   const enter = (words: string, line?: GoingLine): boolean => {
     const said = words.trim();
     if (planWaits) {
-      if (said === "") answering.approve();
-      else answering.revise(said);
+      // Enter stands for the card's Approve and keeps its guard (`approvable`): it approves
+      // nothing with no row ticked, nor again while the first approval is out.
+      if (said === "") return answering.approve();
+      answering.revise(said);
       return true;
     }
     if (runWaits || goingState().starting) {
