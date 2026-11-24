@@ -235,7 +235,10 @@ func (e *Engine) runOwner(ctx context.Context, tx pgx.Tx, issue record.Issue) (c
 // of the phase it carries is handed that phase's work again at a raised entry
 // (StartPromotedWorker). Its step starts again where it stands (StartStepRecord), whatever the
 // promotion starts of it. A root carried in held starts no worker, and its architect is told of
-// the hold as a root's (HeldNotice): the hold's first notice was routed in the tree it left.
+// the hold as a root's (HeldNotice): the hold's first notice was routed in the tree it left. A
+// worker's start is a phase start like any other (dispatch://INFRA-3320 R9): where an open
+// Dispatch child of the root holds it, the root waits in awaiting_children instead, and nothing of
+// its run starts (carriedStartHeld).
 func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Issue) error {
 	if root.Phase == phase.Held && root.Hold != nil {
 		if err := e.enqueue(ctx, tx, root.Key, HeldNotice(root)); err != nil {
@@ -250,6 +253,12 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 	if err != nil {
 		return err
 	}
+	if owner != "" {
+		held, err := e.carriedStartHeld(ctx, tx, root)
+		if err != nil || held {
+			return err
+		}
+	}
 	if err := e.reviveClaims(ctx, tx, root, claim.RoleArchitect, owner); err != nil {
 		return err
 	}
@@ -259,6 +268,35 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 		}
 	}
 	return e.StartStepRecord(ctx, tx, root)
+}
+
+// carriedStartHeld holds the start of the phase root stands in, a root a hand-over of the release
+// before carried in whose promotion would start that phase's worker (StartCarriedRun), where an
+// open Dispatch child of root holds that start (childrenHoldingStart, the children read from the
+// daemon's copy of Dispatch's links): root moves to awaiting_children in place of the start
+// (awaitChildren), holding the phase's resume task the promoted worker would have been given
+// (resumeTaskOn), and no claim of it starts, since no role of a parent that waits on its children
+// works (R11 of dispatch://INFRA-3320). The return starts that phase once no open child is left
+// (ReturnFromChildren). It says whether it held the start.
+func (e *Engine) carriedStartHeld(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
+	pr, err := e.store.PullRequestRow(ctx, tx, root.Key)
+	if err != nil {
+		return false, err
+	}
+	open, err := e.childrenHoldingStart(ctx, tx, root, root.Phase, pr)
+	if err != nil || len(open) == 0 {
+		return false, err
+	}
+	w, err := e.walk(ctx, tx, root)
+	if err != nil {
+		return false, err
+	}
+	task, err := e.resumeTaskOn(ctx, tx, root, w)
+	if err != nil {
+		return false, err
+	}
+	return true, e.awaitChildren(ctx, tx, root, w, childrenHold{Start: root.Phase, Task: task, Open: open,
+		Cause: fmt.Sprintf("its promotion resumed the %s phase a hand-over of the release before carried it in at", root.Phase)})
 }
 
 // returnToWorkTask is what the worker of the phase an issue stands in is told when the issue comes

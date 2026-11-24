@@ -1814,9 +1814,12 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	})
 
 	// A root a hand-over of the release before carried in, in implementing, waits in the line for
-	// its first start under this release (record.CarriedIn). The pass leaves it where it stands and
-	// its promotion takes a slot and starts the phase it carries.
-	t.Run("a root handed over in implementing starts the phase it carries", func(t *testing.T) {
+	// its first start under this release (record.CarriedIn). Its promotion opens it, and the start
+	// of the phase it carries is a phase start like any other (dispatch://INFRA-3320 R9): with an
+	// open Dispatch child it waits in awaiting_children holding that start, and no worker of it
+	// starts (workflow.Engine.StartCarriedRun). Once the child is done, the pass's return starts the
+	// phase it carries.
+	t.Run("a root handed over in implementing waits on its open child and starts the phase it carries once the child is done", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
 		carriedRoot(t, pool, spParent, phase.Implementing, "A")
@@ -1825,18 +1828,25 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		spPass(t, pool, admission)
 
 		got := issue(t, pool, spParent)
-		if got.Phase != phase.Implementing || got.ChildrenWait != nil || !issueOpen(t, pool, spParent) {
-			t.Fatalf("the carried root = phase %s, held start %+v, started %t; want implementing, started, nothing held",
+		if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != phase.Implementing ||
+			!issueOpen(t, pool, spParent) {
+			t.Fatalf("the carried root = phase %s, held start %+v, started %t; want awaiting_children, started, holding the start of implementing",
 				got.Phase, got.ChildrenWait, issueOpen(t, pool, spParent))
+		}
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 0 {
+			t.Fatalf("worker starts = %+v, want none while its child is open", starts)
+		}
+		if told := spNotices(t, pool, spParent); len(told) != 1 {
+			t.Fatalf("awaiting-children notices = %+v, want one", told)
+		}
+
+		back := pnChildDone(t, pool, admission)
+
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil {
+			t.Fatalf("the carried root once its child is done = phase %s, held start %+v; want implementing", back.Phase, back.ChildrenWait)
 		}
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer {
 			t.Fatalf("worker starts = %+v, want the implementer's start of the phase it carries", starts)
-		}
-		if !holdsSlot(t, pool, spParent) {
-			t.Fatalf("slots = %+v, want the one its promotion took", slots(t, pool))
-		}
-		if told := spNotices(t, pool, spParent); len(told) != 0 {
-			t.Fatalf("awaiting-children notices = %+v, want none", told)
 		}
 	})
 

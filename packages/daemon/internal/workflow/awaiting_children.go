@@ -19,9 +19,9 @@ import (
 // the parent to awaiting_children, where it holds no admission slot and no role of it works, and
 // keeps the start it held for the moment no open child is left (record.Issue.ChildrenWait). This
 // file holds the one move every door takes — the transition's guard (Engine.transition), the
-// release of a hold (retryPhase), the restart of a stopped task (restartTask) and the admission
-// pass (StopForChildren) — what the move says, and the return the admission pass makes once no
-// open child is left (ReturnFromChildren).
+// release of a hold (retryPhase), the restart of a stopped task (restartTask), the promotion of a
+// carried run (carriedStartHeld) and the admission pass (StopForChildren) — what the move says,
+// and the return the admission pass makes once no open child is left (ReturnFromChildren).
 
 // AwaitingChildrenNoticeKind is the kind of the notice a parent's architect is told when the
 // parent enters awaiting_children (awaitingChildrenNotice). It replaces the phase-finished notice
@@ -78,9 +78,10 @@ type childrenHold struct {
 
 // awaitChildren moves issue into awaiting_children in place of the start hold names, and is the
 // one move into that phase: the transition's guard, the release of a hold, the restart of a
-// stopped task at its first step (restartTask) and the admission pass all write it here. w is the
-// walk of issue's run as the caller holds it, after any move of its task (moveTask): each door has
-// read it already, so the move reads it no second time. In one transaction it
+// stopped task at its first step (restartTask), the promotion of a carried run (carriedStartHeld)
+// and the admission pass all write it here. w is the walk of issue's run as the caller holds it,
+// after any move of its task (moveTask): each door has read it already, so the move reads it no
+// second time. In one transaction it
 //
 //   - writes in_progress where the record shows another status (Engine.status): the parent's
 //     work is under way in its children (dispatch://INFRA-3320 R11);
@@ -90,8 +91,8 @@ type childrenHold struct {
 //     the phase (record.Issue.ChildrenWaitedAt, leftItsPhase), through the one write of an issue
 //     on w (writeIssueOn), which holds an issue with plan rows to its task standing at the place
 //     of the held start: the transition's guard (holdForChildren) and the restart of a stopped
-//     task (restartTask) move the task there, and the release of a hold and the admission pass
-//     hold the start of the phase the task already stands at;
+//     task (restartTask) move the task there, and the release of a hold, the promotion of a
+//     carried run and the admission pass hold the start of the phase the task already stands at;
 //   - marks the issue moved, since this is a phase write (the rule in dispatchIssue);
 //   - cancels every open backstop of the parent's pod, since no role of it has a phase for one to
 //     wake it into (R11), where the engine holds the pod tables (Config.Pods);
@@ -214,7 +215,8 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 // children of issue that hold it, none where to is no phase of planning through accepting or the
 // pull request has merged. The guard of a move between phases reads it after the phase the issue
 // leaves (childrenHolding); the restart of a stopped task at its first step reads it alone
-// (restartTask), since that start is raised from held whatever place the stop stood at.
+// (restartTask), since that start is raised from held whatever place the stop stood at, and so does
+// the promotion of a carried run (carriedStartHeld), whose start is of the phase it stands in.
 func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue record.Issue, to phase.Phase, pr *record.PullRequest) ([]record.OpenChild, error) {
 	if !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
 		return nil, nil

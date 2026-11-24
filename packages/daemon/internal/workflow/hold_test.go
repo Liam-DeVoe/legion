@@ -726,6 +726,44 @@ func TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold(t
 	}
 }
 
+// A root a hand-over of the release before carried in mid-phase, with an open Dispatch child,
+// starts no worker at its promotion (StartCarriedRun): the start of the phase it carries is a
+// phase start like any other (dispatch://INFRA-3320 R9), so the root waits in awaiting_children
+// holding that start, and no claim of it starts, since no role of a parent that waits on its
+// children works (R11). Once the child is done, the return starts the phase's worker
+// (ReturnFromChildren), as the admission pass's return does.
+func TestACarriedRootWithAnOpenChildWaitsOnItAtItsPromotionAndStartsOnceItIsDone(t *testing.T) {
+	pool := migratedPool(t)
+	root := record.Issue{Key: cwParent, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: cwParent,
+		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, CarriedGeneration: 2, Status: "in_progress",
+		DispatchStatus: "todo", Rank: "U", HandedOver: true, HoldsGate: true, TakenBack: true, LastDispatchSeq: 1}
+	seedIssue(t, pool, root)
+	mirrorChild(t, pool, cwChild, cwParent, "todo", 1)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		return engine.StartCarriedRun(ctx, tx, root)
+	})
+
+	if got := storedIssue(t, pool, cwParent); got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil ||
+		got.ChildrenWait.Start != phase.Implementing || !slices.Equal(got.ChildrenWait.Children, []string{cwChild}) {
+		t.Fatalf("the carried root = phase %s, held start %+v; want awaiting_children holding the start of implementing for %s",
+			got.Phase, got.ChildrenWait, cwChild)
+	}
+	if starts := superviseRowsOf(t, pool, cwParent, "start"); len(starts) != 0 {
+		t.Fatalf("starts of %s = %+v, want none: no role of a parent that waits on its children works", cwParent, starts)
+	}
+
+	returnsFromChildren(t, pool, engine, cwParent)
+
+	if got := storedIssue(t, pool, cwParent); got.Phase != phase.Implementing || got.ChildrenWait != nil {
+		t.Fatalf("the carried root once its child is done = phase %s, held start %+v; want implementing", got.Phase, got.ChildrenWait)
+	}
+	if starts := roleStartsOf(t, pool, cwParent, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing {
+		t.Fatalf("the implementer's starts = %+v, want the return's one of implementing", starts)
+	}
+}
+
 // A held issue that a stop left and Dispatch shows back in work at a status other than todo comes
 // back held (ReturnToWork): the hold's retry is what starts the worker of the phase the hold came
 // from (phase.RoleFor of that phase, which is never admitted), so nothing hands that role work,
