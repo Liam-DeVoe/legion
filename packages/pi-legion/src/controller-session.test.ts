@@ -69,6 +69,7 @@ function daemonLaunchedController(answers: {
   readonly claims?: readonly EnvoyStep[];
   readonly subscriptions?: readonly EnvoyStep[];
   readonly ready?: () => Response;
+  readonly register?: () => Response | Promise<Response>;
   readonly hostStop?: () => Promise<void> | undefined;
   readonly steps?: string[];
 }) {
@@ -92,6 +93,7 @@ function daemonLaunchedController(answers: {
         });
       }
       if (route === "/legion/v1/claims/register") {
+        if (answers.register !== undefined) return answers.register();
         return new Response(daemonFixture("register-controller.json"), {
           headers: { "content-type": "application/json" },
         });
@@ -242,6 +244,53 @@ test("a daemon-launched controller whose controller-topic subscription is refuse
     expect(run.exits).toEqual([]);
     expect(run.lines).toEqual([]);
     expect(run.posted).not.toContain("/legion/v1/claims/ready");
+  } finally {
+    run.stopSink();
+  }
+});
+
+// The tester's red test (R24 of dispatch://INFRA-3589, round 11): the session's stop begins while
+// the controller's `claims/register` is on the wire, and the daemon then refuses the registration.
+// A claim the stop overtook says nothing and exits nothing (`extensions/legion.ts`'s
+// `session_shutdown`), so the refusal writes no line either. The control row below is the same
+// refusal with no stop begun: it is logged and exits, so this row's absence can fail.
+const registerRefused = (): Response =>
+  Response.json({ error: "this boot token names no controller" }, { status: 409 });
+
+test("a daemon-launched controller whose session stops while claims/register is on the wire, and whose registration the daemon then refuses, exits nothing and writes no line", async () => {
+  const asked = Promise.withResolvers<void>();
+  const held = Promise.withResolvers<Response>();
+  const run = daemonLaunchedController({
+    register: () => {
+      asked.resolve();
+      return held.promise;
+    },
+  });
+  try {
+    const claiming = run.controller.handleSessionStart(run.context);
+    await asked.promise;
+    run.controller.stop();
+    held.resolve(registerRefused());
+    await claiming;
+    await settled();
+
+    expect(run.exits).toEqual([]);
+    expect(run.lines).toEqual([]);
+  } finally {
+    run.stopSink();
+  }
+});
+
+test("a daemon-launched controller whose registration the daemon refuses with no stop begun logs it and exits", async () => {
+  const run = daemonLaunchedController({ register: registerRefused });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await settled();
+
+    expect(run.exits).toEqual([1]);
+    expect(run.lines.map(({ message }) => message)).toContainEqual(
+      expect.stringContaining("claims/register for the controller failed (409)")
+    );
   } finally {
     run.stopSink();
   }
