@@ -5,6 +5,13 @@ import {
   type DeliveryClaim,
   type DeliveryDedupe,
 } from "@legion/envoy-client/delivery";
+import {
+  type HeldStoredCard,
+  heldStoredCards,
+  REPLAY_DELIVERED_ENTRY,
+  STORED_CARD_ENTRY,
+  storedCardRecord,
+} from "./missed-messages";
 import { type CardDelivery, UnwrittenFrames, unwrittenCardKeys } from "./unwritten-frames";
 
 /** A Dispatch frame: its dedupe key names its event, so the ledger knows it by both. */
@@ -76,6 +83,9 @@ function harness() {
   // The notice records the transcript of the session they were made on got, in order.
   const noticeRecords: { session: string; id: string; content?: string; handed?: true }[] = [];
   const recordFailures: string[] = [];
+  // The stored cards recorded in the transcript of the session each names, in order.
+  const storedRecords: { session: string; card: HeldStoredCard }[] = [];
+  const storedRecordFailures: string[] = [];
   const frames = new UnwrittenFrames({
     sessionID: () => state.session,
     hostIsOn: (id) => id === (state.hostSession ?? state.session),
@@ -112,6 +122,12 @@ function harness() {
       noticeRecords.push({ session: state.session, id, handed: true });
     },
     recordNoticeFailed: (error) => recordFailures.push((error as Error).message),
+    recordStored: (session, card) => {
+      if (state.refuseRecord) throw new Error("the session file refused the record");
+      storedRecords.push({ session, card });
+    },
+    recordStoredFailed: (identity, error) =>
+      storedRecordFailures.push(`${identity.event_id}: ${(error as Error).message}`),
   });
   /** A claim of `identity`, as the live path takes one before it hands a frame on. */
   const claim = (identity: DedupeIdentity) => {
@@ -139,6 +155,8 @@ function harness() {
     noticeFailures,
     noticeRecords,
     recordFailures,
+    storedRecords,
+    storedRecordFailures,
     claim,
     claimState,
   };
@@ -430,7 +448,9 @@ describe("an inert card", () => {
 
 // A `low` card goes as `nextTurn` with no turn: an idle host stores it in the context and the
 // session file at once, with no `message_end`, and a busy host keeps it in memory only. So it is
-// handed only to a settled host, and the session file is the witness that it was written.
+// handed only to a settled host, and the session file is the witness that it was written. While it
+// waits, held or handed, its record in the transcript holds it across a restart, so its claim
+// settles once that record is written.
 describe("a stored card", () => {
   /** The entry the host writes for a card that names `details`, as the branch holds it. */
   const storedEntry = (details: Record<string, string>) => ({
@@ -438,35 +458,48 @@ describe("a stored card", () => {
     ...writtenCard(details),
   });
 
-  test("sent while the host is not settled is held, and the first settled check hands it", async () => {
-    const { frames, state, handed, claim, claimState } = harness();
+  test("sent while the host is not settled is held and recorded, its claim settles, and the first settled check hands it", async () => {
+    const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     state.settled = false;
 
-    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
+    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame), "message-1")).toBe(
+      "queued"
+    );
     expect(handed).toEqual([]);
+    expect(storedRecords).toEqual([
+      { session: "s1", card: { identity: frame, content: "card", dispatchMessageId: "message-1" } },
+    ]);
+    expect(claimState(frame)).toBe("settled");
+    // Recorded, not shown: the ledger records the frame once the session's store holds the card.
+    expect(recorded).toEqual([]);
     expect(await frames.storedCheck()).toBe(true);
     expect(handed).toEqual([]);
 
     state.settled = true;
     expect(await frames.storedCheck()).toBe(true);
-    expect(handed).toEqual([{ content: "card", deliverAs: "stored", identity: frame }]);
-    expect(claimState(frame)).toBe("pending");
+    expect(handed).toEqual([
+      { content: "card", deliverAs: "stored", identity: frame, dispatchMessageId: "message-1" },
+    ]);
+    expect(storedRecords).toHaveLength(1);
   });
 
   test("is written once the session's store holds its entry, and never handed again before that", async () => {
-    const { frames, state, handed, recorded, claim, claimState } = harness();
+    const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
     const frame = dispatchFrame(1);
 
     expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
     expect(handed).toHaveLength(1);
+    // Handed and recorded: the record holds the card from here on, so its claim settles.
+    expect(storedRecords).toHaveLength(1);
+    expect(claimState(frame)).toBe("settled");
     // Not stored yet: the host stores no session before its first assistant message.
     expect(await frames.storedCheck()).toBe(true);
     state.stored = [storedEntry({ event_id: "event-2" })];
     expect(await frames.storedCheck()).toBe(true);
     for (const _moment of [1, 2, 3]) frames.handBackWithdrawn();
     expect(handed).toHaveLength(1);
-    expect(claimState(frame)).toBe("pending");
+    expect(recorded).toEqual([]);
 
     state.stored = [
       storedEntry({ event_id: "event-2" }),
@@ -474,7 +507,6 @@ describe("a stored card", () => {
     ];
     expect(await frames.storedCheck()).toBe(false);
     expect(recorded).toEqual([{ session: "s1", identity: frame }]);
-    expect(claimState(frame)).toBe("settled");
     expect(frames.waitsOnStored()).toBe(false);
   });
 
@@ -503,7 +535,87 @@ describe("a stored card", () => {
     frames.sendCard("s1", "card", "card", card, claim(card));
 
     expect(handed.map(({ content }) => content)).toEqual(["card"]);
-    expect(claimState(low)).toBe("pending");
+    expect(claimState(low)).toBe("settled");
+  });
+
+  // An edge listener's relay holds at most 16 frames of a session in flight (`relayEdgeInFlight`
+  // in packages/envoy/cmd/listener/session_relay.go): a held card whose claim waited for the
+  // session's store would take one of those places until the turn ends.
+  test("held, more than an edge listener's relay holds in flight, leaves no claim open", () => {
+    const { frames, state, handed, storedRecords, claim, claimState } = harness();
+    const lows = Array.from({ length: 17 }, (_, n) => dispatchFrame(n + 1));
+    const card = dispatchFrame(18);
+    state.settled = false;
+    for (const low of lows) frames.sendCard("s1", `low ${low.event_id}`, "stored", low, claim(low));
+
+    expect(storedRecords).toHaveLength(17);
+    expect(lows.map(claimState)).toEqual(lows.map(() => "settled"));
+    expect(frames.sendCard("s1", "card", "card", card, claim(card))).toBe("queued");
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+    expect(frames.waitsOnStored()).toBe(true);
+  });
+
+  test("whose record cannot be written keeps its claim until the session's store holds it", async () => {
+    const { frames, state, recorded, storedRecordFailures, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+    state.refuseRecord = true;
+
+    frames.sendCard("s1", "card", "stored", frame, claim(frame));
+    expect(storedRecordFailures).toEqual(["event-1: the session file refused the record"]);
+    expect(claimState(frame)).toBe("pending");
+
+    state.stored = [storedEntry({ event_id: "event-1" })];
+    expect(await frames.storedCheck()).toBe(false);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
+  });
+
+  // The frame of a recorded card is answered `done`, so the stream keeps no copy of it: a restart
+  // holds the card again from its record, until the transcript shows the card written.
+  test("recorded, is held again by a restore until the transcript shows it written", async () => {
+    const first = harness();
+    const [low, written, shown] = [dispatchFrame(1), dispatchFrame(2), dispatchFrame(3)];
+    first.state.settled = false;
+    first.frames.sendCard("s1", "low", "stored", low, first.claim(low), "message-1");
+    first.frames.sendCard(
+      "s1",
+      [{ type: "text", text: "written" }],
+      "stored",
+      written,
+      first.claim(written)
+    );
+    first.frames.sendCard("s1", "shown", "stored", shown, first.claim(shown));
+    const transcript = [
+      ...first.storedRecords.map(({ card }) => ({
+        type: "custom",
+        customType: STORED_CARD_ENTRY,
+        data: storedCardRecord(card),
+      })),
+      // The host stored the second card, and the ledger recorded the third, before the stop.
+      storedEntry({ event_id: "event-2" }),
+      { type: "custom", customType: REPLAY_DELIVERED_ENTRY, data: { event_id: "event-3", at: 1 } },
+    ];
+    const held = heldStoredCards(transcript);
+    expect(held).toEqual([{ identity: low, content: "low", dispatchMessageId: "message-1" }]);
+
+    const second = harness();
+    // A restore that reads the same transcript twice holds the card once.
+    second.frames.requeueStored(held);
+    second.frames.requeueStored(held);
+    expect(await second.frames.storedCheck()).toBe(true);
+    expect(second.handed).toEqual([
+      { content: "low", deliverAs: "stored", identity: low, dispatchMessageId: "message-1" },
+    ]);
+    // The relay sends the frame again, a frame before it holding the resume point below it: the
+    // card handed is that frame's, so nothing more is handed or recorded, and the copy settles.
+    expect(second.frames.sendCard("s1", "low", "stored", low, second.claim(low))).toBe("queued");
+    expect(second.handed).toHaveLength(1);
+    expect(second.storedRecords).toEqual([]);
+    expect(second.claimState(low)).toBe("settled");
+
+    second.state.stored = [storedEntry({ dedupe_key: "dispatch-1" })];
+    expect(await second.frames.storedCheck()).toBe(false);
+    expect(second.recorded).toEqual([{ session: "s1", identity: low }]);
   });
 
   // The host reads idle until it starts the turn a card asked for, after its own awaits; a

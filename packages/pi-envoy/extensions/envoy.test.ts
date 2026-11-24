@@ -14304,6 +14304,32 @@ console.log(JSON.stringify(args));
       ]);
     });
 
+    // The check a run's end arms runs `STORED_CHECKS` times and stops. An automatic compaction
+    // after the run can keep the host busy longer: its end arms the check again, so the held card
+    // is handed once the host is next idle, not at the next heartbeat.
+    test("held through an automatic compaction longer than the run's end checks is handed once it ends", async () => {
+      let idle = false;
+      const { agent, context, delivered, fixture } = await bootDirectSession("low-compaction", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-compaction", { urgency: "low" }));
+      agent.push(daemonEnvelope("busy notice", "med-compaction", { urgency: "med" }));
+      await delivered(1);
+      // The run ends, and the host is busy compacting through every check the end armed.
+      await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(1);
+
+      idle = true;
+      await fixture.handlers.get("auto_compaction_end")?.({ aborted: false }, context);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(2);
+      expect(String(fixture.deliveries[1]?.content)).toContain("held notice");
+      expect(fixture.deliveries[1]?.options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+    });
+
     test("is recorded shown once the session file holds its entry, and not before", async () => {
       const directory = mkdtempSync(join(tmpdir(), "envoy-low-card-"));
       const sessionFile = join(directory, "session.jsonl");
@@ -24268,6 +24294,74 @@ describe("consumer delivery", () => {
       }
     });
   }
+
+  // An edge listener relays a session's next frame only while fewer than 16 of its frames are in
+  // flight, awaiting `done` or `nak` (`relayEdgeInFlight` in
+  // packages/envoy/cmd/listener/session_relay.go). A low card held through a turn is answered
+  // `done` once the session records it, so more held low cards than that bound stop no later
+  // card: the `med` card behind them reaches the host while the turn still runs.
+  test("more low cards held through a turn than an edge relay holds in flight stop no later card", async () => {
+    const session = await bootConsumer("consumer-edge-bound", { turn: "streaming" });
+    const edgeInFlight = 16;
+    const lows = Array.from({ length: edgeInFlight + 1 }, (_, n) =>
+      daemonEnvelope(`held notice ${n}`, `edge-low-${n}`, { urgency: "low" })
+    );
+    const frames = [...lows, daemonEnvelope("med notice", "edge-med", { urgency: "med" })];
+    const inboxes: string[] = [];
+    const inFlight = () =>
+      inboxes.filter(
+        (inbox) => !session.replies(inbox).some((word) => word === "done" || word === "nak")
+      ).length;
+    for (const [index, frame] of frames.entries()) {
+      await until(() => inFlight() < edgeInFlight, `a place in flight for frame ${index + 1}`);
+      inboxes.push(session.relay(index + 1, frame));
+    }
+    await until(() => session.events.includes("handed evt-edge-med"), "the med card");
+
+    // The turn still streams: each low card was answered done and none was handed.
+    for (const inbox of inboxes.slice(0, lows.length)) {
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+    }
+    expect(session.events.filter((event) => event.startsWith("handed "))).toEqual([
+      "handed evt-edge-med",
+    ]);
+    expect(session.fixture.deliveries.at(-1)?.options).toEqual({
+      deliverAs: "aside",
+      triggerTurn: true,
+    });
+  });
+
+  // The listener sends a frame answered `done` to no later process, so the session's own record
+  // of a held low card is what keeps it across a stop: the restarted session holds the card again
+  // and stores it at its first settled check, where the next turn reads it
+  // (dispatch://INFRA-3686/spec R5).
+  test("a low card held through a turn survives a stop with its frame answered done", async () => {
+    const first = await bootConsumer("consumer-low-stop-a", { turn: "streaming" });
+    const low = first.relay(5, daemonEnvelope("held notice", "low-stop", { urgency: "low" }));
+    await until(() => first.replies(low).includes("done"), "the held card's done");
+    expect(first.events.filter((event) => event.startsWith("handed "))).toEqual([]);
+    await first.stop();
+
+    const second = await bootConsumer("consumer-low-stop-b", {
+      entries: first.entries(),
+      storesNextTurn: true,
+    });
+    expect(second.registrations[0]?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 5 });
+    await until(() => second.events.includes("stored evt-low-stop"), "the held card stored");
+    expect(second.fixture.deliveries.map((delivery) => delivery.options)).toEqual([
+      { deliverAs: "nextTurn", triggerTurn: false },
+    ]);
+    expect(String(second.fixture.deliveries[0]?.content)).toContain("held notice");
+
+    // Stored before a third start: that start holds nothing again.
+    await second.stop();
+    const third = await bootConsumer("consumer-low-stop-c", {
+      entries: second.entries(),
+      storesNextTurn: true,
+    });
+    await settle();
+    expect(third.fixture.deliveries).toEqual([]);
+  });
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
     const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");

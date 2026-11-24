@@ -339,6 +339,8 @@ Neither is an ephemeral session (`codex exec --ephemeral`), which no message cou
   seconds later. One that arrives during a turn waits in the plugin's inbox, and the
   `PostToolUse` hook (`hooks/codex-tool-hook.ts`) hands it to the model in the turn's next
   request; one no tool call took is queued when the turn ends (`src/codex/codex-delivery.ts`).
+  The hook's text starts the plugin's own lines, its first line and each person's label, with a
+  mark minted for that text, so a message that holds a person's label is not read as theirs.
   A person's Send or Aside is accepted on Dispatch and arrives as their own words; a `/` message
   is answered that it was not run.
 - A BTW is answered by a separate `codex app-server` that forks the session's conversation

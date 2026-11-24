@@ -219,11 +219,14 @@ import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
   heldReplayNotices,
+  heldStoredCards,
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
   rememberedSubjects,
   replaySnapshot,
+  STORED_CARD_ENTRY,
+  storedCardRecord,
 } from "../src/missed-messages";
 import { opensAsk } from "../src/opens-ask";
 import {
@@ -446,7 +449,8 @@ const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
  *  it goes out with that part and the note saying so. */
 const WHOLE_BODY_TIMEOUT_MS = 10_000;
 /** How often the check for stored cards runs while one waits (`checkStoredCards`), and how many
- *  checks one arming runs at most: 10 s, after which the next run's end or heartbeat checks. */
+ *  checks one arming runs at most: 10 s, after which the next run's end, automatic compaction's
+ *  end or heartbeat checks. */
 const STORED_CHECK_MS = 100;
 const STORED_CHECKS = 100;
 /** The most BTW event ids an instance remembers, so a failure notice naming one stays inert. */
@@ -1159,6 +1163,13 @@ export default function envoyExtension(hostApi: PiApi): void {
         });
       }
     }
+    // The stored cards the transcript records as waiting and shows no write of, which a restart
+    // or a session change cut short, are held again for the first settled check. Their frames
+    // were answered `done` once they were recorded, and a copy the relay sends again is that held
+    // card (`UnwrittenFrames.sendCard`). This comes after the release above, so no card of the
+    // session left stands under a frame's keys.
+    unwritten.requeueStored(heldStoredCards(entries));
+    if (unwritten.waitsOnStored()) checkStoredCards();
   };
 
   // Where this instance has read the `dispatch` command's ledger to (`results.jsonl` in the
@@ -1651,18 +1662,31 @@ export default function envoyExtension(hostApi: PiApi): void {
         error: messageFor(error),
       });
     },
+    // A stored card goes to the transcript of the session it is for, which is the session the host
+    // is on: `sendCard` hands or holds a card only for that session.
+    recordStored: (addressed, card) => {
+      if (hostSessionID() !== addressed) throw new Error("the host is on another session");
+      pi.appendEntry(STORED_CARD_ENTRY, storedCardRecord(card));
+    },
+    recordStoredFailed: (identity, error) => {
+      logger.warn(
+        "envoy: a stored card could not be recorded in the session file; its frame waits until the session's store holds it",
+        { eventID: identity.event_id, error: messageFor(error) }
+      );
+    },
   });
 
   // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
   // settles, when one held while it was busy is handed, nor its write to the session file. So a
   // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
-  // run's end that no continuation follows, a stored card's hand-over and each heartbeat of a
-  // settled host, until no stored card waits or `STORED_CHECKS` checks have run. A run that starts
-  // in between holds the card again, as the host is not settled, and its end checks again; so
-  // does the next heartbeat for a session whose file Oh My Pi has not written yet. A new arming
-  // counts the checks again from the first. While one chain of checks is live
-  // (`storedCheckLive`) an arming starts no other, so two never run side by side, and a card
-  // that comes while a check awaits keeps the live chain going.
+  // run's end that no continuation follows, an automatic compaction's end, a stored card's
+  // hand-over, a restore that holds recorded cards again, and each heartbeat of a settled host,
+  // until no stored card waits or `STORED_CHECKS` checks have run. A run that starts in between
+  // holds the card again, as the host is not settled, and its end checks again; so does the next
+  // heartbeat for a session whose file Oh My Pi has not written yet. A new arming counts the
+  // checks again from the first. While one chain of checks is live (`storedCheckLive`) an arming
+  // starts no other, so two never run side by side, and a card that comes while a check awaits
+  // keeps the live chain going.
   let storedChecksLeft = 0;
   let storedCheckLive = false;
   const checkStoredCards = (): void => {
@@ -2099,11 +2123,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   // `session` is the session the frame is addressed to, which every answer to it names and is
   // signed as: the relay reads it off its owner, before anything here awaits, since every frame
   // reaches the session through its own consumer's relay. `subject` is the subject the frame
-  // was published on, and `relayed` the relay frame it came as. A relay frame is
-  // answered `done` once it is written, or skipped,
-  // suppressed, a repeat, or rejected (after the rejection reply is posted), and `nak` once the
-  // host dropped it unwritten. A BTW's side turn and every Dispatch reply run off the caller
-  // (`offWorker`), so the frames after one never wait on a model call or a reply.
+  // was published on, and `relayed` the relay frame it came as. A relay frame is answered `done`
+  // once it is written, or recorded as a stored card that waits (`UnwrittenFrames.sendCard`), or
+  // skipped, suppressed, a repeat, or rejected (after the rejection reply is posted), and `nak`
+  // once the host dropped it unwritten. A BTW's side turn and every Dispatch reply run off the
+  // caller (`offWorker`), so the frames after one never wait on a model call or a reply.
   const deliver = async (
     session: string,
     subject: string,
@@ -2146,7 +2170,8 @@ export default function envoyExtension(hostApi: PiApi): void {
       return;
     }
     // A relay frame's claim answers the listener as the claim ends: `done` once it settles (the
-    // host wrote the frame, or handled it with nothing to write, the ledger recording it first),
+    // host wrote the frame, or handled it with nothing to write, the ledger recording it first, or
+    // the transcript records the stored card that shows it, which a restart holds again),
     // `nak` once it is released with nothing recorded (the host dropped the frame unwritten: a
     // session change, an interrupt that withdrew a person's turn), so the listener sends it again.
     // A release while this call still runs answers only once the call returns: a throw is the
@@ -3354,9 +3379,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
     );
   });
+  // An automatic compaction keeps the host busy, and one after a run's end can outlast every check
+  // that end armed (`STORED_CHECKS`). So its end arms the check again while a stored card waits,
+  // and a card held through the compaction is handed once the host is next idle.
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
     refreshAgentStreamContext(eventSessionID(context));
+    if (unwritten.waitsOnStored()) checkStoredCards();
   });
   pi.on("auto_retry_end", async (event) => cardWake.autoRetryEnd(event));
 

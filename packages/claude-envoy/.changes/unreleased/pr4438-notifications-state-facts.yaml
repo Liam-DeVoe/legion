@@ -2,6 +2,8 @@ kind: Changed
 body: |-
   The Claude Code plugin's notices state the fields of their kind, as the Oh My Pi plugins' do, and
   its cards carry no reply procedure. A message put in front of a card, in the Codex hook's text
-  and in the prompt at unread rows, opens or closes no block of that card. Each of Envoy's notices
-  names on its kind line the tool whose description gives its step (`notice: message not shown
-  (envoy_inbox)`).
+  and in the prompt at unread rows, opens or closes no block of that card. In the Codex hook's
+  text, the plugin's own lines (its first line and each person's label) start with a mark minted
+  for that text, so a message that holds a person's label is not read as a person's message. Each
+  of Envoy's notices names on its kind line the tool whose description gives its step (`notice:
+  message not shown (envoy_inbox)`).

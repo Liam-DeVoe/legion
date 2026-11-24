@@ -1234,12 +1234,14 @@ test.skipIf(skip)(
 // session's stored context with no turn: as `nextTurn` with no `triggerTurn`, which the host
 // appends to the context and to the session's store at once, and only to a settled host, since a
 // busy one keeps such a card in memory only (src/unwritten-frames.ts, the `stored` hand-over). The
-// first turn after that reads it, whatever starts that turn, and its frame is answered `done` once
-// the session's store holds it. Every other card is delivered as before. `a low card is read at the
-// next turn` and `a low card stored on a branch with no reply` run on SQL storage, the storage of
-// every Legion workflow session, since what they check hangs on how the store answers a stored
-// card. The other cases run on file storage, which covers the file witness: the pi-envoy CI job
-// has fifteen minutes for all of its steps (ci-job-pi-envoy.yaml), and these cases take about four.
+// first turn after that reads it, whatever starts that turn. Its frame is answered `done` once the
+// session records the card in its transcript, held or handed, and that record holds the card across
+// a stop until the session's store holds it. Every other card is delivered as before. `a low card
+// is read at the next turn` and `a low card stored on a branch with no reply` run on SQL storage,
+// the storage of every Legion workflow session, since what they check hangs on how the store
+// answers a stored card. The other cases run on file storage, which covers the file witness: the
+// pi-envoy CI job has fifteen minutes for all of its steps (ci-job-pi-envoy.yaml), and these cases
+// take about four.
 
 /** How long a case watches a session that holds a `low` card for a turn that must not come. */
 const QUIET_MS = 30_000;
@@ -1311,7 +1313,7 @@ async function storedLine(session: CardSession, card: string): Promise<string> {
 }
 
 /** Waits until the session answers `done` to the frame of `card`, whose words are `words`: the
- *  card is in the session's store, so the stream's copy and the resume point below it go. */
+ *  session recorded the card, so the stream's copy and the resume point below it go. */
 async function answeredDone(
   session: CardSession,
   card: string,
@@ -1337,8 +1339,9 @@ test.skipIf(skip)(
       daemonEnvelope(notice.text, notice.label, "low")
     );
     await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet: the frame is not done.
-    expect(noticeWords).not.toContain("done");
+    // The session has had no reply, so its store holds nothing yet, but the session recorded the
+    // card: the frame is done, and holds no place in the relay until the store holds the card.
+    await answeredDone(session, notice.text, noticeWords);
     const task = `TASK-${randomUUID().slice(0, 8)}`;
     await session.command({ type: "prompt", message: task });
     const first = await session.nextTurn("the task's first model request");
@@ -1347,7 +1350,7 @@ test.skipIf(skip)(
     first.reply([text("Did the task.")]);
     await session.settled();
     // The task's reply put the session in its store, and the notice with it.
-    await answeredDone(session, notice.text, noticeWords);
+    await storedLine(session, notice.text);
 
     // A Dispatch event the daemon wrote, sent low: no turn, and a med card's turn reads it.
     const comment = marked("low-comment");
@@ -1394,6 +1397,9 @@ test.skipIf(skip)(
       "the session to take the low card",
       daemonEnvelope(low.text, low.label, "low")
     );
+    // Held while the tool call runs, and recorded: its frame is done during the turn, so a later
+    // card waits on no place in the relay.
+    await answeredDone(session, low.text, lowWords);
     const med = marked("med-during");
     await session.relay(
       "the session to take the med card",
@@ -1470,7 +1476,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a low card survives a stop of the session",
   async () => {
-    const session = await startSession();
+    const session = await startSession({ config: FOREGROUND_BASH });
     await session.command({ type: "prompt", message: "Start the turn before the stop." });
     const held = await session.nextTurn("the first model request");
     const low = marked("low-stop");
@@ -1496,8 +1502,36 @@ test.skipIf(skip)(
     expectBefore(turn.request, low.text, card.text);
     turn.reply([text("Read both cards.")]);
     await session.settled();
+
+    // A low card held when the session stops: the tool call keeps the turn going, so the card is
+    // held, not stored, when the process ends. Its frame was answered done once the session
+    // recorded the card, so the listener sends it to no later process: the record keeps it, and
+    // the restarted session stores it, where the next turn reads it.
+    await session.command({ type: "prompt", message: "Start the long tool call." });
+    const busy = await session.nextTurn("the long tool call's model request");
+    const started = path.join(session.root, "stop-tool-started");
+    busy.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
+    await session.until("the 20 s tool call to start", async () =>
+      (await Bun.file(started).exists()) ? true : undefined
+    );
+    const heldLow = marked("low-held-stop");
+    const heldWords = await session.relayWatched(
+      "the session to take the low card during the tool call",
+      daemonEnvelope(heldLow.text, heldLow.label, "low")
+    );
+    await answeredDone(session, heldLow.text, heldWords);
+    await session.restart();
+    const waking = marked("med-held-restart");
+    await session.relay(
+      "the restarted session to take the med card",
+      daemonEnvelope(waking.text, waking.label, "med")
+    );
+    const after = await session.nextTurn("the first model request after the stop in the tool call");
+    expectBefore(after.request, heldLow.text, waking.text);
+    after.reply([text("Read both cards.")]);
+    await session.settled();
   },
-  180_000
+  240_000
 );
 
 test.skipIf(skip)(
@@ -1513,8 +1547,9 @@ test.skipIf(skip)(
     session.releaseStartup();
     await session.state();
     await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet: the frame is not done.
-    expect(lowWords).not.toContain("done");
+    // The session has had no reply, so its store holds nothing yet, but the session recorded the
+    // card: the frame is done.
+    await answeredDone(session, low.text, lowWords);
     const card = marked("med-startup");
     await session.relay(
       "the session to take the med card",
@@ -1524,7 +1559,7 @@ test.skipIf(skip)(
     expectBefore(turn.request, low.text, card.text);
     turn.reply([text("Read both cards.")]);
     await session.settled();
-    await answeredDone(session, low.text, lowWords);
+    await storedLine(session, low.text);
 
     // A start-turn mark, as the Legion entry keeps it for its controller's start: unsent from
     // `session_start`, sent with the start prompt (its `input`), cleared at its `agent_start`.
@@ -1591,15 +1626,15 @@ test.skipIf(skip)(
       daemonEnvelope(low.text, low.label, "low")
     );
     await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet: the frame is not done.
-    expect(lowWords).not.toContain("done");
+    // The session has had no reply, so its store holds nothing yet, but the session recorded the
+    // card: the frame is done.
+    await answeredDone(session, low.text, lowWords);
     const typed = `TYPED-${randomUUID().slice(0, 8)}`;
     await session.type(typed);
     const turn = await session.nextTurn("the typed message's model request");
     expect(newestMessage(turn.request.body)).toContain(typed);
     expectBefore(turn.request, low.text, typed);
     turn.reply([text("Read the card and the message.")]);
-    await answeredDone(session, low.text, lowWords);
   },
   180_000
 );
@@ -1679,12 +1714,15 @@ function entryRole(entry: Record<string, unknown>): unknown {
 }
 
 // Oh My Pi stores every entry of a session once any entry of it is an assistant message, on any
-// branch of its tree, and appends a stored card at the leaf it has then. The stored-card check reads
-// only the branch the session is on (`storedEntries`, `storeHoldsBranch`). A person's edit of the
+// branch of its tree, and appends a stored card at the leaf it has then. A person's edit of the
 // first prompt moves the leaf to before it, a branch with no reply, where a low card is stored, and
-// a move back to the reply leaves that card on a branch the check never reads again: the store
-// holds it, and its frame is never answered done for the life of the process, holding a place of
-// the session consumer's ack-pending and its resume point (dispatch://INFRA-3686/spec R5).
+// a move back to the reply leaves that card on a branch the session is no longer on. The store
+// holds it all the same, and the stored-card check reads every branch (`storedEntries`,
+// `storeHoldsSession`), so the ledger records the frame shown. A check that read only the branch
+// the session is on never found the card, and its frame held a place of the session consumer's
+// ack-pending and its resume point for the life of the process (dispatch://INFRA-3686/spec R5).
+// The frame is answered `done` once the session records the card; the ledger's record of it is the
+// store's witness.
 test.skipIf(skip)(
   "a low card stored on a branch with no reply, then left for one with a reply, is answered done",
   async () => {
@@ -1713,13 +1751,27 @@ test.skipIf(skip)(
       daemonEnvelope(low.text, low.label, "low")
     );
     await session.until("the low card in the store", () =>
-      sqlSessionText(database, file)?.includes(low.text) ? true : undefined
+      storeEntries(database, file).some(
+        (entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(low.text)
+      )
+        ? true
+        : undefined
     );
     await noRequestFor(session, 12_000, 1);
     // The person goes back to the first reply without sending the edit.
     await session.command({ type: "navigate_tree", entryId: reply.id });
     await noRequestFor(session, 12_000, 1);
     expect(words).toContain("done");
+    await session.until("the ledger's record of the low card in the store", () =>
+      storeEntries(database, file).some(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === "envoy-replay-delivered" &&
+          JSON.stringify(entry.data).includes(`evt-${low.label}`)
+      )
+        ? true
+        : undefined
+    );
   },
   180_000
 );

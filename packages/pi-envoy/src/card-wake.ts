@@ -635,8 +635,9 @@ export class CardWake {
     this.#owed.clear();
     this.#startupPhase = false;
     if (unread === 0) return;
-    // The count is the wake's one fact; what the session does on it is in its prompt and the
-    // Envoy skill, and a startup card's wake may be the session's first turn.
+    // The count is the wake's one fact. The step the session takes on it is in envoy_inbox's
+    // description (`@legion/envoy-client/tool-contract`), as `./envoy-notices.ts` says, and a
+    // startup card's wake may be the session's first turn.
     this.#deps.sendMessage(
       {
         customType: "envoy-message",

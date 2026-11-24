@@ -2,7 +2,7 @@ import type { DedupeIdentity, DeliveryClaim } from "@legion/envoy-client/deliver
 import { ledgerIdentity } from "@legion/envoy-client/delivery-ledger";
 import type { ContentBlock } from "@legion/pi-shared/pi-types";
 import type { CardMode } from "./card-wake";
-import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
+import { type HeldReplayNotice, type HeldStoredCard, writtenCardIdentity } from "./missed-messages";
 
 /**
  * How a card is handed to the host: `card` and `aside` each go as an aside that starts a turn when
@@ -20,11 +20,19 @@ import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
  * that a card starts does not take it and a process that ends loses it. So a stored card too is
  * handed only to a settled host, and not while a card handed to start a turn has not started it
  * (`runStarted`). One sent while the host is busy is held, and handed at the first settled check
- * (`storedCheck`, which the extension runs after a run that does not continue, and at each
- * heartbeat that finds the host settled) or right before a card that starts a turn. A held
- * stored card holds back no other card. With no `message_end`, a stored card is written once the
- * session's store holds its entry (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is
- * never handed again.
+ * (`storedCheck`, which the extension runs after a run that does not continue, after an automatic
+ * compaction, and at each heartbeat that finds the host settled) or right before a card that
+ * starts a turn. A held stored card holds back no other card. With no `message_end`, a stored card
+ * is written once the session's store holds its entry (`storedCheck`,
+ * `UnwrittenFramesHost.storedEntries`), and it is never handed again.
+ *
+ * A stored card that waits for the store, held or handed, is recorded in the session's transcript
+ * (`UnwrittenFramesHost.recordStored`), and its frame's claim settles once that record is written.
+ * The record holds the card across a restart (`requeueStored`), so its frame keeps no place in the
+ * relay while the card waits: an edge listener's relay holds at most 16 frames of a session in
+ * flight (`relayEdgeInFlight` in packages/envoy/cmd/listener/session_relay.go), and 16 frames held
+ * through a long turn would stop every later card. A card whose record cannot be written keeps its
+ * claim until the store holds it.
  */
 export type CardDelivery = CardMode | "inert";
 
@@ -33,7 +41,8 @@ export type CardDelivery = CardMode | "inert";
  * My Pi holds a card or a user turn sent while a turn streams in memory until the turn takes it,
  * and writes it, emitting its `message_end`, only then (measured on omp 18.8.9, idle and mid-turn
  * alike); a process that ends first loses it. Until then the frame's claim stays pending, so the
- * frame is answered no `done`, the stream keeps its copy, and nothing records it shown.
+ * frame is answered no `done`, the stream keeps its copy, and nothing records it shown. A stored
+ * card's claim settles before that, once the card's record is written (`CardDelivery`).
  */
 interface Unwritten {
   /** The session it was handed to: written once the host is on another, it records nothing. */
@@ -158,6 +167,13 @@ export interface UnwrittenFramesHost {
   noticeHanded(id: string): void;
   /** A held notice's record could not be written: it is held in this process only. */
   recordNoticeFailed(error: unknown): void;
+  /** Records a stored card that waits for the session's store, held or handed, in the transcript of
+   *  `sessionID`, the session the card is for (`STORED_CARD_ENTRY`), so a restart that cuts the
+   *  wait short holds it again (`requeueStored`); a throw means it was not recorded. */
+  recordStored(sessionID: string, card: HeldStoredCard): void;
+  /** A stored card's record could not be written: its frame's claim waits until the session's
+   *  store holds the card, so the stream keeps its copy until then. */
+  recordStoredFailed(identity: DedupeIdentity, error: unknown): void;
 }
 
 /**
@@ -208,16 +224,20 @@ export function storeHoldsSession(entries: readonly unknown[]): boolean {
  * each under the claim of its frame. This owns each claim from the hand-off on: the claim
  * settles, and the replay ledger records the frame, once the host writes it (`written`,
  * `turnHandled`, `textTurnsEnded`), or at once for a frame nothing waits on (`sendCard`,
- * `awaitTurn`); it is released, recording nothing, when the card was for a session the host does
- * not have open, or the host refused the card, or an inert card held had nothing to wait under
- * (`sendCard`), or the host dropped the frame unwritten (a session change,
- * `releaseOtherSessions`; a person's turn an interrupt withdrew,
- * `handBackWithdrawn`), so the frame is answered no `done` and the stream keeps its copy.
+ * `awaitTurn`); a stored card's claim settles once its record is written, and the ledger records
+ * its frame once the session's store holds it (`CardDelivery`, `storedCheck`). A claim is
+ * released, recording nothing, when the card was for a session the host does not have open, or
+ * the host refused the card, or an inert card held had nothing to wait under (`sendCard`), or the
+ * host dropped the frame unwritten (a session change, `releaseOtherSessions`; a person's turn an
+ * interrupt withdrew, `handBackWithdrawn`), so the frame is answered no `done` and the stream
+ * keeps its copy.
  *
  * It also holds the replay notices (`sendNotice`) sent while the host is not settled, in order,
  * until the first settled moment hands them. A notice names no frame and has no claim: nothing
  * waits on its write. A held notice is recorded in the session's transcript, and marked handed
- * there once it is, so a restart that cuts the hold short holds it again (`requeueNotices`).
+ * there once it is, so a restart that cuts the hold short holds it again (`requeueNotices`). A
+ * stored card that waits is recorded there too, so a restart or a session change holds it again
+ * (`requeueStored`).
  */
 export class UnwrittenFrames {
   readonly #host: UnwrittenFramesHost;
@@ -268,6 +288,13 @@ export class UnwrittenFrames {
    * nothing of has nothing to wait under, so its claim is released and the listener sends the
    * frame again. A stored card is held as well while a card that starts a turn is on its way to the
    * host (`#turnStarting`).
+   *
+   * A stored card that waits, held or handed, is recorded (`UnwrittenFramesHost.recordStored`), and
+   * its claim settles once the record is written. One whose record cannot be written keeps its
+   * claim until the session's store holds it (`recordStoredFailed`). A stored card of a frame whose
+   * stored card waits for `session` already is that card: one held again from the transcript
+   * (`requeueStored`) while the stream relays its frame again. Nothing more is handed or recorded,
+   * and its claim settles at once.
    */
   sendCard(
     session: string,
@@ -282,6 +309,17 @@ export class UnwrittenFrames {
       claim?.release();
       return "closed";
     }
+    const keys = identity === undefined ? [] : unwrittenCardKeys(ledgerIdentity(identity));
+    if (
+      deliverAs === "stored" &&
+      keys.some((key) => {
+        const waiting = this.#cards.get(key);
+        return waiting?.deliverAs === "stored" && waiting.sessionID === session;
+      })
+    ) {
+      claim?.settle();
+      return "queued";
+    }
     const settled = this.#host.settled();
     const startsTurn = (deliverAs === "card" || deliverAs === "aside") && settled;
     const hand =
@@ -291,7 +329,6 @@ export class UnwrittenFrames {
     if ((startsTurn || (deliverAs === "stored" && hand)) && !this.#turnStarting()) {
       this.#handHeldStored();
     }
-    const keys = identity === undefined ? [] : unwrittenCardKeys(ledgerIdentity(identity));
     const card: UnwrittenCard | undefined =
       identity === undefined || keys.length === 0
         ? undefined
@@ -308,6 +345,7 @@ export class UnwrittenFrames {
     if (card !== undefined) this.#awaitWrite(card);
     if (!hand) {
       if (card === undefined) claim?.release();
+      else if (deliverAs === "stored") this.#recordStored(card);
       return "queued";
     }
     try {
@@ -318,10 +356,13 @@ export class UnwrittenFrames {
       throw error;
     }
     if (startsTurn) this.#turnStartingAt = this.#moments;
-    if (card !== undefined) return "queued";
-    // The ledger keeps nothing of the frame, so there is nothing to record.
-    claim?.settle();
-    return "shown";
+    if (card === undefined) {
+      // The ledger keeps nothing of the frame, so there is nothing to record.
+      claim?.settle();
+      return "shown";
+    }
+    if (deliverAs === "stored") this.#recordStored(card);
+    return "queued";
   }
 
   /** Whether a card of the frame `identity` waits to be written: that card shows it. */
@@ -383,6 +424,34 @@ export class UnwrittenFrames {
         continue;
       }
       this.#notices.push({ id, sessionID, content, recorded: true });
+    }
+  }
+
+  /**
+   * Holds again, for the session this instance serves now, the stored cards its transcript records
+   * as waiting and shows no write of (`heldStoredCards`), after those held already, until the first
+   * settled check hands them (`storedCheck`). Each frame was answered `done` once its card was
+   * recorded, so no claim goes with the card, and its record stands. One of a frame whose card
+   * waits here already is passed over, so a restore that reads the same transcript twice holds
+   * each once. One recorded for another session is held for this one too: a fork's transcript
+   * copies the entries of the session it forked from, whose hold a session change drops
+   * (`releaseOtherSessions`).
+   */
+  requeueStored(cards: readonly HeldStoredCard[]): void {
+    const sessionID = this.#host.sessionID();
+    for (const { identity, content, dispatchMessageId } of cards) {
+      const keys = unwrittenCardKeys(ledgerIdentity(identity));
+      if (keys.length === 0 || keys.some((key) => this.#cards.has(key))) continue;
+      this.#awaitWrite({
+        sessionID,
+        identity,
+        claim: undefined,
+        keys,
+        content,
+        deliverAs: "stored",
+        dispatchMessageId,
+        handedAt: undefined,
+      });
     }
   }
 
@@ -565,9 +634,12 @@ export class UnwrittenFrames {
    * longer waited on, since the host dropped it with the session (measured on omp 18.8.9: a card a
    * turn held when RPC `new_session` ran got no `message_end`). Its claim is released and nothing
    * records it, so the stream keeps its copy and the session's own consumer relays it again once
-   * the host is back on that session or resumes it, to be waited on anew. A notice held for the session it left is dropped:
-   * it concerns only the session it was raised for, whose transcript records it, so the restore
-   * once the host is back on that session holds it again (`requeueNotices`).
+   * the host is back on that session or resumes it, to be waited on anew. A stored card whose
+   * claim settled once it was recorded has no claim to release: the restore once the host is back
+   * on that session holds it again from its record (`requeueStored`). A notice held for the
+   * session it left is dropped: it concerns only the session it was raised for, whose transcript
+   * records it, so the restore once the host is back on that session holds it again
+   * (`requeueNotices`).
    */
   releaseOtherSessions(sessionID: string): void {
     for (const waiting of [this.#cards, this.#turns]) {
@@ -641,6 +713,30 @@ export class UnwrittenFrames {
       this.#awaitWrite(card);
       this.#host.handBackFailed(card.identity, error);
     }
+  }
+
+  // Records a stored card that waits for the session's store in the transcript of the session it
+  // is for, and settles its claim once the record is written: the frame is answered `done`, and
+  // the record holds the card across a restart (`requeueStored`). A card with no claim is not
+  // recorded again: only a card held again from its record has none. One whose record cannot be
+  // written keeps its claim until the session's store holds it (`storedCheck`).
+  #recordStored(card: UnwrittenCard): void {
+    if (card.claim === undefined) return;
+    try {
+      this.#host.recordStored(card.sessionID, {
+        identity: card.identity,
+        content: card.content,
+        dispatchMessageId: card.dispatchMessageId,
+      });
+    } catch (error) {
+      this.#host.recordStoredFailed(card.identity, error);
+      return;
+    }
+    const recorded: UnwrittenCard = { ...card, claim: undefined };
+    for (const key of card.keys) {
+      if (this.#cards.get(key) === card) this.#cards.set(key, recorded);
+    }
+    card.claim.settle();
   }
 
   // The host wrote what it was handed: the record of the frame is asked for under the session

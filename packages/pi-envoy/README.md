@@ -208,15 +208,20 @@ session and no ask's (`ask.*`). It starts no turn: it goes as `nextTurn` with no
 the next turn reads it, whatever starts that turn. Oh My Pi keeps such a card only in memory while
 a turn streams, where that turn does not take it and a process that ends loses it, so the
 extension hands it only to a settled host (`hostSettled`). One that comes during a turn is held,
-and handed at the first settled check after the run, at a heartbeat that finds the host settled,
-or right before a card that starts a turn (`checkStoredCards`). The host writes it with no
-`message_end`, so its frame counts as shown once the session's store holds its entry, on any
-branch of the session, under SQL session storage as under files (`storeHoldsSession`,
-`storedCheck`); until then its claim stays pending and the stream keeps its copy. For the same
-reason no host event puts it on the agent stream: the extension records it there as it hands it
-over (`handCard`), so Dispatch's live view shows it, under either storage, before the turn that
-reads it. Its `details` carry the hand-over state `inert` and its urgency, and no card id, so no
-wake follows it and no unread count names it.
+and handed at the first settled check after the run or after an automatic compaction, at a
+heartbeat that finds the host settled, or right before a card that starts a turn
+(`checkStoredCards`). The host writes it with no `message_end`, so its frame counts as shown once
+the session's store holds its entry, on any branch of the session, under SQL session storage as
+under files (`storeHoldsSession`, `storedCheck`). While it waits for the store, held or handed,
+the extension records the card in the session's transcript (`envoy-stored-card`) and answers its
+frame `done` once that record is written, so the frame holds no place of the relay's frames in
+flight (an edge listener's relay holds at most 16 of a session's frames). The record holds the
+card across a stop or a session change: a restore holds it again until the transcript shows it
+written (`heldStoredCards`). A card whose record cannot be written keeps its claim, and the stream
+keeps its copy, until the store holds it. No host event puts such a card on the agent stream: the
+extension records it there as it hands it over (`handCard`), so Dispatch's live view shows it,
+under either storage, before the turn that reads it. Its `details` carry the hand-over state
+`inert` and its urgency, and no card id, so no wake follows it and no unread count names it.
 
 ## Session identity
 

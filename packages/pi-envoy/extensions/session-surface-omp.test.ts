@@ -1529,9 +1529,14 @@ test.skipIf(skip)(
 
     const low = `phase-finished on ACME-1 ${randomUUID()}`;
     await session.relay(daemonNotice(low, "low"), "the low notice");
-    // The host stores the low card with no turn: it is in the session file.
+    // The host stores the low card with no turn: its entry is in the session file, not only the
+    // record the session keeps of the card while it waits for the store.
     await session.until("the low card in the session file", async () =>
-      (await session.entries()).some((line) => line.includes(low)) ? true : undefined
+      (await session.entries()).some(
+        (line) => line.includes('"custom_message"') && line.includes(low)
+      )
+        ? true
+        : undefined
     );
     const med = `checks-red on ACME-1 ${randomUUID()}`;
     await session.relay(daemonNotice(med, "med"), "the med notice");
@@ -1582,7 +1587,11 @@ test.skipIf(skip)(
     expect(shown).toMatchObject({ role: "user", streaming: false });
     expect(String(shown.id)).toStartWith("c");
     await session.until("the low card in the session's store", async () =>
-      (await session.entries()).some((line) => line.includes(low)) ? true : undefined
+      (await session.entries()).some(
+        (line) => line.includes('"custom_message"') && line.includes(low)
+      )
+        ? true
+        : undefined
     );
 
     const med = `checks-red on ACME-1 ${randomUUID()}`;
