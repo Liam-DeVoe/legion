@@ -1919,7 +1919,9 @@ tests, the load-test cluster's test with helm) and of envoy-infra-go (the natsli
 editor's parity fuzz, and the proofs whose pull-request leg passed 10 minutes with them:
 envoy-session-stall's claimant delivery, verification results and session title
 (envoy-session-proofs; that leg took 16.2 minutes with them in CI run 45292147224) and
-envoy-e2e-local's bucket refill (envoy-e2e-refill; 10.8 minutes in that run). The labels
+envoy-e2e-local's bucket refill (envoy-e2e-refill; 10.8 minutes in that run). The
+envoy-session-proofs leg also runs the local-stack mode of project-secrets-check.sh and that
+check's negative control, which main added as a script no job ran. The labels
 `lane:envoy_go_checks` and `lane:envoy_infra_go` lift the job whole. Its legs keep the runners
 of the legs they came from; the session proofs' leg takes the job's Postgres, sized for its
 Dispatch processes.
