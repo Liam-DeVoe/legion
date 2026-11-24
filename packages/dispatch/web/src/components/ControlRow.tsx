@@ -334,11 +334,9 @@ export interface ControlRowProps {
  * scroll (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits. A control of a dialog, a
  * panel or a selection bar a page draws in a slot - the Delivery page's Session groups dialog - is
- * that region's and none of the row's, so the row hands its focus nowhere. In a dialog or a
- * panel, the page's rescue answers a loss the reader caused inside that region, never with a
- * control of the row outside it. In a selection bar, the bar's own hand-off (`SelectionBar`)
- * answers a loss the reader caused. The page's rescue leaves a loss there that the reader did not
- * cause as `leaveUncaused` says.
+ * that region's and none of the row's, so the row hands its focus nowhere, and never to a control
+ * of the row outside that region. In a selection bar, the bar's own hand-off (`SelectionBar`)
+ * answers a loss the reader caused.
  *
  * Beside its slots it draws **Clear filters**, `+N more` and the panel `+N more` opens, and
  * nothing else. Neither that panel nor the one a trigger opens takes room in the row

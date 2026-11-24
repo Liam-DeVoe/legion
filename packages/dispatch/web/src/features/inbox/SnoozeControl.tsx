@@ -118,11 +118,10 @@ export function SnoozePick({
  * it, while its pick's write is out and through the commit after its answer. An un-snooze takes
  * the row out of its window at once the same way, where the list would be drawn in Un-snooze's
  * place, so Un-snooze stays drawn, held, while its write is out and through the commit after its
- * answer. The press is the reader's, and the row's going after the answer is that press's doing
- * (`causedByReader`) only while its control - for a pick, the trigger of the list it was made in -
- * is still in the page and held: the row goes with its held control, so the page's rescue hands
- * the focus on as it does for Dismiss and Assign to me, to the same control in the row that moves
- * up into the row's place. That is a row's own Snooze. In the reading column's head
+ * answer. The press is the reader's, and its control - for a pick, the trigger of the list it was
+ * made in - stays in the page and held until the row goes with it after the answer, so the focus
+ * stays on that control until then, and a second press on it does nothing. That is a row's own
+ * Snooze. In the reading column's head
  * (`ReadingPaneHead`) the control goes with the question the column shows, and the Inbox's own
  * hand-off sends the focus to the column's focus stop instead (`Inbox.tsx`). A control taken away
  * at the press would leave the row's going to drop the focus onto the page.

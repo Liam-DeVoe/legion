@@ -23,9 +23,10 @@ import type { SessionSends } from "./useSessionSends";
  * sending; still being tried past its deadline with Stop trying; or refused with why, Retry and
  * Discard. The session's live view and its Agents row both show it, and either's controls act on
  * the same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message
- * takes its place. It is a row to the page's focus rescue by the row marker (`row-marker.ts`), not
- * by list markup: in the live view it is a turn of the transcript, whose stored turns are no list,
- * so a list around the held turns would read to a screen reader as a list the transcript is not.
+ * takes its place. It is a row to the page's focus hand-offs by the row marker (`row-marker.ts`),
+ * not by list markup: in the live view it is a turn of the transcript, whose stored turns are no
+ * list, so a list around the held turns would read to a screen reader as a list the transcript is
+ * not.
  */
 export function PendingSendTurn({
   held,

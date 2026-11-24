@@ -493,8 +493,8 @@ export function IssueHeader({
               // what it holds, a button's `aria-label` included. It opens the editor when the
               // reader activates it - a click, Enter or Space - and never as it takes the focus:
               // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
-              // Focus), and the page's focus rescue can give the button the focus with no act of
-              // the reader's. A closed issue's title edits nothing, so it is the heading alone.
+              // Focus), and a focus can come to the button with no act of the reader's. A closed
+              // issue's title edits nothing, so it is the heading alone.
               <div className="relative min-w-0 flex-1">
                 <h1
                   className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}

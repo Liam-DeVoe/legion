@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -59,12 +59,11 @@ const REVISION = 41;
 
 // Queries are scoped to this render's container: bun runs every test file in one document, and
 // a sibling file's un-unmounted render would otherwise leak its links into a `screen`-wide query.
-// `rescue` mounts the line in the shell's main content with the page's focus rescue, beside a
-// control of the page after it; `redraw` draws it again for the issue's `advances` a later read
-// answers.
+// `inMain` mounts the line in the shell's main content, beside a control of the page after it;
+// `redraw` draws it again for the issue's `advances` a later read answers.
 function renderLine(
   advances: Issue["advances"],
-  { closed = false, rescue = false }: { closed?: boolean; rescue?: boolean } = {}
+  { closed = false, inMain = false }: { closed?: boolean; inMain?: boolean } = {}
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
   const patchIssue = answerIssuePatches();
@@ -81,11 +80,11 @@ function renderLine(
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          {rescue ? (
-            <RescuedMain>
+          {inMain ? (
+            <main>
               {line}
               <button type="button">Elsewhere</button>
-            </RescuedMain>
+            </main>
           ) : (
             line
           )}
@@ -332,17 +331,16 @@ test("the Priority to advance list holds a text box that narrows the priorities,
 });
 
 // The `+` is replaced in its place by the form it opens, and its press takes the focus away with
-// it. The page's focus rescue lands that focus on what the press drew there: the form's first
-// control, the Priority to advance list's trigger, focused with no scroll. The walk back by count
-// from the `+`'s place reaches the same trigger, and scrolls it into view.
+// it. The form lands that focus on its own first control, the Priority to advance list's trigger,
+// with no scroll, since the form stands where the `+` stood.
 test("a press on Add a priority lands the focus on the Priority to advance list, scrolling nothing", async () => {
   const user = userEvent.setup();
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
-  const view = renderLine([{ id: "evals-now", inherited: false }], { rescue: true });
+  const view = renderLine([{ id: "evals-now", inherited: false }], { inMain: true });
   try {
     await user.click(await view.q.findByRole("button", { name: "Add a priority to CORE-9" }));
     const picker = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(picker).toHaveFocus();
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
@@ -359,11 +357,11 @@ test("the form drawn again by a live update leaves the focus on the control the 
   const user = userEvent.setup();
   const own = (count: number) =>
     Array.from({ length: count }, (_, index) => ({ id: `priority-${index}`, inherited: false }));
-  const view = renderLine(own(MAX_ISSUE_ADVANCES - 1), { rescue: true });
+  const view = renderLine(own(MAX_ISSUE_ADVANCES - 1), { inMain: true });
   try {
     await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
     const first = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(first).toHaveFocus();
     const elsewhere = view.q.getByRole("button", { name: "Elsewhere" });
     await user.click(elsewhere);
@@ -374,7 +372,7 @@ test("the form drawn again by a live update leaves the focus on the control the 
     view.redraw(own(MAX_ISSUE_ADVANCES - 1));
     const again = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
     expect(again).not.toBe(first);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(elsewhere).toHaveFocus();
   } finally {
     view.unmountAll();

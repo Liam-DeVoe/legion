@@ -16,8 +16,7 @@ import {
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
-import { nextFrame } from "../../__tests__/frames";
+import { afterFrameAndTasks, nextFrame } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -1463,11 +1462,11 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
   }
 });
 
-// The same answer from elsewhere, with the page's focus rescue mounted as the app shell mounts it
-// (`RescuedMain`). The reader's click on the answer field has been answered, so no press of
-// theirs is live when the card swaps to its record. Whoever caused the loss, the card hands the
-// focus to its form's own row, the reader's own place, with no scroll: the Inbox keeps that row
-// in the list with the recorded answer while it holds the focus, and no other row takes it.
+// The same answer from elsewhere, in the shell's main content, as the app shell draws it. The
+// reader's click on the answer field has been answered, so no press of theirs is live when the
+// card swaps to its record. Whoever caused the loss, the card hands the focus to its form's own
+// row, the reader's own place, with no scroll: the Inbox keeps that row in the list with the
+// recorded answer while it holds the focus, and no other row takes it.
 test("an ask answered elsewhere while the reader's focus is in its form hands the focus to its own row, which stays in the list with its record", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
@@ -1501,9 +1500,9 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <RescuedMain>
+        <main>
           <Inbox />
-        </RescuedMain>
+        </main>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1514,7 +1513,7 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     if (row === null) throw new Error("ask-b row missing");
     const field = within(card).getByLabelText("Your answer");
     await user.click(field);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(field).toHaveFocus();
 
     // Bob answers it in his own tab: the server drops it from the inbox and the thread records
@@ -1529,7 +1528,7 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
     expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     expect(field).not.toBeInTheDocument();
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(row).toHaveFocus();
     expect(kept.closest("[data-inbox-row]")).toBe(row);
@@ -1587,9 +1586,9 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -1601,7 +1600,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     if (row === null) throw new Error("ask-b row missing");
     const field = within(card).getByLabelText("Your answer");
     await user.click(field);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(field).toHaveFocus();
 
     // Bob answers it in his own tab: the server drops it from the inbox and the thread records
@@ -1614,7 +1613,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     const kept = await screen.findByTestId("ask-ask-b");
     expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     expect(field).not.toBeInTheDocument();
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(row).toHaveFocus();
     expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]);
     expect(scrolls).not.toHaveBeenCalled();
@@ -2766,10 +2765,8 @@ function drawnAssign(askId: string, issueKey: string): string {
 // Under the Unassigned filter the optimistic assignment takes the row out of the filter, and the
 // Inbox keeps the row while the save is out (`AskAssignWritesProvider`). It lets go of the row in
 // the commit that draws the save's answer, while the button is still held from the press
-// (`useHeldThroughAnswer`), so the button goes with its row while it is held: the press is still
-// live then, and the page's rescue reads the row's going as its doing (`causedByReader`). A
-// button let go before its row goes would end the press while the row still stands, where a
-// browser can run the rescue's check before the row goes.
+// (`useHeldThroughAnswer`), so the button goes with its row while it is held, and keeps the focus
+// and takes no second press until then.
 test("Assign to me stays held until it goes with its row, in the commit that draws its answer", async () => {
   const user = userEvent.setup();
   const orphan = issueAsk(
@@ -3492,14 +3489,12 @@ async function pressDrawnSnooze(user: UserEvent, askId: string, label: string): 
 
 // A Snooze pick keeps its row in the band the reader saw it in while the write is out, held and
 // showing the moment being saved, and the row moves into Later, which starts folded, in the commit
-// after the write's answer, where the Inbox lets go of the row. The pick is the reader's press, and
-// the row's going is its doing only while the list's trigger it was made from is held
-// (`causedByReader`), so the list stays drawn and held from the pick through that commit - the
-// optimistic moment would draw Un-snooze in its place - and goes with its row in the commit its
-// hold ends. The write is out across two of the rescue's checks, as a server slower than a frame
-// keeps it, and once the row has gone the page's rescue hands the focus to the same control in the
-// row that moves up into its place, as it does for Dismiss and Assign to me, not to the page.
-test("a Snooze pick keeps its row in its band, held, through the commit after its answer, and the focus goes to the same control of the row that moves up when the row folds away", async () => {
+// after the write's answer, where the Inbox lets go of the row. The list stays drawn and held from
+// the pick through that commit - the optimistic moment would draw Un-snooze in its place - and
+// goes with its row in the commit its hold ends. The write is out for two frames and their tasks
+// here, as a server slower than a frame keeps it, and the list's trigger keeps the focus all that
+// time.
+test("a Snooze pick keeps its row in its band, held, through the commit after its answer, and its row folds away with the trigger still held", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
   const askB = issueAsk({
@@ -3531,11 +3526,11 @@ test("a Snooze pick keeps its row in its band, held, through the commit after it
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <commits.Recorded host={null}>
               <Inbox />
             </commits.Recorded>
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -3551,8 +3546,8 @@ test("a Snooze pick keeps its row in its band, held, through the commit after it
     const fromPick = commits.markAt(tomorrow, "click");
     await user.click(tomorrow);
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
-    await afterRescue();
-    await afterRescue();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
     expect(trigger).toHaveFocus();
     // Out, the row is where the reader saw it, with the moment being saved before its list.
     expect(headings()).toEqual(bands);
@@ -3567,9 +3562,6 @@ test("a Snooze pick keeps its row in its band, held, through the commit after it
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
     expect(drawnChanges(fromPick())).toEqual(["Snooze held", "(no row)"]);
     expect(screen.getByRole("button", { name: /^Later \(1\)/ })).toBeTruthy();
-    await afterRescue();
-
-    expect(within(rowOf("ask-c")).getByLabelText("Snooze CORE-3: Which owner?")).toHaveFocus();
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -3581,11 +3573,10 @@ test("a Snooze pick keeps its row in its band, held, through the commit after it
 // An Un-snooze press is held to the rule a Snooze pick is: its row stays in Later while the write
 // is out, and Un-snooze stays drawn there, held, from the press through the commit after the
 // answer - the optimistic moment would draw the Snooze list in its place - so it goes with its row
-// in the commit its hold ends, while the press is still live. The write is out across two of the
-// rescue's checks, as a server slower than a frame keeps it. The reader has folded the band the
-// row returns to, so the row leaves the page as it leaves Later, and the page's rescue hands the
-// focus to the same control in the row that moves up into its place, not to the page.
-test("an Un-snooze press keeps its button held in Later through the commit after its answer, and the focus goes to the same control of the row that moves up when the row leaves Later", async () => {
+// in the commit its hold ends. The write is out for two frames and their tasks here, as a server
+// slower than a frame keeps it. The reader has folded the band the row returns to, so the row
+// leaves the page as it leaves Later.
+test("an Un-snooze press keeps its button held in Later through the commit after its answer, and its row leaves Later with the button still held", async () => {
   const user = userEvent.setup();
   const askA = inboxIssue("ask-a", "CORE-1", "Which approach?");
   const askB = inboxIssue("ask-b", "CORE-2", "Which format?", { snoozed_until: soon() });
@@ -3606,11 +3597,11 @@ test("an Un-snooze press keeps its button held in Later through the commit after
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <commits.Recorded host={null}>
               <Inbox />
             </commits.Recorded>
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -3624,8 +3615,8 @@ test("an Un-snooze press keeps its button held in Later through the commit after
     const fromPress = commits.markAt(button, "click");
     await user.click(button);
     await waitFor(() => expect(unsnoozeAsk).toHaveBeenCalledTimes(1));
-    await afterRescue();
-    await afterRescue();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
     // Out, the row is where the reader saw it.
     expect(rowIds()).toEqual(["ask-b", "ask-c"]);
     expect(rowOf("ask-b")).toHaveAttribute("data-inbox-section", "later");
@@ -3635,11 +3626,7 @@ test("an Un-snooze press keeps its button held in Later through the commit after
       await landing.promise;
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
-    await afterRescue();
-
-    expect(
-      within(rowOf("ask-c")).getByRole("button", { name: "Un-snooze CORE-3: Which owner?" })
-    ).toHaveFocus();
+    await afterFrameAndTasks();
     expect(drawnChanges(fromPress())).toEqual(["Un-snooze held", "(no row)"]);
   } finally {
     view.unmount();
@@ -4482,13 +4469,10 @@ test("Escape from the bar's Snooze list while its write is out goes to the row h
 });
 
 // Escape from a control inside a row goes back to that row, even while the row's own snooze is
-// saving. Here it is pressed on the row's mark, which the snooze does not hold: the key ends the
-// pick's press, and itself stops counting a frame and a task after it. The write's landing then
-// folds the row into Later, and that is no press's doing, so the page's rescue leaves the focus on
-// the body, as it does for every loss the reader did not cause. `j` from the body starts at the
-// first row, as it does from anywhere off the list. Escape on the held Snooze itself would not end
-// the pick's press (`notePress` passes over a key on a control the press holds), so the row's going
-// would be the pick's doing and the rescue would hand the focus to the row that moves up.
+// saving. Here it is pressed on the row's mark, which the snooze does not hold. The write's landing
+// then folds the row into Later, and that is no press's doing, so the focus stays on the body, as
+// it does for every loss the reader did not cause. `j` from the body starts at the first row, as it
+// does from anywhere off the list.
 test("Escape onto a row whose own snooze is saving leaves the focus on the body once the write folds the row away, and j from there moves to the first row", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -4512,9 +4496,9 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -4534,14 +4518,14 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     expect(rowOf("ask-b")).toHaveFocus();
     // The write is out past the Escape's own frame and task, as a server slower than a frame
     // keeps it.
-    await afterRescue();
+    await afterFrameAndTasks();
 
     await act(async () => {
       landing.resolve();
       await landing.promise;
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(document.body).toHaveFocus();
 
     await user.keyboard("j");
@@ -5612,12 +5596,10 @@ test("a question the reader was answering keeps its text in the column, closed, 
   }
 });
 
-// The same withdrawal with the page's focus rescue mounted as the app shell mounts it
-// (`RescuedMain`), and no press of the reader's live when it lands. Whoever caused the loss, the
-// card hands the focus to its form's nearest focus stop, in the column the column's own focus
-// stop, with no scroll, and the Inbox's `j` answers from there. Left to the rescue, the focus
-// would land on a control of the record drawn in the form's place, and a text box there would
-// take the `j` as text.
+// The same withdrawal in the shell's main content, as the app shell draws it, and no press of the
+// reader's live when it lands. Whoever caused the loss, the card hands the focus to its form's
+// nearest focus stop, in the column the column's own focus stop, with no scroll, and the Inbox's
+// `j` answers from there.
 test("in the reading column, a question withdrawn under the reader's focus hands it to the column's focus stop, and j then selects the next row", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -5635,9 +5617,9 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -5650,7 +5632,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     await user.clear(draft);
     await user.click(draft);
     await user.paste("Only on a cold start, and only back to the last lease.");
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(draft).toHaveFocus();
     // The opening selection keeps its row in sight (`pane-selection.ts`); what follows is the
     // loss, which scrolls nothing.
@@ -5667,7 +5649,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     const kept = within(screen.getByTestId("inbox-pane"));
     expect(kept.getByTestId("ask-resolution-badge").textContent).toBe("Retracted");
     expect(draft).not.toBeInTheDocument();
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
     expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
@@ -5687,11 +5669,11 @@ test("in the reading column, a question withdrawn under the reader's focus hands
 });
 
 // A question the server takes off the list while the reader's focus is in its answer box, with
-// nothing typed there, so the column keeps nothing of it, and with the page's focus rescue mounted
-// as the app shell mounts it (`RescuedMain`). The column goes in the commit that drops the row:
-// React lets go of the column's wrapper first and then of the card's form, whose hand-off puts
-// the focus on the column's stop as it goes (`AskCard`'s `handOffFocus`). The column drawn next
-// for the next question takes the focus on its own stop, so it is not left on the page.
+// nothing typed there, so the column keeps nothing of it, in the shell's main content, as the app
+// shell draws it. The column goes in the commit that drops the row: React lets go of the column's
+// wrapper first and then of the card's form, whose hand-off puts the focus on the column's stop as
+// it goes (`AskCard`'s `handOffFocus`). The column drawn next for the next question takes the focus
+// on its own stop, so it is not left on the page.
 test("in the reading column, a question taken off the list under the focus in its answer box hands the focus to the next question's focus stop", async () => {
   const narrow = widenToReadingPane();
   const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
@@ -5707,9 +5689,9 @@ test("in the reading column, a question taken off the list under the focus in it
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -5720,7 +5702,7 @@ test("in the reading column, a question taken off the list under the focus in it
     expect(selectedIds()).toEqual(["ask-a"]);
     const answer = within(pane).getByLabelText("Your answer");
     act(() => answer.focus());
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(answer).toHaveFocus();
 
     // A refetch the reader did not cause takes the question off the list.
@@ -5731,7 +5713,7 @@ test("in the reading column, a question taken off the list under the focus in it
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
     expect(rowIds()).toEqual(["ask-b"]);
     expect(answer).not.toBeInTheDocument();
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Question body" })).toHaveFocus();
@@ -5766,9 +5748,9 @@ test("in the reading column, j from the page after a control went from the colum
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -5782,16 +5764,16 @@ test("in the reading column, j from the page after a control went from the colum
     control.textContent = "Show more";
     screen.getByTestId("inbox-pane-scroller").append(control);
     act(() => control.focus());
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(control).toHaveFocus();
     control.remove();
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(document.activeElement).toBe(document.body);
 
     await user.keyboard("j");
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
     expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(document.activeElement).toBe(document.body);
   } finally {
     view.unmount();
@@ -5802,13 +5784,13 @@ test("in the reading column, j from the page after a control went from the colum
   }
 });
 
-// The reader's Snooze pick in the column's head, with the page's focus rescue mounted as the app
-// shell mounts it (`RescuedMain`). The write lands, the deferred question leaves the list, and the
-// column is drawn again for the next one, whose answer is a text box. The column's question went,
-// so the Inbox hands the focus to the new column's own focus stop, with no scroll, and the rescue
-// does not take the next question's controls for what the press drew in the Snooze's place: its
-// answer box there would take the reader's next `j` as text. From the stop `j` and `k` step the
-// selection and Enter opens the selected question's answer box, as they do from the page.
+// The reader's Snooze pick in the column's head, in the shell's main content, as the app shell
+// draws it. The write lands, the deferred question leaves the list, and the column is drawn again
+// for the next one, whose answer is a text box. The column's question went, so the Inbox hands the
+// focus to the new column's own focus stop, with no scroll, and not to the next question's
+// controls: its answer box there would take the reader's next `j` as text. From the stop `j` and
+// `k` step the selection and Enter opens the selected question's answer box, as they do from the
+// page.
 test("a Snooze pick in the column's head hands the focus to the next question's focus stop, and j, k and Enter answer from there", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -5840,9 +5822,9 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <Inbox />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -5853,14 +5835,14 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     expect(selectedIds()).toEqual(["ask-a"]);
     const snooze = within(pane).getByLabelText("Snooze CORE-1: Which approach?");
     act(() => snooze.focus());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     await pickIn(user, () => snooze, "Tomorrow");
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
     expect(rowIds()).toEqual(["ask-b", "ask-c"]);
     expect(within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer")).toBeTruthy();
-    await afterRescue();
+    await afterFrameAndTasks();
 
     const scroller = () => screen.getByTestId("inbox-pane-scroller");
     expect(scroller()).toHaveFocus();
@@ -7606,13 +7588,13 @@ test("a bulk snooze of the selected row keeps the list and the picker the reader
   }
 });
 
-// The bar's Snooze at the reading column's width with no rescue mounted, where the short rows draw
-// no Snooze of their own and the column shows a row the reader did not mark: nothing but the bar's
-// own Snooze holds the pick's press through its write. The write lands past the pick's own frame
-// and task, as a server slower than a frame keeps it, and the bar goes with the rows it snoozed:
-// that going is the pick's doing, so the focus goes to the row that moves up into the place of the
-// row marked last, as it does in the narrow list, and never to the body.
-test("a bulk Snooze that lands after its pick's frame, at the reading column's width with no rescue, hands the focus to the row now at the place of the row marked last, never the body", async () => {
+// The bar's Snooze at the reading column's width, where the short rows draw no Snooze of their own
+// and the column shows a row the reader did not mark: nothing but the bar's own Snooze holds the
+// pick's press through its write. The write lands past the pick's own frame and task, as a server
+// slower than a frame keeps it, and the bar goes with the rows it snoozed: that going is the pick's
+// doing, so the focus goes to the row that moves up into the place of the row marked last, as it
+// does in the narrow list, and never to the body.
+test("a bulk Snooze that lands after its pick's frame, at the reading column's width, hands the focus to the row now at the place of the row marked last, never the body", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const rows = [

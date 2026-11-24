@@ -13,7 +13,6 @@ import { createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
-import { RescuedMain } from "../../__tests__/focus-rescue";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -120,12 +119,12 @@ interface ComposerOptions {
   onSent?: () => void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
-  rescued?: boolean;
+  inMain?: boolean;
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
- *  instance - an Agents row's owner and seed when the reader picks an issue. `rescued` draws it in
- *  the shell's main content with the page's focus rescue mounted (`RescuedMain`). */
+ *  instance - an Agents row's owner and seed when the reader picks an issue. `inMain` draws it in
+ *  the shell's main content, as the app shell draws it. */
 function renderComposer(options: ComposerOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -156,7 +155,7 @@ function renderComposer(options: ComposerOptions = {}) {
     return (
       <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
         <QueryClientProvider client={queryClient}>
-          {props.rescued ? <RescuedMain>{field}</RescuedMain> : field}
+          {props.inMain ? <main>{field}</main> : field}
         </QueryClientProvider>
       </MemoryRouter>
     );
@@ -2351,10 +2350,9 @@ test("while a send is out, Ctrl+C, Ctrl+F and F5 in the box reach the browser, a
   }
 });
 
-// Offline a send can be out longer than the page's focus rescue reads the press as the reader's,
-// which is the write deadline (`SEND_DEADLINE_MS`, `focus-place.ts`). The box the reader sent
-// from never loses the focus, so the rescue has nothing to answer: the focus is on the box past
-// that deadline, and still there once the send lands.
+// Offline a send can be out longer than the write deadline (`SEND_DEADLINE_MS`). The box the
+// reader sent from never loses the focus: the focus is on the box past that deadline, and still
+// there once the send lands.
 test("offline, the box a send went from keeps the focus while the send is out past the write deadline", async () => {
   const online = onlineManager.isOnline();
   const answer = Promise.withResolvers<Comment>();
@@ -2362,7 +2360,7 @@ test("offline, the box a send went from keeps the focus while the send is out pa
   const restoreFocus = emulateChromiumFocusFixup();
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const { queryClient, view } = renderComposer({ rescued: true });
+  const { queryClient, view } = renderComposer({ inMain: true });
 
   try {
     act(() => onlineManager.setOnline(false));

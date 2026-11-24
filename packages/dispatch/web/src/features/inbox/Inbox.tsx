@@ -19,7 +19,7 @@ import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
-import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
+import { focusLost } from "../../components/focus-place";
 import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
@@ -1497,17 +1497,13 @@ function InboxBody({
   // none, and the selection's settling hands the next row the selection on the layout lane, so
   // the column is drawn again for that row in the same task (`pane-selection.ts`). The focus the
   // column held has fallen to the body, and what now stands where it was is the next question,
-  // not what the reader pressed for. The page's rescue takes nothing from another item
-  // (`showsAnother`, `components/focus-place.ts`), so without this hand-off it would walk a
-  // caused loss back to a control before the column, and leave an uncaused one on the body. So
-  // the focus goes to the column's own focus stop, with no scroll, whoever caused the loss, and
-  // `j`, `k` and Enter answer from there as they do from the body. A component may hand a lost
-  // focus to its own region's stop whoever caused the loss (`leaveUncaused`). On the layout lane
-  // too, in the commit that draws the column again, so it runs before the rescue's check a frame
-  // later, which then finds the focus placed. A focus the column lost while it still shows the
-  // same question - an editor a press opened in place - is the rescue's, and so is one that has
-  // gone somewhere by then. `focusLost`, not the body alone, so an engine that names a removed
-  // element focused until its focus fixup is read the same way.
+  // not what the reader pressed for. So the focus goes to the column's own focus stop, with no
+  // scroll, whoever caused the loss, and `j`, `k` and Enter answer from there as they do from the
+  // body. It runs on the layout lane, in the commit that draws the column again. A focus the
+  // column lost while it still shows the same question - an editor a press opened in place - is
+  // none of this hand-off's, and nor is one that has gone somewhere by then. `focusLost`, not the
+  // body alone, so an engine that names a removed element focused until its focus fixup is read
+  // the same way.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
     if (noted === null || noted.element.isConnected) return;
@@ -2470,16 +2466,8 @@ function InboxBody({
                     onWidthChange={setPaneWidth}
                     width={paneWidth}
                   />
-                  {/* The column names the question it shows, by which the page's rescue tells
-                        the next question drawn here from what a press drew in its place
-                        (`SHOWN_ITEM_ATTRIBUTE`). */}
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                  <div
-                    className="min-h-0 min-w-0"
-                    {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
-                    onBlur={forgetPaneReturn}
-                    ref={holdPane}
-                  >
+                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                     <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
                   </div>
                 </>

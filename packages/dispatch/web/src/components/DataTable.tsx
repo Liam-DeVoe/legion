@@ -378,7 +378,7 @@ export interface DataTableProps<Row> {
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
   /** Draws one row: a `<tr>` carrying the caller's own row attribute, which the keys and the
    *  box's height read, `data-index`, which the table writes the row's `aria-rowindex` from, and
-   *  `ref={measure}`. A `<tr>` is a row to the page's focus rescue by its element alone
+   *  `ref={measure}`. A `<tr>` is a row to the page's focus hand-offs by its element alone
    *  (`row-marker.ts`'s `ROW_SELECTOR`). */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`, as `renderRow` does. */
@@ -529,9 +529,8 @@ function TableHeaderCell<TData>({
  * which takes the focus as the row keys' `focusRow` gives it, each only while the reader can see
  * it, else to the main content's own stop with no scroll (`useFocusPlace`). A row that leaves
  * altogether is no case of this: the selection bar and the page's own hand-offs answer for it.
- * Nor is a focused row the box scrolls out of its drawn window: it goes with the focus, which the
- * shell's focus rescue leaves on the page rather than pull the box back to where the row was
- * (`useFocusRescue`).
+ * Nor is a focused row the box scrolls out of its drawn window: it goes with the focus, which is
+ * left on the page rather than pulling the box back to where the row was.
  *
  * The table says how many rows it has (`aria-rowcount`) and each drawn line where it sits among
  * them (`aria-rowindex`), so a screen reader hears the whole page's rows rather than the drawn

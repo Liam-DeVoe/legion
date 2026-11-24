@@ -343,7 +343,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // somewhere. A focus still on the text box the close took away is nowhere (`focusLost`): an
   // engine that moves the focus off a removed element only at its next rendering update still
   // names the box focused when this effect runs, before that update, and a Tab out of the box
-  // would otherwise leave the focus there to the page's rescue rather than on the trigger. A
+  // would otherwise leave the focus there, to fall onto the page, rather than on the trigger. A
   // press outside moves the focus after this runs, so the focus ends where that press put it.
   useEffect(() => {
     if (open) {

@@ -570,7 +570,7 @@ function keepRemovedFocus(): () => void {
 // INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
 // the body, and an engine that moves the focus off a removed element only at its next rendering
 // update still names the text box the close took away when the close runs, so there Tab or
-// Shift+Tab out of the box left the focus to the page's rescue. A close the list makes itself puts
+// Shift+Tab out of the box left the focus to fall onto the page. A close the list makes itself puts
 // the reader on the trigger in every engine; a press outside still leaves them where it put them.
 test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {
   const user = userEvent.setup();
