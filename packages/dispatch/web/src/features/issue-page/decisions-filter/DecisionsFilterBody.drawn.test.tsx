@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
+import { watchMoves } from "../../../__tests__/laid-out-rows";
 import { ApiError, api } from "../../../api/client";
 import type {
   Actor,
@@ -1414,30 +1415,18 @@ test("a focused entry that another person deletes gives the focus to its neighbo
 // it on, and the foot's control scrolls to its nearest edge only where it is not wholly in sight
 // (`focusIntoView`).
 test("a hand-off as a read moves or takes away the reader's entry, an address's landing, and Left from a foot row give every focus with no scroll of the browser's own", async () => {
-  /** Each focus given since the last `handOff()`: the element and whether it was asked to scroll
-   *  nothing. */
-  let given: { readonly element: Element; readonly still: boolean }[] = [];
-  const focus = HTMLElement.prototype.focus;
-  const spy = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-    this: HTMLElement,
-    options?: FocusOptions
-  ) {
-    given.push({ element: this, still: options?.preventScroll === true });
-    focus.call(this, options);
-  });
+  // Each focus given since the last `handOff()`, with the options it was asked with.
+  const moves = watchMoves();
   /** The focuses the hand-off gave, each by its element's node id or its role, and whether it
    *  scrolled nothing; empties the record for the next hand-off. */
-  const handOff = () => {
-    const named = given.map(({ element, still }) => ({
+  const handOff = () =>
+    moves.focused.splice(0).map(({ options, target }) => ({
       at:
-        element.getAttribute("data-node-id") ??
-        element.getAttribute("role") ??
-        element.textContent?.trim(),
-      still,
+        target.getAttribute("data-node-id") ??
+        target.getAttribute("role") ??
+        target.textContent?.trim(),
+      still: options?.preventScroll === true,
     }));
-    given = [];
-    return named;
-  };
   const deleted = async (
     view: Drawn,
     issue: { children: TreeNode[]; made: Decision[] },
@@ -1545,7 +1534,7 @@ test("a hand-off as a read moves or takes away the reader's entry, an address's 
     expect(handOff()).toEqual([{ at: footControl.textContent?.trim(), still: true }]);
     unfolded.unmount();
   } finally {
-    spy.mockRestore();
+    moves.restore();
   }
 });
 

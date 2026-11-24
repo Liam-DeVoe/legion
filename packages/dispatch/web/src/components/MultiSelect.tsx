@@ -566,7 +566,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // A focus arriving on the trigger as it is handed back is no arrival (`handingBack`). `options`
   // are the focus's own; with none, the engine brings the element into view where it is out of
   // sight, as it does for Escape and Tab.
-  const handBack = (to: HTMLElement | null = returnTarget(), options?: FocusOptions) =>
+  const handBack = (options?: FocusOptions, to: HTMLElement | null = returnTarget()) =>
     focusBack(to, (element) => {
       handingBack.current = true;
       element.focus(options);
@@ -585,14 +585,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // itself - the Inbox's hand-off focuses the row after the snoozed ones with no scroll while
   // they still stand, and brings it into view once they have gone (`pane-selection.ts`). The
   // engine's own scroll of a card a key opened the bar's Snooze from, partly out of sight, moved
-  // the list 230 px in card mode at the pick (the tester's round 16). A menu whose host's write is
-  // out writes nothing and stays open (`ariaDisabled`).
+  // the list 230 px in card mode at the pick. A menu whose host's write is out writes nothing and
+  // stays open (`ariaDisabled`).
   const choose = (value: string) => {
     if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
     if (props.mode === "single") {
       onOpenChange(false, "pick");
-      handBack(undefined, { preventScroll: true });
+      handBack({ preventScroll: true });
       props.onPick(value);
       return;
     }
@@ -622,10 +622,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // move the page under the press between its `mousedown` and its `mouseup`: in card mode the
   // focus given back to a card far up the page scrolled the cards, so the press on the Later
   // band's toggle or on another card's Snooze, far down the page, released on another element and
-  // did not act (the tester's round 16).
+  // did not act.
   const handBackOverPress = () => {
     const to = returnTarget();
-    focusBackOverPress(() => handBack(to, { preventScroll: true }));
+    focusBackOverPress(() => handBack({ preventScroll: true }, to));
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
@@ -639,8 +639,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // box, with no scroll, here, before the panel's own effect starts to follow the focus
   // (`AnchoredPanel`): the layout effect below alone decides where the panel stands scrolled. The
   // engine's own scroll of the list box it focuses centred that box in the panel, which put the
-  // status's first choice under the text box and its last under the foot line on a phone (the
-  // tester's round 16).
+  // status's first choice under the text box and its last under the foot line on a phone.
   useLayoutEffect(() => {
     if (!open) {
       letGo(opening);

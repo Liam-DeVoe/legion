@@ -102,6 +102,9 @@ export function RevocableList<Row>({
   const submitGuard = useSubmitGuard();
   // Why the read a landed revoke made has not settled, once its hold ran out (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
+  // What the list says of a read that failed, and of the read a landed revoke made that has not
+  // settled.
+  const notLoaded = `Couldn't load ${noun}.`;
   // The list shows a refused revoke itself, under the table.
   const mutation = useKeyedWrite({
     inline: true,
@@ -149,7 +152,7 @@ export function RevocableList<Row>({
       {query.isError ? (
         <div className="mt-6">
           <QueryError
-            message={`Couldn't load ${noun}.`}
+            message={notLoaded}
             onRetry={() => void query.refetch()}
             retrying={query.isFetching}
           />
@@ -215,7 +218,7 @@ export function RevocableList<Row>({
       {/* A list read that has not settled is said as the list says a list that failed to load. */}
       {refused === undefined && unsettled !== undefined ? (
         <p className={`mt-2 ${dangerText}`}>
-          Couldn't load {noun}. {unsettled}.
+          {notLoaded} {unsettled}.
         </p>
       ) : null}
     </section>

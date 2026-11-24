@@ -99,8 +99,9 @@ export function focusOnMount(element: HTMLElement | null): void {
  *  control before that place, walking back. `index` is the lost control's place among `controls`
  *  as they stand now: how many of them come before the point it left. A component's hand-off
  *  counts the place of a control taken away off the spot it went from, once it has gone
- *  (`placeLeft`), so however many controls went together, the walk starts where they were. */
-function placesFrom(
+ *  (`placeLeft`), so however many controls went together, the walk starts where they were. A
+ *  deleted post's kept reply and kept edit walk so from the offer they stand in (`handFocusFrom`). */
+export function placesFrom(
   controls: readonly HTMLElement[],
   index: number,
   atPlace: (control: Element) => boolean
@@ -433,7 +434,7 @@ function inRegionWithin(container: Element, element: Element): boolean {
 }
 
 /** How many of `controls` come before `node` in the page. */
-function countBefore(controls: readonly Element[], node: Node): number {
+export function countBefore(controls: readonly Element[], node: Node): number {
   let index = 0;
   for (const control of controls) {
     if (
@@ -476,9 +477,7 @@ export function focusLost(): boolean {
  *  the focus. */
 export function focusIntoView(element: HTMLElement): boolean {
   if (!focusNoScroll(element)) return false;
-  if (!inSightWhole(element, new Map())) {
-    element.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }
+  showWhole(element, new Map(), "any");
   return true;
 }
 
@@ -503,8 +502,7 @@ type Shown = "any" | "cut";
  *  So every engine lands a control the same way. `clips` is the caller's read of which boxes clip
  *  (`clippingBoxes`): a focus changes no box's overflow. Answers whether it took the focus. */
 function land(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): boolean {
-  element.focus({ preventScroll: true });
-  if (document.activeElement !== element) return false;
+  if (!focusNoScroll(element)) return false;
   showWhole(element, clips, shown);
   queueMicrotask(() => {
     if (document.activeElement === element) showWhole(element, clips, shown);

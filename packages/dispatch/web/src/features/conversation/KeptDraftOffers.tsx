@@ -3,7 +3,13 @@ import { type ReactNode, type RefObject, useRef } from "react";
 import { flushSync } from "react-dom";
 
 import type { Actor } from "../../api/types";
-import { focusableIn, focusLost, inSightNow } from "../../components/focus-place";
+import {
+  countBefore,
+  focusableIn,
+  focusLost,
+  inSightNow,
+  placesFrom,
+} from "../../components/focus-place";
 import { takesText } from "../../components/key-targets";
 import {
   dangerText,
@@ -148,12 +154,13 @@ const OFFER_PLACES = ["[data-reply]", "[data-margin-item], [data-inbox-thread]"]
  * it has gone, then each control before it, walking back. The controls are read while the offer
  * stands; one inside it goes with it, and one that takes typed text is passed over: the reader
  * never chose such a field, and their next key would be typed into it. The page's component
- * hand-offs walk by the same rule (`useFocusPlace`). With no such control in sight the focus
- * stays where the press left it. A deleted post's kept reply hands it so (`KeptReplyToDeleted`),
- * and so does its kept edit (`ThreadCard`'s `DeletedCommentEdit`).
+ * hand-offs walk by the same rule (`useFocusPlace`, `placesFrom`). A control of the inner place is
+ * one of the outer place too, so each is read once, at its first place. With no such control in
+ * sight the focus stays where the press left it. A deleted post's kept reply hands it so
+ * (`KeptReplyToDeleted`), and so does its kept edit (`ThreadCard`'s `DeletedCommentEdit`).
  */
 export function handFocusFrom(press: () => void, offer: Element | null): void {
-  const controls =
+  const controls = new Set<HTMLElement>(
     offer === null
       ? []
       : OFFER_PLACES.flatMap((selector) => {
@@ -162,16 +169,14 @@ export function handFocusFrom(press: () => void, offer: Element | null): void {
           const reachable = focusableIn(place).filter(
             (control) => !offer.contains(control) && !takesText(control)
           );
-          const after = reachable.findIndex(
-            (control) =>
-              (offer.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
-          );
-          const at = after === -1 ? reachable.length : after;
-          return [...reachable.slice(at, at + 1), ...reachable.slice(0, at).reverse()];
-        });
+          return placesFrom(reachable, countBefore(reachable, offer), () => true);
+        })
+  );
   handFocusOn(press, () => {
     const clips = new Map<Element, boolean>();
-    return controls.find((control) => control.isConnected && inSightNow(control, clips)) ?? null;
+    return (
+      [...controls].find((control) => control.isConnected && inSightNow(control, clips)) ?? null
+    );
   });
 }
 

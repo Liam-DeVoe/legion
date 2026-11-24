@@ -204,9 +204,7 @@ test("a held Enter toggles the active option once", async () => {
     await user.keyboard("{Enter>4}");
     expect(screen.getByTestId("selected").textContent, "a held Enter picks api once").toBe("api");
     await user.keyboard("{Enter>5}");
-    expect(screen.getByTestId("selected").textContent, "a held Enter takes api back once").toBe(
-      ""
-    );
+    expect(screen.getByTestId("selected").textContent, "a held Enter takes api back once").toBe("");
   } finally {
     view.unmount();
   }

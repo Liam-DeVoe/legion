@@ -2831,8 +2831,8 @@ test("a title a switch sent that Dispatch refuses because the issue was closed m
 // method's keys: the editor stays open with the reader's draft and sends nothing, where an Enter
 // would write the title mid-word. Chromium and Firefox mark such a key `isComposing`; Safari sends
 // it after the composition's end, unmarked, with keyCode 229. A plain key after it still ends the
-// edit and gives the focus back to the heading: Escape restores the title and sends nothing, and
-// Enter writes the title, once.
+// edit and gives the focus back to the title's button: Escape restores the title and sends
+// nothing, and Enter writes the title, once.
 test.each([
   ["Escape", "isComposing"],
   ["Enter", "isComposing"],

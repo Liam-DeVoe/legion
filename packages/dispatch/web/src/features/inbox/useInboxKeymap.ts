@@ -66,10 +66,7 @@ function rowAround(node: Element | null): HTMLElement | null {
  *  the page's key, as on the row (`typedOnMenuTrigger`). So `b` on a card's focused Snooze opens
  *  that card's Snooze menu and `p` there its priority menu. */
 function rowInHand(): HTMLElement | null {
-  const active = document.activeElement;
-  return (
-    focusedRow() ?? (active?.matches(MENU_TRIGGER_SELECTOR) === true ? rowAround(active) : null)
-  );
+  return focusedRow() ?? rowAround(focusedMatching(MENU_TRIGGER_SELECTOR));
 }
 
 /** Whether `node` is in the reading column `column`: inside it, or inside a panel a control of

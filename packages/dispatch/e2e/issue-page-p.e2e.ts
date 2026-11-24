@@ -1540,7 +1540,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       await page.keyboard.press("e");
       await expect(
         editor,
-        "e did not open the title's editor from the focused heading"
+        "e did not open the title's editor from the title's button"
       ).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(editor, "Enter left the title's editor open").toHaveCount(0);
@@ -1561,15 +1561,16 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       return promise;
     });
-    await expect(editor, "a focus given back to the heading opened the title's editor").toHaveCount(
-      0
-    );
+    await expect(
+      editor,
+      "a focus given back to the title's button opened the title's editor"
+    ).toHaveCount(0);
     await expect(titleButton, "Details did not give the focus back to the title").toBeFocused();
     await page.keyboard.press("x");
     await focusThePage(page);
     expect(
       (await getIssue(key)).title,
-      "a focus given back to the heading opened the title's editor"
+      "a focus given back to the title's button opened the title's editor"
     ).toBe("The header's issue");
 
     // The palette offers Close issue and Set priority P2, and not Reopen issue.
@@ -2145,15 +2146,15 @@ test("the labels' count names every label the line does not draw whole after the
 });
 
 // A focus alone opens no title editor, so a key typed after the page or the browser gives the
-// heading the focus back is no part of the title. Row (8) reads that through Details, whose
+// title's button the focus back is no part of the title. Row (8) reads that through Details, whose
 // drawer gives the focus back again in the frames after it closes: with the heading's old
 // `onFocus` put back, the editor that focus opened was closed again by that second focus, and
-// row (8) passed. Here the page gives the heading its focus back once, as a return to the window
-// does, and nothing focuses it again.
+// row (8) passed. Here the page gives the title's button its focus back once, as a return to the
+// window does, and nothing focuses it again.
 // SLOW(>=2s): 1,477 to 1,896 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
 // e2e-rows-9whgn at 4d06932a: one load, an edit opened by e and ended by Enter, the focus taken and
 // given back with two frames waited, a key typed, and the title read back from the server.
-test("a focus given back to the title's heading opens no editor", async ({ browser }) => {
+test("a focus given back to the title's button opens no editor", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -2164,8 +2165,8 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
     const titleButton = titleControl(header);
     const editor = header.getByRole("textbox", { name: "Issue title" });
     const title = (await getIssue(seeded.key)).title;
-    // Enter ends an edit with the focus on the heading; the page then loses the focus and gives
-    // it back to that heading.
+    // Enter ends an edit with the focus on the title's button; the page then loses the focus and
+    // gives it back to that button.
     await page.keyboard.press("e");
     await expect(editor, "e did not put the caret in the title").toBeFocused();
     await page.keyboard.press("Enter");
@@ -2175,14 +2176,15 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
       (element as HTMLElement).focus();
     });
     await framesDrawn(page, 2);
-    await expect(editor, "a focus given back to the heading opened the title's editor").toHaveCount(
-      0
-    );
+    await expect(
+      editor,
+      "a focus given back to the title's button opened the title's editor"
+    ).toHaveCount(0);
     await page.keyboard.press("x");
     await focusThePage(page);
     expect(
       (await getIssue(seeded.key)).title,
-      "a key typed after a focus given back to the heading changed the title"
+      "a key typed after a focus given back to the title's button changed the title"
     ).toBe(title);
   });
 });
@@ -2556,7 +2558,7 @@ async function expectFocusInSight(page: Page, menuId: string, message: string): 
 // over the title and the properties line, and it stayed open as Tab took the focus on past its
 // last action, so the focus went on to controls under it that the reader could not see (WCAG
 // 2.4.11). The row opens the menu by Enter from its control, Tabs once per action and once
-// more, and reads the menu closed. It then Tabs on to the title's heading and then the Status,
+// more, and reads the menu closed. It then Tabs on to the title's button and then the Status,
 // the two the open menu covers at 390 px, and reads the focus in sight at every control it stops
 // on. It sets 390 px for every project before it reads anything, so the phone project would only
 // repeat it.
@@ -2833,11 +2835,11 @@ function reviewAnswered(page: Page, artifactId: string, status: number) {
 
 // With the focus on the approval chip of a document whose request waits on the reader, `a`
 // presses its Approve and the approval is recorded, and the focus stays on the chip. With the
-// focus on another of the header's controls, the title's heading, `a` is not the approval's: it
+// focus on another of the header's controls, the title's button, `a` is not the approval's: it
 // sends no review and the request still waits. Nor is it on the chip once the document is
 // approved, which draws no Approve.
 // SLOW(>=2s): 1,510 to 1,960 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
-// e2e-rows-9whgn at 4d06932a: one load after an approval request, a pressed on the title's heading
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, a pressed on the title's button
 // and two frames waited, then a pressed on the chip and polled until Dispatch records the approval,
 // and a pressed again on the approved chip with two frames waited.
 test("the approval chip's a approves the document whose request waits, and a elsewhere approves nothing", async ({
@@ -2859,12 +2861,12 @@ test("the approval chip's a approves the document whose request waits, and a els
     await expect(titleButton).toBeFocused();
     await page.keyboard.press("a");
     await framesDrawn(page, 2);
-    expect(reviewed, "a on the title's heading sent a review").toEqual([]);
+    expect(reviewed, "a on the title's button sent a review").toEqual([]);
     expect(
       (await getArtifact(seeded.specArtifactId)).approval?.state,
-      "a on the title's heading answered the request"
+      "a on the title's button answered the request"
     ).toBe("awaiting");
-    await expect(approve, "a on the title's heading took the chip's Approve away").toBeVisible();
+    await expect(approve, "a on the title's button took the chip's Approve away").toBeVisible();
 
     const chip = approvalChip(page, seeded.specArtifactId);
     await chip.focus();
@@ -2894,9 +2896,9 @@ test("the approval chip's a approves the document whose request waits, and a els
 
 // With the focus on the chip whose request waits, or on its Approve, Shift+R presses its Request
 // changes, which opens the Request changes dialog, and Escape closes the dialog and gives the
-// focus back. With the focus on the title's heading it opens nothing.
+// focus back. With the focus on the title's button it opens nothing.
 // SLOW(>=2s): 1,473 to 1,875 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
-// e2e-rows-9whgn at 4d06932a: one load after an approval request, Shift+R on the title's heading
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, Shift+R on the title's button
 // with two frames waited, then the Request changes dialog opened by Shift+R and closed by Escape
 // twice, from the chip and from its Approve.
 test("the approval chip's Shift+R opens Request changes, from the chip and from its Approve", async ({
@@ -2918,7 +2920,7 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
     await expect(titleButton).toBeFocused();
     await page.keyboard.press("Shift+R");
     await framesDrawn(page, 2);
-    await expect(dialog, "Shift+R on the title's heading opened Request changes").toHaveCount(0);
+    await expect(dialog, "Shift+R on the title's button opened Request changes").toHaveCount(0);
 
     for (const [from, control] of [
       ["the chip", approvalChip(page, seeded.specArtifactId)],
@@ -3812,7 +3814,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
 });
 
 // `Shift+P` presses the pin while the menu is shut, so it opens nothing and closes nothing: the
-// focus stays where the reader had it, on the page's body or on the title's heading, and never
+// focus stays where the reader had it, on the page's body or on the title's button, and never
 // jumps to the menu's control.
 // SLOW(>=2s): 2,489 ms with four workers (CI run 44646643988), 1,572 ms on one worker (Job
 // e2e-rows-rdf2g at 43949bc0): one load, then a pin and an unpin by Shift+P, each read back on

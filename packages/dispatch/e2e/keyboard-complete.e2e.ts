@@ -124,6 +124,7 @@ import { firstAttempts, type KeyedWrite, watchWrites, writesSent } from "./keyed
 import { machineSession } from "./machines";
 import { commentWithBody } from "./margin-helpers";
 import { expectHighlight, openList, openTrigger, priorityTrigger, statusTrigger } from "./menus";
+import { inboxRead, logReads, readAnsweredSince } from "./pick-writes";
 import {
   type ReviewedRoute,
   type ReviewSeed,
@@ -1864,18 +1865,17 @@ async function withNewPage<Opened extends Page | undefined, T>(
   return answer;
 }
 
-/** What `act` opens in a new page of `context`, whose address it answers once loaded; the page is
- *  closed (`withNewPage`). A press that opens no page fails by `what`, the press's own words
- *  (`newPageAt`). */
+/** What `act` opens in a new page of `page`'s context, whose address it answers once loaded; the
+ *  page is closed (`withNewPage`). A press that opens no page fails by `what`, the press's own
+ *  words (`newPageAt`). */
 async function openedAddress(
-  context: BrowserContext,
   page: Page,
   act: () => Promise<unknown>,
   what: string
 ): Promise<string> {
   return withNewPage(
     page,
-    () => newPageAt(context, act, what),
+    () => newPageAt(page.context(), act, what),
     (opened) => opened.url()
   );
 }
@@ -1896,17 +1896,11 @@ async function storedSpec(seed: LinkSeed): Promise<string> {
 /** A plain primary click on each of `view`'s three links: the web link opens a new page at the
  *  other site and the Dispatch page stays where it was; the `dispatch://` link and the key move
  *  the same page to the other issue, with no new load of the application. */
-async function clickEachLink(
-  context: BrowserContext,
-  page: Page,
-  seed: LinkSeed,
-  view: LinkView
-): Promise<void> {
+async function clickEachLink(page: Page, seed: LinkSeed, view: LinkView): Promise<void> {
   let links = await openLinkView(page, seed, view);
   const at = page.url();
   expect(
     await openedAddress(
-      context,
       page,
       () => links.away.click(),
       `k-link-click: in ${view}, a click on the web link`
@@ -1929,11 +1923,10 @@ async function clickEachLink(
 // @firefox: the click each engine sends on a link, whose fields decide the path the link opens
 // through (Firefox sends Enter's click on a focused link with `detail` 1, Chromium with 0).
 test("k-link-click: in the spec the reader edits, a plain click opens each link, a pointer over one shows no Open link card, and Ctrl and a middle click open a new tab @firefox", async ({
-  context,
   page,
 }) => {
   const seed = await seedLinkSpec();
-  await clickEachLink(context, page, seed, "the editable spec");
+  await clickEachLink(page, seed, "the editable spec");
 
   // The web link inside the text a comment is anchored to opens too, rather than the comment.
   await openLinkView(page, seed, "the editable spec");
@@ -1943,7 +1936,6 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
   });
   expect(
     await openedAddress(
-      context,
       page,
       () => commented.click(),
       "k-link-click: in the editable spec, a click on the link inside commented text"
@@ -1974,7 +1966,6 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
   ] as const) {
     expect(
       await openedAddress(
-        context,
         page,
         () => link.click({ modifiers: ["ControlOrMeta"] }),
         `k-link-click: a Ctrl+click on ${what}`
@@ -1983,7 +1974,6 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
     ).toMatch(new RegExp(`^${otherPage}(/|$)`));
     expect(
       await openedAddress(
-        context,
         page,
         () => link.click({ button: "middle" }),
         `k-link-click: a middle click on ${what}`
@@ -2005,7 +1995,6 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
 // in each, and one move in place from each.
 // @firefox: the click each engine sends on a link (the row above says why).
 test("k-link-click: in the spec the reader edits and in a project document, a plain click on a link opens it after a Ctrl+click on that link opened it in a new tab @firefox", async ({
-  context,
   page,
 }) => {
   const seed = await seedLinkSpec();
@@ -2026,7 +2015,6 @@ test("k-link-click: in the spec the reader edits and in a project document, a pl
     // A Ctrl+click opens the link in a new tab; the editor may select around the link as it does.
     expect(
       await openedAddress(
-        context,
         page,
         () => link.click({ modifiers: ["ControlOrMeta"] }),
         step("a Ctrl+click on the dispatch:// link")
@@ -2131,12 +2119,9 @@ test("k-link-click: on a phone, a tap on a dispatch:// link in the spec the read
 for (const view of ["the past version", "the reading pane", "the comment"] as const) {
   // SLOW(>=2s): the view opened twice, a new page loaded and two moves to the other issue.
   // @firefox: the click each engine sends on a link (k-link-click's first row says why).
-  test(`k-link-click: in ${view}, a plain click opens each link @firefox`, async ({
-    context,
-    page,
-  }) => {
+  test(`k-link-click: in ${view}, a plain click opens each link @firefox`, async ({ page }) => {
     const seed = await seedLinkSpec();
-    await clickEachLink(context, page, seed, view);
+    await clickEachLink(page, seed, view);
   });
 }
 
@@ -2493,7 +2478,6 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
 // SLOW(>=2s): the spec opened three times and a new page loaded.
 // @firefox: the click each engine sends on a link (k-link-click's first row says why).
 test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a link or beside a key's title opens it and changes no text @firefox", async ({
-  context,
   page,
 }) => {
   const seed = await seedLinkSpec();
@@ -2505,7 +2489,6 @@ test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a l
   for (let step = 0; step < 8; step += 1) await page.keyboard.press("ArrowRight");
   expect(
     await openedAddress(
-      context,
       page,
       () => page.keyboard.press("Alt+Enter"),
       "k-link-keys: Alt+Enter in the web link"
@@ -2583,7 +2566,6 @@ async function tabWalk(page: Page, scope: Locator, limit: number): Promise<TabSt
 // @firefox: the click each engine sends for Enter on a focused link (k-link-click's first row
 // says why).
 test("k-link-keys: in the past version and the reading pane, Tab reaches each link, the key's title included, and Enter opens it @firefox", async ({
-  context,
   page,
 }) => {
   const seed = await seedLinkSpec();
@@ -2617,7 +2599,6 @@ test("k-link-keys: in the past version and the reading pane, Tab reaches each li
     await links.away.focus();
     expect(
       await openedAddress(
-        context,
         page,
         () => page.keyboard.press("Enter"),
         `k-link-keys: in ${view}, Enter on the web link`
@@ -9739,6 +9720,8 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
   await page.goto("/");
   const rows = page.locator("[data-inbox-row]");
   await expect(rows).toHaveCount(6);
+  // Every read of the Inbox, with when it went out and when it was answered (`logReads`).
+  const inboxReads = logReads(page, inboxRead);
   for (const level of ["the gap after it", "its middle"] as const) {
     const step = (text: string) => `k-phone: a tap on the page level with ${level}: ${text}`;
     // The fourth card down is in the P2 band both times: the first pick puts its card above all.
@@ -9757,6 +9740,16 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     }
     const card = inboxRow(page, moved);
     const writes = issueWrites(page, movedKey);
+    // The moment the runner hears the server's answer to the pick's write, noted in that event,
+    // before the page can act on the answer: each Inbox read the landing makes goes out after it.
+    let answeredAt = Number.POSITIVE_INFINITY;
+    const answered = page.waitForResponse((response) => {
+      const ours =
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${encodeURIComponent(movedKey)}`;
+      if (ours) answeredAt = Date.now();
+      return ours;
+    });
     const priority = priorityTrigger(card, movedKey);
     await priority.evaluate((node) => {
       window.scrollBy(0, node.getBoundingClientRect().top - innerHeight * 0.8);
@@ -9771,8 +9764,16 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     await expect
       .poll(() => writesSent(writes), { message: step("a tap on P1 sends one write") })
       .toBe(1);
-    // The server answers the pick's write within this second and a half.
-    await page.waitForTimeout(1500);
+    // The band is read once the pick's write has landed, the Inbox has been read again after it,
+    // and the page has drawn those answers. On a slow server the row waits for them, so the read
+    // cannot pass on a band the write has not reached yet.
+    await answered;
+    await expect
+      .poll(() => readAnsweredSince(inboxReads, answeredAt), {
+        message: step("the Inbox is read again once the pick's write has landed"),
+      })
+      .toBe(true);
+    await nextFrames(page);
     await expect(
       card,
       step("the picked card stays in the P2 band while the focus is in it")
