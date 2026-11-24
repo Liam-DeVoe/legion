@@ -70,9 +70,12 @@ type standing struct {
 // of a step's record takes the step it found, or, for a phase the issue has left, stepAt's
 // (reportEndedStep). An issue its plan holds stands in no step (planHold): a stopped task's run
 // ended with its stop, and a parent held for its children has not started its retro, so the end
-// rule ends the run each stood in (runOver) and no start is made for either.
+// rule ends the run each stood in (runOver) and no start is made for either. Nor does an issue
+// held for its fix or its CI (fixOrCIHold): the run of the step a hold beside the fix stands from
+// ended failed when the hold was written (besideFix), a task held at its end has not started its
+// retro, and the fix's own run stands beside it until the fix ends it (fixRunsAt).
 func standingStep(w Walk, issue record.Issue) (standing, bool) {
-	if planHold(issue, w.Stored) {
+	if planHold(issue, w.Stored) || fixOrCIHold(issue) {
 		return standing{}, false
 	}
 	return stepAt(w, issue, record.StandsAt(issue))

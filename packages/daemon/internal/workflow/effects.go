@@ -470,11 +470,19 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 		return err
 	}
 	at.lines += beside
+	// The task's working copy moves to the head a fix left it behind (copyMoveAfterFix), read
+	// before enter writes this start; the way after a fix names its own (moveToOf).
+	moveTo := moveToOf(ctx)
+	if moveTo == "" {
+		if moveTo, err = e.copyMoveAfterFix(ctx, tx, issue, w); err != nil {
+			return err
+		}
+	}
 	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, moveTo: moveToOf(ctx)})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, moveTo: moveTo})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -714,13 +715,14 @@ const (
 // RefusesRound is the whole of why review, one that decides (intake.PullRequestReview.Decides),
 // must not decide pr's round, a RoundRefusal with no reason when nothing refuses it: who wrote it
 // (DecidesRound, with reviewerSession as ReviewerSession reads it), then the head it says it read
-// (refusesRound). A review-App review judged while reviewerSession is "" waits
-// (RefusedWhileNoSession). Two places judge a review - this engine, for the review a webhook
-// delivers, and the daemon's read of GitHub's list of a pull request's reviews (daemon's
-// reviewToApply), which applies only a review this would take - and both ask this one judgement,
-// so neither judges by a narrower rule than the other, and neither asks a second one to learn how
-// long a refusal stands: the answer carries that (RoundRefusal.Lasts).
-func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
+// (refusesRound), where besideFix, the commit the running review step started at beside a fix of
+// its task as ReviewBesideFix reads it, decides beside pr's head. A review-App review judged while
+// reviewerSession is "" waits (RefusedWhileNoSession). Two places judge a review - this engine,
+// for the review a webhook delivers, and the daemon's read of GitHub's list of a pull request's
+// reviews (daemon's reviewToApply), which applies only a review this would take - and both ask
+// this one judgement, so neither judges by a narrower rule than the other, and neither asks a
+// second one to learn how long a refusal stands: the answer carries that (RoundRefusal.Lasts).
+func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession, besideFix string) RoundRefusal {
 	if !e.DecidesRound(review, reviewerSession) {
 		switch {
 		case !e.byReviewApp(review.Author):
@@ -730,7 +732,7 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 		}
 		return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", Lasts: RefusedAtEveryHead}
 	}
-	return e.refusesRound(review, pr)
+	return e.refusesRound(review, pr, besideFix)
 }
 
 // refusesRound is the second half of that judgement (RefusesRound): why a review that decides
@@ -747,25 +749,72 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 //     carried.
 //   - A review the review App submitted, listed or by webhook, decides only when the head its
 //     Legion footer names (intake.PullRequestReview.LegionHead) is pr's current head, compared
-//     exactly, so its refusal stands at the head the record holds now and no further. The footer
-//     is the review's own word for the code it read, written in the body it was submitted with; no
-//     clock answers for a force push that puts an earlier head back, and GitHub's commit_id for
-//     the review moves with the pull request.
+//     exactly, or besideFix, the commit the running review step started at where a fix of its
+//     task ran beside it ("" for none, ReviewBesideFix), so its refusal stands at the head the
+//     record holds now and no further. The footer is the review's own word for the code it read,
+//     written in the body it was submitted with; no clock answers for a force push that puts an
+//     earlier head back, and GitHub's commit_id for the review moves with the pull request. A
+//     review step that started at X ends with the review of X, also after the fix beside it
+//     pushed, since only the fix pushes while it runs.
 //   - Every other review - a person's, delivered by its webhook - decides as it did before.
-func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) RoundRefusal {
+func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest, besideFix string) RoundRefusal {
 	if !e.byReviewApp(review.Author) {
 		if review.ReadFromList {
 			return RoundRefusal{Reason: "a person's review read from the list", Lasts: RefusedAtEveryHead}
 		}
 		return RoundRefusal{}
 	}
-	switch head := review.LegionHead(); {
+	head := review.LegionHead()
+	switch {
 	case head == "":
 		return RoundRefusal{Reason: "footer names no head", Lasts: RefusedAtThisHead}
-	case head != pr.HeadSHA:
-		return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
+	case head == pr.HeadSHA || head == besideFix:
+		return RoundRefusal{}
+	case besideFix != "":
+		return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s nor %s, the commit its review step started at beside a fix", head, pr.HeadSHA, besideFix),
+			Lasts: RefusedAtThisHead}
 	}
-	return RoundRefusal{}
+	return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
+}
+
+// ReviewBesideFix is the commit the running review step of issue's task started at, where a fix
+// of that task started after that step's start or ran at it, and "" otherwise: an issue with no
+// record or no plan rows, one that stands in no step of type review, a run of that step that has
+// ended or names no start commit, and a task whose latest fix (record.Store.LatestFix) has not
+// started or ended before the step started. While a fix runs only the fix pushes to the task's
+// branch (fixPushSentence, tellStepsOfFix), so a head that moved since that start is the fix's:
+// the review of that commit decides the step (refusesRound, settleRound), the commit the
+// reviewer read moves to it (record.PhaseRow.ReviewedHead), and the fix's push re-asks no round
+// (reaskRound). The daemon's read of a pull request's reviews reads it in the transaction that
+// reads the reviewer's session, before it judges one (RefusesRound), so both judge a review
+// beside a fix alike.
+func (e *Engine) ReviewBesideFix(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
+	recorded, err := e.store.Issue(ctx, tx, issue)
+	if err != nil || recorded == nil {
+		return "", err
+	}
+	return e.reviewBesideFix(ctx, tx, *recorded)
+}
+
+// reviewBesideFix is ReviewBesideFix of issue as the fact's transaction holds it.
+func (e *Engine) reviewBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return "", err
+	}
+	step, ok := standingStep(w, issue)
+	if !ok || step.typ != plan.TypeReview || step.place.Kind != record.PlaceStep {
+		return "", nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil || start.Run != record.RunOpen || start.StartCommit == "" {
+		return "", err
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.StartedAt == nil || (fix.EndedAt != nil && fix.EndedAt.Before(start.StartedAt)) {
+		return "", err
+	}
+	return start.StartCommit, nil
 }
 
 // ReviewerSession is the session of issue's reviewer, the session a review-App review's Legion
@@ -842,7 +891,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		before, by = round{}, byAnswer
 	}
 	// Only changes_requested and approved decide anything, and one judgement says whether such a
-	// review may decide this round (RefusesRound): who wrote it, and the head it says it read.
+	// review may decide this round (RefusesRound): who wrote it, and the head it says it read, which
+	// beside a fix may be the commit the review step started at (ReviewBesideFix).
 	// Any other review orders nothing either, so a comment written after a decision but
 	// delivered before it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
@@ -856,10 +906,18 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// that judges it again by the session recorded then either takes it or refuses it afresh.
 	refused := ""
 	if decides {
-		if refusal := e.RefusesRound(fact, *pr, reviewerSession); refusal.Reason != "" {
+		// besideFix is read only for a review the review App submitted: no other author's review is
+		// held to the head its footer names.
+		besideFix := ""
+		if e.byReviewApp(fact.Author) {
+			if besideFix, err = e.reviewBesideFix(ctx, tx, *issue); err != nil {
+				return intake.Result{}, err
+			}
+		}
+		if refusal := e.RefusesRound(fact, *pr, reviewerSession, besideFix); refusal.Reason != "" {
 			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
 				"footer_session", fact.LegionSession(), "reviewer_session", reviewerSession, "reviewer_claim", string(reviewerClaim),
-				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "read_from_list", fact.ReadFromList,
+				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "beside_fix", besideFix, "read_from_list", fact.ReadFromList,
 				"body_truncated", fact.BodyTruncated}
 			switch {
 			case refusal.Lasts == RefusedWhileNoSession:
@@ -1257,11 +1315,27 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
 // runs again.
 //
+// An approval of the commit the running review step started at beside a fix of its task
+// (ReviewBesideFix) ends the round as approved where it does not stand at the open pull request's
+// head, which the fix's push moved or is moving: the review step that started at X ends with the
+// review of X, and what runs after the fix is the fix's way (besideFix). An approval of the head
+// itself is weighed as every approval is.
+//
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
 func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
 	r := e.reviewRound(issue, row, pr)
+	if issue.Phase == phase.Reviewing && pr != nil && pr.State == record.PullRequestOpen && row.Decision != nil &&
+		row.Decision.State == "approved" && !classify.ApprovalStands(*pr, row.Decision.Head) {
+		besideFix, err := e.reviewBesideFix(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		if besideFix != "" && row.Decision.Head == besideFix {
+			r = round{outcome: roundApproved}
+		}
+	}
 	switch r.outcome {
 	case roundRejected:
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
