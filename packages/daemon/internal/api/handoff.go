@@ -252,7 +252,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if works {
 		of = issue.Phase
 	}
-	if refusal := stepReportRefusal(grant.Role, of == phase.Retro, false, position.pullRequest != nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
+	if refusal := stepReportRefusal(grant.Role, of == phase.Retro, position.pullRequest == nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -509,10 +509,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 }
 
 // stepReportRefusal is the one rule of what a report of a step carries, which both reports of a
-// step take: a worker's completion (answerCompletion, owner false) and the owner's report of a
-// step of its own (completeStep, owner true). role is the role of the place the report ends, the
-// step's role or the role of the retro; retro is whether that place is the retro; hasPullRequest
-// is whether the issue has a pull request record, in any state; issue names it in a sentence. It
+// step take: a worker's completion (answerCompletion) and the owner's report of a step of its own
+// (completeStep). role is the role of the place the report ends, the step's role or the role of
+// the retro; retro is whether that place is the retro; reviewByVerdict is whether no review on
+// GitHub decides a reviewer's step there: an issue with no pull request record, in any state, and
+// the owner's step; issue names it in a sentence. It
 // is nil where the report carries what its place asks, and each refusal is a 400 its caller writes
 // before anything is read further or recorded:
 //
@@ -527,9 +528,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 //     on GitHub decides its step: on an issue with no pull request record, where none can exist,
 //     and in the owner's step, which no review on GitHub ends (workflow's settleRound).
 //   - VERDICT_ROLE_FORBIDDEN: any other report names no verdict.
-func stepReportRefusal(role claim.Role, retro, owner, hasPullRequest bool, verdict, commit, issue string) *intake.Refusal {
+func stepReportRefusal(role claim.Role, retro, reviewByVerdict bool, verdict, commit, issue string) *intake.Refusal {
 	deploymentRole := !claim.IsBuiltin(role)
-	verdictStep := !retro && (deploymentRole || role == claim.RoleReviewer && (owner || !hasPullRequest))
+	verdictStep := !retro && (deploymentRole || role == claim.RoleReviewer && reviewByVerdict)
 	if (role == claim.RoleImplementer || role == claim.RoleMerger || deploymentRole || verdictStep) && strings.TrimSpace(commit) == "" {
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "MISSING_FIELD", Message: "commit is required"}
 	}
