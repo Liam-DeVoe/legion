@@ -1550,11 +1550,12 @@ These arrive as messages on the Dispatch issue:
   commit to the head. The commit is the one its agent's newest deciding review on the task read, at
   whichever of that agent's reviewer steps it was made: such a review writes its commit onto the
   phases row of each reviewer step of the task that agent works, and the first round of a reviewer
-  step starts from the commit of that agent's nearest earlier reviewer step, or `none` where there
-  is none. So in `implementer reviewer:r tester reviewer:r`, after step 4 requests changes at X,
-  step 2's next round names X. While the row holds no commit, each task of that step's round, a
-  wake or a resume included, names `Commit another agent's review read: <sha>.` before its last two
-  sentences where another agent's reviewer step before it read one: the commit of the nearest such
+  step starts from the commit of that agent's own reviewer row of the task, at any of its steps, or
+  `none` where there is none. So in `implementer reviewer:r tester reviewer:r`, after step 4
+  requests changes at X, step 2's next round names X. While the row holds no commit, each task of
+  that step's round, a wake or a resume included, names
+  `Commit another agent's review read: <sha>.` before its last two sentences where another agent's
+  reviewer step before it read one: the commit of the nearest such
   step. A wake or a resume names the commit of the row of the agent it is queued for. A review
   moves that commit only when it is the reviewer's own (its Legion footer names the session the
   reviewer's claim records), the phases row of the reviewer step whose round it is holds the task of
