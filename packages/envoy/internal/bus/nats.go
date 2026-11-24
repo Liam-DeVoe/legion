@@ -56,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
 	// reports, and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
@@ -571,6 +572,9 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -789,6 +793,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
 		closedHook:                  opts.closedHook,
 		closeSettleBound:            opts.closeSettleBound,
@@ -2384,9 +2389,10 @@ func (c *Client) ReachesNoSession(topic string) bool {
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
-// published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// published, or a KV key or value refused however often a call names it, so a caller answers it as
+// a refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrNoForwardMsgID, or internal/kvchunk's ReservedKey, a KV key under the chunk keys' prefix that
+// a store laying its records out in chunks takes for no record.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that
@@ -2399,7 +2405,8 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 
 // ErrTooLarge is the ErrRefused of an envelope too large to publish whole: a message past the NATS
 // server's max payload, which nats.go refuses before sending it, a subject past maxSubjectBytes, a
-// KV key whose subject would be, or a CI record or settlement past the bound its store keeps below
+// KV key whose subject would be, a KV value past the server's max payload or its bucket's largest
+// value (KeyValue.tooLarge), or a CI record or settlement past the bound its store keeps below
 // those. Its error names the size and the bound.
 var ErrTooLarge error = refusal("too large to publish whole")
 
@@ -2572,6 +2579,24 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
+}
+
+// PublishEachWithin publishes item on its own topic as PublishAckWithin does, and once the
+// publish succeeds calls published, when it is not nil, with that topic and the stream's
+// acknowledgement: its duplicate verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. It is the webhook
+// handlers' publisher (webhook.Publisher), which a publisher that also puts copies on other
+// topics implements by calling published once for each topic it published on
+// (ghrename.Publisher).
+func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	ack, err := c.PublishAckWithin(ctx, item)
+	if err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, ack.Duplicate, ack.Resent)
+	}
+	return nil
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
