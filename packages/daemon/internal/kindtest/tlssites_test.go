@@ -19,14 +19,13 @@ import (
 )
 
 // webSearchRequest is the one request the pinned Oh My Pi's keyless web_search sends Parallel's
-// MCP endpoint, as testdata/parallel-mcp-request.json holds it. That file is written from the
-// provider's code at the .omp-pin tag (oh-my-pi's packages/coding-agent/src/web/search/providers/
-// parallel.ts, lines 83-98, and src/mcp/json-rpc.ts, lines 174-189): a JSON-RPC 2.0 tools/call of
-// web_search whose id is a random base-36 string and whose arguments carry the capability check's
-// query. Its id and session_id are stand-ins. A run's own request replaces it: the kind job keeps
-// each request the stand-in received, with its body, as a line of tls-sites-requests.txt in its
-// kind-<leg>-logs artifact (`grep '^POST search.parallel.ai/mcp ' tls-sites-requests.txt`), and the
-// body after the status is the file, with the run's id written here.
+// MCP endpoint (oh-my-pi's packages/coding-agent/src/web/search/providers/parallel.ts at the
+// .omp-pin tag): a JSON-RPC 2.0 tools/call of web_search whose id is a random base-36 string and
+// whose arguments carry the capability check's query. testdata/parallel-mcp-request.json is the
+// first such request the stand-in received in the kind / tree-stage4b-controller leg of the
+// workflow_dispatch run 45300865457 of ci.yaml, the body of its line of tls-sites-requests.txt in
+// that leg's kind-tree-stage4b-controller-logs artifact
+// (`grep -m1 '^POST search.parallel.ai/mcp ' tls-sites-requests.txt`), laid out by biome.
 const webSearchRequest = "testdata/parallel-mcp-request.json"
 
 // A pod's web_search reaches the rig's stand-in for Parallel's MCP endpoint over TLS, under its

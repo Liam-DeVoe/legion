@@ -1,13 +1,13 @@
 {
   "jsonrpc": "2.0",
-  "id": "k3j9x2m1q8",
+  "id": "r1su2ck53ua",
   "method": "tools/call",
   "params": {
     "name": "web_search",
     "arguments": {
       "objective": "jujutsu version control",
       "search_queries": ["jujutsu version control"],
-      "session_id": "capability-report",
+      "session_id": "01a20b22-aa4b-766d-b86a-20e1f36e0008",
       "model_name": "parallel"
     }
   }

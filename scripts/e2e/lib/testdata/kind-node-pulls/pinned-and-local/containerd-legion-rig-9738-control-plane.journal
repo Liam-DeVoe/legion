@@ -1,0 +1,622 @@
+Starting containerd.service - containerd container runtime...
+time="2026-11-24T01:07:30Z" level=warning msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration" t="13.836µs"
+time="2026-11-24T01:07:30.535461207Z" level=info msg="starting containerd" revision=db8809540e1a7a9da5d518876894933ff55692ab version=v2.3.4
+time="2026-11-24T01:07:30.535561134Z" level=info msg="loading plugin" id=io.containerd.content.v1.content type=io.containerd.content.v1
+time="2026-11-24T01:07:30.535770135Z" level=warning msg="failed check for fsverity support" error="enable fsverity failed: operation not supported" path=/var/lib/containerd/io.containerd.content.v1.content
+time="2026-11-24T01:07:30.535791655Z" level=info msg="loading plugin" id=io.containerd.image-verifier.v1.bindir type=io.containerd.image-verifier.v1
+time="2026-11-24T01:07:30.535860725Z" level=info msg="loading plugin" id=io.containerd.warning.v1.deprecations type=io.containerd.warning.v1
+time="2026-11-24T01:07:30.535870513Z" level=info msg="loading plugin" id=io.containerd.event.v1.exchange type=io.containerd.event.v1
+time="2026-11-24T01:07:30.535889147Z" level=info msg="loading plugin" id=io.containerd.mount-handler.v1.erofs type=io.containerd.mount-handler.v1
+time="2026-11-24T01:07:30.535909315Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.535938290Z" level=info msg="skip loading plugin" error="no scratch file generator: skip plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.535947136Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.erofs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.536062121Z" level=info msg="skip loading plugin" error="EROFS unsupported, please `modprobe erofs`: skip plugin" id=io.containerd.snapshotter.v1.erofs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.536112445Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.native type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.536138925Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.overlayfs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.536228693Z" level=info msg="loading plugin" id=io.containerd.monitor.task.v1.cgroups type=io.containerd.monitor.task.v1
+time="2026-11-24T01:07:30.536383712Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.fuse-overlayfs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:07:30.536454435Z" level=info msg="loading plugin" id=io.containerd.metadata.v1.bolt type=io.containerd.metadata.v1
+time="2026-11-24T01:07:30.536494680Z" level=info msg="metadata content store policy set" policy=shared
+time="2026-11-24T01:07:30.536971832Z" level=info msg="loading plugin" id=io.containerd.gc.v1.scheduler type=io.containerd.gc.v1
+time="2026-11-24T01:07:30.537017929Z" level=info msg="loading plugin" id=io.containerd.server.v1.metrics type=io.containerd.server.v1
+time="2026-11-24T01:07:30.537066449Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.metrics type=io.containerd.server.v1
+time="2026-11-24T01:07:30.537101365Z" level=info msg="loading plugin" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-11-24T01:07:30.537119138Z" level=info msg="skip loading plugin" error="skip plugin: tracing endpoint not configured" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-11-24T01:07:30.537156207Z" level=info msg="loading plugin" id=io.containerd.nri.v1.nri type=io.containerd.nri.v1
+time="2026-11-24T01:07:30.537230235Z" level=info msg="built-in NRI default validator is disabled"
+time="2026-11-24T01:07:30.537242078Z" level=info msg="runtime interface created"
+time="2026-11-24T01:07:30.537250443Z" level=info msg="created NRI interface"
+time="2026-11-24T01:07:30.537270581Z" level=info msg="loading plugin" id=io.containerd.ttrpc.v1.otelttrpc type=io.containerd.ttrpc.v1
+time="2026-11-24T01:07:30.537283726Z" level=info msg="loading plugin" id=io.containerd.service.v1.containers-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537299064Z" level=info msg="loading plugin" id=io.containerd.service.v1.content-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537310666Z" level=info msg="loading plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-11-24T01:07:30.537429358Z" level=info msg="skip loading plugin" error="failed to check mkfs.erofs availability: failed to run mkfs.erofs --help: exec: \"mkfs.erofs\": executable file not found in $PATH: skip plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-11-24T01:07:30.537446550Z" level=info msg="loading plugin" id=io.containerd.mount-manager.v1.bolt type=io.containerd.mount-manager.v1
+time="2026-11-24T01:07:30.537604856Z" level=info msg="loading plugin" id=io.containerd.differ.v1.walking type=io.containerd.differ.v1
+time="2026-11-24T01:07:30.537633129Z" level=info msg="loading plugin" id=io.containerd.service.v1.diff-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537650652Z" level=info msg="loading plugin" id=io.containerd.service.v1.images-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537667203Z" level=info msg="loading plugin" id=io.containerd.service.v1.introspection-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537678594Z" level=info msg="loading plugin" id=io.containerd.service.v1.namespaces-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537690496Z" level=info msg="loading plugin" id=io.containerd.service.v1.snapshots-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537702198Z" level=info msg="loading plugin" id=io.containerd.shim.v1.manager type=io.containerd.shim.v1
+time="2026-11-24T01:07:30.537717076Z" level=info msg="loading plugin" id=io.containerd.runtime.v2.task type=io.containerd.runtime.v2
+time="2026-11-24T01:07:30.537770957Z" level=info msg="loading plugin" id=io.containerd.service.v1.tasks-service type=io.containerd.service.v1
+time="2026-11-24T01:07:30.537791776Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.containers type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537808677Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.content type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537826080Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.diff type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537839655Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.events type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537850325Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.images type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537863961Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.introspection type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537875252Z" level=info msg="loading plugin" id=io.containerd.lease.v1.manager type=io.containerd.lease.v1
+time="2026-11-24T01:07:30.537888497Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.leases type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537915277Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.mounts type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537928261Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.namespaces type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.537942307Z" level=info msg="loading plugin" id=io.containerd.sandbox.store.v1.local type=io.containerd.sandbox.store.v1
+time="2026-11-24T01:07:30.537962495Z" level=info msg="loading plugin" id=io.containerd.transfer.v1.local type=io.containerd.transfer.v1
+time="2026-11-24T01:07:30.537998632Z" level=info msg="loading plugin" id=io.containerd.cri.v1.images type=io.containerd.cri.v1
+time="2026-11-24T01:07:30.538056160Z" level=warning msg="Found 'DiscardUnpackedLayers' in CRI config which is incompatible with transfer service (not supported with transfer service). Falling back to local image pull mode."
+time="2026-11-24T01:07:30.538133415Z" level=info msg="Get image filesystem path \"/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs\" for snapshotter \"overlayfs\""
+time="2026-11-24T01:07:30.538149855Z" level=info msg="Start snapshots syncer"
+time="2026-11-24T01:07:30.538179080Z" level=info msg="loading plugin" id=io.containerd.cri.v1.runtime type=io.containerd.cri.v1
+time="2026-11-24T01:07:30.538341263Z" level=warning msg="Ignoring unknown key in TOML for plugin" error="strict mode: fields in the document are missing in the target struct" key=tolerate_missing_hugepages_controller plugin=io.containerd.cri.v1.runtime
+time="2026-11-24T01:07:30.538591812Z" level=info msg="starting cri plugin" config="{\"containerd\":{\"defaultRuntimeName\":\"runc\",\"runtimes\":{\"runc\":{\"runtimeType\":\"io.containerd.runc.v2\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":{\"BinaryName\":\"\",\"CriuImagePath\":\"\",\"CriuWorkPath\":\"\",\"IoGid\":0,\"IoUid\":0,\"NoNewKeyring\":false,\"Root\":\"\",\"ShimCgroup\":\"\",\"SystemdCgroup\":true},\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"/etc/containerd/cri-base.json\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"},\"test-handler\":{\"runtimeType\":\"io.containerd.runc.v2\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":{\"SystemdCgroup\":true},\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"/etc/containerd/cri-base.json\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"}},\"ignoreBlockIONotEnabledErrors\":false,\"ignoreRdtNotEnabledErrors\":false},\"cni\":{\"binDir\":\"\",\"binDirs\":[\"/opt/cni/bin\"],\"confDir\":\"/etc/cni/net.d\",\"maxConfNum\":1,\"setupSerially\":false,\"confTemplate\":\"\",\"ipPref\":\"\",\"useInternalLoopback\":false},\"enableSelinux\":false,\"selinuxCategoryRange\":1024,\"maxContainerLogLineSize\":16384,\"disableApparmor\":false,\"restrictOOMScoreAdj\":false,\"disableProcMount\":false,\"unsetSeccompProfile\":\"\",\"tolerateMissingHugetlbController\":true,\"disableHugetlbController\":true,\"device_ownership_from_security_context\":false,\"ignoreImageDefinedVolumes\":false,\"netnsMountsUnderStateDir\":false,\"enableUnprivilegedPorts\":true,\"enableUnprivilegedICMP\":true,\"enableCDI\":true,\"cdiSpecDirs\":[\"/etc/cdi\",\"/var/run/cdi\"],\"drainExecSyncIOTimeout\":\"0s\",\"ignoreDeprecationWarnings\":null,\"statsCollectPeriod\":\"\",\"statsRetentionPeriod\":\"\",\"enableCRIU\":true,\"enableExperimentalRestoreViaCreate\":false,\"containerdRootDir\":\"/var/lib/containerd\",\"containerdEndpoint\":\"/run/containerd/containerd.sock\",\"rootDir\":\"/var/lib/containerd/io.containerd.grpc.v1.cri\",\"stateDir\":\"/run/containerd/io.containerd.grpc.v1.cri\"}"
+time="2026-11-24T01:07:30.539401346Z" level=info msg="loading plugin" id=io.containerd.podsandbox.controller.v1.podsandbox type=io.containerd.podsandbox.controller.v1
+time="2026-11-24T01:07:30.539494961Z" level=info msg="loading plugin" id=io.containerd.sandbox.controller.v1.shim type=io.containerd.sandbox.controller.v1
+time="2026-11-24T01:07:30.539758494Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandbox-controllers type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.539809519Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandboxes type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.539828414Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.snapshots type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.539847490Z" level=info msg="loading plugin" id=io.containerd.streaming.v1.manager type=io.containerd.streaming.v1
+time="2026-11-24T01:07:30.539865875Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.streaming type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.539968679Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.tasks type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.540007832Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.transfer type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.540034412Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.version type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.540051734Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.healthcheck type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.540068907Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.cri type=io.containerd.grpc.v1
+time="2026-11-24T01:07:30.540110014Z" level=info msg="Connect containerd service"
+time="2026-11-24T01:07:30.540174123Z" level=info msg="using experimental NRI integration - disable nri plugin to prevent this"
+time="2026-11-24T01:07:30.541449803Z" level=warning msg="failed to load cni during init, please check CRI plugin status before setting up network for pods" error="cni config load failed: no network config found in /etc/cni/net.d: cni plugin not initialized: failed to load cni config"
+time="2026-11-24T01:07:30.559754719Z" level=info msg="loading plugin" id=io.containerd.server.v1.ttrpc type=io.containerd.server.v1
+time="2026-11-24T01:07:30.559823517Z" level=info msg="loading plugin" id=io.containerd.monitor.container.v1.restart type=io.containerd.monitor.container.v1
+time="2026-11-24T01:07:30.559878560Z" level=info msg="loading plugin" id=io.containerd.metrics.v1.grpc-prometheus type=io.containerd.metrics.v1
+time="2026-11-24T01:07:30.559899226Z" level=info msg="Start subscribing containerd event"
+time="2026-11-24T01:07:30.559925207Z" level=info msg="loading plugin" id=io.containerd.metrics.v1.grpc-otel type=io.containerd.metrics.v1
+time="2026-11-24T01:07:30.559949553Z" level=info msg="loading plugin" id=io.containerd.server.v1.grpc type=io.containerd.server.v1
+time="2026-11-24T01:07:30.559951734Z" level=info msg="Start stats collector"
+time="2026-11-24T01:07:30.560136890Z" level=info msg="Start recovering state"
+time="2026-11-24T01:07:30.560975970Z" level=warning msg="The image sha256:d6a28daf3e6b0ac88d2c74d715a4a156a33c1acef57fe89bcd334c47532949e7 is not unpacked."
+time="2026-11-24T01:07:30.564166970Z" level=warning msg="The image registry.k8s.io/pause:3.10 is not unpacked."
+time="2026-11-24T01:07:30.564397131Z" level=warning msg="The image docker.io/kindest/local-path-helper:v20260131-7181c60a is not unpacked."
+time="2026-11-24T01:07:30.564404094Z" level=warning msg="The image docker.io/kindest/kindnetd:v20260820-69b56db7 is not unpacked."
+time="2026-11-24T01:07:30.565355984Z" level=warning msg="The image docker.io/kindest/local-path-provisioner:v20260820-69b56db7 is not unpacked."
+time="2026-11-24T01:07:30.565820345Z" level=warning msg="The image registry.k8s.io/kube-apiserver-amd64:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.565822182Z" level=warning msg="The image sha256:4626fe10df5b930638e6e1662143ee1c7a698de6174fdb61a8ce658e688be2cd is not unpacked."
+time="2026-11-24T01:07:30.565969411Z" level=warning msg="The image sha256:270fbeb69717150d82de2f31e6d6a93a6a60f8843d63df68cebe33c4b59c5f78 is not unpacked."
+time="2026-11-24T01:07:30.566491798Z" level=warning msg="The image sha256:364b3c3d9ec198179631af61ca9ff18efa5316ba19ce79f301fbeaee7b060989 is not unpacked."
+time="2026-11-24T01:07:30.567054913Z" level=warning msg="The image sha256:19aa6a21b42cb57f6f76e0f3584d7dfec241a3f3568cd6590a2967c28d9cdce3 is not unpacked."
+time="2026-11-24T01:07:30.567355964Z" level=warning msg="The image registry.k8s.io/coredns/coredns:v1.14.6 is not unpacked."
+time="2026-11-24T01:07:30.567859873Z" level=warning msg="The image sha256:bec5f0e1e2eeb613b139d1f11f4d3d651ace46da25fd6c578e415fb9e911b9cf is not unpacked."
+time="2026-11-24T01:07:30.568372815Z" level=warning msg="The image registry.k8s.io/kube-scheduler:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.568558633Z" level=warning msg="The image sha256:520212b8b0fcd9309d7362d592f513b72880fa5a4e9e8b91442e7ee3b622c6a9 is not unpacked."
+time="2026-11-24T01:07:30.569660895Z" level=warning msg="The image import-2026-08-26@sha256:79bd77de40aa3294690796f94cdc8a08c4cf6a51a6a3500425c56c9e13622cc7 is not unpacked."
+time="2026-11-24T01:07:30.569639246Z" level=warning msg="The image registry.k8s.io/kube-proxy-amd64:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.568953371Z" level=warning msg="The image import-2026-08-26@sha256:eff360f86083f21c9ceaa64cbaa2e4d439d9e7e1d6834c21d25daac35e58015b is not unpacked."
+time="2026-11-24T01:07:30.569261618Z" level=warning msg="The image sha256:873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136 is not unpacked."
+time="2026-11-24T01:07:30.569314539Z" level=warning msg="The image registry.k8s.io/kube-controller-manager:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.569356124Z" level=warning msg="The image registry.k8s.io/kube-apiserver:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.568869765Z" level=warning msg="The image registry.k8s.io/kube-scheduler-amd64:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.569995182Z" level=warning msg="The image registry.k8s.io/kube-proxy:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.570136707Z" level=warning msg="The image registry.k8s.io/etcd:3.7.0-0 is not unpacked."
+time="2026-11-24T01:07:30.570800017Z" level=warning msg="The image import-2026-08-26@sha256:213e68034d4be2f89076d1d446501434d1bfdff862916392708f095f5fecb6e1 is not unpacked."
+time="2026-11-24T01:07:30.570898419Z" level=warning msg="The image sha256:c82008e2cd0186ef96bfd05d6b49d3286768fae5bd7a961f70bd485a3785c006 is not unpacked."
+time="2026-11-24T01:07:30.560992296Z" level=warning msg="The image import-2026-08-26@sha256:1aa5cce2a7d436c309f705cf2a32a50f8378a2b6f2e5dd4bb26f81c714dd0b86 is not unpacked."
+time="2026-11-24T01:07:30.571781390Z" level=warning msg="The image registry.k8s.io/kube-controller-manager-amd64:v1.37.0 is not unpacked."
+time="2026-11-24T01:07:30.571902499Z" level=warning msg="The image sha256:1fabf80a1273af13d05ef7528d2e48302da8b2c82c6e40eee9133debd484c428 is not unpacked."
+time="2026-11-24T01:07:30.572942201Z" level=info msg="loading plugin" id=io.containerd.server.v1.grpc-tcp type=io.containerd.server.v1
+time="2026-11-24T01:07:30.572970764Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.grpc-tcp type=io.containerd.server.v1
+time="2026-11-24T01:07:30.572984921Z" level=info msg="loading plugin" id=io.containerd.http.v1.pprof type=io.containerd.http.v1
+time="2026-11-24T01:07:30.573039273Z" level=info msg="loading plugin" id=io.containerd.server.v1.debug type=io.containerd.server.v1
+time="2026-11-24T01:07:30.573057857Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.debug type=io.containerd.server.v1
+time="2026-11-24T01:07:30.573272519Z" level=info msg=serving... address=/run/containerd/containerd.sock.ttrpc
+time="2026-11-24T01:07:30.573303436Z" level=info msg="starting GRPC server" address=/run/containerd/containerd.sock gid=0 uid=0
+time="2026-11-24T01:07:30.573366695Z" level=info msg=serving... address=/run/containerd/containerd.sock
+time="2026-11-24T01:07:30.587980466Z" level=info msg="Start event monitor"
+time="2026-11-24T01:07:30.588010373Z" level=info msg="Start cni network conf syncer for default"
+time="2026-11-24T01:07:30.588018638Z" level=info msg="Start streaming server"
+time="2026-11-24T01:07:30.588032323Z" level=info msg="Registered namespace \"k8s.io\" with NRI"
+time="2026-11-24T01:07:30.588043715Z" level=info msg="runtime interface starting up..."
+time="2026-11-24T01:07:30.588052652Z" level=info msg="starting plugins..."
+time="2026-11-24T01:07:30.588111431Z" level=info msg="Synchronizing NRI (plugin) with current runtime state"
+time="2026-11-24T01:07:30.588261873Z" level=info msg="containerd successfully booted in 0.053521s"
+Started containerd.service - containerd container runtime.
+time="2026-11-24T01:07:32.942194606Z" level=info msg="RunPodSandbox for name:\"kube-controller-manager-legion-rig-9738-control-plane\"  uid:\"7a585b8c6a7d99a0a42a8228b58ef699\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:32.944594003Z" level=info msg="RunPodSandbox for name:\"kube-scheduler-legion-rig-9738-control-plane\"  uid:\"fac756693616e4455385fefa777315ef\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:32.948764362Z" level=info msg="RunPodSandbox for name:\"etcd-legion-rig-9738-control-plane\"  uid:\"f1b143d7b7dee7533eeb8ca5c40dbb85\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:32.960750515Z" level=info msg="RunPodSandbox for name:\"kube-apiserver-legion-rig-9738-control-plane\"  uid:\"bcf2f854eb9dfabed41f84fbe94a6d88\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:32.974008993Z" level=info msg="connecting to shim 125324980b5a41ee251b58fb87524d13be16865830c6ff518f82ae3517a295ad" address="unix:///run/containerd/s/493ba08992c7c3f4d14e47b7bd517226f289a586c497e7caba542d321969fc37" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:32.988368287Z" level=info msg="connecting to shim 43e5be1374dc43df6e37bafe29deff3c018ba2ebfa850ae6c74927706d2d42bf" address="unix:///run/containerd/s/4261c48e428052a0e58e04f3096a8813282a77d907b10822341b92d6869f8ff9" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:32.988433741Z" level=info msg="connecting to shim c71dc99010fecd2645e2eca426b3e2314d36fd92ce7978f74b051ffe8802f309" address="unix:///run/containerd/s/9012a1adad10fa64912f2bafd08c2db02b1092a2497d66ab1fd51afea63c3197" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:32.993619193Z" level=info msg="connecting to shim 69462d450ba94e034a61c3c3747974a145b347e2df7709676d9fee45e33e222c" address="unix:///run/containerd/s/f1e7e90151251b0316a24b97ad268b85de703bf323f346fae976a3784ccfa0b3" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:33.081707786Z" level=info msg="RunPodSandbox for name:\"kube-controller-manager-legion-rig-9738-control-plane\"  uid:\"7a585b8c6a7d99a0a42a8228b58ef699\"  namespace:\"kube-system\" returns sandbox id \"125324980b5a41ee251b58fb87524d13be16865830c6ff518f82ae3517a295ad\""
+time="2026-11-24T01:07:33.088848871Z" level=info msg="CreateContainer within sandbox \"125324980b5a41ee251b58fb87524d13be16865830c6ff518f82ae3517a295ad\" for container name:\"kube-controller-manager\""
+time="2026-11-24T01:07:33.141159675Z" level=info msg="RunPodSandbox for name:\"etcd-legion-rig-9738-control-plane\"  uid:\"f1b143d7b7dee7533eeb8ca5c40dbb85\"  namespace:\"kube-system\" returns sandbox id \"69462d450ba94e034a61c3c3747974a145b347e2df7709676d9fee45e33e222c\""
+time="2026-11-24T01:07:33.142903102Z" level=info msg="RunPodSandbox for name:\"kube-apiserver-legion-rig-9738-control-plane\"  uid:\"bcf2f854eb9dfabed41f84fbe94a6d88\"  namespace:\"kube-system\" returns sandbox id \"c71dc99010fecd2645e2eca426b3e2314d36fd92ce7978f74b051ffe8802f309\""
+time="2026-11-24T01:07:33.146123072Z" level=info msg="RunPodSandbox for name:\"kube-scheduler-legion-rig-9738-control-plane\"  uid:\"fac756693616e4455385fefa777315ef\"  namespace:\"kube-system\" returns sandbox id \"43e5be1374dc43df6e37bafe29deff3c018ba2ebfa850ae6c74927706d2d42bf\""
+time="2026-11-24T01:07:33.147283428Z" level=info msg="CreateContainer within sandbox \"69462d450ba94e034a61c3c3747974a145b347e2df7709676d9fee45e33e222c\" for container name:\"etcd\""
+time="2026-11-24T01:07:33.150375919Z" level=info msg="CreateContainer within sandbox \"c71dc99010fecd2645e2eca426b3e2314d36fd92ce7978f74b051ffe8802f309\" for container name:\"kube-apiserver\""
+time="2026-11-24T01:07:33.152777163Z" level=info msg="CreateContainer within sandbox \"43e5be1374dc43df6e37bafe29deff3c018ba2ebfa850ae6c74927706d2d42bf\" for container name:\"kube-scheduler\""
+time="2026-11-24T01:07:33.492877320Z" level=info msg="CreateContainer within sandbox \"125324980b5a41ee251b58fb87524d13be16865830c6ff518f82ae3517a295ad\" for name:\"kube-controller-manager\" returns container id \"7d5eb659f5fdcdb2ddaa7bd4856f0f8dee9d861796ded247aac57b2b0c3e1d2e\""
+time="2026-11-24T01:07:33.493691938Z" level=info msg="StartContainer for \"7d5eb659f5fdcdb2ddaa7bd4856f0f8dee9d861796ded247aac57b2b0c3e1d2e\""
+time="2026-11-24T01:07:33.497341294Z" level=info msg="connecting to shim 7d5eb659f5fdcdb2ddaa7bd4856f0f8dee9d861796ded247aac57b2b0c3e1d2e" address="unix:///run/containerd/s/493ba08992c7c3f4d14e47b7bd517226f289a586c497e7caba542d321969fc37" protocol=ttrpc version=3
+time="2026-11-24T01:07:33.580971033Z" level=info msg="CreateContainer within sandbox \"43e5be1374dc43df6e37bafe29deff3c018ba2ebfa850ae6c74927706d2d42bf\" for name:\"kube-scheduler\" returns container id \"ea471b0e66600712adf2c621bd4ab55024db3bc346434614c1b8018eca629dc6\""
+time="2026-11-24T01:07:33.584665293Z" level=info msg="StartContainer for \"ea471b0e66600712adf2c621bd4ab55024db3bc346434614c1b8018eca629dc6\""
+time="2026-11-24T01:07:33.586058426Z" level=info msg="connecting to shim ea471b0e66600712adf2c621bd4ab55024db3bc346434614c1b8018eca629dc6" address="unix:///run/containerd/s/4261c48e428052a0e58e04f3096a8813282a77d907b10822341b92d6869f8ff9" protocol=ttrpc version=3
+time="2026-11-24T01:07:33.670419986Z" level=info msg="StartContainer for \"7d5eb659f5fdcdb2ddaa7bd4856f0f8dee9d861796ded247aac57b2b0c3e1d2e\" returns successfully"
+time="2026-11-24T01:07:33.674661251Z" level=info msg="CreateContainer within sandbox \"c71dc99010fecd2645e2eca426b3e2314d36fd92ce7978f74b051ffe8802f309\" for name:\"kube-apiserver\" returns container id \"de71f99103adbd3d1f8433207e1e26adcedc7880e23b71aa0b0cb411aba134f8\""
+time="2026-11-24T01:07:33.675635348Z" level=info msg="StartContainer for \"de71f99103adbd3d1f8433207e1e26adcedc7880e23b71aa0b0cb411aba134f8\""
+time="2026-11-24T01:07:33.676921801Z" level=info msg="connecting to shim de71f99103adbd3d1f8433207e1e26adcedc7880e23b71aa0b0cb411aba134f8" address="unix:///run/containerd/s/9012a1adad10fa64912f2bafd08c2db02b1092a2497d66ab1fd51afea63c3197" protocol=ttrpc version=3
+time="2026-11-24T01:07:33.787929176Z" level=info msg="StartContainer for \"ea471b0e66600712adf2c621bd4ab55024db3bc346434614c1b8018eca629dc6\" returns successfully"
+time="2026-11-24T01:07:33.824052439Z" level=info msg="CreateContainer within sandbox \"69462d450ba94e034a61c3c3747974a145b347e2df7709676d9fee45e33e222c\" for name:\"etcd\" returns container id \"759555ef5ced4ce556568a08a4ec17e306cefedaf5fb30369324c3df8c712e60\""
+time="2026-11-24T01:07:33.824856858Z" level=info msg="StartContainer for \"759555ef5ced4ce556568a08a4ec17e306cefedaf5fb30369324c3df8c712e60\""
+time="2026-11-24T01:07:33.826329360Z" level=info msg="connecting to shim 759555ef5ced4ce556568a08a4ec17e306cefedaf5fb30369324c3df8c712e60" address="unix:///run/containerd/s/f1e7e90151251b0316a24b97ad268b85de703bf323f346fae976a3784ccfa0b3" protocol=ttrpc version=3
+time="2026-11-24T01:07:33.885586645Z" level=info msg="StartContainer for \"de71f99103adbd3d1f8433207e1e26adcedc7880e23b71aa0b0cb411aba134f8\" returns successfully"
+time="2026-11-24T01:07:33.972817430Z" level=info msg="StartContainer for \"759555ef5ced4ce556568a08a4ec17e306cefedaf5fb30369324c3df8c712e60\" returns successfully"
+time="2026-11-24T01:07:44.959603067Z" level=info msg="No cni config template is specified, wait for other system components to drop the config."
+time="2026-11-24T01:07:46.478922380Z" level=info msg="RunPodSandbox for name:\"kindnet-ckfvd\"  uid:\"f9051d0e-d5f0-4823-9acf-6205eddc65d0\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:46.497918185Z" level=info msg="connecting to shim a29c83c2f4e497cd25eb4875d62e5b2ef5908bf549d558579b464b1216e3b339" address="unix:///run/containerd/s/2f4ecabecded2a4b67b62217215907f248a4e2b0dc7b1c5a9fff0f5ca56724ae" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:46.498599247Z" level=info msg="RunPodSandbox for name:\"kube-proxy-whgh5\"  uid:\"b2dc2814-5008-448c-be3b-509fca1b7654\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:46.515487971Z" level=info msg="connecting to shim dc6480f2931be754228f95bea287032514a690d0f54ad3c22ddee6897391c523" address="unix:///run/containerd/s/df56eb7fa26f8550269790ff5dba50c785cca18eb5c608ae30a46352db581b7c" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:46.603812053Z" level=info msg="RunPodSandbox for name:\"kube-proxy-whgh5\"  uid:\"b2dc2814-5008-448c-be3b-509fca1b7654\"  namespace:\"kube-system\" returns sandbox id \"dc6480f2931be754228f95bea287032514a690d0f54ad3c22ddee6897391c523\""
+time="2026-11-24T01:07:46.608006229Z" level=info msg="CreateContainer within sandbox \"dc6480f2931be754228f95bea287032514a690d0f54ad3c22ddee6897391c523\" for container name:\"kube-proxy\""
+time="2026-11-24T01:07:46.617510903Z" level=info msg="RunPodSandbox for name:\"kindnet-ckfvd\"  uid:\"f9051d0e-d5f0-4823-9acf-6205eddc65d0\"  namespace:\"kube-system\" returns sandbox id \"a29c83c2f4e497cd25eb4875d62e5b2ef5908bf549d558579b464b1216e3b339\""
+time="2026-11-24T01:07:46.623330920Z" level=info msg="CreateContainer within sandbox \"a29c83c2f4e497cd25eb4875d62e5b2ef5908bf549d558579b464b1216e3b339\" for container name:\"kindnet-cni\""
+time="2026-11-24T01:07:46.996766190Z" level=info msg="CreateContainer within sandbox \"dc6480f2931be754228f95bea287032514a690d0f54ad3c22ddee6897391c523\" for name:\"kube-proxy\" returns container id \"5b6d1070a4a69dea2a361195102fa3cd45f003d99f3c1c57939f74e402fc04cb\""
+time="2026-11-24T01:07:46.997669444Z" level=info msg="StartContainer for \"5b6d1070a4a69dea2a361195102fa3cd45f003d99f3c1c57939f74e402fc04cb\""
+time="2026-11-24T01:07:46.999574036Z" level=info msg="connecting to shim 5b6d1070a4a69dea2a361195102fa3cd45f003d99f3c1c57939f74e402fc04cb" address="unix:///run/containerd/s/df56eb7fa26f8550269790ff5dba50c785cca18eb5c608ae30a46352db581b7c" protocol=ttrpc version=3
+time="2026-11-24T01:07:47.142451284Z" level=info msg="StartContainer for \"5b6d1070a4a69dea2a361195102fa3cd45f003d99f3c1c57939f74e402fc04cb\" returns successfully"
+time="2026-11-24T01:07:47.373949809Z" level=info msg="CreateContainer within sandbox \"a29c83c2f4e497cd25eb4875d62e5b2ef5908bf549d558579b464b1216e3b339\" for name:\"kindnet-cni\" returns container id \"0f7c96288a4ed27880763817dd135486963b4e3d8ffeb8de2a81ad2ba0af7baa\""
+time="2026-11-24T01:07:47.374694235Z" level=info msg="StartContainer for \"0f7c96288a4ed27880763817dd135486963b4e3d8ffeb8de2a81ad2ba0af7baa\""
+time="2026-11-24T01:07:47.375976419Z" level=info msg="connecting to shim 0f7c96288a4ed27880763817dd135486963b4e3d8ffeb8de2a81ad2ba0af7baa" address="unix:///run/containerd/s/2f4ecabecded2a4b67b62217215907f248a4e2b0dc7b1c5a9fff0f5ca56724ae" protocol=ttrpc version=3
+time="2026-11-24T01:07:47.480729253Z" level=info msg="StartContainer for \"0f7c96288a4ed27880763817dd135486963b4e3d8ffeb8de2a81ad2ba0af7baa\" returns successfully"
+time="2026-11-24T01:07:57.520598916Z" level=error msg="failed to reload cni configuration after receiving fs change event(WRITE         \"/etc/cni/net.d/10-kindnet.conflist.temp\")" error="cni config load failed: no network config found in /etc/cni/net.d: cni plugin not initialized: failed to load cni config"
+time="2026-11-24T01:07:57.520749077Z" level=error msg="failed to reload cni configuration after receiving fs change event(WRITE         \"/etc/cni/net.d/10-kindnet.conflist.temp\")" error="cni config load failed: no network config found in /etc/cni/net.d: cni plugin not initialized: failed to load cni config"
+time="2026-11-24T01:07:57.520892099Z" level=error msg="failed to reload cni configuration after receiving fs change event(WRITE         \"/etc/cni/net.d/10-kindnet.conflist.temp\")" error="cni config load failed: no network config found in /etc/cni/net.d: cni plugin not initialized: failed to load cni config"
+time="2026-11-24T01:07:57.906975892Z" level=info msg="RunPodSandbox for name:\"coredns-559f6c778d-jz4dw\"  uid:\"8589a8ca-c4f4-4b91-aa36-92f3af4578c8\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:57.920449640Z" level=info msg="RunPodSandbox for name:\"local-path-provisioner-75f7fc7dc5-67xpm\"  uid:\"be8aee76-dc67-4694-ac3c-1b2b44d065b0\"  namespace:\"local-path-storage\""
+time="2026-11-24T01:07:57.932026307Z" level=info msg="RunPodSandbox for name:\"coredns-559f6c778d-bgghn\"  uid:\"4c886d96-86a2-4b40-855a-2cb173093a08\"  namespace:\"kube-system\""
+time="2026-11-24T01:07:57.948784688Z" level=info msg="connecting to shim 254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad" address="unix:///run/containerd/s/b96bcef49c5dc8bbd19544eacf273df0337c32687e38ceeb0c358888e0ddd1bb" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:57.965493229Z" level=info msg="connecting to shim 5e7e248343d71d758c8eeeaa79dcfa49cad8d1df6179d44b778c80a5a53d8210" address="unix:///run/containerd/s/36440bf206bcc0cd2a593cad4900fe5aed570dc5b88ee3b29d45538979e6ab47" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:57.988229085Z" level=info msg="connecting to shim 83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f" address="unix:///run/containerd/s/b8186935247d75a17428173c2ee608b9e920133e350763ee3d7e4b65283b3fe8" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:07:58.065690223Z" level=info msg="RunPodSandbox for name:\"coredns-559f6c778d-jz4dw\"  uid:\"8589a8ca-c4f4-4b91-aa36-92f3af4578c8\"  namespace:\"kube-system\" returns sandbox id \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\""
+time="2026-11-24T01:07:58.070063214Z" level=info msg="CreateContainer within sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" for container name:\"coredns\""
+time="2026-11-24T01:07:58.100016947Z" level=info msg="RunPodSandbox for name:\"local-path-provisioner-75f7fc7dc5-67xpm\"  uid:\"be8aee76-dc67-4694-ac3c-1b2b44d065b0\"  namespace:\"local-path-storage\" returns sandbox id \"5e7e248343d71d758c8eeeaa79dcfa49cad8d1df6179d44b778c80a5a53d8210\""
+time="2026-11-24T01:07:58.106458630Z" level=info msg="CreateContainer within sandbox \"5e7e248343d71d758c8eeeaa79dcfa49cad8d1df6179d44b778c80a5a53d8210\" for container name:\"local-path-provisioner\""
+time="2026-11-24T01:07:58.109526431Z" level=info msg="RunPodSandbox for name:\"coredns-559f6c778d-bgghn\"  uid:\"4c886d96-86a2-4b40-855a-2cb173093a08\"  namespace:\"kube-system\" returns sandbox id \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\""
+time="2026-11-24T01:07:58.113869826Z" level=info msg="CreateContainer within sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" for container name:\"coredns\""
+time="2026-11-24T01:07:58.793048945Z" level=info msg="CreateContainer within sandbox \"5e7e248343d71d758c8eeeaa79dcfa49cad8d1df6179d44b778c80a5a53d8210\" for name:\"local-path-provisioner\" returns container id \"dd756c583e2f073fdbd6c6239cd3de87627d13c57779e021676c8be9f0a9f614\""
+time="2026-11-24T01:07:58.794691653Z" level=info msg="StartContainer for \"dd756c583e2f073fdbd6c6239cd3de87627d13c57779e021676c8be9f0a9f614\""
+time="2026-11-24T01:07:58.797471155Z" level=info msg="connecting to shim dd756c583e2f073fdbd6c6239cd3de87627d13c57779e021676c8be9f0a9f614" address="unix:///run/containerd/s/36440bf206bcc0cd2a593cad4900fe5aed570dc5b88ee3b29d45538979e6ab47" protocol=ttrpc version=3
+time="2026-11-24T01:07:58.922045432Z" level=info msg="StartContainer for \"dd756c583e2f073fdbd6c6239cd3de87627d13c57779e021676c8be9f0a9f614\" returns successfully"
+time="2026-11-24T01:07:58.963054102Z" level=info msg="CreateContainer within sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" for name:\"coredns\" returns container id \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\""
+time="2026-11-24T01:07:58.964535971Z" level=info msg="StartContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\""
+time="2026-11-24T01:07:58.967178226Z" level=info msg="connecting to shim 98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054" address="unix:///run/containerd/s/b96bcef49c5dc8bbd19544eacf273df0337c32687e38ceeb0c358888e0ddd1bb" protocol=ttrpc version=3
+time="2026-11-24T01:07:58.978184961Z" level=info msg="CreateContainer within sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" for name:\"coredns\" returns container id \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\""
+time="2026-11-24T01:07:58.979045358Z" level=info msg="StartContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\""
+time="2026-11-24T01:07:58.983677796Z" level=info msg="connecting to shim 53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3" address="unix:///run/containerd/s/b8186935247d75a17428173c2ee608b9e920133e350763ee3d7e4b65283b3fe8" protocol=ttrpc version=3
+time="2026-11-24T01:07:59.073473689Z" level=info msg="StartContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" returns successfully"
+time="2026-11-24T01:07:59.073624051Z" level=info msg="StartContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" returns successfully"
+time="2026-11-24T01:08:01.030760593Z" level=info msg="RunPodSandbox for name:\"agent-sandbox-controller-6485d9b866-zj7mz\"  uid:\"facc43c4-3b3b-4d92-bac1-c0c8c50dad1f\"  namespace:\"agent-sandbox-system\""
+time="2026-11-24T01:08:01.066775545Z" level=info msg="connecting to shim deaa20b4dc6ff14a8589b8039a5a544d83a388fb72223537a5fe8c2410fc6f78" address="unix:///run/containerd/s/c8031e51d1a85b93671d6ea5b3e1b9f977b3e8bbc799f785623a08dbde8a3441" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:01.140037387Z" level=info msg="RunPodSandbox for name:\"agent-sandbox-controller-6485d9b866-zj7mz\"  uid:\"facc43c4-3b3b-4d92-bac1-c0c8c50dad1f\"  namespace:\"agent-sandbox-system\" returns sandbox id \"deaa20b4dc6ff14a8589b8039a5a544d83a388fb72223537a5fe8c2410fc6f78\""
+time="2026-11-24T01:08:01.142277718Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e\""
+time="2026-11-24T01:08:02.084117542Z" level=info msg="ImageCreate event name:\"ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:08:02.084443360Z" level=info msg="stop pulling image ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e: active requests=0, bytes read=16410580"
+time="2026-11-24T01:08:02.085045692Z" level=info msg="ImageCreate event name:\"sha256:319cd025a622e450363c248f3ee51b8f6873d5af87e5b6d89205025f00379410\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:08:02.087490414Z" level=info msg="Pulled image \"ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e\" with image id \"sha256:319cd025a622e450363c248f3ee51b8f6873d5af87e5b6d89205025f00379410\", repo tag \"\", repo digest \"ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e\", size \"16456476\" in 945.171578ms"
+time="2026-11-24T01:08:02.087522534Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e\" returns image reference \"sha256:319cd025a622e450363c248f3ee51b8f6873d5af87e5b6d89205025f00379410\""
+time="2026-11-24T01:08:02.090089889Z" level=info msg="CreateContainer within sandbox \"deaa20b4dc6ff14a8589b8039a5a544d83a388fb72223537a5fe8c2410fc6f78\" for container name:\"agent-sandbox-controller\""
+time="2026-11-24T01:08:02.097026708Z" level=info msg="CreateContainer within sandbox \"deaa20b4dc6ff14a8589b8039a5a544d83a388fb72223537a5fe8c2410fc6f78\" for name:\"agent-sandbox-controller\" returns container id \"7689754be98ac3174d3ca1fc30a3ff83bf5c77f698061fd00c4007b50bab33ca\""
+time="2026-11-24T01:08:02.097586089Z" level=info msg="StartContainer for \"7689754be98ac3174d3ca1fc30a3ff83bf5c77f698061fd00c4007b50bab33ca\""
+time="2026-11-24T01:08:02.098654864Z" level=info msg="connecting to shim 7689754be98ac3174d3ca1fc30a3ff83bf5c77f698061fd00c4007b50bab33ca" address="unix:///run/containerd/s/c8031e51d1a85b93671d6ea5b3e1b9f977b3e8bbc799f785623a08dbde8a3441" protocol=ttrpc version=3
+time="2026-11-24T01:08:02.163691055Z" level=info msg="StartContainer for \"7689754be98ac3174d3ca1fc30a3ff83bf5c77f698061fd00c4007b50bab33ca\" returns successfully"
+Stopping containerd.service - containerd container runtime...
+time="2026-11-24T01:08:03.083093141Z" level=info msg="Stop CRI service"
+time="2026-11-24T01:08:03.087232687Z" level=info msg="Stop CRI service"
+time="2026-11-24T01:08:03.087294934Z" level=info msg="Event monitor stopped"
+time="2026-11-24T01:08:03.087305503Z" level=info msg="Stream server stopped"
+containerd.service: Deactivated successfully.
+containerd.service: Unit process 294 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 318 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 332 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 338 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 1537 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 1566 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 3189 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 3220 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 3258 (containerd-shim) remains running after unit stopped.
+containerd.service: Unit process 3570 (containerd-shim) remains running after unit stopped.
+Stopped containerd.service - containerd container runtime.
+containerd.service: Consumed 8.865s CPU time, 800M memory peak.
+containerd.service: Found left-over process 294 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 318 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 332 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 338 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 1537 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 1566 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3189 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3220 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3258 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3570 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Starting containerd.service - containerd container runtime...
+containerd.service: Found left-over process 294 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 318 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 332 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 338 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 1537 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 1566 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3189 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3220 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3258 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+containerd.service: Found left-over process 3570 (containerd-shim) in control group while starting unit. Ignoring.
+containerd.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+time="2026-11-24T01:08:03Z" level=warning msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration" t="21.36µs"
+time="2026-11-24T01:08:03.145049303Z" level=info msg="starting containerd" revision=db8809540e1a7a9da5d518876894933ff55692ab version=v2.3.4
+time="2026-11-24T01:08:03.145211467Z" level=info msg="loading plugin" id=io.containerd.content.v1.content type=io.containerd.content.v1
+time="2026-11-24T01:08:03.145449313Z" level=warning msg="failed check for fsverity support" error="enable fsverity failed: operation not supported" path=/var/lib/containerd/io.containerd.content.v1.content
+time="2026-11-24T01:08:03.145470904Z" level=info msg="loading plugin" id=io.containerd.image-verifier.v1.bindir type=io.containerd.image-verifier.v1
+time="2026-11-24T01:08:03.145535284Z" level=info msg="loading plugin" id=io.containerd.warning.v1.deprecations type=io.containerd.warning.v1
+time="2026-11-24T01:08:03.145548088Z" level=info msg="loading plugin" id=io.containerd.event.v1.exchange type=io.containerd.event.v1
+time="2026-11-24T01:08:03.145571853Z" level=info msg="loading plugin" id=io.containerd.mount-handler.v1.erofs type=io.containerd.mount-handler.v1
+time="2026-11-24T01:08:03.145590518Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145616196Z" level=info msg="skip loading plugin" error="no scratch file generator: skip plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145641033Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.erofs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145810471Z" level=info msg="skip loading plugin" error="EROFS unsupported, please `modprobe erofs`: skip plugin" id=io.containerd.snapshotter.v1.erofs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145828384Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.native type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145847450Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.overlayfs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.145950854Z" level=info msg="loading plugin" id=io.containerd.monitor.task.v1.cgroups type=io.containerd.monitor.task.v1
+time="2026-11-24T01:08:03.146200192Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.fuse-overlayfs type=io.containerd.snapshotter.v1
+time="2026-11-24T01:08:03.146314607Z" level=info msg="loading plugin" id=io.containerd.metadata.v1.bolt type=io.containerd.metadata.v1
+time="2026-11-24T01:08:03.146347068Z" level=info msg="metadata content store policy set" policy=shared
+time="2026-11-24T01:08:03.147191341Z" level=info msg="loading plugin" id=io.containerd.gc.v1.scheduler type=io.containerd.gc.v1
+time="2026-11-24T01:08:03.147239612Z" level=info msg="loading plugin" id=io.containerd.server.v1.metrics type=io.containerd.server.v1
+time="2026-11-24T01:08:03.147264518Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.metrics type=io.containerd.server.v1
+time="2026-11-24T01:08:03.147278064Z" level=info msg="loading plugin" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-11-24T01:08:03.147300416Z" level=info msg="skip loading plugin" error="skip plugin: tracing endpoint not configured" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-11-24T01:08:03.147346372Z" level=info msg="loading plugin" id=io.containerd.nri.v1.nri type=io.containerd.nri.v1
+time="2026-11-24T01:08:03.147431001Z" level=info msg="built-in NRI default validator is disabled"
+time="2026-11-24T01:08:03.147442612Z" level=info msg="runtime interface created"
+time="2026-11-24T01:08:03.147450838Z" level=info msg="created NRI interface"
+time="2026-11-24T01:08:03.147460105Z" level=info msg="loading plugin" id=io.containerd.ttrpc.v1.otelttrpc type=io.containerd.ttrpc.v1
+time="2026-11-24T01:08:03.147471938Z" level=info msg="loading plugin" id=io.containerd.service.v1.containers-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147486655Z" level=info msg="loading plugin" id=io.containerd.service.v1.content-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147511953Z" level=info msg="loading plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-11-24T01:08:03.147565132Z" level=info msg="skip loading plugin" error="failed to check mkfs.erofs availability: failed to run mkfs.erofs --help: exec: \"mkfs.erofs\": executable file not found in $PATH: skip plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-11-24T01:08:03.147581894Z" level=info msg="loading plugin" id=io.containerd.mount-manager.v1.bolt type=io.containerd.mount-manager.v1
+time="2026-11-24T01:08:03.147675920Z" level=info msg="loading plugin" id=io.containerd.differ.v1.walking type=io.containerd.differ.v1
+time="2026-11-24T01:08:03.147694535Z" level=info msg="loading plugin" id=io.containerd.service.v1.diff-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147709764Z" level=info msg="loading plugin" id=io.containerd.service.v1.images-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147722618Z" level=info msg="loading plugin" id=io.containerd.service.v1.introspection-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147735001Z" level=info msg="loading plugin" id=io.containerd.service.v1.namespaces-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147759928Z" level=info msg="loading plugin" id=io.containerd.service.v1.snapshots-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.147773974Z" level=info msg="loading plugin" id=io.containerd.shim.v1.manager type=io.containerd.shim.v1
+time="2026-11-24T01:08:03.147792559Z" level=info msg="loading plugin" id=io.containerd.runtime.v2.task type=io.containerd.runtime.v2
+time="2026-11-24T01:08:03.148413163Z" level=info msg="connecting to shim 125324980b5a41ee251b58fb87524d13be16865830c6ff518f82ae3517a295ad" address="unix:///run/containerd/s/493ba08992c7c3f4d14e47b7bd517226f289a586c497e7caba542d321969fc37" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.148460208Z" level=info msg="connecting to shim 0f7c96288a4ed27880763817dd135486963b4e3d8ffeb8de2a81ad2ba0af7baa" address="unix:///run/containerd/s/2f4ecabecded2a4b67b62217215907f248a4e2b0dc7b1c5a9fff0f5ca56724ae" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.148601950Z" level=info msg="connecting to shim 43e5be1374dc43df6e37bafe29deff3c018ba2ebfa850ae6c74927706d2d42bf" address="unix:///run/containerd/s/4261c48e428052a0e58e04f3096a8813282a77d907b10822341b92d6869f8ff9" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.148793326Z" level=info msg="connecting to shim 254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad" address="unix:///run/containerd/s/b96bcef49c5dc8bbd19544eacf273df0337c32687e38ceeb0c358888e0ddd1bb" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.162843102Z" level=info msg="connecting to shim 53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3" address="unix:///run/containerd/s/b8186935247d75a17428173c2ee608b9e920133e350763ee3d7e4b65283b3fe8" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.163233895Z" level=info msg="connecting to shim 5b6d1070a4a69dea2a361195102fa3cd45f003d99f3c1c57939f74e402fc04cb" address="unix:///run/containerd/s/df56eb7fa26f8550269790ff5dba50c785cca18eb5c608ae30a46352db581b7c" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.163571368Z" level=info msg="connecting to shim 5e7e248343d71d758c8eeeaa79dcfa49cad8d1df6179d44b778c80a5a53d8210" address="unix:///run/containerd/s/36440bf206bcc0cd2a593cad4900fe5aed570dc5b88ee3b29d45538979e6ab47" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.167775511Z" level=info msg="connecting to shim 69462d450ba94e034a61c3c3747974a145b347e2df7709676d9fee45e33e222c" address="unix:///run/containerd/s/f1e7e90151251b0316a24b97ad268b85de703bf323f346fae976a3784ccfa0b3" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.175834061Z" level=info msg="connecting to shim 759555ef5ced4ce556568a08a4ec17e306cefedaf5fb30369324c3df8c712e60" address="unix:///run/containerd/s/f1e7e90151251b0316a24b97ad268b85de703bf323f346fae976a3784ccfa0b3" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.177600607Z" level=info msg="connecting to shim 7689754be98ac3174d3ca1fc30a3ff83bf5c77f698061fd00c4007b50bab33ca" address="unix:///run/containerd/s/c8031e51d1a85b93671d6ea5b3e1b9f977b3e8bbc799f785623a08dbde8a3441" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.177782863Z" level=info msg="connecting to shim 7d5eb659f5fdcdb2ddaa7bd4856f0f8dee9d861796ded247aac57b2b0c3e1d2e" address="unix:///run/containerd/s/493ba08992c7c3f4d14e47b7bd517226f289a586c497e7caba542d321969fc37" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.181851028Z" level=info msg="connecting to shim 83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f" address="unix:///run/containerd/s/b8186935247d75a17428173c2ee608b9e920133e350763ee3d7e4b65283b3fe8" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.189946340Z" level=info msg="connecting to shim 98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054" address="unix:///run/containerd/s/b96bcef49c5dc8bbd19544eacf273df0337c32687e38ceeb0c358888e0ddd1bb" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.196016600Z" level=info msg="connecting to shim a29c83c2f4e497cd25eb4875d62e5b2ef5908bf549d558579b464b1216e3b339" address="unix:///run/containerd/s/2f4ecabecded2a4b67b62217215907f248a4e2b0dc7b1c5a9fff0f5ca56724ae" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.197181904Z" level=info msg="connecting to shim c71dc99010fecd2645e2eca426b3e2314d36fd92ce7978f74b051ffe8802f309" address="unix:///run/containerd/s/9012a1adad10fa64912f2bafd08c2db02b1092a2497d66ab1fd51afea63c3197" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.197961689Z" level=info msg="connecting to shim dc6480f2931be754228f95bea287032514a690d0f54ad3c22ddee6897391c523" address="unix:///run/containerd/s/df56eb7fa26f8550269790ff5dba50c785cca18eb5c608ae30a46352db581b7c" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.204571198Z" level=info msg="connecting to shim dd756c583e2f073fdbd6c6239cd3de87627d13c57779e021676c8be9f0a9f614" address="unix:///run/containerd/s/36440bf206bcc0cd2a593cad4900fe5aed570dc5b88ee3b29d45538979e6ab47" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.207901555Z" level=info msg="connecting to shim de71f99103adbd3d1f8433207e1e26adcedc7880e23b71aa0b0cb411aba134f8" address="unix:///run/containerd/s/9012a1adad10fa64912f2bafd08c2db02b1092a2497d66ab1fd51afea63c3197" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.209422631Z" level=info msg="connecting to shim deaa20b4dc6ff14a8589b8039a5a544d83a388fb72223537a5fe8c2410fc6f78" address="unix:///run/containerd/s/c8031e51d1a85b93671d6ea5b3e1b9f977b3e8bbc799f785623a08dbde8a3441" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.211532569Z" level=info msg="connecting to shim ea471b0e66600712adf2c621bd4ab55024db3bc346434614c1b8018eca629dc6" address="unix:///run/containerd/s/4261c48e428052a0e58e04f3096a8813282a77d907b10822341b92d6869f8ff9" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:03.220644011Z" level=info msg="loading plugin" id=io.containerd.service.v1.tasks-service type=io.containerd.service.v1
+time="2026-11-24T01:08:03.220743387Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.containers type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220763775Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.content type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220777952Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.diff type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220793602Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.events type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220805634Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.images type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220819751Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.introspection type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220832444Z" level=info msg="loading plugin" id=io.containerd.lease.v1.manager type=io.containerd.lease.v1
+time="2026-11-24T01:08:03.220848615Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.leases type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220862000Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.mounts type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220874854Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.namespaces type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.220890754Z" level=info msg="loading plugin" id=io.containerd.sandbox.store.v1.local type=io.containerd.sandbox.store.v1
+time="2026-11-24T01:08:03.220902987Z" level=info msg="loading plugin" id=io.containerd.transfer.v1.local type=io.containerd.transfer.v1
+time="2026-11-24T01:08:03.220977597Z" level=info msg="loading plugin" id=io.containerd.cri.v1.images type=io.containerd.cri.v1
+time="2026-11-24T01:08:03.221046265Z" level=warning msg="Found 'DiscardUnpackedLayers' in CRI config which is incompatible with transfer service (not supported with transfer service). Falling back to local image pull mode."
+time="2026-11-24T01:08:03.221135573Z" level=info msg="Get image filesystem path \"/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs\" for snapshotter \"overlayfs\""
+time="2026-11-24T01:08:03.221154268Z" level=info msg="Start snapshots syncer"
+time="2026-11-24T01:08:03.221189514Z" level=info msg="loading plugin" id=io.containerd.cri.v1.runtime type=io.containerd.cri.v1
+time="2026-11-24T01:08:03.221398637Z" level=warning msg="Ignoring unknown key in TOML for plugin" error="strict mode: fields in the document are missing in the target struct" key=tolerate_missing_hugepages_controller plugin=io.containerd.cri.v1.runtime
+time="2026-11-24T01:08:03.221633587Z" level=info msg="starting cri plugin" config="{\"containerd\":{\"defaultRuntimeName\":\"runc\",\"runtimes\":{\"runc\":{\"runtimeType\":\"io.containerd.runc.v2\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":{\"BinaryName\":\"\",\"CriuImagePath\":\"\",\"CriuWorkPath\":\"\",\"IoGid\":0,\"IoUid\":0,\"NoNewKeyring\":false,\"Root\":\"\",\"ShimCgroup\":\"\",\"SystemdCgroup\":true},\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"/etc/containerd/cri-base.json\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"},\"runsc\":{\"runtimeType\":\"io.containerd.runsc.v1\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":null,\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"},\"test-handler\":{\"runtimeType\":\"io.containerd.runc.v2\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":{\"SystemdCgroup\":true},\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"/etc/containerd/cri-base.json\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"}},\"ignoreBlockIONotEnabledErrors\":false,\"ignoreRdtNotEnabledErrors\":false},\"cni\":{\"binDir\":\"\",\"binDirs\":[\"/opt/cni/bin\"],\"confDir\":\"/etc/cni/net.d\",\"maxConfNum\":1,\"setupSerially\":false,\"confTemplate\":\"\",\"ipPref\":\"\",\"useInternalLoopback\":false},\"enableSelinux\":false,\"selinuxCategoryRange\":1024,\"maxContainerLogLineSize\":16384,\"disableApparmor\":false,\"restrictOOMScoreAdj\":false,\"disableProcMount\":false,\"unsetSeccompProfile\":\"\",\"tolerateMissingHugetlbController\":true,\"disableHugetlbController\":true,\"device_ownership_from_security_context\":false,\"ignoreImageDefinedVolumes\":false,\"netnsMountsUnderStateDir\":false,\"enableUnprivilegedPorts\":true,\"enableUnprivilegedICMP\":true,\"enableCDI\":true,\"cdiSpecDirs\":[\"/etc/cdi\",\"/var/run/cdi\"],\"drainExecSyncIOTimeout\":\"0s\",\"ignoreDeprecationWarnings\":null,\"statsCollectPeriod\":\"\",\"statsRetentionPeriod\":\"\",\"enableCRIU\":true,\"enableExperimentalRestoreViaCreate\":false,\"containerdRootDir\":\"/var/lib/containerd\",\"containerdEndpoint\":\"/run/containerd/containerd.sock\",\"rootDir\":\"/var/lib/containerd/io.containerd.grpc.v1.cri\",\"stateDir\":\"/run/containerd/io.containerd.grpc.v1.cri\"}"
+time="2026-11-24T01:08:03.223824141Z" level=info msg="loading plugin" id=io.containerd.podsandbox.controller.v1.podsandbox type=io.containerd.podsandbox.controller.v1
+time="2026-11-24T01:08:03.223908809Z" level=info msg="loading plugin" id=io.containerd.sandbox.controller.v1.shim type=io.containerd.sandbox.controller.v1
+time="2026-11-24T01:08:03.223967870Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandbox-controllers type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.223994751Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandboxes type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224009328Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.snapshots type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224020960Z" level=info msg="loading plugin" id=io.containerd.streaming.v1.manager type=io.containerd.streaming.v1
+time="2026-11-24T01:08:03.224034215Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.streaming type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224047409Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.tasks type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224059502Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.transfer type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224077216Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.version type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224194505Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.healthcheck type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224207329Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.cri type=io.containerd.grpc.v1
+time="2026-11-24T01:08:03.224227037Z" level=info msg="Connect containerd service"
+time="2026-11-24T01:08:03.224254107Z" level=info msg="using experimental NRI integration - disable nri plugin to prevent this"
+time="2026-11-24T01:08:03.251919587Z" level=info msg="loading plugin" id=io.containerd.server.v1.ttrpc type=io.containerd.server.v1
+time="2026-11-24T01:08:03.251979269Z" level=info msg="loading plugin" id=io.containerd.monitor.container.v1.restart type=io.containerd.monitor.container.v1
+time="2026-11-24T01:08:03.252029433Z" level=info msg="loading plugin" id=io.containerd.metrics.v1.grpc-prometheus type=io.containerd.metrics.v1
+time="2026-11-24T01:08:03.252117128Z" level=info msg="loading plugin" id=io.containerd.metrics.v1.grpc-otel type=io.containerd.metrics.v1
+time="2026-11-24T01:08:03.252145601Z" level=info msg="loading plugin" id=io.containerd.server.v1.grpc type=io.containerd.server.v1
+time="2026-11-24T01:08:03.252031274Z" level=info msg="Start subscribing containerd event"
+time="2026-11-24T01:08:03.252369862Z" level=info msg="Start stats collector"
+time="2026-11-24T01:08:03.252788968Z" level=info msg="Start recovering state"
+time="2026-11-24T01:08:03.262577336Z" level=info msg="loading plugin" id=io.containerd.server.v1.grpc-tcp type=io.containerd.server.v1
+time="2026-11-24T01:08:03.262625928Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.grpc-tcp type=io.containerd.server.v1
+time="2026-11-24T01:08:03.262925580Z" level=info msg="loading plugin" id=io.containerd.http.v1.pprof type=io.containerd.http.v1
+time="2026-11-24T01:08:03.263005940Z" level=info msg="loading plugin" id=io.containerd.server.v1.debug type=io.containerd.server.v1
+time="2026-11-24T01:08:03.263023714Z" level=info msg="skip loading plugin" error="skip plugin" id=io.containerd.server.v1.debug type=io.containerd.server.v1
+time="2026-11-24T01:08:03.263221555Z" level=info msg=serving... address=/run/containerd/containerd.sock.ttrpc
+time="2026-11-24T01:08:03.263240661Z" level=info msg="starting GRPC server" address=/run/containerd/containerd.sock gid=0 uid=0
+time="2026-11-24T01:08:03.263304190Z" level=info msg=serving... address=/run/containerd/containerd.sock
+time="2026-11-24T01:08:03.276214127Z" level=warning msg="The image docker.io/kindest/local-path-helper:v20260131-7181c60a is not unpacked."
+time="2026-11-24T01:08:03.277271106Z" level=warning msg="The image sha256:19aa6a21b42cb57f6f76e0f3584d7dfec241a3f3568cd6590a2967c28d9cdce3 is not unpacked."
+time="2026-11-24T01:08:03.294723101Z" level=info msg="Start event monitor"
+time="2026-11-24T01:08:03.294765310Z" level=info msg="Start cni network conf syncer for default"
+time="2026-11-24T01:08:03.294780228Z" level=info msg="Start streaming server"
+time="2026-11-24T01:08:03.294794194Z" level=info msg="Registered namespace \"k8s.io\" with NRI"
+time="2026-11-24T01:08:03.294805675Z" level=info msg="runtime interface starting up..."
+time="2026-11-24T01:08:03.294812108Z" level=info msg="starting plugins..."
+time="2026-11-24T01:08:03.294824351Z" level=info msg="Synchronizing NRI (plugin) with current runtime state"
+time="2026-11-24T01:08:03.301462393Z" level=info msg="containerd successfully booted in 0.159013s"
+Started containerd.service - containerd container runtime.
+time="2026-11-24T01:08:03.931801261Z" level=info msg="RunPodSandbox for name:\"gvisor-check\"  uid:\"12501add-2c99-48e9-b942-52079bb7e1a0\"  namespace:\"default\""
+time="2026-11-24T01:08:03.971251555Z" level=info msg="connecting to shim 397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c" address="unix:///run/containerd/s/6d2feabf7b32b33e868c083bda9f7395be3f5c536d14f4a9cdda2f8fd7cb3bfd" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:08:03.976685403Z" level=info msg="Setting size of volume \"gvisorinternaldevshm\" to 67108864 bytes, matching host tmpfs \"/run/containerd/io.containerd.grpc.v1.cri/sandboxes/397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c/shm\""
+time="2026-11-24T01:08:04.101833482Z" level=info msg="RunPodSandbox for name:\"gvisor-check\"  uid:\"12501add-2c99-48e9-b942-52079bb7e1a0\"  namespace:\"default\" returns sandbox id \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\""
+time="2026-11-24T01:08:04.105946217Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\""
+time="2026-11-24T01:08:04.633138732Z" level=info msg="ImageCreate event name:\"ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:08:04.633444229Z" level=info msg="stop pulling image ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec: active requests=0, bytes read=2222272"
+time="2026-11-24T01:08:04.634517959Z" level=info msg="ImageCreate event name:\"sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:08:04.636855273Z" level=info msg="Pulled image \"ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\" with image id \"sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb\", repo tag \"\", repo digest \"ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\", size \"2222118\" in 530.86267ms"
+time="2026-11-24T01:08:04.636884779Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\" returns image reference \"sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb\""
+time="2026-11-24T01:08:04.639670942Z" level=info msg="CreateContainer within sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" for container name:\"gvisor-check\""
+time="2026-11-24T01:08:04.648792223Z" level=info msg="CreateContainer within sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" for name:\"gvisor-check\" returns container id \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\""
+time="2026-11-24T01:08:04.649448000Z" level=info msg="StartContainer for \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\""
+time="2026-11-24T01:08:04.659296520Z" level=info msg="connecting to shim 210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd" address="unix:///run/containerd/s/01fc43dbe27e2bb4f8ddbc41488c19971dca5f659f46cb4fee6e0727af273cb2" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:08:04.773451199Z" level=info msg="StartContainer for \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\" returns successfully"
+time="2026-11-24T01:08:04.773658806Z" level=info msg="received container exit event container_id:\"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\"  id:\"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\"  pid:3943  exited_at:{seconds:1795482484  nanos:773225964}"
+time="2026-11-24T01:08:06.105657247Z" level=error msg="collecting metrics for 210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd" error="cannot stat a stopped container/process"
+time="2026-11-24T01:08:06.105917745Z" level=info msg="shim disconnected" id=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd namespace=k8s.io
+time="2026-11-24T01:08:06.106036839Z" level=info msg="cleaning up after shim disconnected" id=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd namespace=k8s.io
+time="2026-11-24T01:08:06.106052789Z" level=info msg="cleaning up dead shim" id=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd namespace=k8s.io
+time="2026-11-24T01:08:07.527444600Z" level=info msg="StopPodSandbox for \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\""
+time="2026-11-24T01:08:07.527511595Z" level=info msg="Container to stop \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\" must be in running or unknown state, current state \"CONTAINER_EXITED\""
+time="2026-11-24T01:08:07.560481144Z" level=warning msg="error from eventChan" error="<nil>"
+time="2026-11-24T01:08:07.570377847Z" level=warning msg="Ignoring error killing container \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:08:07.570425346Z" level=warning msg="Failed to stat cgroup for OOM check, id: \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\"" error="open /sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod12501add_2c99_48e9_b942_52079bb7e1a0.slice/cri-containerd-397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c.scope/cgroup.controllers: no such file or directory"
+time="2026-11-24T01:08:07.570706486Z" level=info msg="received sandbox exit event container_id:\"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\"  id:\"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\"  exit_status:137  exited_at:{seconds:1795482487  nanos:570446004}" monitor_name=podsandbox
+time="2026-11-24T01:08:07.580225690Z" level=warning msg="Ignoring error killing container \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:08:07.590951981Z" level=info msg="shim disconnected" id=397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c namespace=k8s.io
+time="2026-11-24T01:08:07.590992156Z" level=info msg="cleaning up after shim disconnected" id=397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c namespace=k8s.io
+time="2026-11-24T01:08:07.591005722Z" level=info msg="cleaning up dead shim" id=397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c namespace=k8s.io
+time="2026-11-24T01:08:07.607772434Z" level=info msg="received sandbox container exit event sandbox_id:\"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\"  exit_status:137  exited_at:{seconds:1795482487  nanos:570446004}" monitor_name=criService
+time="2026-11-24T01:08:07.629919759Z" level=info msg="TearDown network for sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" successfully"
+time="2026-11-24T01:08:07.629973289Z" level=info msg="StopPodSandbox for \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" returns successfully"
+time="2026-11-24T01:08:08.533619441Z" level=info msg="RemoveContainer for \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\""
+time="2026-11-24T01:08:08.537820421Z" level=info msg="RemoveContainer for \"210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd\" returns successfully"
+time="2026-11-24T01:08:09.061548279Z" level=info msg="StopContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" with timeout 30 (s)"
+time="2026-11-24T01:08:09.062219217Z" level=info msg="Stop container \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" with signal terminated"
+time="2026-11-24T01:08:09.363770911Z" level=info msg="RunPodSandbox for name:\"coredns-fd7dcf5f-tzgsk\"  uid:\"a25dcf6a-6772-42bd-87d5-2f0c9b395ec2\"  namespace:\"kube-system\""
+time="2026-11-24T01:08:09.393650682Z" level=info msg="connecting to shim ffd2f29e0eaf114ea0b41fe012cf10b8cc161095aedfeeb36a491aabe5cdfa01" address="unix:///run/containerd/s/31bdde6acf692ef26e534f88244faac8898b26213f80c37b9b1602e8b5ca0eb4" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:09.437202892Z" level=info msg="RunPodSandbox for name:\"coredns-fd7dcf5f-4wvqd\"  uid:\"d97badb7-6d03-4094-b4e6-23a0c10fbe73\"  namespace:\"kube-system\""
+time="2026-11-24T01:08:09.475430917Z" level=info msg="connecting to shim d4a190698a0182e62ce63e1ab2b984c2cea8a9c2efe5dc8e9f06079c0aa686ce" address="unix:///run/containerd/s/fd3c87953b05d280ed9e19541a800669d1d44958f7c03e218e9bb675706fc967" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:08:09.475860236Z" level=info msg="RunPodSandbox for name:\"coredns-fd7dcf5f-tzgsk\"  uid:\"a25dcf6a-6772-42bd-87d5-2f0c9b395ec2\"  namespace:\"kube-system\" returns sandbox id \"ffd2f29e0eaf114ea0b41fe012cf10b8cc161095aedfeeb36a491aabe5cdfa01\""
+time="2026-11-24T01:08:09.480266962Z" level=info msg="CreateContainer within sandbox \"ffd2f29e0eaf114ea0b41fe012cf10b8cc161095aedfeeb36a491aabe5cdfa01\" for container name:\"coredns\""
+time="2026-11-24T01:08:09.496222139Z" level=info msg="CreateContainer within sandbox \"ffd2f29e0eaf114ea0b41fe012cf10b8cc161095aedfeeb36a491aabe5cdfa01\" for name:\"coredns\" returns container id \"96b65935001c59fb2ef21830856fb7b5f1de634d3ea3f45e2380fa28a05e44fa\""
+time="2026-11-24T01:08:09.499702040Z" level=info msg="StartContainer for \"96b65935001c59fb2ef21830856fb7b5f1de634d3ea3f45e2380fa28a05e44fa\""
+time="2026-11-24T01:08:09.500897763Z" level=info msg="connecting to shim 96b65935001c59fb2ef21830856fb7b5f1de634d3ea3f45e2380fa28a05e44fa" address="unix:///run/containerd/s/31bdde6acf692ef26e534f88244faac8898b26213f80c37b9b1602e8b5ca0eb4" protocol=ttrpc version=3
+time="2026-11-24T01:08:09.582734638Z" level=info msg="RunPodSandbox for name:\"coredns-fd7dcf5f-4wvqd\"  uid:\"d97badb7-6d03-4094-b4e6-23a0c10fbe73\"  namespace:\"kube-system\" returns sandbox id \"d4a190698a0182e62ce63e1ab2b984c2cea8a9c2efe5dc8e9f06079c0aa686ce\""
+time="2026-11-24T01:08:09.585598717Z" level=info msg="StartContainer for \"96b65935001c59fb2ef21830856fb7b5f1de634d3ea3f45e2380fa28a05e44fa\" returns successfully"
+time="2026-11-24T01:08:09.588468921Z" level=info msg="CreateContainer within sandbox \"d4a190698a0182e62ce63e1ab2b984c2cea8a9c2efe5dc8e9f06079c0aa686ce\" for container name:\"coredns\""
+time="2026-11-24T01:08:09.598676392Z" level=info msg="CreateContainer within sandbox \"d4a190698a0182e62ce63e1ab2b984c2cea8a9c2efe5dc8e9f06079c0aa686ce\" for name:\"coredns\" returns container id \"ae7f5d6202c45ff0ad2989a29b612f5dced49f1cd82410c8837cfea1823191eb\""
+time="2026-11-24T01:08:09.599787203Z" level=info msg="StartContainer for \"ae7f5d6202c45ff0ad2989a29b612f5dced49f1cd82410c8837cfea1823191eb\""
+time="2026-11-24T01:08:09.601016970Z" level=info msg="connecting to shim ae7f5d6202c45ff0ad2989a29b612f5dced49f1cd82410c8837cfea1823191eb" address="unix:///run/containerd/s/fd3c87953b05d280ed9e19541a800669d1d44958f7c03e218e9bb675706fc967" protocol=ttrpc version=3
+time="2026-11-24T01:08:09.682074823Z" level=info msg="StartContainer for \"ae7f5d6202c45ff0ad2989a29b612f5dced49f1cd82410c8837cfea1823191eb\" returns successfully"
+time="2026-11-24T01:08:10.579532702Z" level=info msg="StopContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" with timeout 30 (s)"
+time="2026-11-24T01:08:10.579968468Z" level=info msg="Stop container \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" with signal terminated"
+time="2026-11-24T01:08:14.093128192Z" level=info msg="received container exit event container_id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  exited_at:{seconds:1795482494  nanos:92789236}"
+time="2026-11-24T01:08:15.601875713Z" level=info msg="received container exit event container_id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  exited_at:{seconds:1795482495  nanos:601421291}"
+time="2026-11-24T01:08:24.093519447Z" level=error msg="failed to delete task" error="context deadline exceeded" id=98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054
+time="2026-11-24T01:08:24.093625428Z" level=error msg="failed to handle container TaskExit event container_id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  exited_at:{seconds:1795482494  nanos:92789236}" error="failed to stop container: failed to delete task: context deadline exceeded"
+time="2026-11-24T01:08:25.054797620Z" level=error msg="ttrpc: received message on inactive stream" stream=55
+time="2026-11-24T01:08:25.295336131Z" level=info msg="TaskExit event container_id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  id:\"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\"  exited_at:{seconds:1795482494  nanos:92789236}"
+time="2026-11-24T01:08:25.296427613Z" level=error msg="failed to delete task" error="rpc error: code = NotFound desc = container not created: not found" id=98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054
+time="2026-11-24T01:08:25.296517324Z" level=info msg="shim disconnected" id=98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054 namespace=k8s.io
+time="2026-11-24T01:08:25.296536871Z" level=info msg="cleaning up after shim disconnected" id=98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054 namespace=k8s.io
+time="2026-11-24T01:08:25.296549565Z" level=info msg="cleaning up dead shim" id=98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054 namespace=k8s.io
+time="2026-11-24T01:08:25.602410414Z" level=error msg="failed to delete task" error="context deadline exceeded" id=53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3
+time="2026-11-24T01:08:25.602527807Z" level=error msg="failed to handle container TaskExit event container_id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  exited_at:{seconds:1795482495  nanos:601421291}" error="failed to stop container: failed to delete task: context deadline exceeded"
+time="2026-11-24T01:08:25.770656195Z" level=info msg="Ensure that container 98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054 in task-service has been cleanup successfully"
+time="2026-11-24T01:08:26.316957447Z" level=info msg="StopContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" returns successfully"
+time="2026-11-24T01:08:26.317572544Z" level=info msg="StopPodSandbox for \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\""
+time="2026-11-24T01:08:26.317650973Z" level=info msg="Container to stop \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" must be in running or unknown state, current state \"CONTAINER_EXITED\""
+time="2026-11-24T01:08:26.326416972Z" level=info msg="received sandbox exit event container_id:\"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\"  id:\"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\"  exit_status:137  exited_at:{seconds:1795482506  nanos:326147250}" monitor_name=podsandbox
+time="2026-11-24T01:08:27.295282780Z" level=info msg="TaskExit event container_id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  id:\"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\"  exited_at:{seconds:1795482495  nanos:601421291}"
+time="2026-11-24T01:08:27.816537673Z" level=error msg="ttrpc: received message on inactive stream" stream=59
+time="2026-11-24T01:08:27.821685977Z" level=error msg="failed to delete task" error="rpc error: code = NotFound desc = container not created: not found" id=53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3
+time="2026-11-24T01:08:27.821767227Z" level=info msg="shim disconnected" id=53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3 namespace=k8s.io
+time="2026-11-24T01:08:27.821784160Z" level=info msg="cleaning up after shim disconnected" id=53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3 namespace=k8s.io
+time="2026-11-24T01:08:27.821794931Z" level=info msg="cleaning up dead shim" id=53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3 namespace=k8s.io
+time="2026-11-24T01:08:27.835604449Z" level=info msg="Ensure that container 53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3 in task-service has been cleanup successfully"
+time="2026-11-24T01:08:27.865277808Z" level=info msg="StopContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" returns successfully"
+time="2026-11-24T01:08:27.866041317Z" level=info msg="StopPodSandbox for \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\""
+time="2026-11-24T01:08:27.866212804Z" level=info msg="Container to stop \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" must be in running or unknown state, current state \"CONTAINER_EXITED\""
+time="2026-11-24T01:08:27.876411830Z" level=info msg="received sandbox exit event container_id:\"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\"  id:\"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\"  exit_status:137  exited_at:{seconds:1795482507  nanos:876242908}" monitor_name=podsandbox
+time="2026-11-24T01:08:27.959767623Z" level=info msg="shim disconnected" id=254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad namespace=k8s.io
+time="2026-11-24T01:08:27.959802171Z" level=info msg="cleaning up after shim disconnected" id=254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad namespace=k8s.io
+time="2026-11-24T01:08:27.960333646Z" level=info msg="cleaning up dead shim" id=254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad namespace=k8s.io
+time="2026-11-24T01:08:27.960062884Z" level=info msg="shim disconnected" id=83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f namespace=k8s.io
+time="2026-11-24T01:08:27.960835674Z" level=info msg="cleaning up after shim disconnected" id=83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f namespace=k8s.io
+time="2026-11-24T01:08:27.960846114Z" level=info msg="cleaning up dead shim" id=83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f namespace=k8s.io
+time="2026-11-24T01:08:27.975424324Z" level=info msg="received sandbox container exit event sandbox_id:\"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\"  exit_status:137  exited_at:{seconds:1795482507  nanos:876242908}" monitor_name=criService
+time="2026-11-24T01:08:27.976146695Z" level=info msg="received sandbox container exit event sandbox_id:\"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\"  exit_status:137  exited_at:{seconds:1795482506  nanos:326147250}" monitor_name=criService
+time="2026-11-24T01:08:28.009241752Z" level=info msg="TearDown network for sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" successfully"
+time="2026-11-24T01:08:28.009304695Z" level=info msg="StopPodSandbox for \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" returns successfully"
+time="2026-11-24T01:08:28.013575520Z" level=info msg="TearDown network for sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" successfully"
+time="2026-11-24T01:08:28.013623695Z" level=info msg="StopPodSandbox for \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" returns successfully"
+time="2026-11-24T01:08:28.594807361Z" level=info msg="RemoveContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\""
+time="2026-11-24T01:08:28.600530359Z" level=info msg="RemoveContainer for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" returns successfully"
+time="2026-11-24T01:08:28.600897661Z" level=error msg="ContainerStatus for \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\" failed" error="rpc error: code = NotFound desc = an error occurred when try to find container \"53445fb91b636a9a5b268c37ed915778dcfad50bb07478a1a1fb11e214663bc3\": not found"
+time="2026-11-24T01:08:28.603364607Z" level=info msg="RemoveContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\""
+time="2026-11-24T01:08:28.608540605Z" level=info msg="RemoveContainer for \"98c67ccd8009414f7a0826a993dda2af20dd59d05f7b83a0da6a3fb3d7723054\" returns successfully"
+time="2026-11-24T01:08:38.419308677Z" level=info msg="StopPodSandbox for \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\""
+time="2026-11-24T01:08:38.433722328Z" level=info msg="TearDown network for sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" successfully"
+time="2026-11-24T01:08:38.433759228Z" level=info msg="StopPodSandbox for \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" returns successfully"
+time="2026-11-24T01:08:38.434197949Z" level=info msg="RemovePodSandbox for \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\""
+time="2026-11-24T01:08:38.434247504Z" level=info msg="Forcibly stopping sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\""
+time="2026-11-24T01:08:38.447213531Z" level=info msg="TearDown network for sandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" successfully"
+time="2026-11-24T01:08:38.562422348Z" level=info msg="Ensure that sandbox 83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f in task-service has been cleanup successfully"
+time="2026-11-24T01:08:38.606681035Z" level=info msg="RemovePodSandbox \"83cf15056b9c129ca2bab09bbce1cc245689989db68f14062a78c38c8b1f715f\" returns successfully"
+time="2026-11-24T01:08:38.607257469Z" level=info msg="StopPodSandbox for \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\""
+time="2026-11-24T01:08:38.621691500Z" level=info msg="TearDown network for sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" successfully"
+time="2026-11-24T01:08:38.621728030Z" level=info msg="StopPodSandbox for \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" returns successfully"
+time="2026-11-24T01:08:38.622010870Z" level=info msg="RemovePodSandbox for \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\""
+time="2026-11-24T01:08:38.622039164Z" level=info msg="Forcibly stopping sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\""
+time="2026-11-24T01:08:38.635195948Z" level=info msg="TearDown network for sandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" successfully"
+time="2026-11-24T01:08:38.655423377Z" level=info msg="Ensure that sandbox 397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c in task-service has been cleanup successfully"
+time="2026-11-24T01:08:38.657044176Z" level=info msg="RemovePodSandbox \"397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c\" returns successfully"
+time="2026-11-24T01:08:38.657550353Z" level=info msg="StopPodSandbox for \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\""
+time="2026-11-24T01:08:38.672038744Z" level=info msg="TearDown network for sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" successfully"
+time="2026-11-24T01:08:38.672112514Z" level=info msg="StopPodSandbox for \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" returns successfully"
+time="2026-11-24T01:08:38.672527046Z" level=info msg="RemovePodSandbox for \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\""
+time="2026-11-24T01:08:38.672582842Z" level=info msg="Forcibly stopping sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\""
+time="2026-11-24T01:08:38.686041015Z" level=info msg="TearDown network for sandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" successfully"
+time="2026-11-24T01:08:38.704258062Z" level=info msg="Ensure that sandbox 254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad in task-service has been cleanup successfully"
+time="2026-11-24T01:08:38.709774517Z" level=info msg="RemovePodSandbox \"254b864e5003e4b9a3f194ab9df1ddfbc58b433ba6d1bb0a127d1945a2408fad\" returns successfully"
+time="2026-11-24T01:11:52.859535551Z" level=info msg="PullImage \"localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db\""
+time="2026-11-24T01:11:52.860449258Z" level=info msg="host will try HTTPS first since it is configured for HTTP with a TLS configuration, consider changing host to HTTPS or removing unused TLS configuration" host="localhost:44555"
+time="2026-11-24T01:11:52.863256836Z" level=info msg="host will try HTTPS first since it is configured for HTTP with a TLS configuration, consider changing host to HTTPS or removing unused TLS configuration" host="localhost:44555"
+time="2026-11-24T01:12:46.977753639Z" level=info msg="stop pulling image localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db: active requests=0, bytes read=2344536459"
+time="2026-11-24T01:12:46.978951191Z" level=info msg="ImageCreate event name:\"localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:12:46.983640815Z" level=info msg="ImageCreate event name:\"sha256:859dc135effe7d5fbd76c215c77e6cda0368fe18d2c8c3a70404225faf24e75c\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:12:46.985406392Z" level=info msg="Pulled image \"localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db\" with image id \"sha256:859dc135effe7d5fbd76c215c77e6cda0368fe18d2c8c3a70404225faf24e75c\", repo tag \"\", repo digest \"localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db\", size \"2344536491\" in 54.125823602s"
+time="2026-11-24T01:12:46.985442790Z" level=info msg="PullImage \"localhost:44555/legion-worker-stand-ins@sha256:a5f28c8038ec55bb42c6d836f7fc80dcd336c020767a6f0844c65821a42533db\" returns image reference \"sha256:859dc135effe7d5fbd76c215c77e6cda0368fe18d2c8c3a70404225faf24e75c\""
+time="2026-11-24T01:12:47.364704677Z" level=info msg="RunPodSandbox for name:\"rig-clone\"  uid:\"4203f1fe-93b2-4d55-9e3a-5e08d521143b\"  namespace:\"legion\""
+time="2026-11-24T01:12:47.417979034Z" level=info msg="connecting to shim 675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732" address="unix:///run/containerd/s/313930538a445fa0f98f35acc9098b10c82666a4644f21edac818e9ac9737063" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:12:47.430692864Z" level=info msg="Setting size of volume \"gvisorinternaldevshm\" to 67108864 bytes, matching host tmpfs \"/run/containerd/io.containerd.grpc.v1.cri/sandboxes/675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732/shm\""
+time="2026-11-24T01:12:47.628519296Z" level=info msg="RunPodSandbox for name:\"rig-clone\"  uid:\"4203f1fe-93b2-4d55-9e3a-5e08d521143b\"  namespace:\"legion\" returns sandbox id \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\""
+time="2026-11-24T01:12:47.632557242Z" level=info msg="CreateContainer within sandbox \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\" for container name:\"clone\""
+time="2026-11-24T01:12:47.650998338Z" level=info msg="CreateContainer within sandbox \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\" for name:\"clone\" returns container id \"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\""
+time="2026-11-24T01:12:47.651579257Z" level=info msg="StartContainer for \"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\""
+time="2026-11-24T01:12:47.660550336Z" level=info msg="connecting to shim 28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d" address="unix:///run/containerd/s/7e2e7e9fcf6890d5b93631b07b6c4c6f11923811039b6cc36d93818a4407f42b" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:12:47.774774129Z" level=info msg="StartContainer for \"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\" returns successfully"
+time="2026-11-24T01:12:48.300278113Z" level=info msg="received container exit event container_id:\"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\"  id:\"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\"  pid:5113  exited_at:{seconds:1795482768  nanos:300000196}"
+time="2026-11-24T01:12:50.617979898Z" level=error msg="ttrpc: received message on inactive stream" stream=35
+time="2026-11-24T01:12:50.618173143Z" level=error msg="collecting metrics for 28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d" error="cannot stat a stopped container/process"
+time="2026-11-24T01:12:50.618179013Z" level=error msg="collecting metrics for 28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d" error="cannot stat a stopped container/process"
+time="2026-11-24T01:12:50.619145379Z" level=info msg="shim disconnected" id=28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d namespace=k8s.io
+time="2026-11-24T01:12:50.619172820Z" level=info msg="cleaning up after shim disconnected" id=28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d namespace=k8s.io
+time="2026-11-24T01:12:50.619183751Z" level=info msg="cleaning up dead shim" id=28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d namespace=k8s.io
+time="2026-11-24T01:12:52.258893618Z" level=info msg="StopPodSandbox for \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\""
+time="2026-11-24T01:12:52.258977735Z" level=info msg="Container to stop \"28db6f7461d63d0a635647d45f104c0bfaca97bfac729d18a73844420a82b54d\" must be in running or unknown state, current state \"CONTAINER_EXITED\""
+time="2026-11-24T01:12:52.298406849Z" level=warning msg="error from eventChan" error="<nil>"
+time="2026-11-24T01:12:52.307470859Z" level=warning msg="Ignoring error killing container \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:12:52.307519921Z" level=warning msg="Failed to stat cgroup for OOM check, id: \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\"" error="open /sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-pod4203f1fe_93b2_4d55_9e3a_5e08d521143b.slice/cri-containerd-675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732.scope/cgroup.controllers: no such file or directory"
+time="2026-11-24T01:12:52.307782803Z" level=info msg="received sandbox exit event container_id:\"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\"  id:\"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\"  exit_status:137  exited_at:{seconds:1795482772  nanos:307545779}" monitor_name=podsandbox
+time="2026-11-24T01:12:52.317587776Z" level=warning msg="Ignoring error killing container \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:12:52.327554440Z" level=info msg="shim disconnected" id=675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732 namespace=k8s.io
+time="2026-11-24T01:12:52.327588223Z" level=info msg="cleaning up after shim disconnected" id=675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732 namespace=k8s.io
+time="2026-11-24T01:12:52.327600927Z" level=info msg="cleaning up dead shim" id=675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732 namespace=k8s.io
+time="2026-11-24T01:12:52.343349904Z" level=info msg="received sandbox container exit event sandbox_id:\"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\"  exit_status:137  exited_at:{seconds:1795482772  nanos:307545779}" monitor_name=criService
+time="2026-11-24T01:12:52.365046164Z" level=info msg="TearDown network for sandbox \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\" successfully"
+time="2026-11-24T01:12:52.365126374Z" level=info msg="StopPodSandbox for \"675500f0cdf6bfefc45ac9147cdeb17509930695d2f883d4ee5edbf8e4a22732\" returns successfully"
+time="2026-11-24T01:12:54.490135569Z" level=info msg="RunPodSandbox for name:\"ganesha\"  uid:\"32c822c2-58b0-4ad7-8066-4de02d93e8e5\"  namespace:\"nfs\""
+time="2026-11-24T01:12:54.519983452Z" level=info msg="connecting to shim 2ce1b26510f755d57367c221cd97843966d0986f204aa90d3778b7bb6f8907df" address="unix:///run/containerd/s/d04f38fb9b4098a85c18f2e0e59af8d9b073c258c1600fde200760a56f0646ef" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:12:54.590533434Z" level=info msg="RunPodSandbox for name:\"ganesha\"  uid:\"32c822c2-58b0-4ad7-8066-4de02d93e8e5\"  namespace:\"nfs\" returns sandbox id \"2ce1b26510f755d57367c221cd97843966d0986f204aa90d3778b7bb6f8907df\""
+time="2026-11-24T01:12:54.592583944Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d\""
+time="2026-11-24T01:12:57.815509457Z" level=info msg="ImageCreate event name:\"ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:12:57.815745672Z" level=info msg="stop pulling image ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d: active requests=0, bytes read=91037138"
+time="2026-11-24T01:12:57.816583108Z" level=info msg="ImageCreate event name:\"sha256:fd0b16f70b66b72bcb2f91d556fa33eba02729c44ffc5f2c16130e7f9fbed3c4\"  labels:{key:\"io.cri-containerd.image\"  value:\"managed\"}"
+time="2026-11-24T01:12:57.818593795Z" level=info msg="Pulled image \"ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d\" with image id \"sha256:fd0b16f70b66b72bcb2f91d556fa33eba02729c44ffc5f2c16130e7f9fbed3c4\", repo tag \"\", repo digest \"ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d\", size \"91036984\" in 3.225955579s"
+time="2026-11-24T01:12:57.818629001Z" level=info msg="PullImage \"ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d\" returns image reference \"sha256:fd0b16f70b66b72bcb2f91d556fa33eba02729c44ffc5f2c16130e7f9fbed3c4\""
+time="2026-11-24T01:12:57.823997687Z" level=info msg="CreateContainer within sandbox \"2ce1b26510f755d57367c221cd97843966d0986f204aa90d3778b7bb6f8907df\" for container name:\"ganesha\""
+time="2026-11-24T01:12:57.831713655Z" level=info msg="CreateContainer within sandbox \"2ce1b26510f755d57367c221cd97843966d0986f204aa90d3778b7bb6f8907df\" for name:\"ganesha\" returns container id \"372787ed04ee408839b2cf312885b27d6ed0c8b364101d203f137d764891f434\""
+time="2026-11-24T01:12:57.832125695Z" level=info msg="StartContainer for \"372787ed04ee408839b2cf312885b27d6ed0c8b364101d203f137d764891f434\""
+time="2026-11-24T01:12:57.833695154Z" level=info msg="connecting to shim 372787ed04ee408839b2cf312885b27d6ed0c8b364101d203f137d764891f434" address="unix:///run/containerd/s/d04f38fb9b4098a85c18f2e0e59af8d9b073c258c1600fde200760a56f0646ef" protocol=ttrpc version=3
+time="2026-11-24T01:12:57.897257283Z" level=info msg="StartContainer for \"372787ed04ee408839b2cf312885b27d6ed0c8b364101d203f137d764891f434\" returns successfully"
+time="2026-11-24T01:13:00.454431094Z" level=info msg="RunPodSandbox for name:\"rig-nfs\"  uid:\"eeee8468-d2fa-4e07-8a2c-c9149826c2e3\"  namespace:\"legion\""
+time="2026-11-24T01:13:00.488278562Z" level=info msg="connecting to shim e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c" address="unix:///run/containerd/s/4d65c7d665d30a32ddc6da8b0a6e27faf11e0b97ed4b1d2917c026c50787d25b" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:13:00.493824419Z" level=info msg="Setting size of volume \"gvisorinternaldevshm\" to 67108864 bytes, matching host tmpfs \"/run/containerd/io.containerd.grpc.v1.cri/sandboxes/e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c/shm\""
+time="2026-11-24T01:13:00.702040977Z" level=info msg="RunPodSandbox for name:\"rig-nfs\"  uid:\"eeee8468-d2fa-4e07-8a2c-c9149826c2e3\"  namespace:\"legion\" returns sandbox id \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\""
+time="2026-11-24T01:13:00.707638256Z" level=info msg="CreateContainer within sandbox \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\" for container name:\"mount\""
+time="2026-11-24T01:13:00.723674501Z" level=info msg="CreateContainer within sandbox \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\" for name:\"mount\" returns container id \"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\""
+time="2026-11-24T01:13:00.724440806Z" level=info msg="StartContainer for \"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\""
+time="2026-11-24T01:13:00.735587996Z" level=info msg="connecting to shim 3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57" address="unix:///run/containerd/s/864d52b0fd8bf3d733025b1cc58eb8cb88230f15d6ce8b35de7b50c119f6c010" namespace=k8s.io protocol=ttrpc version=2
+time="2026-11-24T01:13:00.854897129Z" level=info msg="StartContainer for \"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\" returns successfully"
+time="2026-11-24T01:13:00.869334276Z" level=info msg="received container exit event container_id:\"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\"  id:\"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\"  pid:5581  exited_at:{seconds:1795482780  nanos:869005843}"
+time="2026-11-24T01:13:01.224998031Z" level=info msg="shim disconnected" id=3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57 namespace=k8s.io
+time="2026-11-24T01:13:01.225036734Z" level=info msg="cleaning up after shim disconnected" id=3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57 namespace=k8s.io
+time="2026-11-24T01:13:01.225051612Z" level=info msg="cleaning up dead shim" id=3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57 namespace=k8s.io
+time="2026-11-24T01:13:02.284128360Z" level=info msg="StopPodSandbox for \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\""
+time="2026-11-24T01:13:02.284427294Z" level=info msg="Container to stop \"3aff7d7abc7558f205cc8787c8588a2376cc0cb95ea54e8db95a963ac7b8cf57\" must be in running or unknown state, current state \"CONTAINER_EXITED\""
+time="2026-11-24T01:13:02.319847590Z" level=warning msg="error from eventChan" error="<nil>"
+time="2026-11-24T01:13:02.329286557Z" level=warning msg="Ignoring error killing container \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:13:02.329355226Z" level=warning msg="Failed to stat cgroup for OOM check, id: \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\"" error="open /sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-podeeee8468_d2fa_4e07_8a2c_c9149826c2e3.slice/cri-containerd-e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c.scope/cgroup.controllers: no such file or directory"
+time="2026-11-24T01:13:02.338804123Z" level=info msg="received sandbox exit event container_id:\"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\"  id:\"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\"  exit_status:137  exited_at:{seconds:1795482782  nanos:338477560}" monitor_name=podsandbox
+time="2026-11-24T01:13:02.347541808Z" level=warning msg="Ignoring error killing container \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\": \"runsc\" did not terminate successfully: sandbox is not running\n"
+time="2026-11-24T01:13:02.357413550Z" level=info msg="shim disconnected" id=e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c namespace=k8s.io
+time="2026-11-24T01:13:02.357452473Z" level=info msg="cleaning up after shim disconnected" id=e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c namespace=k8s.io
+time="2026-11-24T01:13:02.357464406Z" level=info msg="cleaning up dead shim" id=e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c namespace=k8s.io
+time="2026-11-24T01:13:02.380503750Z" level=info msg="received sandbox container exit event sandbox_id:\"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\"  exit_status:137  exited_at:{seconds:1795482782  nanos:338477560}" monitor_name=criService
+time="2026-11-24T01:13:02.402925428Z" level=info msg="TearDown network for sandbox \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\" successfully"
+time="2026-11-24T01:13:02.402985090Z" level=info msg="StopPodSandbox for \"e6a06aae7ed11eb7b6e843df54911bf548d2c39dc9c2ace4c918b9587b488f7c\" returns successfully"
+time="2026-11-24T01:13:04.102249281Z" level=info msg="container event discarded" container=397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c type=CONTAINER_CREATED_EVENT
+time="2026-11-24T01:13:04.113693498Z" level=info msg="container event discarded" container=397df4c7208886a7799443837d98f2ac72ed426e7db5f18344302f99d2b7443c type=CONTAINER_STARTED_EVENT
+time="2026-11-24T01:13:04.659550451Z" level=info msg="container event discarded" container=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd type=CONTAINER_CREATED_EVENT
+time="2026-11-24T01:13:04.728547299Z" level=info msg="RunPodSandbox for name:\"rig-pull-refused\"  uid:\"eec15ad3-7e08-4a39-8a9e-e59b55cda725\"  namespace:\"legion\""
+time="2026-11-24T01:13:04.771170141Z" level=info msg="container event discarded" container=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd type=CONTAINER_STARTED_EVENT
+time="2026-11-24T01:13:04.772803039Z" level=info msg="connecting to shim b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730" address="unix:///run/containerd/s/b3c94fd19fb537613c05623aad49768baaf6170f66bf4bff3b786081d0fe61bb" namespace=k8s.io protocol=ttrpc version=3
+time="2026-11-24T01:13:04.864354978Z" level=info msg="RunPodSandbox for name:\"rig-pull-refused\"  uid:\"eec15ad3-7e08-4a39-8a9e-e59b55cda725\"  namespace:\"legion\" returns sandbox id \"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\""
+time="2026-11-24T01:13:04.876735275Z" level=info msg="PullImage \"docker.io/library/busybox:1.37.0\""
+time="2026-11-24T01:13:04.878455107Z" level=info msg="fetch failed" error="failed to do request: Head \"http://127.0.0.1:1/v2/library/busybox/manifests/1.37.0?ns=docker.io\": dial tcp 127.0.0.1:1: connect: connection refused" host="127.0.0.1:1" method=HEAD url="http://127.0.0.1:1/v2/library/busybox/manifests/1.37.0?ns=docker.io"
+time="2026-11-24T01:13:04.879161903Z" level=info msg="stop pulling image docker.io/library/busybox:1.37.0: active requests=0, bytes read=0"
+time="2026-11-24T01:13:04.879453498Z" level=error msg="PullImage \"docker.io/library/busybox:1.37.0\" failed" error="rpc error: code = Unknown desc = failed to pull and unpack image \"docker.io/library/busybox:1.37.0\": failed to resolve reference \"docker.io/library/busybox:1.37.0\": failed to do request: Head \"http://127.0.0.1:1/v2/library/busybox/manifests/1.37.0?ns=%5BREDACTED%5D\": dial tcp 127.0.0.1:1: connect: connection refused"
+time="2026-11-24T01:13:06.136234818Z" level=info msg="container event discarded" container=210de63d8b1ac558044d988aa997dd896b69c5a2f789a8e4a6a9b71f43f385cd type=CONTAINER_STOPPED_EVENT
+time="2026-11-24T01:13:07.079968180Z" level=info msg="StopPodSandbox for \"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\""
+time="2026-11-24T01:13:07.094661645Z" level=info msg="received sandbox exit event container_id:\"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\"  id:\"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\"  exit_status:137  exited_at:{seconds:1795482787  nanos:93305702}" monitor_name=podsandbox
+time="2026-11-24T01:13:07.124665795Z" level=info msg="shim disconnected" id=b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730 namespace=k8s.io
+time="2026-11-24T01:13:07.124704388Z" level=info msg="cleaning up after shim disconnected" id=b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730 namespace=k8s.io
+time="2026-11-24T01:13:07.124717182Z" level=info msg="cleaning up dead shim" id=b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730 namespace=k8s.io
+time="2026-11-24T01:13:07.139070436Z" level=info msg="received sandbox container exit event sandbox_id:\"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\"  exit_status:137  exited_at:{seconds:1795482787  nanos:93305702}" monitor_name=criService
+time="2026-11-24T01:13:07.167571228Z" level=info msg="TearDown network for sandbox \"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\" successfully"
+time="2026-11-24T01:13:07.167634187Z" level=info msg="StopPodSandbox for \"b2af98363f30df2674a3ca4e4ca3dc05c7cf89a36fe85b43688a5bb87728e730\" returns successfully"
