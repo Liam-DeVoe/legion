@@ -80,7 +80,6 @@
       "tree": "LEGION-207",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "lingerUntil": "2026-09-22T10:10:12Z",
       "workers": {
         "implementer": {
           "claim": {
