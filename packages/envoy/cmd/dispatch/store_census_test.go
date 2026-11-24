@@ -1564,17 +1564,19 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // (reflect.DeepEqual of the two decoded answers). Store-to-projection equality says nothing about
 // this: both sides can agree and the answer a reader gets still change.
 //
-// Four fields are removed from this build's answer before the comparison, and no other: the state
-// and the visibility of each graph node (model.GraphNode), and the address and the kind of each
-// closure member (model.ReferenceMember). Approved requirements add them beside the fields the
-// older build answers, and the older build answers none of them, so each would be a difference of
-// every read that answers a node or a member. They are removed only where the answer's shape
-// places a node or a member (addedFields; of these reads GET /api/v1/issues/{key}/references alone
-// answers either), never a field of one of those names elsewhere, such as a document's kind, a
-// link's via kind or an ask's state. Each must stand where the shape places it and hold the value
-// this build's rule gives (withoutTheAddedFields): one absent, or holding another value, fails the
-// run naming the read, its path and what was found there. Each read logs how many of each field it
-// removed. Every other difference fails, printing both answers.
+// Beside `as_of`, which decodeRead drops from both answers (withoutTheMomentOfTheRead), four fields
+// are removed from this build's answer before the comparison, and no other: the state and the
+// visibility of each graph node (model.GraphNode), and the address and the kind of each closure
+// member (model.ReferenceMember). This build answers them beside the fields the older build
+// answers (the model marks each `required:"false"`, for the release before), and the older build
+// answers none of them, so each would be a difference of every read that answers a node or a
+// member. They are removed only where the answer's shape places a node or a member (addedFields;
+// of these reads GET /api/v1/issues/{key}/references alone answers either), never a field of one
+// of those names elsewhere, such as a document's kind, a link's via kind or an ask's state. Each
+// must stand where the shape places it and hold the value this build's rule gives
+// (withoutTheAddedFields): one absent, or holding another value, fails the run naming the read, its
+// path and what was found there. Each read logs how many of each field it removed. Every other
+// difference fails, printing both answers.
 //
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
@@ -1596,7 +1598,7 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
 	// own comment read is the one here. lists names the fields of an object answer that hold
 	// what the read lists; a read that names none lists its own items, or is one object. added
-	// is where the answer places the fields approved requirements add (addedFields), the zero
+	// is where the answer places the fields this build adds (addedFields), the zero
 	// value for an answer that holds no graph node and no closure member.
 	reads := []struct {
 		path  string
@@ -1635,7 +1637,7 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
-				read.path, mustEncode(t, was), mustEncode(t, is))
+				read.path, foundText(was), foundText(is))
 			continue
 		}
 		t.Logf("GET %s answers field for field on both builds, over %d element(s)", read.path, elements)
@@ -1687,7 +1689,8 @@ func decodeRead(t *testing.T, body []byte) any {
 
 // withoutTheMomentOfTheRead drops `as_of` wherever an answer carries it. It is the clock of the
 // read and no answer about the data: two reads of one database a millisecond apart carry
-// different ones, and nothing of this child moves it. Every other field is compared.
+// different ones, and nothing of this child moves it. Every other field is compared, but the four
+// that withoutTheAddedFields removes from this build's answer.
 func withoutTheMomentOfTheRead(answer any) any {
 	switch held := answer.(type) {
 	case map[string]any:
@@ -1706,7 +1709,7 @@ func withoutTheMomentOfTheRead(answer any) any {
 	}
 }
 
-// addedFields is where one read's answer places what approved requirements add beside the older
+// addedFields is where one read's answer places what this build adds beside the older
 // build's answer: nodes are the paths of its graph nodes (model.GraphNode), each of which this
 // build answers with state and visibility, and members the paths of its closure members
 // (model.ReferenceMember), each of which it answers with address and kind. A path names a field of
@@ -1719,7 +1722,7 @@ type addedFields struct {
 // issueReferencesAdded is addedFields of GET /api/v1/issues/{key}/references
 // (model.IssueReferences): its nodes are the node of each link out and of each link in
 // (model.ReferenceLink), and it has no node of its own; its members are the items of members. It
-// is the one read of compareTheOldReadWithTheNew that answers either: the shapes the other eleven
+// is the one read of compareTheOldReadWithTheNew that answers either: the shapes the other reads
 // answer hold no model.GraphNode and no model.ReferenceMember.
 var issueReferencesAdded = addedFields{
 	nodes:   []string{"links[].node", "linked_from[].node"},
@@ -1727,7 +1730,7 @@ var issueReferencesAdded = addedFields{
 }
 
 // withoutTheAddedFields removes from answer, this build's decoded answer to one read, the four
-// fields approved requirements add beside the older build's answer, at the positions shape places
+// fields this build adds beside the older build's answer, at the positions shape places
 // them and nowhere else: the state and the visibility of each node, and the address and the kind
 // of each member. It answers how many of each it removed, by the field's name, and a problem for
 // each of them absent where shape places it, for each holding another value than this build's
@@ -1874,15 +1877,6 @@ func foundText(value any) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Sprintf("%v", value)
-	}
-	return string(encoded)
-}
-
-func mustEncode(t *testing.T, answer any) string {
-	t.Helper()
-	encoded, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatalf("encode a read's answer: %v", err)
 	}
 	return string(encoded)
 }
