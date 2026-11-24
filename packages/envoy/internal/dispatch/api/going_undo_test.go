@@ -478,16 +478,19 @@ func TestUndoOfOneRun(t *testing.T) {
 // TestARunSaysWhetherUndoTakesItBack: a run's read, GET /api/v1/going/runs/{id} and History
 // alike, says whether Undo can still take a change of it back (undoable) and when its Undo landed
 // (undone_at), so History offers Undo only while it takes something back and an undone run says
-// when after a reload; and it counts its changes Undo can still take back, took back and leaves
-// standing, so no page infers them from the two. A run whose write landed is undoable and was
-// never undone; once its Undo lands it is not undoable, and it says the moment that undo landed. A
-// run that wrote nothing, a run whose one write is a message, which Undo names sent, not undone,
-// and a reasoned close of which only the reason landed are not undoable, before Undo and after it,
-// and never undone. So, decided as Undo decides it from the call's record, are a claim its route
-// answered changed nothing, a create its route answered 200 for an issue Dispatch already held, a
-// write whose record cannot be read, and an update whose recorded last_seq does not decode: Undo
-// sends nothing for any of them, and History offered it on every reload. Of those, a message, a
-// reason and a write Undo refuses stand; a claim and a create that changed nothing leave nothing.
+// when after a reload; and it counts its changes Undo can still take back, took back, and tried
+// and could not take back, so no page infers them from the two. A run whose write landed is
+// undoable and was never undone; once its Undo lands it is not undoable, and it says the moment
+// that undo landed. A run that wrote nothing, a run whose one write is a message, which Undo names
+// sent, not undone, and a reasoned close of which only the reason landed are not undoable, before
+// Undo and after it, and never undone. So, decided as Undo decides it from the call's record, are
+// a claim its route answered changed nothing, a create its route answered 200 for an issue
+// Dispatch already held, a write whose record cannot be read, and an update whose recorded
+// last_seq does not decode: Undo sends nothing for any of them, and History offered it on every
+// reload. Of those, only a write Undo refuses stands; a message and a reason, sent, not undone by
+// design, and a claim and a create that changed nothing are in no count. A change Undo keeps
+// because another writer changed it since the run stands once Undo kept it, and a second press
+// answers it as the first did.
 func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -562,9 +565,9 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	t.Run("a run whose one write is a message is not undoable", func(t *testing.T) {
 		issue := rig.issue(t, "Messaged, not undoable")
 		run := rig.ran(t, "ask on Messaged, not undoable where we are", goingChange("dispatch_message", map[string]any{"issue": issue, "body": "Where are we?"}))
-		neverUndoable(t, run, "before Undo", 1)
+		neverUndoable(t, run, "before Undo", 0)
 		rig.undone(t, run, "dispatch_message")
-		neverUndoable(t, run, "after Undo", 1)
+		neverUndoable(t, run, "after Undo", 0)
 	})
 
 	t.Run("a claim its route answered changed nothing is not undoable", func(t *testing.T) {
@@ -624,8 +627,9 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	})
 
 	// A run of three changes: one Undo takes back, one whose record Undo refuses, and a message,
-	// which no undo takes back. Before Undo the read counts one to take back and two that stand;
-	// after it, one taken back and the same two standing, and a second press changes no count.
+	// which Undo does not take back by design. Before Undo the read counts one to take back and the
+	// refused one standing; after it, one taken back and the same one standing, the message in no
+	// count, and a second press changes no count.
 	t.Run("a run of three changes counts what Undo takes back, took back and leaves standing", func(t *testing.T) {
 		undone, refused, messaged := rig.issue(t, "Renamed and undone"), rig.issue(t, "Renamed and refused"), rig.issue(t, "Messaged and standing")
 		run := rig.ran(t, "rename two issues and ask on a third",
@@ -635,8 +639,8 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		// The second rename's record says nothing of what it left, so its undo is refused (409
 		// GOING_UNDO_AFTER_UNREAD) with nothing sent, and its change stands.
 		rig.exec(t, `update going_landings set answer = answer - 'body' where run_id = $1::uuid and phase = 'do' and path = $2`, run, "/api/v1/issues/"+refused)
-		if got := read(t, run); !got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{undoable: 1, standing: 2}) {
-			t.Fatalf("before Undo the run reads undoable %v, undone at %v, counts %+v; want one change to take back and two standing",
+		if got := read(t, run); !got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{undoable: 1, standing: 1}) {
+			t.Fatalf("before Undo the run reads undoable %v, undone at %v, counts %+v; want one change to take back and the refused one standing",
 				got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
 		}
 		lines := rig.undone(t, run, "dispatch_message", "dispatch_issue_update", "dispatch_issue_update")
@@ -648,8 +652,8 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		}
 		undid := func(t *testing.T, when string) {
 			t.Helper()
-			if got := read(t, run); got.Undoable || got.UndoneAt == nil || goingUndoCountsOf(got) != (goingUndoCounts{undone: 1, standing: 2}) {
-				t.Fatalf("%s the run reads undoable %v, undone at %v, counts %+v; want one change taken back and two standing",
+			if got := read(t, run); got.Undoable || got.UndoneAt == nil || goingUndoCountsOf(got) != (goingUndoCounts{undone: 1, standing: 1}) {
+				t.Fatalf("%s the run reads undoable %v, undone at %v, counts %+v; want one change taken back and the refused one standing",
 					when, got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
 			}
 		}
@@ -658,18 +662,69 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		undid(t, "after a second press")
 	})
 
+	// Three renames another writer changed after the run: one whose undo's read finds the title
+	// changed, so it sends nothing; one that also moved the status, whose undo writes the status
+	// back and keeps the title; and one whose title changes between the undo's read and its write,
+	// which its route refuses. Each is undoable before Undo; after it each stands, kept, and none is
+	// undoable, and a second press answers the first's lines and sends nothing again.
+	t.Run("a change Undo keeps as another writer changed it stands once Undo kept it", func(t *testing.T) {
+		kept, partly, raced := rig.issue(t, "Retitled by bob since"), rig.issue(t, "Retitled by bob and moved back"), rig.issue(t, "Retitled by bob mid-undo")
+		status := rig.issueRead(t, partly).Status
+		run := rig.ran(t, "rename three issues",
+			goingChange("dispatch_issue_update", retitle(kept, "Ours, kept")),
+			goingChange("dispatch_issue_update", map[string]any{"issue": partly, "title": "Ours, partly", "status": "in_progress"}),
+			goingChange("dispatch_issue_update", retitle(raced, "Ours, raced")))
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+kept, map[string]any{"title": "Bob's"})
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+partly, map[string]any{"title": "Bob's"})
+		var writes atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+raced, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			// bob retitles the issue after the undo's read and before its write back.
+			if writes.Add(1) == 1 {
+				if response := dispatchRequest(t, rig.mux, http.MethodPatch, "/api/v1/issues/"+raced, map[string]any{"title": "Bob's"}, "bob"); response.Code >= http.StatusMultipleChoices {
+					t.Errorf("bob's own retitle answered %d %s", response.Code, response.Body.String())
+				}
+			}
+			inner.ServeHTTP(w, r)
+		})
+		if got := read(t, run); !got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{undoable: 3}) {
+			t.Fatalf("before Undo the run reads undoable %v, counts %+v; want three changes to take back", got.Undoable, goingUndoCountsOf(got))
+		}
+		first := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue_update", "dispatch_issue_update")
+		for _, line := range first {
+			if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged {
+				t.Fatalf("Undo answered %+v, want each rename kept, %s", first, codeGoingUndoChanged)
+			}
+		}
+		if rig.title(t, kept) != "Bob's" || rig.title(t, partly) != "Bob's" || rig.title(t, raced) != "Bob's" || rig.issueRead(t, partly).Status != status {
+			t.Fatalf("after Undo the titles are %q, %q and %q and the moved issue is %s; want bob's titles kept and the status %s back",
+				rig.title(t, kept), rig.title(t, partly), rig.title(t, raced), rig.issueRead(t, partly).Status, status)
+		}
+		stood := func(t *testing.T, when string) {
+			t.Helper()
+			if got := read(t, run); got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{standing: 3}) {
+				t.Fatalf("%s the run reads undoable %v, counts %+v; want it not undoable, three changes standing", when, got.Undoable, goingUndoCountsOf(got))
+			}
+		}
+		stood(t, "after Undo")
+		second := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue_update", "dispatch_issue_update")
+		if !reflect.DeepEqual(first, second) || writes.Load() != 1 {
+			t.Fatalf("the second press answered %+v with the raced write back sent %d times; want the first press's %+v, sent once", second, writes.Load(), first)
+		}
+		stood(t, "after a second press")
+	})
+
 	// Last: partlyLandedWaiting stops the rig's agent loop.
 	t.Run("a reasoned close of which only the reason landed is not undoable", func(t *testing.T) {
 		run, issue, _ := rig.partlyLandedWaiting(t, "Only its reason landed")
 		rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
-		neverUndoable(t, run, "before Undo", 1)
+		neverUndoable(t, run, "before Undo", 0)
 		goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
-		neverUndoable(t, run, "after Undo", 1)
+		neverUndoable(t, run, "after Undo", 0)
 	})
 }
 
 // goingUndoCounts is what a run's read counts of its changes: how many Undo can still take back,
-// how many an Undo took back, and how many Undo leaves standing.
+// how many an Undo took back, and how many Undo tried and could not take back.
 type goingUndoCounts struct {
 	undoable, undone, standing int
 }

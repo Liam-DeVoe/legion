@@ -51,11 +51,13 @@ const goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.
 // list of goingOpenCall - its key, the row of the run's plan it ran, joined as goingLandedWrites
 // joins it, and the last request of it that landed with what its route recorded beside it - which
 // goingCallUndo decides; when the run's Undo landed, its newest landing of phase undo, null for
-// none; and how many of its calls an Undo took back, its landings of phase undo but those of a
-// request that changed nothing (unchanged, landUnchanged), one for each call whose undo landed
-// (goingUndoLanding). A call whose undo changed nothing has a landing, so it is no open call
-// either, and is in no count. All of it is read in the statement that reads the run, by the
-// primary key of going_landings, so a page of History makes no read of its own for each run.
+// none; and two counts of its landings of phase undo, one for each call whose undo landed
+// (goingUndoLanding, recordUndo), by the line each recorded: those whose line is ok, but those of
+// a request that changed nothing (unchanged), the calls an Undo took back; and those whose line is
+// not, the calls Undo kept as another writer changed them since the run, which stand. A call
+// whose undo changed nothing has a landing, so it is no open call either, and is in no count. All
+// of it is read in the statement that reads the run, by the primary key of going_landings, so a
+// page of History makes no read of its own for each run.
 // The answer of an issue's update, create or claim carries the whole issue - a page of 50 runs of
 // three issue updates read some 220 to 250 KB that way, against 24 KB before the read took
 // answers - so of those three it reads only the members goingUndoer.plan reads: the item's key or
@@ -87,7 +89,10 @@ const goingRunUndoColumns = `r.author_login, (
 		) c
 	),
 	(select max(u.landed_at) from going_landings u where u.run_id = r.id and u.phase = 'undo'),
-	(select count(*) from going_landings u where u.run_id = r.id and u.phase = 'undo' and not coalesce((u.answer->>'unchanged')::boolean, false))`
+	(select count(*) from going_landings u where u.run_id = r.id and u.phase = 'undo'
+	   and coalesce((u.answer->'line'->'outcome'->>'ok')::boolean, false) and not coalesce((u.answer->>'unchanged')::boolean, false)),
+	(select count(*) from going_landings u where u.run_id = r.id and u.phase = 'undo'
+	   and not coalesce((u.answer->'line'->'outcome'->>'ok')::boolean, false))`
 
 // goingContext is the item the bar's context chip names when the person asked: the page's path,
 // and the project, issue and document block that page shows, each empty where it shows none.
@@ -162,14 +167,15 @@ type goingRunUsed struct {
 // back a change of it (a call of it Undo goes on to put back, goingCallUndo; false for a run that
 // changed nothing), and when its Undo landed (null for a run never undone), so History offers Undo
 // only while it can take something back, and an undone run says when after a reload. Three counts
-// of its calls that landed a change say what Undo did and will do, so no page infers it from the
-// two above: how many Undo can still take back now (UndoableCount, the calls undoable stands for),
-// how many an Undo took back (UndoneCount, the calls whose undo landed a change), and how many
-// Undo leaves standing (StandingCount: a call whose undo the record refuses with nothing sent, or
-// one named sent, not undone), which is the same before Undo is pressed and after. A call that
-// changed nothing, and one whose undo's request its route answered as changing nothing
-// (landUnchanged), is in none of them; a call whose undo's request was refused is still in the
-// first.
+// of its calls say what Undo did and will do, so no page infers it from the two above: how many
+// Undo can still take back now (UndoableCount, the calls undoable stands for), how many an Undo
+// took back (UndoneCount, the calls whose undo landed a change), and how many Undo tried and
+// could not take back, so their change stands (StandingCount: a call whose undo the record
+// refuses with nothing sent, and one whose undo kept what another writer changed since the run).
+// A call Undo tries nothing of by design - sent, not undone, as a message, a broadcast, a review
+// and every write Dispatch does not undo - is in none of them, and so is a call that changed
+// nothing and one whose undo's request its route answered as changing nothing (recordUndo); a call
+// whose undo's request failed is still in the first.
 type goingRun struct {
 	ID            string        `json:"id"`
 	Conversation  string        `json:"conversation"`
@@ -217,23 +223,23 @@ const (
 	// goingFateTakesBack is a call Undo goes on to take back: it reads the item now and sends the
 	// request that puts it back, where the item still holds what the call left.
 	goingFateTakesBack goingCallFate = iota
-	// goingFateStands is a call whose change stands and Undo does not take back: its record
-	// settles it with a refusal and nothing sent, its record cannot be read, or it is sent, not
-	// undone.
+	// goingFateStands is a call whose undo its record refuses with nothing sent, so its change
+	// stands: its undo is unknown or unserved, its record cannot be read or does not say what it
+	// left or what it replaced, or it names a claim the bar cannot take back.
 	goingFateStands
-	// goingFateNothingLeft is a call its record says changed nothing - a claim, a create or an
-	// approval request its route answered changed nothing, a follow or a thread left as it was
-	// found - so nothing of it stands and nothing is taken back.
-	goingFateNothingLeft
+	// goingFateNotTried is a call Undo tries nothing of: one that is sent, not undone by design,
+	// and one its record says changed nothing - a claim, a create or an approval request its route
+	// answered changed nothing, a follow or a thread left as it was found.
+	goingFateNotTried
 )
 
 // goingCallUndo is what Undo does with call, a call of the run run whose undo has not landed,
 // pressed by the run's person, login: the undo's own decision from the call's record
-// (goingUndoer.plan), which goes on to put something back or settles the call - a write tool whose
-// undo is not_undone, a last request that is not the call's own (a close's reason sent before it),
-// a claim or a create its route answered changed nothing, or a record the undo cannot read. The
-// two are one function, so History offers Undo, and counts what it takes back and leaves, exactly
-// as Undo would do it. The plan reads nothing, so it runs here, where no server is, over catalogue.
+// (goingUndoer.plan), which goes on to put something back, refuses the undo, or tries nothing of
+// the call - a write tool whose undo is not_undone, a last request that is not the call's own (a
+// close's reason sent before it), a claim or a create its route answered changed nothing. The two
+// are one function, so History offers Undo, and counts what it takes back and leaves, exactly as
+// Undo would do it. The plan reads nothing, so it runs here, where no server is, over catalogue.
 func goingCallUndo(catalogue GoingCatalogue, run, login string, call goingOpenCall) goingCallFate {
 	approval := call.Approval
 	if string(approval) == "null" {
@@ -252,7 +258,7 @@ func goingCallUndo(catalogue GoingCatalogue, run, login string, call goingOpenCa
 	case plan.stands:
 		return goingFateStands
 	}
-	return goingFateNothingLeft
+	return goingFateNotTried
 }
 
 // goingRunCatalogue is the catalogue of the server's own route table (BuildGoingCatalogue), built
@@ -437,8 +443,11 @@ func scanGoingRun(row pgx.Row, lead ...any) (goingRun, error) {
 	var run goingRun
 	var chip, used, open []byte
 	var author string
+	// StandingCount starts at the calls whose undo landed and kept another writer's change; the
+	// refusals the open calls' records settle are added below.
 	targets := append(lead, &run.ID, &run.Conversation, &run.Continues, &run.Words, &chip, &run.Level, &run.Mode,
-		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &author, &open, &run.UndoneAt, &run.UndoneCount)
+		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &author, &open, &run.UndoneAt,
+		&run.UndoneCount, &run.StandingCount)
 	if err := row.Scan(targets...); err != nil {
 		return goingRun{}, err
 	}

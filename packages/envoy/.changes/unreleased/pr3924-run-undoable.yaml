@@ -16,17 +16,22 @@ body: |-
   The record also counts the run's changes, each a required integer decided by that same function
   in that same statement: `undoable_count`, how many Undo can still take back now; `undone_count`,
   how many an Undo took back, one for each undo that landed a change; and `standing_count`, how
-  many Undo leaves standing, a call whose undo the record refuses with nothing sent (409
-  `GOING_UNDO_AFTER_UNREAD`, `GOING_UNDO_BEFORE_UNREAD`, `GOING_UNDO_UNKNOWN`,
-  `GOING_UNDO_NOT_CALLERS_CLAIM`, 501 `GOING_UNDO_UNSERVED`, or a record with nothing to write
-  back) or one named "sent, not undone". A call that changed nothing, and one whose undo changed
-  nothing, is in none of them. Before, a page could only infer from `undoable` and `undone_at`,
-  and read a run whose refused or not-undone change still stood as undone. An undo whose request
+  many Undo tried and could not take back, so their change stands: a call whose undo the record
+  refuses with nothing sent (409 `GOING_UNDO_AFTER_UNREAD`, `GOING_UNDO_BEFORE_UNREAD`,
+  `GOING_UNDO_UNKNOWN`, `GOING_UNDO_NOT_CALLERS_CLAIM`, 501 `GOING_UNDO_UNSERVED`, or a record
+  with nothing to write back), and one whose undo kept what another writer changed since the run
+  (409 `GOING_UNDO_CHANGED`). A call that is sent, not undone by design (a message, a broadcast, a
+  review, every write Dispatch does not undo), a call that changed nothing, and one whose undo
+  changed nothing are in none of them. Before, a page could only infer from `undoable` and
+  `undone_at`, and read a run whose refused change still stood as undone. An undo whose request
   its route answers below 300 while it commits nothing, as a follow of a session that follows the
   ask already answers 204, now says the undo changed nothing and there is nothing to undo, and
   records that as the call's undo landing (`going_landings`, phase `undo`, marked `unchanged`), so
   a second press answers it again and sends nothing, and History no longer offers Undo for it.
-  Before, it said the change was reversed, and each press sent the request again.
+  Before, it said the change was reversed, and each press sent the request again. An undo that
+  keeps a change another writer made since the run is recorded the same way, whether its read
+  found the change or its route refused the request for it, so a second press answers it as kept
+  and History offers no Undo for it.
   A call whose recorded `last_seq` is not a whole number is a record Undo cannot read: Undo answers
   409 `GOING_UNDO_AFTER_UNREAD` and puts nothing back, and History, which now reads `last_seq` among
   those members, does not offer Undo for it. Before, Undo dropped the bad value and went on, and a
