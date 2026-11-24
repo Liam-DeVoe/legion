@@ -15,6 +15,7 @@ import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchServiceError,
+  DispatchUnreachableError,
   type DispatchWriteRetry,
   DispatchWriteUnsettledError,
 } from "../dispatch-http";
@@ -377,6 +378,60 @@ test("when only the last attempt may have reached Dispatch, the proxy's refusal 
   expect(message).not.toContain("earlier attempt");
   expect(message).toContain("this attempt may have reached Dispatch");
   expect(message).not.toContain("a new `dispatch review`");
+});
+
+test("when the proxy refuses every attempt and only the last refusal may have left it, the unsettled write names no earlier attempt", async () => {
+  const fetchImpl = scriptedFetch([
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown"),
+  ]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(fetchImpl.sent).toHaveLength(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
+  expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+  const message = (ended as DispatchWriteUnsettledError).message;
+  expect(message).toContain("GRANT_NOT_LIVE");
+  expect(message).toContain("this attempt may have reached Dispatch");
+  expect(message).not.toContain("earlier attempt");
+});
+
+test("a proxy that refuses the connection on every attempt says the review can be sent again once the broker answers", async () => {
+  const sent: Sent[] = [];
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit
+  ): Promise<Response> => {
+    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+    // Bun rejects a refused connection with a TypeError carrying the errno code (errors.ts).
+    throw Object.assign(
+      new TypeError("Unable to connect. Is the computer able to access the url?"),
+      {
+        code: "ECONNREFUSED",
+      }
+    );
+  };
+  const fetchImpl = Object.assign(impl, { preconnect: () => {} }) as typeof fetch;
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(sent.length).toBeGreaterThan(0);
+  expect(ended).toBeInstanceOf(DispatchUnreachableError);
+  const message = (ended as DispatchUnreachableError).message;
+  expect(message).toContain("Cipher's proxy at http://proxy.example:3128");
+  expect(message).toContain("The review can be sent again once the broker answers.");
+  expect(message).not.toContain("restart this agent process");
 });
 
 /**

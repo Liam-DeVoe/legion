@@ -270,10 +270,12 @@ export class DispatchWriteUnsettledError extends Error {
     unanswered?: string
   ) {
     let answer: string;
-    // A 5xx can itself come after Dispatch committed the write; any other refusal says the
-    // landing was an earlier attempt's.
+    // A 5xx can itself come after Dispatch committed the write, and so can a refusal Cipher's
+    // proxy wrote itself (`DispatchProxyRefusalError`), whose own text names the attempt that may
+    // have left the proxy; any other refusal says the landing was an earlier attempt's.
     let why =
-      last instanceof DispatchServiceError && last.status >= 500
+      (last instanceof DispatchServiceError && last.status >= 500) ||
+      last instanceof DispatchProxyRefusalError
         ? "an attempt of the write may have reached Dispatch"
         : "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
@@ -414,7 +416,7 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * a write attempt that failed so cannot have landed, where one that failed otherwise (a reset after
  * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
  * `failure` is the failure's class alone, for a text that names another path to Dispatch (a write
- * through Cipher's proxy, `#attempt`).
+ * through Cipher's proxy, `#proxyUnreachable`).
  */
 export class DispatchUnreachableError extends Error {
   constructor(
