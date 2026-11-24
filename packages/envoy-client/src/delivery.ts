@@ -1052,10 +1052,11 @@ type DispatchCardEvent = {
   readonly [compactRecordField: string]: unknown;
 };
 
-/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`: the event the
- *  reader read, as its JSON text - its owner, type, actor and payload, with a body read whole in
- *  place of the part the frame carried - and never the frame's payload, so a key readDispatchPayload
- *  dropped reaches no card. An event JSON.stringify cannot write either (it recurses as the encoder
+/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`: the card's
+ *  `dispatch` block (DispatchCardEvent) as JSON text - its owner, type, actor, relation and payload
+ *  or compact record, with a body read whole in place of the part the frame carried - and never
+ *  the frame's payload, so a key readDispatchPayload dropped reaches no card. A block
+ *  JSON.stringify cannot write (it recurses as the encoder
  *  does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
  *  `bound`, is shown by its owner, its type, the actor's `kind` and `id` and the reason. The actor
  *  is written by those two strings alone: the schema passes its other keys through, and one of

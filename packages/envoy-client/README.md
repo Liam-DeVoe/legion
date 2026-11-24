@@ -37,9 +37,10 @@ once as `message`, and marks unknown sources or fields with `unrecognised`.
 A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`:
 one nested deeper than the encoder's recursion reaches, and one whose layout passes the card's
 bound, as an array chain 1,400 levels deep does from a 3 KB frame. A Dispatch event is shown under
-`dispatch` as the text of the event `readDispatchPayload` read - its owner, type, actor and
-payload, with a body read whole in place of the part the frame carried - never as the frame's
-payload, so a key the reader drops reaches no card; an event too deep to write as JSON, or whose
+`dispatch` as the card's `dispatch` block written as JSON text - the owner, type, actor, relation
+and payload or compact record the card lays out from the event `readDispatchPayload` read, with a
+body read whole in place of the part the frame carried - never as the frame's payload, so a key
+the reader drops reaches no card; an event too deep to write as JSON, or whose
 text still passes the bound, shows its owner, its type, its actor's `kind` and `id` (no other key
 of the actor) and the reason, held to the bound too, and its owner, type and reason alone when
 even that passes it. The bound is

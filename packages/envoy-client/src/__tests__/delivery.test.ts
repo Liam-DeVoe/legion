@@ -1907,8 +1907,9 @@ describe("renderInbound non-dispatch envelopes", () => {
       expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
     });
 
-    // A Dispatch card the layout cannot hold shows the event its reader read, as text: where it
-    // is, what it is, who did it and its payload, never the frame's payload.
+    // A Dispatch card the layout cannot hold shows its own `dispatch` block as JSON text - the
+    // owner (`PRIV-1` from the event's `issue_key`), type, actor and payload - never the frame's
+    // payload.
     test("a Dispatch event whose payload is nested 9,999 deep is shown as its text", () => {
       const deepEvent = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":${nested}}`;
       const rendered = renderInbound(
