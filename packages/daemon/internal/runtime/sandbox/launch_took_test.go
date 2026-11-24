@@ -6,11 +6,13 @@ package sandbox
 // make the read, and once the suspension that takes the pod is written it hands the daemon what it
 // took (Options.LaunchTook, runtime.TakenPod), which tells the issue's architect once (the daemon's
 // tellLaunchTook, internal/daemon's launch_took_test.go). One test each for a moved facet
-// (movedInPod), a superseded disk shape and a kept pod whose stored template cannot be read, each
-// with another role running in the pod and a workspace that holds one commit origin does not hold:
-// the pod is replaced and the daemon is handed the commit. A pod whose launchers are not bound, and
-// a pod that is not live: the pod is replaced, no read is sent, and the daemon is handed why no read
-// could be made. Each fails with the hand-off taken out.
+// (movedInPod), a superseded disk shape, a kept pod whose stored template cannot be read and a pod
+// one of whose launchers is not bound to it, each with another role running in the pod and a
+// workspace that holds one commit origin does not hold: the pod is replaced and the daemon is
+// handed the commit. A pod that is not live, a pod whose launchers are not bound and none of which
+// reads a workspace, and a kept volume a launch deletes with no pod of its Sandbox: the disk is
+// taken, no read is sent, and the daemon is handed why no read could be made. Each fails with the
+// hand-off taken out.
 
 import (
 	"context"
@@ -153,9 +155,11 @@ func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
 }
 
 // The reviewer's start replaces the pod the tester runs in, because the reviewer's launcher Secret
-// binds another pod (launcherBound). No launcher of the pod is bound to it, so no read is sent, and
-// the daemon is handed that no read could be made.
-func TestALaunchIntoAPodWithUnboundLaunchersSaysNoReadCouldBeMade(t *testing.T) {
+// binds another pod (launcherBound). The tester's launcher, connected and authenticated for that
+// pod, can still read its workspace, so it does, and the daemon is handed the commit it found: one
+// launcher bound wrongly is no word that no process of the pod can read (GPT-6.1 Sol's point 4 on
+// #5285 at 0259f8af, INFRA-341's reviewer's point 4).
+func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *testing.T) {
 	var took tookLaunches
 	g := newRig(t, nil, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
 	testerLoc := g.spawn(workerSpec(t))
@@ -166,8 +170,95 @@ func TestALaunchIntoAPodWithUnboundLaunchersSaysNoReadCouldBeMade(t *testing.T) 
 	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
 		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
 	}
-	took.wantUnread(t, testerLoc.Sandbox.PodUID, "not bound")
+	took.wantRead(t, testerLoc.Sandbox.PodUID)
+	if why := took.all()[0].Why; !strings.Contains(why, "not bound") {
+		t.Fatalf("the daemon was handed why %q, want the launchers that are not bound named as why the launch replaced the pod", why)
+	}
+}
+
+// The control: the same replacement where no launcher of the pod says it reads a workspace. No
+// read is sent, and the daemon is handed that no read could be made, because no launcher of the
+// pod can make it.
+func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *testing.T) {
+	var took tookLaunches
+	g := newRig(t, nil, withOptions(func(o *Options) { o.LaunchTook = took.record }))
+	testerLoc := g.spawn(workerSpec(t))
+	editSecret(g, roleSecretName(testerLoc.Sandbox.Name, claim.RoleReviewer), func(s *corev1.Secret) {
+		s.Annotations[launcherPodUIDAnnotation] = "uid-another-pod"
+	})
+	reviewerLoc := g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
+	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
+		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
+	}
+	took.wantUnread(t, testerLoc.Sandbox.PodUID, "no launcher")
 	noReadSent(t, g, workerToken, otherToken)
+}
+
+// A launch that deletes a kept volume its issue's Sandbox holds with no pod of its own (GPT-6.1
+// Sol's point 3 on #5285 at 0259f8af, INFRA-341's reviewer's point 5): the round's ReplacePod left
+// the Sandbox Suspended with its volume, and the next launch replaces the Sandbox, and the volume
+// with it, because the launch renders another disk shape or because the volume carries the reset
+// mark. No process runs to read the volume, so the daemon is handed that no read could be made,
+// naming the pod that ReplacePod displaced, the last pod known to have used the volume. The
+// control is a launch that keeps the volume: it deletes no disk and is handed nothing.
+func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
+	// suspendedKept is a rig whose issue Sandbox keeps a volume, Suspended by a round's ReplacePod
+	// over the pod that loc records, with that pod gone. failInit has that pod show a failed
+	// workspace-init first, so the suspension writes the reset mark (volumeFault).
+	suspendedKept := func(t *testing.T, failInit bool, options ...rigOption) (*rig, runtime.Locator) {
+		t.Helper()
+		g := newRig(t, nil, append([]rigOption{withOptions(keptVolumes(SandboxMicroVM))}, options...)...)
+		loc := g.spawn(workerSpec(t))
+		if failInit {
+			g.editPod(loc.Sandbox.Name, "the pod store to see the failed workspace-init", func(p *corev1.Pod) {
+				p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
+					{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
+					{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
+				}}
+			})
+		}
+		if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
+			t.Fatalf("ReplacePod: %v", err)
+		}
+		g.eventually("the replaced pod to go", func() bool { return g.r.storedPod(loc.Sandbox.Name) == nil })
+		if s := g.sandbox(loc.Sandbox.Name); s == nil || s.mode() != modeSuspended || len(s.Spec.VolumeClaimTemplates) != 1 {
+			t.Fatalf("after ReplacePod the issue's Sandbox is %+v, want it Suspended with its kept volume", s)
+		}
+		return g, loc
+	}
+	relaunch := func(g *rig, r *Runtime, loc runtime.Locator) {
+		spec := workerSpec(g.t)
+		spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+		g.launcher(spec.Claim)
+		_, _ = r.Resume(g.ctx, &loc, spec)
+	}
+
+	t.Run("the launch keeps no volume now", func(t *testing.T) {
+		var took tookLaunches
+		g, loc := suspendedKept(t, false, withWorkspaceRead(oneCommitRead))
+		r2 := secondRuntime(t, g, func(o *Options) { o.LaunchTook = took.record })()
+		relaunch(g, r2, loc)
+		took.wantUnread(t, loc.Sandbox.PodUID, "no live pod")
+		noReadSent(t, g, workerToken)
+	})
+	t.Run("the volume carries the reset mark", func(t *testing.T) {
+		var took tookLaunches
+		g, loc := suspendedKept(t, true, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
+		if mark := g.sandbox(loc.Sandbox.Name).Annotations[volumeResetAnnotation]; mark == "" {
+			t.Fatal("the suspension wrote no reset mark, so this case proves nothing")
+		}
+		relaunch(g, g.r, loc)
+		took.wantUnread(t, loc.Sandbox.PodUID, "no live pod")
+		noReadSent(t, g, workerToken)
+	})
+	t.Run("control: the launch keeps the volume", func(t *testing.T) {
+		var took tookLaunches
+		g, loc := suspendedKept(t, false, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
+		relaunch(g, g.r, loc)
+		if taken := took.all(); len(taken) != 0 {
+			t.Fatalf("the daemon was handed %+v, want nothing: the launch keeps the volume and its Sandbox", taken)
+		}
+	})
 }
 
 // The death path's Resume over a Failed issue pod its Sandbox still runs: the pod is not live, so
