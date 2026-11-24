@@ -18,9 +18,9 @@ import {
 import {
   agentRowId,
   replyRowId,
+  rowThreadSession,
   seedAgentThread,
   seedCommentThread,
-  threadSessions,
 } from "./inbox-threads";
 import {
   askIdOf,
@@ -37,9 +37,9 @@ import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test
 import { asUser } from "./users";
 
 /** The session that answers the thread rows below, under the running row's own id
- *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
  *  by its id, for every person at once. */
-const threadSession = threadSessions(rowSessionId).thread;
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The Inbox's keyboard, in the rows whose claim reaches the server: a bulk snooze written and

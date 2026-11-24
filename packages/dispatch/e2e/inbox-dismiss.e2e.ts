@@ -18,10 +18,10 @@ import {
   expectSidebarInboxCount,
   holdReadMarks,
   replyRowId,
+  rowThreadSession,
   seedAgentThread,
   seedBulkReplyThreads,
   seedCommentThread,
-  threadSessions,
   unreadThreadRows,
 } from "./inbox-threads";
 import { openView } from "./inbox-view";
@@ -40,9 +40,9 @@ import {
 import { asUser } from "./users";
 
 /** The session that answers this file's threads, under the running row's own id
- *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
  *  by its id, for every person at once. */
-const threadSession = threadSessions(rowSessionId).thread;
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The Inbox's **Dismiss** (INFRA-450, A12): a thread stays in the Inbox, read or not, until the

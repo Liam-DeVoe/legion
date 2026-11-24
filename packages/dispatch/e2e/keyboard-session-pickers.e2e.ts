@@ -29,8 +29,8 @@ const LEVELS = ["auto", "low", "medium", "high"];
  *  replay and responder are process-global, so a session another row seeded would carry that
  *  row's frames into this one, and Dispatch keeps the switches sent to a session and its answers
  *  by its id, for every person at once, so a repeat of a row under one fixed id would read the
- *  switches its earlier copy sent. Each row calls this once, so its id is the row's own without
- *  `row`: `row` numbers the session's title, which the header draws. */
+ *  switches its earlier copy sent. `row` numbers both the session's logical id (`pickersN`) and
+ *  the title the header draws. */
 function liveSession(row: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],

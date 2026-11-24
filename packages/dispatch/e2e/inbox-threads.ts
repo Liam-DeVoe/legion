@@ -46,39 +46,16 @@ export const THREAD_SESSION: FakeSession = {
   title: "Release bot",
 };
 
-/** A second session, for a row that must stay the other session's: its reply is unread in the
- *  Agents page's own count whatever the Inbox marks read. */
-export const OTHER_SESSION: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  roles: [],
-  session_id: sessionIds.reviewer,
-  title: "Review bot",
-};
-
-/** `THREAD_SESSION` and `OTHER_SESSION` under the ids `sessionId` names them by, each read from a
- *  getter when a row names it, as `agentSessions` (e2e/agents.ts) does: a real-stack spec passes
- *  `rowSessionId` (e2e/test.ts), which this module cannot import, since the stubbed rows import it
- *  too. Dispatch keeps what is sent to a session, the replies on it and a person's read marks of
- *  them by its id, for every person at once, so under a fixed id a row's Agent rows and the
- *  session's conversation would hold every earlier row's. The stubbed rows replay recordings made
- *  under the two fixed ids, so the constants keep them, and each seed below takes the session as
- *  a parameter whose default is `THREAD_SESSION`. */
-export function threadSessions(sessionId: (logical: string) => string): {
-  readonly other: FakeSession;
-  readonly thread: FakeSession;
-} {
+/** `THREAD_SESSION` with an id read from a getter when the row uses it, as in `agentSessions`
+ *  (e2e/agents.ts). Real-stack specs pass `rowSessionId` (e2e/test.ts) so stubbed specs can import
+ *  this module without importing the real-stack fixtures. Dispatch stores sends, replies and
+ *  read marks by session id, so a fixed id would give a row's Agent rows and conversation the
+ *  earlier rows' activity. Stubbed specs replay recordings with the fixed `THREAD_SESSION` id. */
+export function rowThreadSession(sessionId: (logical: string) => string): FakeSession {
   return {
-    other: {
-      ...OTHER_SESSION,
-      get session_id() {
-        return sessionId("reviewbot");
-      },
-    },
-    thread: {
-      ...THREAD_SESSION,
-      get session_id() {
-        return sessionId("releasebot");
-      },
+    ...THREAD_SESSION,
+    get session_id() {
+      return sessionId("releasebot");
     },
   };
 }
@@ -476,7 +453,7 @@ async function indexedRow(
  * made under `CORE`. `login` is the reader every row is seeded for, alice unless a real-stack
  * row names a person of its own (`rowPerson`). `session` is the session that answers every
  * thread: `THREAD_SESSION` for the stubbed rows, the row's own on the real stack
- * (`threadSessions`).
+ * (`rowThreadSession`).
  */
 export async function seedTwelve(
   project: RowKey,

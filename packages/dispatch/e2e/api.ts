@@ -68,7 +68,7 @@ export const sessionCookieName = "dsession";
 
 /** The server's dev sign-in route for `login`, relative to the dashboard origin; it answers a
  *  sign-in with a 302 that sets the session cookie. */
-export function devSignInPath(login: string): string {
+export function devSignInPath(login: SignInLogin): string {
   return `/auth/_dev/signin?login=${encodeURIComponent(login)}`;
 }
 

@@ -50,9 +50,9 @@
  *  and it governs the default context alone. A row that opens its own context signs that one in
  *  itself, as it always has: `asUser(browser, rowPerson("alice"))` for a person of its own. The
  *  option, `asUser` and `signIn` take the same logins (`SignInLogin`, e2e/users.ts): alice, bob,
- *  or a login `rowPerson` or `fixedPerson` answered, or, for a caller outside the real-stack
- *  suite's rows, `fixedLogin` (e2e/users.ts), so a row that signs in as another literal login
- *  fails the typecheck.
+ *  a login `rowPerson` or `fixedPerson` answered, or a `fixedLogin` that leaves no person a later
+ *  row reads (e.g. `"Bob"`, which the server folds to `"bob"` in e2e/issue.e2e.ts). Any other
+ *  literal login fails the typecheck.
  *
  *  **What a worker keeps.** Three things are the worker's, not a row's: its database, emptied
  *  once before its first row (`workerDatabase`), the delivery settings the delivery rows read
@@ -314,10 +314,10 @@ async function architectureSourcesHeld(): Promise<string[]> {
 
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
-  /** The login Playwright's own `context` is signed in as (a `SignInLogin`, e2e/users.ts: alice,
-   *  bob, or a `rowPerson` or `fixedPerson` login, or, for a caller outside the real-stack
-   *  suite's rows, a `fixedLogin` one), `own(login)` for the row's own person for that login, or
-   *  `false` for a context nobody signed in. */
+  /** The login Playwright's own `context` is signed in as: a `SignInLogin` (e2e/users.ts),
+   *  `own(login)` for the row's own person for that login, or `false` for a signed-out context.
+   *  A `SignInLogin` is alice, bob, a `rowPerson` or `fixedPerson` login, or a `fixedLogin` that
+   *  leaves no person a later row reads. */
   signedIn: SignInLogin | OwnPerson | false;
 };
 

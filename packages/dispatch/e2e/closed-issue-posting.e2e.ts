@@ -34,39 +34,33 @@ import { asUser, type SignInLogin } from "./users";
 
 const spec = "The quick brown fox jumps over the lazy dog.";
 
-/** The live planner and tester, under the running row's own ids (`rowSessionId`, e2e/test.ts):
- *  Dispatch keeps the messages sent to a session and their deliveries by its id, for every person
- *  at once. Within a row each call answers the same two ids. */
-function sessions(): { readonly planner: FakeSession; readonly tester: FakeSession } {
-  return {
-    planner: {
-      capabilities: ["aside", "btw", "steer"],
-      session_id: rowSessionId("planner"),
-      title: "planner",
-    },
-    tester: {
-      capabilities: ["aside", "btw", "steer"],
-      session_id: rowSessionId("tester"),
-      title: "tester",
-    },
-  };
-}
-
 interface Fixture {
   readonly issueKey: string;
   /** Bob's plain message: a thread a person replies to. */
   readonly questionId: string;
   /** Bob's message to the planner, delivered. */
   readonly plannerMessageId: string;
+  readonly plannerSessionId: string;
   /** Bob's message to the tester, whose delivery failed. */
   readonly testerMessageId: string;
+  readonly testerSessionId: string;
 }
 
 /** The closed issue, held by `holder`: alice, or the row's own person for a row that reads as
  *  one. */
 async function seedClosedIssue(holder: SignInLogin = "alice"): Promise<Fixture> {
   const e2e = rowKey("E2E");
-  const { planner, tester } = sessions();
+  // Dispatch stores sends and deliveries by session id for every person, so use row-owned ids.
+  const planner: FakeSession = {
+    capabilities: ["aside", "btw", "steer"],
+    session_id: rowSessionId("planner"),
+    title: "planner",
+  };
+  const tester: FakeSession = {
+    capabilities: ["aside", "btw", "steer"],
+    session_id: rowSessionId("tester"),
+    title: "tester",
+  };
   await setLiveSessions([planner, tester]);
   await setSessionSendStatus(tester.session_id, 503);
   await createProject({ key: e2e, name: "Closed work" }, { login: holder });
@@ -89,8 +83,10 @@ async function seedClosedIssue(holder: SignInLogin = "alice"): Promise<Fixture> 
   return {
     issueKey: issue.key,
     plannerMessageId: toPlanner.id,
+    plannerSessionId: planner.session_id,
     questionId: question.id,
     testerMessageId: toTester.id,
+    testerSessionId: tester.session_id,
   };
 }
 
@@ -150,7 +146,7 @@ test("a comment written in a closed issue's Conversation posts @pr", async ({ br
 test("a message to an agent written on a closed issue posts and reaches the agent", async ({
   browser,
 }) => {
-  const { issueKey, plannerMessageId } = await seedClosedIssue();
+  const { issueKey, plannerMessageId, plannerSessionId } = await seedClosedIssue();
   const alice = await asUser(browser, "alice");
 
   try {
@@ -170,12 +166,12 @@ test("a message to an agent written on a closed issue posts and reaches the agen
           .find((thread) => thread.message.id === plannerMessageId)
           ?.replies?.map((message) => [message.body, message.target])
       )
-      .toEqual([["Message after the close", `session:${sessions().planner.session_id}`]]);
+      .toEqual([["Message after the close", `session:${plannerSessionId}`]]);
     await expect
       .poll(async () =>
         (await getSentMessages()).some(
           (sent) =>
-            sent.target_session === sessions().planner.session_id &&
+            sent.target_session === plannerSessionId &&
             JSON.stringify(sent).includes("Message after the close")
         )
       )
@@ -213,7 +209,7 @@ test("Reply on a closed issue's message thread posts", async ({ browser }) => {
 });
 
 test("Retry of a failed delivery on a closed issue posts a new attempt", async ({ browser }) => {
-  const { issueKey, testerMessageId } = await seedClosedIssue();
+  const { issueKey, testerMessageId, testerSessionId } = await seedClosedIssue();
   const alice = await asUser(browser, "alice");
 
   try {
@@ -224,7 +220,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
     );
     const retry = card.getByRole("button", { exact: true, name: "Retry" });
     await expect(retry).toBeVisible();
-    await setSessionSendStatus(sessions().tester.session_id, 200);
+    await setSessionSendStatus(testerSessionId, 200);
     const posted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&

@@ -410,12 +410,18 @@ The clock of a unit test:
   `tick` and its `ready` in `web/src/features/refs/parse-worker-fixture.ts`, and the frame waits
   of rows that check what a frame of the page did not do, such as
   `web/src/features/issue-page/IssueTree.test.tsx`'s `nextFrame`.
-  `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
-  TypeScript parser: a `*.test.ts(x)`, a file of a `__tests__` folder, a `*-fixture.ts(x)`,
-  `*-fixtures.ts(x)` or `*.coverage.ts(x)` helper, and any other file that test files alone load
-  by a relative path (an import, an `import(…)`, a `require(…)` or a worker's `new URL(…)`), such
-  as `web/src/features/issue-page/chromium-focus-fixup.ts`; its own row fails when a file of any
-  other name imports `bun:test`, Testing Library or a module of a `__tests__` folder.
+  `web/src/__tests__/real-clock-waits.test.ts` parses unit tests and named helpers: `*.test.ts(x)`,
+  files in `__tests__`, `*-fixture.ts(x)`, `*-fixtures.ts(x)` and `*.coverage.ts(x)`.
+  A separate naming check flags files outside those rules that match its double-quoted `from`
+  patterns for `bun:test`, Testing Library or a `__tests__` module.
+  To find helpers without those names, such as `web/src/features/issue-page/chromium-focus-fixup.ts`,
+  the scan looks in source text for single- or double-quoted `./` and `../` paths in imports,
+  re-exports, `require(…)` and `new URL(…)` calls such as a worker's. It drops the query, then
+  tries the path as written, with `.ts` or `.tsx` added, or with `index.ts` or `index.tsx` appended.
+  This can match comments and strings, but does not resolve aliases or computed paths. The scan
+  adds a file only when it has at least one matched loader and all its matched loaders are
+  tests or helpers already recognized. A cycle of helpers not recognized by name cannot be
+  discovered this way.
   It fails every call in them that reaches a wait of real time by a name, whatever its delay or
   its callback:
   a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a

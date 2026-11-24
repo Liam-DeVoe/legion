@@ -12,10 +12,11 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * the real clock says why above it, in the words the kept ones use ("This one stays on the real
  * clock", then the reason), and docs/testing.md, "The clock of a unit test", is the rule.
  *
- * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
- * `__tests__` folder, a `*-fixture(s).ts(x)` or `*.coverage.ts(x)` helper, and any other file
- * that test files alone load (`loadedByTestsAlone`) - for every call that
- * reaches a wait of real time by a name, whatever its delay and whatever its callback is: a
+ * This parses unit tests and named test helpers under `web/src` - `*.test.ts(x)`, files in
+ * `__tests__`, `*-fixture(s).ts(x)` and `*.coverage.ts(x)` - plus the helpers a text scan of
+ * relative references finds (`loadedByTestsAlone`). It looks for calls that reach a wait of real
+ * time by a name, whatever the delay and callback:
+ *
  * `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a member
  * of any object (`window.setTimeout`, `globalThis.setInterval`, `window.requestAnimationFrame`),
  * by its name or by a key, a string literal or a `const` of the file bound to one
@@ -87,11 +88,15 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * and a wait that has nothing else to wait for says why it stays. The scan reads a test's own
  * calls: a product function the row tests that sets a timer itself is the product's code, not a
  * wait of the row's. The act-rule inputs (`*.fixture.ts` and `*.fixture.tsx`, which the scan's
- * `sourceFiles` skips by name) are left out, since they are written to break rules. A file that
- * imports `bun:test`, Testing Library or a module of a `__tests__` folder is a test file or a
- * helper whatever its name, and the scan holds itself to reading every such file by its name. A
- * file that test files alone load is a helper whatever its name and whatever it imports, as
- * `features/issue-page/chromium-focus-fixup.ts` is, and the scan reads it by what loads it.
+ * `sourceFiles` skips by name) are left out, since they are written to break rules. A separate
+ * naming check flags files outside the naming rules that match its double-quoted `from` patterns
+ * for `bun:test`, Testing Library or a `__tests__` module. To find other helpers, such as
+ * `features/issue-page/chromium-focus-fixup.ts`, `loadedByTestsAlone` scans source text for
+ * single- or double-quoted `./` or `../` paths in imports, re-exports, `require(…)` and
+ * `new URL(…)`. It tries only the path without its query, with `.ts` or `.tsx` added, or with
+ * `index.ts` or `index.tsx` appended. Comments and strings can count; computed paths and aliases
+ * do not. A helper must have at least one matched loader, and all its matched loaders must
+ * already qualify. A cycle of helpers not recognized by name cannot qualify this way.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -157,21 +162,22 @@ function isTestFile(path: string): boolean {
   );
 }
 
-/** A relative module a file loads, without its query: what an import or an export names (`from
- *  "./fake-clock"`, `import "./setup"`), an `import(…)`, a `require(…)`, and a worker's `new
- *  URL("./markdown-parse.worker.ts", import.meta.url)`. A spelling of one in a comment or a
- *  string counts as a load too. */
-const loadedModule = /\b(?:from|import|require|new URL)\s*\(?\s*"(\.{1,2}\/[^"?]+)/g;
+/** A single- or double-quoted `./` or `../` path without its query, in a static import or
+ *  re-export, an `import(…)`, a `require(…)`, or a `new URL(…)` such as a worker's. A matching
+ *  spelling in a comment or string counts too. */
+const loadedModule =
+  /\b(?:from|import|require|new URL)\s*\(?\s*(?:"(\.{1,2}\/[^"?]+)|'(\.{1,2}\/[^'?]+))/g;
 
-/** The files of `texts` that test files alone load: each one some file loads (`loadedModule`,
- *  resolved as the bundler resolves it, `./x` to `x`, `x.ts`, `x.tsx`, `x/index.ts` or
- *  `x/index.tsx`), where every file that loads it is a test file by its name (`isTestFile`) or
- *  another such file. A module a product file loads is none, however many tests load it too. */
+/** Helpers inferred from matched relative references (`loadedModule`). Try the path as written
+ *  with its query removed, then `.ts`, `.tsx`, `index.ts` and `index.tsx`, within `texts` only.
+ *  Add a file once it has at least one matched loader and all its matched loaders are tests or
+ *  named helpers (`isTestFile`) or have already been added. A cycle of otherwise unrecognized
+ *  helpers cannot start that process. */
 function loadedByTestsAlone(texts: ReadonlyMap<string, string>): Set<string> {
   const loaders = new Map<string, string[]>();
   for (const [path, text] of texts) {
-    for (const [, specifier] of text.matchAll(loadedModule)) {
-      const base = join(dirname(path), specifier);
+    for (const [, doubleQuoted, singleQuoted] of text.matchAll(loadedModule)) {
+      const base = join(dirname(path), doubleQuoted ?? singleQuoted);
       const loaded = [
         base,
         `${base}.ts`,
@@ -179,7 +185,10 @@ function loadedByTestsAlone(texts: ReadonlyMap<string, string>): Set<string> {
         join(base, "index.ts"),
         join(base, "index.tsx"),
       ].find((each) => texts.has(each));
-      if (loaded !== undefined) loaders.set(loaded, [...(loaders.get(loaded) ?? []), path]);
+      if (loaded === undefined) continue;
+      const by = loaders.get(loaded);
+      if (by === undefined) loaders.set(loaded, [path]);
+      else by.push(path);
     }
   }
   const helpers = new Set<string>();
@@ -455,13 +464,13 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
     ) {
       found.push({ source: moduleIs(node.moduleReference.expression.text), target: node.name });
     } else if (
-      // The default of a name, or of a nested destructure, binds it wherever the destructure
-      // takes its value from: a parameter, a `for … of` and a `catch` hand it none the scan reads.
       (ts.isVariableDeclaration(node) ||
         ts.isParameter(node) ||
         (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent))) &&
       node.initializer !== undefined
     ) {
+      // An object binding element's default binds its name or nested pattern even when the
+      // scan does not read the destructure's input, as in a parameter, `for … of` or `catch`.
       found.push({ source: standsFor(node.initializer), target: node.name });
     } else if (
       // A shorthand default stands only in a destructure that assigns, which TypeScript parses as
@@ -820,15 +829,14 @@ test("the scan reads every file that imports bun:test, Testing Library or a __te
   expect(unread, "a test helper the scan does not read by its name").toEqual([]);
 });
 
-// A file that test files alone load is a test helper whatever its name and whatever it imports:
-// `features/issue-page/chromium-focus-fixup.ts`, which five rows load to make happy-dom drop the
-// focus as Chromium does, and `fonts/inter/subset-script.ts`, which reads subset.sh for three
-// checks. The scan reads each such file, and so a helper of a helper; it reads no module a
-// product file loads, by an import or by a worker's `new URL(…)`, however many tests load it.
-test("the scan reads every file that test files alone load, and no module a product file loads", () => {
+// Five test files import `features/issue-page/chromium-focus-fixup.ts` to make happy-dom drop
+// focus as Chromium does, and three test files import `fonts/inter/subset-script.ts` to read
+// subset.sh. The sample exercises a chain of test-only helpers and a worker that both a test
+// and a product file load.
+test("the scan follows a test-only import chain and leaves out a worker the page loads", () => {
   const sample = new Map([
     ["row.test.tsx", 'import { emulate } from "./focus";\nimport { Page } from "./page";'],
-    ["focus.ts", 'import { nextFrame } from "./frames";'],
+    ["focus.ts", "import { nextFrame } from './frames';"],
     ["frames/index.ts", "export const nextFrame = () => {};"],
     ["page.tsx", 'const worker = new Worker(new URL("./parse.worker.ts", import.meta.url));'],
     ["parse.worker.ts", "export function parse() {}"],

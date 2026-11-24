@@ -153,8 +153,8 @@ jobs:
   # Both crons start this job and the `dispatch-browser` one, since a schedule starts a workflow
   # and not a job, so the 13:41 run also runs the full lane; the quarantine check's `if:` keeps it
   # to the 02:17 one. That is a second full lane a day on a repository whose nightly is one, which
-  # is the price of keeping this job dispatchable before its own merge; it is the same eight
-  # runners for the same ten minutes, and `concurrency` keeps it from overlapping the 02:17 run.
+  # is the price of keeping this job dispatchable before its own merge. `concurrency` keeps the
+  # two full-lane runs from overlapping.
   #
   # The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

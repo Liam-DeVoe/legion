@@ -1,14 +1,14 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
-import { replyRowId, seedCommentThread, seedTwelve, threadSessions } from "./inbox-threads";
+import { replyRowId, rowThreadSession, seedCommentThread, seedTwelve } from "./inbox-threads";
 import { expect, type Locator, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /** The session that answers the seeded threads, under the running row's own id
- *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
  *  by its id, for every person at once. */
-const threadSession = threadSessions(rowSessionId).thread;
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The two rows of the Inbox's thread family that need the real stack, each with the reason it

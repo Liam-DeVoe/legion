@@ -23,17 +23,17 @@ import {
   asSession,
   holdReadMarks,
   replyRowId,
+  rowThreadSession,
   seedAgentThread,
   sessionActor,
-  threadSessions,
 } from "./inbox-threads";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser, type SignInLogin } from "./users";
 
 /** The session that answers this file's threads, under the running row's own id
- *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and a
- *  person's read marks of them by its id, for every person at once. */
-const threadSession = threadSessions(rowSessionId).thread;
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and
+ *  a person's read marks of them by its id, for every person at once. */
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The Inbox's reading pane over a thread (INFRA-450): a comment thread anchored in a document

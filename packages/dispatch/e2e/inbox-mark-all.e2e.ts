@@ -9,12 +9,12 @@ import {
   expectInboxCount,
   expectSidebarInboxCount,
   replyRowId,
+  rowThreadSession,
   seedAcceptedSend,
   seedAgentThread,
   seedBulkAgentThreads,
   seedBulkReplyThreads,
   seedCommentThread,
-  threadSessions,
   unreadThreadRows,
 } from "./inbox-threads";
 import { holdPosts, refusePosts } from "./sends";
@@ -22,9 +22,9 @@ import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /** The session that answers this file's threads, under the running row's own id
- *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and a
- *  person's read marks of them by its id, for every person at once. */
-const threadSession = threadSessions(rowSessionId).thread;
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and
+ *  a person's read marks of them by its id, for every person at once. */
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The Inbox's **Mark all read** (INFRA-450): one click over a list of six hundred and twenty

@@ -45,9 +45,9 @@ echo "::notice title=dispatch-browser flake rate::$flaky flaky rows of $total, $
 # One line per flaky row, so a log reader gets what the summary got. A row's trace is in its
 # job's test-results artifact, uploaded on a green run too, whose name begins with the caller's
 # job id (`inputs.job`: dispatch-browser on the full lane, dispatch-browser-pr on the pull-request
-# lane): <job>-test-results-shard-<shard>-<attempt>, <job>-test-results-alone-<project>-<attempt>,
-# <job>-embedder-test-results-<attempt> or, on the full lane alone,
-# <job>-multiprocess-test-results-<attempt>.
+# lane). Both lanes upload <job>-test-results-shard-<shard>-<attempt> and
+# <job>-embedder-test-results-<attempt>. Only the full lane uploads
+# <job>-test-results-alone-<project>-<attempt> and <job>-multiprocess-test-results-<attempt>.
 [ -z "$rows" ] || echo "$rows" | while IFS= read -r row; do
   echo "::notice title=dispatch-browser flaky row::$row"
 done
