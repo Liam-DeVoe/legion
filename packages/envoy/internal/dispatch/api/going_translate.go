@@ -707,6 +707,10 @@ func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
 	return goingReadRef{Ref: ref, of: of}, true
 }
 
+// goingReadHistoryRule is why a read with history reads nothing: a post's history is that of
+// one comment or one issue message, named by a reference, as `dispatch read --history` reads it.
+const goingReadHistoryRule = "history reads the bodies the edits and the delete of one post replaced, so it needs a ref naming one comment or one issue message"
+
 // goingPickRead is the row of dispatch_read a call reads, and what that row's route takes of the
 // call, as `dispatch read` picks what it reads (packages/envoy-client/src/dispatch-commands/read.ts),
 // each item through the route a person reads it with: the item a reference names
@@ -715,6 +719,9 @@ func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
 func goingPickRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
 		return goingPickReadRef(value, arguments, serverURL)
+	}
+	if arguments["history"] == true {
+		return "", goingCall{}, goingUntranslatable(goingReadHistoryRule)
 	}
 	issue, project, artifact, message := goingText(arguments, "issue"), goingText(arguments, "project"),
 		goingText(arguments, "artifact"), goingText(arguments, "message")
@@ -739,13 +746,17 @@ func goingPickRead(arguments map[string]any, serverURL string) (string, goingCal
 // issue (goingIssueRead), and its children, which the issue's own read lists; its log, as its
 // events (goingIssueEvents); its comments; a document of an issue or a project; a block, as its
 // node in the reference graph with what references it; an ask; a comment with its thread; and a
-// message.
+// message. With history it is the history of the comment or the issue message the reference
+// names, each body its edits and its delete replaced, and of nothing else.
 func goingPickReadRef(value string, arguments map[string]any, serverURL string) (string, goingCall, error) {
 	ref, parsed := goingParseReadRef(value, serverURL)
+	history := arguments["history"] == true
 	switch {
 	case !parsed:
 		return "", goingCall{}, goingUntranslatable(fmt.Sprintf(
 			"ref %q is no reference to an issue, its log, its children or its comments, a document, a block, an ask, a comment or a message", value))
+	case history && (ref.of != "" || (ref.Kind != "comment" && ref.Kind != "message")):
+		return "", goingCall{}, goingUntranslatable(goingReadHistoryRule)
 	case ref.of == goingRefLog:
 		return goingIssueEvents(ref.IssueKey, arguments)
 	case ref.of == goingRefChildren:
@@ -764,8 +775,12 @@ func goingPickReadRef(value string, arguments map[string]any, serverURL string) 
 		return "GET /api/v1/references", goingCall{path: map[string]string{}, query: url.Values{"to": {value}}}, nil
 	case ref.Kind == "ask":
 		return "GET /api/v1/asks/{id}", goingCall{path: map[string]string{"id": ref.ID}}, nil
+	case ref.Kind == "comment" && history:
+		return "GET /api/v1/comments/{id}/history", goingCall{path: map[string]string{"id": ref.ID}}, nil
 	case ref.Kind == "comment":
 		return "GET /api/v1/comments/{id}", goingCall{path: map[string]string{"id": ref.ID}}, nil
+	case ref.Kind == "message" && history:
+		return "GET /api/v1/messages/{id}/history", goingCall{path: map[string]string{"id": ref.ID}}, nil
 	case ref.Kind == "message":
 		return "GET /api/v1/issues/{key}/messages/{id}", goingCall{path: map[string]string{"key": ref.IssueKey, "id": ref.ID}}, nil
 	}
@@ -1299,6 +1314,34 @@ func goingTranslateMessageReply(_ context.Context, _ goingReader, call goingCall
 		body["in_reply_to_block"] = block
 	}
 	return goingCall{path: map[string]string{"id": id}, query: url.Values{"follow_up": {"true"}}, body: body}, nil
+}
+
+// goingTranslateEditPost sends an edit of a comment or an issue message: the new body, to the
+// post the call names (goingCorrection).
+func goingTranslateEditPost(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	return goingCorrection(call, goingPick(call.arguments, "body")), nil
+}
+
+// goingTranslateDeletePost sends a delete of a comment or an issue message, which takes nothing
+// but the writer (goingCorrection).
+func goingTranslateDeletePost(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	return goingCorrection(call, nil), nil
+}
+
+// goingCorrection is a correction of the post the call names, as the route takes it: the post's
+// id in the path, taken out of a dispatch:// reference where the call names one, since the path
+// takes an id and no reference, and in body the session the caller acts as, where it acts as
+// one, which is how the route reads a session's correction (correctionActor). A person's
+// credential names the person, so a person's call sends body as it is.
+func goingCorrection(call goingCallInput, body map[string]any) goingCall {
+	id, _ := goingReplyTarget(call.path["id"])
+	if call.session != "" {
+		if body == nil {
+			body = map[string]any{}
+		}
+		body["actor"] = goingActorSession(call.session)
+	}
+	return goingCall{path: map[string]string{"id": id}, body: body}
 }
 
 // goingTranslateSendToAgent sends to the session the call names by id or by title (recipient).

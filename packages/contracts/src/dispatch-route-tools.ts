@@ -745,6 +745,20 @@ export const dispatchRouteToolSpecs = [
     routes: get("/api/v1/projects/{key}/legion/board", { params: { key: "project" } }),
   },
   {
+    name: "dispatch_read_issue_legion",
+    label: {
+      kind: "read",
+      verb: "read",
+      present: "Reading the Legion state of {issue}",
+      past: "Read the Legion state of {issue}",
+    },
+    example: { issue: "DSP-1" },
+    description: `Read one issue's Legion state, as Dispatch last read the Legion daemon of its project: whether the project names a daemon; the issue's phase and since when, each role with a claim, its slot, its place in the daemon's waiting line, the issues that block it and what it waits on, or no state where the daemon does not record the issue; and when Dispatch last read the daemon and whether that read failed. ${AS_DATA}`,
+    arguments: (z) => ({ issue: z.string().describe(ISSUE_KEY) }),
+    strict: true,
+    routes: get("/api/v1/issues/{key}/legion", { params: { key: "issue" } }),
+  },
+  {
     name: "dispatch_read_delivery_run",
     label: {
       kind: "read",
@@ -1848,27 +1862,6 @@ export const dispatchRouteToolSpecs = [
     arguments: (z) => ({ comment: z.string().describe("The suggestion's comment id.") }),
     strict: true,
     routes: send("POST", "/api/v1/comments/{id}/reject", { params: { id: "comment" }, body: [] }),
-  },
-  {
-    name: "dispatch_edit_comment",
-    label: {
-      kind: "write",
-      verb: "edit",
-      present: "Editing the comment {comment}",
-      past: "Edited the comment {comment}",
-    },
-    example: { comment: "0190c7d2-1111-7222-8333-444444444444", body: "Corrected wording." },
-    description:
-      "Replace the words of a comment the person you act for wrote; another's comment is refused (403 NOT_AUTHOR). The new words replace whatever the comment holds when the edit lands. Undo does not put the old words back.",
-    arguments: (z) => ({
-      comment: z.string().describe(COMMENT_ID),
-      body: z.string({ min: 1 }).describe("The comment's new body, in markdown."),
-    }),
-    strict: true,
-    routes: send("PATCH", "/api/v1/comments/{id}", {
-      params: { id: "comment" },
-      body: ["body"],
-    }),
   },
   {
     name: "dispatch_list_document_events",

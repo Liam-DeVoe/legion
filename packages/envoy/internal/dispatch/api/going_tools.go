@@ -471,6 +471,44 @@ var goingWriteTools = map[string]goingWriteTool{
 		},
 		Undo: goingUndoNotUndone, Class: goingClassMessage, Event: "message.created", Proposed: true,
 	},
+	// The four corrections of a post: an edit replaces its body, a delete removes it. Each names
+	// its own post, so the one placeholder binds to the tool's own argument. An edit re-indexes the
+	// new body, which is the one edge family a body writes; a delete clears the body, so it writes
+	// no edge at all and removes the ones the post had. None is undone: no route edits a post under
+	// a condition on the body it holds, so a write back could replace words its author wrote
+	// since, and no route restores a deleted post.
+	"dispatch_edit_comment": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodPatch, Pattern: "/api/v1/comments/{id}",
+			Path: map[string]string{"id": "comment"}, Relations: []string{"mentions"},
+			Translate: goingTranslateEditPost,
+		}},
+		Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.edited",
+	},
+	"dispatch_delete_comment": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}",
+			Path:      map[string]string{"id": "comment"},
+			Translate: goingTranslateDeletePost,
+		}},
+		Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.deleted",
+	},
+	"dispatch_edit_message": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodPatch, Pattern: "/api/v1/messages/{id}",
+			Path: map[string]string{"id": "message"}, Relations: []string{"mentions"},
+			Translate: goingTranslateEditPost,
+		}},
+		Undo: goingUndoNotUndone, Class: goingClassText, Event: "message.edited",
+	},
+	"dispatch_delete_message": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodDelete, Pattern: "/api/v1/messages/{id}",
+			Path:      map[string]string{"id": "message"},
+			Translate: goingTranslateDeletePost,
+		}},
+		Undo: goingUndoNotUndone, Class: goingClassText, Event: "message.deleted",
+	},
 	// A send to one session, which reaches it when it is sent, so it stays. A send to a session
 	// that works on an issue is posted on that issue (going_messages.go) as a message that targets
 	// the session, so it is kept and threaded in the issue's conversation: the first row, whose
@@ -725,8 +763,6 @@ var goingWriteTools = map[string]goingWriteTool{
 	// out, and a rejection reaches the suggestion's writer when it is made.
 	"dispatch_accept_suggestion": {Undo: goingUndoNotUndone, Class: goingClassSuggestion, Event: "suggestion.accepted"},
 	"dispatch_reject_suggestion": {Undo: goingUndoNotUndone, Class: goingClassSuggestion, Event: "suggestion.rejected"},
-	// A comment's words before the edit are not read, so an edit is not undone.
-	"dispatch_edit_comment": {Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.edited"},
 	// A document's name before the rename is not read, and no route brings back a removed
 	// document or takes a version back out.
 	"dispatch_rename_document":  {Undo: goingUndoNotUndone, Class: goingClassField, Event: "artifact.renamed"},
@@ -767,8 +803,10 @@ var goingReadTools = map[string]goingReadTool{
 	//
 	// dispatch_read reads the item its arguments name (goingPickRead); the reference that names an
 	// ask or a comment fills those rows' {id}, and an issue's dispatch://KEY/comments reads the
-	// list of its comments. The lists of an issue's asks and of a document's asks and comments, and
-	// a project document's summary, are reads its command makes to find an item, which no call picks.
+	// list of its comments. With history, the reference that names a comment or an issue message
+	// fills its history row's {id}. The lists of an issue's asks and of a document's asks and
+	// comments, and a project document's summary, are reads its command makes to find an item,
+	// which no call picks.
 	"dispatch_read": {Pick: goingPickRead, Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/events", Path: map[string]string{"key": "issue"}},
@@ -783,7 +821,9 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/comments", Path: map[string]string{"id": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/asks/{id}", Path: map[string]string{"id": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/comments/{id}", Path: map[string]string{"id": "ref"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/comments/{id}/history", Path: map[string]string{"id": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/messages/{id}", Path: map[string]string{"id": "message"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/messages/{id}/history", Path: map[string]string{"id": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/references", Path: map[string]string{}},
 	}},
 	// dispatch_doc_read reads the document its arguments name (goingPickDocRead), or a version of
@@ -862,6 +902,7 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_delivery_settings":            {},
 	"dispatch_read_legion_daemon":                {},
 	"dispatch_read_legion_board":                 {},
+	"dispatch_read_issue_legion":                 {},
 	"dispatch_read_delivery_run":                 {},
 	"dispatch_list_ci_reconcile_passes":          {},
 	"dispatch_list_users":                        {},

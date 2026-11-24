@@ -389,6 +389,8 @@ function removedValues(change: RowChange): readonly string[] {
 /** The tools whose every row deletes, removes, closes or declines something. */
 const REMOVING_TOOLS: Readonly<Record<string, true>> = {
   dispatch_decline_ask: true,
+  dispatch_delete_comment: true,
+  dispatch_delete_message: true,
   dispatch_delete_priority: true,
   dispatch_delete_session_group: true,
   dispatch_dismiss_inbox: true,

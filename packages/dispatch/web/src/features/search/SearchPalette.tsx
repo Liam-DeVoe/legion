@@ -70,6 +70,8 @@ import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
 import { ItemChip } from "../refs/ItemChip";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import {
   buildProjectPath,
@@ -372,6 +374,11 @@ function ResultOption({
     () => snippetWithoutDirectives(result.snippet_tree),
     [result.snippet_tree]
   );
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
+  const deleted = postDeletion(result);
   let named: ReactNode;
   if (!itself) {
     named = (
@@ -413,18 +420,24 @@ function ResultOption({
             {kind === undefined ? null : <SearchResultIcon kind={kind} />}
             <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
             {named}
+            {/* A comment or a message its author edited says so, as its byline does. */}
+            <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
           </div>
           {itself ? null : (
             // Under the key, past the icon's 16 px and the 8 px gap after it.
             <div className="mt-0.5 flex min-w-0 pl-6" data-testid="search-hit-snippet">
-              <MarkdownPreview
-                className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
-                highlightClassName={highlight}
-                lines={1}
-                markdown={withoutDirectiveSyntax(source)}
-                trail={snippetWasCut(source) ? "…" : undefined}
-                tree={snippetTree}
-              />
+              {deleted === null ? (
+                <MarkdownPreview
+                  className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
+                  highlightClassName={highlight}
+                  lines={1}
+                  markdown={withoutDirectiveSyntax(source)}
+                  trail={snippetWasCut(source) ? "…" : undefined}
+                  tree={snippetTree}
+                />
+              ) : (
+                <DeletedBody className="min-w-0 flex-1 text-xs" deleted={deleted} />
+              )}
             </div>
           )}
         </div>

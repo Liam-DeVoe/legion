@@ -411,6 +411,13 @@ func (s *goingSchemaSeed) newComment() string {
 	}).ID
 }
 
+// newIssueMessage posts one more message on the issue.
+func (s *goingSchemaSeed) newIssueMessage() string {
+	return goingSchemaWrite[model.Message](s, http.MethodPost, "/api/v1/issues/"+s.shared.issue+"/messages", map[string]any{
+		"body": fmt.Sprintf("A message to correct, %d.", s.next()),
+	}).ID
+}
+
 // newResolvedComment starts one more thread on the issue and resolves it.
 func (s *goingSchemaSeed) newResolvedComment() string {
 	id := s.newComment()
@@ -500,8 +507,8 @@ func (items goingSchemaItemsOf) byID(tool string) []goingSchemaSet {
 
 // goingSchemaFresh is the items each tool's write spoils for the next call, which the seed makes
 // afresh before every call of that tool: an issue a call closes or claims, an ask it resolves or
-// answers, a comment it resolves, a document it edits or removes, a group or a priority it
-// deletes, a source or a daemon it removes.
+// answers, a comment it resolves, a comment or a message it deletes, a document it edits or
+// removes, a group or a priority it deletes, a source or a daemon it removes.
 var goingSchemaFresh = map[string][]string{
 	"dispatch_issue_update":               {"issue"},
 	"dispatch_claim":                      {"issue"},
@@ -525,6 +532,8 @@ var goingSchemaFresh = map[string][]string{
 	"dispatch_answer_ask":                 {"optionsAsk"},
 	"dispatch_decline_ask":                {"ask"},
 	"dispatch_reopen_comment":             {"resolvedComment"},
+	"dispatch_delete_comment":             {"comment"},
+	"dispatch_delete_message":             {"issueMessage"},
 	"dispatch_accept_suggestion":          {"suggestion"},
 	"dispatch_reject_suggestion":          {"suggestion"},
 	"dispatch_remove_document":            {"untouched"},
@@ -567,6 +576,8 @@ func (s *goingSchemaSeed) items(tool string) goingSchemaItemsOf {
 			items.comment = s.newResolvedComment()
 		case "suggestion":
 			items.suggestion = s.newSuggestion()
+		case "issueMessage":
+			items.issueMessage = s.newIssueMessage()
 		case "mentioned":
 			items.mentioned, items.mentionedBlock = s.newMentioned()
 		case "result":
@@ -681,6 +692,11 @@ func (items goingSchemaItemsOf) value(s *goingSchemaSeed, tool string) goingSche
 			}
 			return items.issueMessage
 		case "message":
+			// The corrections of a message take an issue message the caller wrote; every other
+			// tool's message is the direct one.
+			if tool == "dispatch_edit_message" || tool == "dispatch_delete_message" {
+				return items.issueMessage
+			}
 			return items.direct
 		case "read_replies[]":
 			return items.sessionReply
