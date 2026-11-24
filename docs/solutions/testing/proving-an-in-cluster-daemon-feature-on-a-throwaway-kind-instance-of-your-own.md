@@ -40,7 +40,9 @@ applies_when:
 
 ## The order and its correction
 
-The operator's order of 2026-09-13 (19:00Z) withdrew every pre-merge rig:
+After Sami had the smoke rig shut down on 2026-09-13 at 19:00Z (his words are relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), every pre-merge rig
+was withdrawn:
 no smoke rig, no scratch daemon, no throwaway NATS or tmux server, no throwaway OMP profile —
 [pre-merge-surface-withdrawn-by-standing-order](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md)
 records how a pull request carries its proof when the surface is withdrawn. On 2026-09-14 at

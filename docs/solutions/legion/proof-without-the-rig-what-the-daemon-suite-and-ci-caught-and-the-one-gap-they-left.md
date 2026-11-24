@@ -19,7 +19,7 @@ related_issues:
   - "sjawhar/legion#1082"
   - "LEGION-60"
 applies_when:
-  - An acceptance line that named a smoke-rig or scratch-daemon proof is withdrawn (Sami, 2026-09-13 19:00Z, "Please shutdown the goddamn legion smoke")
+  - An acceptance line that named a smoke-rig or scratch-daemon proof is withdrawn
   - You are writing the PR body's E2E line for a daemon change whose only allowed surfaces are the unit suite and CI
   - A test suite in the repository is gated on an environment variable you may not set locally
 ---

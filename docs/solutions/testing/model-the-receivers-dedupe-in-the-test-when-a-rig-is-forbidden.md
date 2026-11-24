@@ -37,9 +37,10 @@ applies_when:
 
 ## Context
 
-LEGION-107's acceptance line 6 originally named a smoke-rig run. Sami withdrew every rig for the
-issue ("Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive
-actions twice now", 2026-09-13), and the spec was rewritten so line 6 is an integration test:
+LEGION-107's acceptance line 6 originally named a smoke-rig run. Sami had the smoke rig shut down
+("Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions
+twice now", 2026-09-13, quoted in https://github.com/cybermonklabs/legion/pull/1075), and the spec
+was rewritten so line 6 is an integration test:
 with the fake runtime, fake worker client, and injected clock, a stream of `delivery_failed`
 exceptions for one message against an alive architect produces at most three re-publishes, each
 carrying the original `dedupe_key`, then the cap line; **a receiver in the test that drops copies by

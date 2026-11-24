@@ -46,7 +46,7 @@ never folded into "Decisions needed" on the assumption the gate will surface it.
 Evidence from this tree on which channel worked: the operator session put the same choice to Sami
 as a plain `dispatch_message` on LEGION-74 at 08:45 UTC and it went unanswered; the architect's
 separate `dispatch_ask` on LEGION-77 (three options, cost stated, recommendation) drew a
-clarification reply and then the answer. The deployment's standing rule decides the channel; what
+clarification reply and then the answer. The deployment's instructions decide the channel; what
 this tree proves is only that the gate is not one.
 
 ## 2. A runbook written before the answer describes an option, not the deployment

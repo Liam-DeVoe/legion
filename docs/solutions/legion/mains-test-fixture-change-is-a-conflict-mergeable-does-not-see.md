@@ -24,7 +24,7 @@ related_issues:
 applies_when:
   - A pull request's CI goes red at a head whose own code was green in an earlier run, and GitHub still reports MERGEABLE
   - main merged a change to a shared test helper or fixture (a signature, a removed helper) between your branch's green run and its next push
-  - You are deciding whether Sami's no-rebase rule applies
+  - You are deciding whether Sami's request against unnecessary rebases (quoted below) applies
 ---
 
 # `main` changed the test fixture your new tests call

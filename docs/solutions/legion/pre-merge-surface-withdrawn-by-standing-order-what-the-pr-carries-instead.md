@@ -48,12 +48,10 @@ record has to say so in a way the merge queue and the operator can act on.
 Both `E2E` paragraphs (implementer's and tester's) and the `Release` paragraph on
 sjawhar/legion#1083 carry five things, and a reviewer verified each against GitHub:
 
-1. **The surface, named, and why it is unreachable pre-merge** — "the installed plugin's delivery
-   pump under a live listener; its pre-merge smoke run (LEGION-109 acceptance 5) withdrawn when Sami
-   had the smoke rig shut down on 2026-09-13 ("Please shutdown the goddamn legion smoke. It's
-   pointless and it has led to destructive actions twice now", relayed in
-   https://github.com/cybermonklabs/legion/pull/1075)". Not "n/a", not a unit suite described as
-   the surface.
+1. **The surface, named, and why it is unreachable pre-merge** — the installed plugin's delivery
+   pump under a live listener, with no pre-merge smoke run (LEGION-109 acceptance 5) after Sami had
+   the smoke rig shut down on 2026-09-13 (https://github.com/cybermonklabs/legion/pull/1075). Not
+   "n/a", not a unit suite described as the surface.
 2. **The unit proof as red/green, not as a count** — the exact `bun test … -t '…'` selection, the
    recorded call sequences it observed, and that the same selection was **5 fail / 0 pass on the
    pre-fix code**. A green count alone is the thing the skill warns is not proof; a test that

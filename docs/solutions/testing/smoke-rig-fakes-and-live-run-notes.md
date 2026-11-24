@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (quoted in https://github.com/cybermonklabs/legion/pull/1075) The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Legion smoke rig: faking tmux -L, real processes for /proc checks, and what a live run actually needs"
