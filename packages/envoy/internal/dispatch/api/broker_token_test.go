@@ -287,6 +287,9 @@ type whoamiAnswer struct {
 	Session *string  `json:"session"`
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`
+	// A pointer, so an answer that leaves the field out reads differently from one that names
+	// an empty scope.
+	ProjectScope *string `json:"project_scope"`
 }
 
 // refusal is the code and message a refused request carries.
@@ -325,7 +328,8 @@ func TestALiveBrokerTokenWithASoundProofIsAccepted(t *testing.T) {
 }
 
 // TestAPersonScopedBrokerTokenCarriesNoProject: a dev box session's token names no single
-// project, so the caller carries none at all rather than an empty one.
+// project, so the caller carries none at all rather than an empty one, and whoami answers its
+// project scope, person.
 func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -343,6 +347,9 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	}
 	if decided.Session == nil || *decided.Session != brokerTestSession {
 		t.Fatalf("whoami = %+v, want the session the token names", decided)
+	}
+	if decided.ProjectScope == nil || *decided.ProjectScope != ciphertoken.ProjectScopePerson {
+		t.Fatalf("whoami project_scope = %v, want %q: %s", decided.ProjectScope, ciphertoken.ProjectScopePerson, response.Body.String())
 	}
 }
 
@@ -1045,7 +1052,8 @@ func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 // TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami: a machine nobody has signed in on holds a
 // token the broker says names a session and a service, no person and no project. It is a
 // session's credential like any other — whoami names the session and the service, and a read
-// answers — and only its writes are refused (the test below).
+// answers — and only its writes are refused (the test below). whoami answers its project scope,
+// person, which is what tells it from a job's token, whose service writes.
 func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1070,6 +1078,9 @@ func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
 	}
 	if answer.Project != nil {
 		t.Fatalf("whoami project = %q, want null: the token is held to no one project", *answer.Project)
+	}
+	if answer.ProjectScope == nil || *answer.ProjectScope != ciphertoken.ProjectScopePerson {
+		t.Fatalf("whoami project_scope = %v, want %q: %s", answer.ProjectScope, ciphertoken.ProjectScopePerson, who.Body.String())
 	}
 
 	read := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/issues/"+own.issue, token, nil))
@@ -1392,7 +1403,9 @@ func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
 
 // TestAJobBrokerTokenIsNamedByWhoami: whoami names a job's token by the session it proved and the
 // identity its entry lists as its service, with no owner and no OAuth scope; the project is the
-// one a named token's entry names, and none for a public token, which no one project limits.
+// one a named token's entry names, and none for a public token, which no one project limits; and
+// the project scope is the token's own, named or public, which is what tells a job's token, whose
+// service writes, from a machine's, which is refused every write.
 func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1401,9 +1414,10 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 		name, token string
 		answer      ciphertoken.Introspection
 		project     *string
+		scope       string
 	}{
-		{"a job's named token", "a-job-named-token-asking-who-it-is", liveJobNamedToken(caller.jkt), new(brokerTestProject)},
-		{"a job's public token", "a-job-public-token-asking-who-it-is", liveJobPublicToken(caller.jkt, "PRIV"), nil},
+		{"a job's named token", "a-job-named-token-asking-who-it-is", liveJobNamedToken(caller.jkt), new(brokerTestProject), ciphertoken.ProjectScopeNamed},
+		{"a job's public token", "a-job-public-token-asking-who-it-is", liveJobPublicToken(caller.jkt, "PRIV"), nil, ciphertoken.ProjectScopePublic},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig.broker.Says(row.token, row.answer)
@@ -1429,6 +1443,9 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 				t.Fatalf("whoami project = %q, want null", *answer.Project)
 			case row.project != nil && (answer.Project == nil || *answer.Project != *row.project):
 				t.Fatalf("whoami project = %v, want %q", answer.Project, *row.project)
+			}
+			if answer.ProjectScope == nil || *answer.ProjectScope != row.scope {
+				t.Fatalf("whoami project_scope = %v, want %q: %s", answer.ProjectScope, row.scope, response.Body.String())
 			}
 		})
 	}

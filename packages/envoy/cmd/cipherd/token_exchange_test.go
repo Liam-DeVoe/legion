@@ -329,7 +329,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			form:   exchangeForm(mintPodToken(t, cluster, clusterKey, otherAccount, exchangeAudience, "pod-uid-unlisted"), "example-unlisted"),
 			status: http.StatusBadRequest, code: "invalid_request",
 			says:   "no entry lists the service account " + otherAccount,
-			proves: "a sound, correctly-audienced pod token of an account BROKER_EXCHANGE_ACCOUNTS does not list is refused, naming the account",
+			proves: "a sound, correctly-audienced pod token of an account no exchange entry lists is refused, naming the account",
 		},
 		{
 			name:   "a token minted for another audience mints nothing",

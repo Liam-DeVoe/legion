@@ -4508,6 +4508,7 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -4534,6 +4535,7 @@ describe("executeDispatchTool", () => {
       owner: null,
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("shared token");
   });
@@ -4565,6 +4567,7 @@ describe("executeDispatchTool", () => {
       owner: null,
       service: "system:serviceaccount:legion:legion-worker",
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("runs as service legion/legion-worker");
     expect(result.text).not.toContain("shared token");
@@ -4760,6 +4763,7 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: "INFRA",
+      project_scope: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).toContain("It may write project INFRA and no other.");
@@ -4793,6 +4797,7 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("Session ses_from_the_broker acts for alice");
     expect(result.text).toContain(
@@ -4822,16 +4827,18 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).not.toContain("which is not this host session");
   });
 
-  // A token that names a service and no person is refused every Dispatch write with
-  // SIGN_IN_REQUIRED, whose message names `agent-secrets login`. whoami is where a person asks
-  // what their credential may do, so its sentence for that caller must not describe the issue
-  // creation the server refuses, and must name the command that gets them a write.
-  test("dispatch_whoami tells a service-only caller its writes need a sign-in", async () => {
+  // A Dispatch older than `project_scope` refuses every write by a token that names a service and
+  // no person with SIGN_IN_REQUIRED, whose message names `agent-secrets login`, and answers whoami
+  // with no project scope. whoami is where a person asks what their credential may do, so its
+  // sentence for that caller must not describe the issue creation the server refuses, and must
+  // name the command that gets them a write.
+  test("dispatch_whoami tells a service-only caller of a Dispatch that names no project scope its writes need a sign-in", async () => {
     const fetchImpl = async (): Promise<Response> =>
       response({
         kind: "agent",
@@ -4855,6 +4862,67 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("runs as service example-fleet");
     expect(result.text).not.toMatch(/issues? you create/);
     expect(result.text).toContain("agent-secrets login");
+  });
+
+  // A job's token, which the secrets broker mints from a job entry, names a service and no person
+  // as a machine's does, and Dispatch takes its writes as that service. whoami tells the two apart
+  // by the token's project scope: `named` or `public` for a job's, `person` for a machine nobody
+  // signed in on, which is refused every write and keeps the sentence naming `agent-secrets login`.
+  test.each([
+    [
+      "a job's named token writes as its service in its one project",
+      {
+        service: "system:serviceaccount:example-ns:example-job",
+        project: "EXAMPLE",
+        project_scope: "named",
+      },
+      [
+        "Session session-1 runs as service example-ns/example-job and no person, and writes as that service",
+        "It may write project EXAMPLE and no other.",
+      ],
+      ["agent-secrets login", "refuses every write", "every public project"],
+    ],
+    [
+      "a job's public token writes as its service in every public project and its listed private ones",
+      {
+        service: "example-org/example-repo/.github/workflows/release.yaml@refs/heads/main",
+        project: null,
+        project_scope: "public",
+      },
+      [
+        "Session session-1 runs as service example-org/example-repo/.github/workflows/release.yaml@refs/heads/main and no person, and writes as that service",
+        "It may write every public project and the private projects its job entry lists.",
+      ],
+      ["agent-secrets login", "refuses every write", "may write project"],
+    ],
+    [
+      "a machine's person-scoped token is refused every write and names the sign-in",
+      { service: "example-fleet", project: null, project_scope: "person" },
+      [
+        "Session session-1 runs as service example-fleet and no person, so it may read but Dispatch refuses every write it makes",
+        "agent-secrets login",
+      ],
+      ["writes as that service", "may write"],
+    ],
+  ] as const)("dispatch_whoami: %s", async (_, answer, says, never) => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({ kind: "agent", owner: null, session: "session-1", scopes: [], ...answer });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.details).toEqual({ session: "session-1", owner: null, ...answer });
+    for (const sentence of says) expect(result.text).toContain(sentence);
+    for (const words of never) expect(result.text).not.toContain(words);
   });
 
   test("dispatch_issue_update moves status and merges external links by URL as the session", async () => {

@@ -476,7 +476,9 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 // configures rather than a person. A credential holding none is answered an empty array and
 // never null, so a reader need not tell "this credential holds no scope" from "this build does
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
-// names the credential and the owner names the person it acts for.
+// names the credential and the owner names the person it acts for. None of these credentials is
+// an access token the secrets broker issued, so none is answered a project_scope, which the
+// dispatch command reads as the credential carrying none.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
@@ -539,7 +541,8 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 				Kind string `json:"kind"`
 				// A pointer, so a null reads differently from the empty array the answer owes a
 				// credential that holds no scope.
-				Scopes *[]string `json:"scopes"`
+				Scopes       *[]string `json:"scopes"`
+				ProjectScope *string   `json:"project_scope"`
 			}](t, response)
 			if got.Kind != test.kind {
 				t.Fatalf("whoami as %s = kind %q, want %q: %s", test.name, got.Kind, test.kind, response.Body.String())
@@ -549,6 +552,9 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			}
 			if !slices.Equal(*got.Scopes, test.scopes) {
 				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
+			}
+			if got.ProjectScope != nil {
+				t.Fatalf("whoami as %s = project_scope %q, want none: only a broker-issued token carries one: %s", test.name, *got.ProjectScope, response.Body.String())
 			}
 		})
 	}

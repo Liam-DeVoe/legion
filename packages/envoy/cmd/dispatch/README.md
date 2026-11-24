@@ -242,7 +242,7 @@ A `public` job's token names no one project, so the project check holds it to no
 The private projects of its list limit no write at this release.
 It holds no OAuth scope, so every route whose `scopes` name `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` at its scope gate.
 The sign-in check below lets it write, and Dispatch records each write under the token's session, for its service, and under no person.
-`GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, and `project` its one project for a `named` token and null for a `public` one.
+`GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, `project` its one project for a `named` token and null for a `public` one, and `project_scope` `named` or `public`, which tells it from a machine's token, whose `project_scope` is `person` and whose every write the sign-in check refuses.
 The access log's `credential` names it `broker-token:service:<identity>` (below).
 The Envoy listener and the NATS auth service take both shapes too, through the same verifier (`internal/ciphertoken`).
 
@@ -4748,10 +4748,12 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, project_scope, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, or a job's identity as its job entry lists it (a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address), null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names `public`, which writes every public project, answers null).
+  `project` is the one project key that credential may write, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names `public`, which writes every public project, answers null;
+  `project_scope` is a broker-issued token's project scope (`model.Credential.ProjectScope`), left out for every other credential: `named` for a token an operator's or a job's entry mapped to its project, `public` for a job's token, and `person` for a person's own token and for a machine's.
+  A broker-issued token that names a service and no person writes, as that service, only under `named` or `public`, a job's token; under `person`, a machine nobody has signed in on, it is refused every write `403 SIGN_IN_REQUIRED`).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)

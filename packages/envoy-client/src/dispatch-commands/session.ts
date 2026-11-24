@@ -64,35 +64,53 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A broker-issued token's project scope; every other credential carries none, and a Dispatch
+  // older than the field leaves it out.
+  const projectScope = identity.kind === "agent" ? (identity.project_scope ?? null) : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
     "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
   // A broker token is the one credential that proves a session of its own, so a caller that
-  // names a service and proves a session is the kind Dispatch refuses every write with
-  // SIGN_IN_REQUIRED. whoami is where a person asks what their credential may do, so it says
-  // that here rather than describing the issue creation the server would refuse, and it names
-  // the command that gets them a write. A verified service-account token names a service and
-  // proves no session; it writes as before, and keeps the sentence it had.
-  const signInNeeded = owner === null && service !== null && proved !== null;
+  // names a service and proves a session holds one that names no person. Dispatch takes the
+  // writes of a job's token, whose project scope is named or public, as its service, and refuses
+  // every other such token every write with SIGN_IN_REQUIRED: a machine's, under the project
+  // scope person. A Dispatch older than project_scope names none and refuses a job's token
+  // outright, so a caller with no project scope keeps the sign-in sentence. whoami is where a
+  // person asks what their credential may do, so for a refused caller it says that rather than
+  // describing the issue creation the server would refuse, and names the command that gets them
+  // a write. A verified service-account token names a service and proves no session; it writes
+  // as before, and keeps the sentence it had.
+  const brokerService = owner === null && service !== null && proved !== null;
+  const job = brokerService && (projectScope === "named" || projectScope === "public");
+  const signInNeeded = brokerService && !job;
   const acting =
     owner !== null
       ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
       : service !== null
         ? // The text names the identity the way every other surface does; details
           // keeps the subject whole, because that is the persisted value.
-          signInNeeded
-          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
-          : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
+          job
+          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, and writes as that service with ${unowned}`
+          : signInNeeded
+            ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
+            : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
         : `Session ${session} runs under the shared token: ${unowned}`;
   const elsewhere =
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  // A job's public token names no one project: it reaches every public project and the private
+  // projects its job entry lists.
+  const writable =
+    project !== null
+      ? ` It may write project ${project} and no other.`
+      : job && projectScope === "public"
+        ? " It may write every public project and the private projects its job entry lists."
+        : "";
   return {
     text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    details: { session, owner, service, project, project_scope: projectScope },
   };
 }
 

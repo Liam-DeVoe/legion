@@ -32,6 +32,13 @@ export interface AuthenticatedUser {
  *  Dispatch older than that field, not as null: `service` is absent from one older than verified
  *  service tokens, and the other two from one older than broker-issued tokens.
  *
+ *  `project_scope` is a broker-issued token's project scope, absent for every other credential:
+ *  `named` for a token an operator's or a job's entry mapped to its project, `public` for a job's
+ *  token, and `person` for a person's own token and for a machine's. Of the tokens that name a
+ *  service and no person, a job's (`named` or `public`) writes as that service, and Dispatch
+ *  refuses a machine's (`person`) every write with `SIGN_IN_REQUIRED`. A Dispatch older than the
+ *  field leaves it out for every credential, and refuses a job's token outright.
+ *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and
  *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays

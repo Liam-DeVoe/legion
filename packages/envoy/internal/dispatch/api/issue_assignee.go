@@ -142,9 +142,11 @@ type whoamiUser struct {
 // Owner is null, since the entry names no person; Service is the identity the entry lists, a
 // pod's Kubernetes service account (`system:serviceaccount:<namespace>:<name>`), a workflow
 // (`<repository>/<workflow path>@<ref>`) or a Google account; Session is the session the token
-// proved; Scopes is empty; and Project is the one project an entry naming one project names, and
+// proved; Scopes is empty; Project is the one project an entry naming one project names, and
 // null for an entry naming `public`, whose token writes every public project and so no one
-// project limits it.
+// project limits it; and ProjectScope is `named` or `public`, which is what tells a job's token
+// from a machine's that names a service and no person too, whose ProjectScope is `person` and
+// whose every write Dispatch refuses (writeNeedsASignedInPerson).
 type whoamiAgent struct {
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.
@@ -154,6 +156,14 @@ type whoamiAgent struct {
 	Scopes  []string `json:"scopes"`
 	Service *string  `json:"service"`
 	Session *string  `json:"session"`
+	// ProjectScope is the project scope of an access token the secrets broker issued, as the
+	// broker answered it (model.Credential.ProjectScope): `named` for a token an operator's or a
+	// job's entry mapped to its project, `public` for a job's token that writes every public
+	// project and the private projects its entry lists, and `person` for a person's own token and
+	// for a machine's token that names no person. It is left out for every other credential, which
+	// carries none, and by a Dispatch older than the field. A read-only token, whose scope is
+	// `none`, is refused this route (refuseReadOnlyToken).
+	ProjectScope string `json:"project_scope,omitempty"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
@@ -163,8 +173,10 @@ type whoamiAgent struct {
 // of its service-account token or the service a broker-issued token naming no person names (a
 // machine's fleet, a read entry's service, or a job's identity; null for every other
 // credential), the session its credential proved (null for a credential that proves none, which
-// every one but a broker-issued token is) and the one project that credential lets it write
-// (null where it names none, a person-scoped token and a job's public token included).
+// every one but a broker-issued token is), the one project that credential lets it write
+// (null where it names none, a person-scoped token and a job's public token included) and a
+// broker-issued token's project scope (left out for every other credential), which tells a job's
+// token, whose service writes, from a machine's, which writes nothing.
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
@@ -191,13 +203,18 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	var projectScope string
+	if actor.Credential != nil {
+		projectScope = actor.Credential.ProjectScope
+	}
 	WriteJSON(w, http.StatusOK, whoamiAgent{
-		Kind:    "agent",
-		Owner:   owner,
-		Project: actor.Project,
-		Scopes:  scopes,
-		Service: actor.Service,
-		Session: session,
+		Kind:         "agent",
+		Owner:        owner,
+		Project:      actor.Project,
+		Scopes:       scopes,
+		Service:      actor.Service,
+		Session:      session,
+		ProjectScope: projectScope,
 	})
 }
 

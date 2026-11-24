@@ -78,12 +78,12 @@ func TestThePodSessionRouteTakesOnlyARegistrarsOwnLogin(t *testing.T) {
 }
 
 // TestThePodSessionRouteRefusesWhatNeedsNoRegistration: what a registrar may register is the pod
-// of an account BROKER_EXCHANGE_ACCOUNTS lists with no fixed session, and nothing else. A pod
-// token that does not verify or has expired is refused as such; a token bound to no pod proves
-// only that the account exists; an account no exchange entry lists exchanges nothing to register
-// for; and an account whose entry fixes a session writes under the configuration's name, so
-// registering one of its pods would say something no exchange reads — the one refusal that names
-// the fixed name, so an operator reads why there is nothing to do.
+// of an account BROKER_EXCHANGE_ACCOUNTS or BROKER_EXCHANGE_JOB_ACCOUNTS lists with no fixed
+// session, and nothing else. A pod token that does not verify or has expired is refused as such;
+// a token bound to no pod proves only that the account exists; an account no exchange entry lists
+// exchanges nothing to register for; and an account whose entry fixes a session writes under the
+// configuration's name, so registering one of its pods would say something no exchange reads —
+// the one refusal that names the fixed name, so an operator reads why there is nothing to do.
 func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 	ts := newTestServer(t)
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
@@ -119,7 +119,7 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 			podToken: ts.accountToken(t, unlistedAccount, "pod-uid-unlisted", time.Hour), session: "implementer-g1",
 			status: http.StatusForbidden, code: "POD_ACCOUNT_NOT_LISTED",
 			says:   unlistedAccount,
-			proves: "a pod of an account BROKER_EXCHANGE_ACCOUNTS does not list exchanges nothing, so there is no name to register it for, and the refusal names the account",
+			proves: "a pod of an account no exchange entry lists exchanges nothing, so there is no name to register it for, and the refusal names the account",
 		},
 		{
 			name:     "an entry that fixes a session",

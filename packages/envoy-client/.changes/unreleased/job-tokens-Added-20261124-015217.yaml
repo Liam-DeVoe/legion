@@ -15,6 +15,12 @@ body: |-
   with `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which GitHub sets in a job that holds `id-token: write`,
   for the audience `AGENT_SECRETS_MACHINE_AUDIENCE` names. A missing variable is an error that
   names it.
+
+  `dispatch whoami` says that a job's broker token, whose project scope Dispatch answers as `named`
+  or `public`, runs as its service and no person and writes as that service, in its one project
+  for `named`, and in every public project and the private projects its job entry lists for
+  `public`. A machine's token, under `person`, and any token of a Dispatch that answers no project
+  scope, keep the sentence that names `agent-secrets login`. Its details carry `project_scope`.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens
