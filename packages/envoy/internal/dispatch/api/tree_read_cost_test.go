@@ -18,9 +18,11 @@ package api
 //	BASELINE_SHA=<the commit the pull request body's BASELINE_SHA= line names> go test -tags basebuild ./internal/dispatch/api/ -run '^TestNoReadThisTreeMovesGetsSlower$' -timeout 170m -count=1 -v
 //
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
-// database on. READ_COST_READS, for diagnosis, names the arms to measure (readCostArmFilter), and
+// database on. READ_COST_READS, for diagnosis, names the arms to measure (readCostArmFilter),
 // READ_COST_KEEP_DATABASE=1, for diagnosis, keeps the run's database when the test ends
-// (readCostKeepDatabase); a run of the check leaves both unset.
+// (readCostKeepDatabase), and READ_COST_PPROF=<arm>, for diagnosis, takes a CPU profile of this
+// head's server over that arm's new-side readings (readCostPprofArm); a run of the check leaves
+// all three unset.
 
 import (
 	"bytes"
@@ -34,6 +36,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"os/exec"
@@ -178,11 +181,15 @@ var readCostChainBaselinePath = filepath.Join("testdata", "read-cost-chain-basel
 
 // readCostServer is one build's process over the run's database, read and written over HTTP on
 // loopback through the one client both sides share, so both sides of every read are read the same
-// way and neither runs in the test process.
+// way and neither runs in the test process. binary is the build it runs, which a profile of it is
+// read against, and pprof the address its profiler serves on, empty where it serves none
+// (startReadCostServerProfiled).
 type readCostServer struct {
 	name    string
 	commit  string
+	binary  string
 	port    int
+	pprof   string
 	process *cmdtest.Process
 	client  *http.Client
 }
@@ -218,6 +225,20 @@ func readCostClient() *http.Client {
 // background work a setting stops (readCostStatements).
 func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit, databaseURL, listener string) *readCostServer {
 	t.Helper()
+	return startReadCostServerProfiled(t, client, name, binary, commit, databaseURL, listener, false)
+}
+
+// readCostPprofListening is the line a server writes once its profiler listens, with the address
+// it bound (cmd/dispatch's startPprof).
+var readCostPprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(127\.0\.0\.1:[0-9]+)`)
+
+// startReadCostServerProfiled is startReadCostServer that, where profiled is set, also has the
+// process serve its Go profiler with DISPATCH_PPROF_PORT=0, on a loopback port the kernel chooses,
+// and keeps the address from the line naming it (readCostPprofListening), which the process writes
+// before it serves. READ_COST_PPROF asks it of this head's server (readCostPprofArm).
+func startReadCostServerProfiled(t *testing.T, client *http.Client, name, binary, commit, databaseURL, listener string,
+	profiled bool) *readCostServer {
+	t.Helper()
 	home := t.TempDir()
 	held := cmdtest.HoldPort(t)
 	environment := map[string]string{
@@ -241,6 +262,9 @@ func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit
 		"DISPATCH_TEST_EMBEDDER_OFF":               "1",
 		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "24h",
 	}
+	if profiled {
+		environment["DISPATCH_PPROF_PORT"] = "0"
+	}
 	cmd := exec.Command(binary)
 	cmd.Dir = home
 	for variable, value := range environment {
@@ -248,8 +272,16 @@ func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit
 	}
 	slices.Sort(cmd.Env)
 	held.Pass(cmd, "DISPATCH_LISTEN_FD")
-	server := &readCostServer{name: name, commit: commit, port: held.Port, process: cmdtest.Start(t, name, cmd), client: client}
+	server := &readCostServer{name: name, commit: commit, binary: binary, port: held.Port, process: cmdtest.Start(t, name, cmd), client: client}
 	server.waitServing(t)
+	if profiled {
+		listening := readCostPprofListening.FindStringSubmatch(server.process.Output.String())
+		if listening == nil {
+			t.Fatalf("%s serves, but logged no line naming its profiler's address:\n%s", name, readCostTail(server.process.Output.String()))
+		}
+		server.pprof = listening[1]
+		t.Logf("c-read-cost: %s serves its profiler at %s", name, server.pprof)
+	}
 	return server
 }
 
@@ -1351,6 +1383,35 @@ func readCostArmFilter(t *testing.T) map[string]bool {
 	return arms
 }
 
+// readCostPprofVariable names the one arm whose new-side readings a run profiles, for diagnosis
+// (readCostPprofArm).
+const readCostPprofVariable = "READ_COST_PPROF"
+
+// readCostPprofArm reads READ_COST_PPROF, one arm of readCostArms, before anything is built or read.
+// Unset, it answers "", and no profile is taken, as a run of the check takes none. Set, it answers
+// the arm and says in one line that the run is not a reading of the check: this head's server then
+// serves its profiler (startReadCostServerProfiled), and the arm's new-side readings take one CPU
+// profile of it (measureReadCostProfiled). Where it names anything else, or an arm arms (the
+// arms READ_COST_READS names) leaves out, it fails, naming the arms it accepts.
+func readCostPprofArm(t *testing.T, arms map[string]bool) string {
+	t.Helper()
+	named := strings.TrimSpace(os.Getenv(readCostPprofVariable))
+	if named == "" {
+		return ""
+	}
+	if !slices.Contains(readCostArms, named) {
+		t.Fatalf("%s=%q is no arm of c-read-cost: it takes one of the arms %s", readCostPprofVariable, named, strings.Join(readCostArms, ", "))
+	}
+	if arms != nil && !arms[named] {
+		measured := slices.DeleteFunc(slices.Clone(readCostArms), func(arm string) bool { return !arms[arm] })
+		t.Fatalf("%s=%s names an arm %s leaves out, so none of its readings would be profiled: it takes one of the arms %s",
+			readCostPprofVariable, named, readCostArmsVariable, strings.Join(measured, ", "))
+	}
+	t.Logf("c-read-cost: %s=%s takes a CPU profile of this head's server over the %s arm's new-side readings, so this run is not a reading of the check",
+		readCostPprofVariable, named, named)
+	return named
+}
+
 // readCostChosen is reads less those of an arm arms leaves out, each of which it says it skips;
 // nil arms leaves out none.
 func readCostChosen(t *testing.T, reads []readCostRead, arms map[string]bool) []readCostRead {
@@ -1729,17 +1790,35 @@ type readCostReading struct {
 func measureReadCost(t *testing.T, check string, statements *readCostStatements, s *readCostServer, read, on string,
 	take func(*readCostServer) (time.Duration, error)) readCostReading {
 	t.Helper()
-	if _, err := take(s); err != nil {
+	return measureReadCostProfiled(t, check, statements, s, read, on, take, "")
+}
+
+// measureReadCostProfiled is measureReadCost that, where arm names an arm (READ_COST_PPROF), takes
+// one CPU profile of s over the readCostRuns readings, asked for just before the first of them
+// (startReadCostProfile), with the readings sent as they always are, and reads it once they and
+// the idle interval after them are done (readCostProfile.read).
+func measureReadCostProfiled(t *testing.T, check string, statements *readCostStatements, s *readCostServer, read, on string,
+	take func(*readCostServer) (time.Duration, error), arm string) readCostReading {
+	t.Helper()
+	warmUp, err := take(s)
+	if err != nil {
 		t.Fatalf("%s: the warm-up reading of %s on %s: %v", check, read, on, err)
 	}
+	var profile *readCostProfile
 	runs := make([]time.Duration, 0, readCostRuns)
 	database, idle := statements.measure(t, readCostRuns, func() {
+		if arm != "" {
+			profile = startReadCostProfile(t, s, arm, warmUp)
+		}
 		for range readCostRuns {
 			took, err := take(s)
 			if err != nil {
 				t.Fatalf("%s: a reading of %s on %s: %v", check, read, on, err)
 			}
 			runs = append(runs, took)
+		}
+		if profile != nil {
+			profile.ended = time.Now()
 		}
 	})
 	sorted := slices.Clone(runs)
@@ -1755,14 +1834,108 @@ func measureReadCost(t *testing.T, check string, statements *readCostStatements,
 	}
 	t.Logf("%s: %s on %s: p50 %.1f ms, p90 %.1f ms, p95 %.1f ms, p99 %.1f ms over %d readings%s", check, read, on,
 		msOf(reading.p50), msOf(reading.p90), msOf(reading.p95), msOf(reading.p99), readCostRuns, readCostDatabaseLine(database, idle))
+	if profile != nil {
+		profile.read(t, s)
+	}
 	return reading
+}
+
+// readCostProfileLead is how long a profile runs before the readings it covers begin: the time
+// the server takes to read the request and start profiling, which no answer reports, since
+// net/http/pprof writes nothing until the profile ends.
+const readCostProfileLead = 250 * time.Millisecond
+
+// readCostProfile is one CPU profile of a server (startReadCostProfile): the arm whose readings it
+// covers, its length in seconds, when its request was sent, when the readings began and ended,
+// and, once done is closed, the profile or the error that stands in its place.
+type readCostProfile struct {
+	arm                string
+	seconds            int
+	sent, began, ended time.Time
+	done               chan struct{}
+	body               []byte
+	err                error
+}
+
+// startReadCostProfile asks s's profiler for one CPU profile (/debug/pprof/profile?seconds=n), n
+// long enough to cover readCostProfileLead and then readCostRuns readings of twice warmUp each, with
+// a second to spare, and answers once the request is sent and readCostProfileLead has passed, just
+// before the first reading. The profile is read on its own goroutine until readCostProfile.read
+// waits for it.
+func startReadCostProfile(t *testing.T, s *readCostServer, arm string, warmUp time.Duration) *readCostProfile {
+	t.Helper()
+	length := readCostProfileLead + 2*readCostRuns*warmUp
+	profile := &readCostProfile{arm: arm, seconds: int((length+time.Second-1)/time.Second) + 1, done: make(chan struct{})}
+	address := "http://" + s.pprof + "/debug/pprof/profile?seconds=" + strconv.Itoa(profile.seconds)
+	sent := make(chan struct{})
+	var once sync.Once
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { once.Do(func() { close(sent) }) },
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		t.Fatalf("c-read-cost: pprof %s: ask %s for a CPU profile: %v", arm, address, err)
+	}
+	client := &http.Client{Timeout: time.Duration(profile.seconds)*time.Second + readCostStopWait}
+	go func() {
+		defer close(profile.done)
+		response, err := client.Do(request)
+		if err != nil {
+			profile.err = err
+			return
+		}
+		defer response.Body.Close()
+		profile.body, profile.err = io.ReadAll(response.Body)
+		if profile.err == nil && response.StatusCode != http.StatusOK {
+			profile.err = fmt.Errorf("%s answered %d: %s", address, response.StatusCode, bytes.TrimSpace(profile.body))
+		}
+	}()
+	select {
+	case <-sent:
+	case <-profile.done:
+		t.Fatalf("c-read-cost: pprof %s: ask %s for a CPU profile: %v", arm, address, profile.err)
+	}
+	profile.sent = time.Now()
+	time.Sleep(readCostProfileLead)
+	profile.began = time.Now()
+	return profile
+}
+
+// read waits for the profile, writes it to $TMPDIR/read-cost-<arm>.pprof, fails the run where the
+// readings it was asked to cover ran past its end, and logs go tool pprof's top 25 functions of it
+// by cumulative time, read against s's build, each line prefixed "c-read-cost: pprof <arm>:".
+func (profile *readCostProfile) read(t *testing.T, s *readCostServer) {
+	t.Helper()
+	<-profile.done
+	if profile.err != nil {
+		t.Fatalf("c-read-cost: pprof %s: the CPU profile of %s: %v", profile.arm, s.name, profile.err)
+	}
+	path := filepath.Join(os.TempDir(), "read-cost-"+profile.arm+".pprof")
+	if err := os.WriteFile(path, profile.body, 0o644); err != nil {
+		t.Fatalf("c-read-cost: pprof %s: write the CPU profile to %s: %v", profile.arm, path, err)
+	}
+	t.Logf("c-read-cost: pprof %s: a CPU profile of %s over %d s, from %s before its %d new-side readings began; they took %s; written to %s",
+		profile.arm, s.name, profile.seconds, profile.began.Sub(profile.sent).Round(time.Millisecond), readCostRuns,
+		profile.ended.Sub(profile.began).Round(time.Millisecond), path)
+	if end := profile.sent.Add(time.Duration(profile.seconds) * time.Second); profile.ended.After(end) {
+		t.Errorf("c-read-cost: pprof %s: the readings ran %s past the profile's end, so it covers only their first part",
+			profile.arm, profile.ended.Sub(end).Round(time.Millisecond))
+	}
+	out, err := exec.Command("go", "tool", "pprof", "-top", "-cum", "-nodecount=25", s.binary, path).CombinedOutput()
+	for line := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
+		t.Logf("c-read-cost: pprof %s: %s", profile.arm, line)
+	}
+	if err != nil {
+		t.Errorf("c-read-cost: pprof %s: go tool pprof -top -cum -nodecount=25 %s %s: %v", profile.arm, s.binary, path, err)
+	}
 }
 
 // measureReadCostSide takes every read of reads that the side has (old, or new) on s, keyed by
 // name, and on the old side, after a read's readings, the reads it leaves out of them, taken apart
-// (measureReadCostApart).
+// (measureReadCostApart). The readings of the read of the arm profile names, where it names one
+// (READ_COST_PPROF), take one CPU profile of s (measureReadCostProfiled).
 func measureReadCostSide(t *testing.T, statements *readCostStatements, s *readCostServer, reads []readCostRead, old bool,
-	skip map[string]bool) map[string]readCostReading {
+	skip map[string]bool, profile string) map[string]readCostReading {
 	t.Helper()
 	readings := map[string]readCostReading{}
 	for _, read := range reads {
@@ -1771,9 +1944,16 @@ func measureReadCostSide(t *testing.T, statements *readCostStatements, s *readCo
 			take = read.old
 		}
 		if take == nil || skip[read.name] {
+			if take != nil && read.arm == profile {
+				t.Errorf("c-read-cost: pprof %s: %s takes no readings on %s, so no profile of them was taken", profile, read.name, s.name)
+			}
 			continue
 		}
-		reading := measureReadCost(t, "c-read-cost", statements, s, read.name, s.name, take)
+		arm := ""
+		if read.arm == profile {
+			arm = profile
+		}
+		reading := measureReadCostProfiled(t, "c-read-cost", statements, s, read.name, s.name, take, arm)
 		if old && read.apart != nil {
 			reading.apart = measureReadCostApart(t, statements, s, read)
 		}
@@ -2002,18 +2182,22 @@ func readCostPodName(pod readCostPod) string {
 // (readCostArmFilter); a run with it set is no reading of the check. READ_COST_KEEP_DATABASE=1,
 // for diagnosis, keeps the run's database when the test ends and writes its name to
 // $TMPDIR/read-cost-kept-database (readCostKeepDatabase); a run with it set is no reading of the
-// check either.
+// check either. READ_COST_PPROF=<arm>, for diagnosis, has this head's server serve its profiler
+// and takes one CPU profile of it over that arm's new-side readings, which it writes to
+// $TMPDIR/read-cost-<arm>.pprof and logs the top of (readCostPprofArm); a run with it set is no
+// reading of the check either.
 //
 // It fails, never skips, where READ_COST_READS names anything but arms of the check,
-// READ_COST_KEEP_DATABASE is set to anything but 1, or BASELINE_SHA is unset or names no
-// 40-character commit, before it builds or measures anything: a reading of the replaced reads
-// needs the server of that commit.
+// READ_COST_PPROF names anything but one of the arms measured, READ_COST_KEEP_DATABASE is set to
+// anything but 1, or BASELINE_SHA is unset or names no 40-character commit, before it builds or
+// measures anything: a reading of the replaced reads needs the server of that commit.
 func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-read-cost: TestNoReadThisTreeMovesGetsSlower took %s of wall time", time.Since(began).Round(time.Second))
 	})
 	arms := readCostArmFilter(t)
+	pprofArm := readCostPprofArm(t, arms)
 	keep := readCostKeepDatabase(t)
 	baseCommit := readCostBaseCommit(t)
 	databaseURL := readCostDatabase(t, keep)
@@ -2045,7 +2229,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	requireReadCostOldShape(t, base, corpus)
 	firstLoad := readCostOldFirstLoad(t, base, corpus)
 	reads := readCostChosen(t, readCostReads(corpus, firstLoad, readCostOldRoleTabs(t, base, corpus, firstLoad)), arms)
-	old := measureReadCostSide(t, statements, base, reads, true, nil)
+	old := measureReadCostSide(t, statements, base, reads, true, nil, "")
 	base.stop(t)
 
 	// ───── second: this head over the same database, booted twice ─────
@@ -2056,7 +2240,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	}
 	t.Logf("c-read-cost: announced another build, %s, listing every relation kind and capability: %v", readCostOtherBuild, refs.TupleKinds())
 	first.stop(t)
-	head := startReadCostServer(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
+	head := startReadCostServerProfiled(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener, pprofArm != "")
 	var view string
 	if err := conn.QueryRow(context.Background(), `select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&view); err != nil {
 		t.Fatalf("read the definition of graph_edges: %v", err)
@@ -2071,7 +2255,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 
 	// ───── fourth: the new side ─────
 	missing := map[string]bool{"inbox": !served}
-	now := measureReadCostSide(t, statements, head, reads, false, missing)
+	now := measureReadCostSide(t, statements, head, reads, false, missing, pprofArm)
 	var chain *readCostChainBaseline
 	if reading, measured := now["chain"]; measured {
 		chain = readCostChainBound(t, headCommit, reading)
