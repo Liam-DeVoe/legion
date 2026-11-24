@@ -120,12 +120,7 @@ func TestAMergeForwardAskedOfTheOwnerWaitsForTheImplementApp(t *testing.T) {
 
 		r.rt.ScriptSlotHolds(nil)
 		ask.LeaseToken = leaseOutboxRow(t, r.pool, ask.ID)
-		if err := r.runner.execute(context.Background(), ask); err != nil {
-			t.Fatalf("the ask once the owner's slot holds the implement App = %v", err)
-		}
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", ask.ID); err != nil {
-			t.Fatalf("finish the ask: %v", err)
-		}
+		r.ran(t, ask, "the ask once the owner's slot holds the implement App")
 		if got := r.published(); len(got) != 1 || got[0] != notify.RoleTopicPrefix+string(r.owner) {
 			t.Fatalf("the ask published %v once the owner's slot holds the implement App, want one to the owner's topic", got)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -301,25 +302,10 @@ func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
 // The control: the write-back that waited for nothing let the notice publish before the write,
 // and wrote the slot for step 3's App, which step 3's owner-step wrote again.
 func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
-	slotRow := func(t *testing.T, r *ownerHoldRig) record.OutboxRow {
-		t.Helper()
-		return leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
-			Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
-	}
-	finish := func(t *testing.T, r *ownerHoldRig, row record.OutboxRow) {
-		t.Helper()
-		if err := r.runner.execute(context.Background(), row); err != nil {
-			t.Fatalf("row %d = %v", row.ID, err)
-		}
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish row %d: %v", row.ID, err)
-		}
-	}
-
 	t.Run("the notice after the write-back", func(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "reviewer")
 		r.started(t, "step", 1, true)
-		slot := slotRow(t, r)
+		slot := r.slotCredentialRow(t)
 		notice := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer,
 			Phase: phase.Reviewing, Summary: "approved"}, r.now))
 		if err := r.runner.execute(context.Background(), notice); !errors.Is(err, errNoticeWaits) {
@@ -328,12 +314,12 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 		if got := r.published(); len(got) != 0 {
 			t.Fatalf("the notice published %v before the write-back ran, want nothing", got)
 		}
-		finish(t, r, slot)
+		r.ran(t, slot, fmt.Sprintf("row %d", slot.ID))
 		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "WriteSlotCredential" {
 			t.Fatalf("the write-back asked the runtime %q of the owner's slot, want one write", calls)
 		}
 		notice.LeaseToken = leaseOutboxRow(t, r.pool, notice.ID)
-		finish(t, r, notice)
+		r.ran(t, notice, fmt.Sprintf("row %d", notice.ID))
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the notice after the write-back published %v, want one", got)
 		}
@@ -343,7 +329,7 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 3}, "implementer:owner", "reviewer", "implementer:owner")
 		r.started(t, "step", 1, true)
 		r.started(t, "step", 3, false)
-		finish(t, r, slotRow(t, r))
+		r.writtenBack(t)
 		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
 			t.Fatalf("the write-back with step 3 running asked the runtime %q, want nothing: step 3's owner-step writes its App", calls)
 		}
@@ -378,19 +364,20 @@ func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPla
 	}
 }
 
-// writtenBack runs one supervise slot_credential of the owner's claim, the write of its slot back
-// to its own App that the end of a run the owner did queues, and deletes the row once the executor
-// finished it, as the runner does.
+// slotCredentialRow is one supervise slot_credential of the owner's claim, the write of its slot
+// back to its own App that the end of a run the owner did queues, leased as the runner leases a row
+// before it executes it.
+func (r *ownerHoldRig) slotCredentialRow(t *testing.T) record.OutboxRow {
+	t.Helper()
+	return leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
+		Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
+}
+
+// writtenBack runs one slot_credential row of the owner's claim (slotCredentialRow) and deletes it
+// once the executor finished it, as the runner does.
 func (r *ownerHoldRig) writtenBack(t *testing.T) {
 	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
-		Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
-	if err := r.runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("the slot_credential row = %v", err)
-	}
-	if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-		t.Fatalf("finish the slot_credential row: %v", err)
-	}
+	r.ran(t, r.slotCredentialRow(t), "the slot_credential row")
 }
 
 // The owner's retro of a task whose last step of the type implementation is the owner's is done as
@@ -437,12 +424,7 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 
 		r.rt.ScriptSlotHolds(nil)
 		row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
-		if err := r.runner.execute(ctx, row); err != nil {
-			t.Fatalf("the retro's owner-step once the slot holds the implement App = %v", err)
-		}
-		if _, err := r.pool.Exec(ctx, "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish the published row: %v", err)
-		}
+		r.ran(t, row, "the retro's owner-step once the slot holds the implement App")
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the retro's owner-step published %v once the slot holds the implement App, want one", got)
 		}
