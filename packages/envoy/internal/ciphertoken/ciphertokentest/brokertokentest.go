@@ -11,6 +11,8 @@
 // file — read one copy; Go cannot share test-only code across packages.
 package ciphertokentest
 
+//ci:reads packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json narrowedAnswersFile joins ../testdata/narrowed-answers.json from this file's own path, which NarrowedAnswers reads for every reader's test
+
 import (
 	"encoding/json"
 	"errors"

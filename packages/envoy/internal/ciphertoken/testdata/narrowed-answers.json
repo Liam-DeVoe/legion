@@ -12,6 +12,16 @@
       "client_id": "dispatch-token-exchange",
       "jkt": "${jkt}"
     },
+    "pod-entry-no-person": {
+      "active": true,
+      "session": "${session}",
+      "service": "system:serviceaccount:example-ns:example-public",
+      "project_scope": "read-named",
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
     "read-entry": {
       "active": true,
       "session": "${session}",

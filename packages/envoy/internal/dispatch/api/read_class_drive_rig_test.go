@@ -155,27 +155,61 @@ func (p *poolStatements) quiet(t *testing.T, what string) {
 }
 
 var (
-	// driveRowLock is a select's row lock, whose update is no write: writesOf would read the word
-	// after it as a table.
-	driveRowLock = regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+)?update\b`)
-	// driveUpdateColumn is doc_updates' column named update, which a document load reads (select
-	// update, d.update) and a compaction rewrites (set update =): the word is the column's, not a
-	// write.
-	driveUpdateColumn = regexp.MustCompile(`(?i)(\.update\b|\bselect\s+update\b|\bset\s+update\s*=)`)
-	// driveUpdateWord is the word update inside one of those.
-	driveUpdateWord = regexp.MustCompile(`(?i)\bupdate\b`)
+	// driveUpdateColumn is doc_updates' column named update where a compaction rewrites it (set
+	// update =, docs/compaction.go's fold), the one place updateNoWrite reads the column as the
+	// verb of a write. A document load's read of the column (select update, d.update) is
+	// updateNoWrite's to place, after writesOf has set comments aside, so that a comment cannot
+	// end in a word that hides the write after it.
+	driveUpdateColumn = regexp.MustCompile(`(?i)\bset\s+update\s*=`)
 	// lastUsedUpdate is the one write of a personal token a read may make: its last use.
 	lastUsedUpdate = regexp.MustCompile(`(?is)^\s*update\s+agent_(read_)?tokens\s+set\s+last_used_at\s*=`)
 )
 
-// driveWritesOf is writesOf (read_only_token_test.go) over statement with the words update that
-// are no write set aside: a row lock's, and the column of doc_updates named update.
+// driveWritesOf is writesOf (read_only_token_test.go) over statement with a compaction's set
+// update = set aside (driveUpdateColumn), the one column of doc_updates named update that
+// updateNoWrite would read as a write.
 func driveWritesOf(statement string) ([]string, bool) {
-	read := driveRowLock.ReplaceAllString(statement, "for lock")
-	read = driveUpdateColumn.ReplaceAllStringFunc(read, func(column string) string {
-		return driveUpdateWord.ReplaceAllString(column, "update_column")
+	read := driveUpdateColumn.ReplaceAllStringFunc(statement, func(column string) string {
+		return updateWord.ReplaceAllString(column, "update_column")
 	})
 	return writesOf(read)
+}
+
+// The drive judges each statement it records by driveWritesOf and readMayWrite
+// (requireReadsWrites): a compaction's rewrite of doc_updates is a write a read may make, a
+// document load's read of the column named update is no write, and a write after a comment that
+// ends in select is still the write it is.
+func TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, sql string
+		write     string // "" for none
+		allowed   bool
+	}{
+		{"a compaction's fold (docs/compaction.go)", "update doc_updates set update = $3, content_changed = $4 where artifact_id = $1 and version = $2", "update doc_updates", true},
+		{"a document load's read of the column", "select update, d.update from doc_updates d where d.artifact_id = $1", "", true},
+		{"a write after a comment that ends in select", "-- the reader's note, then select\nupdate projects set name = name", "update projects", false},
+	} {
+		writes, readable := driveWritesOf(row.sql)
+		if !readable {
+			t.Errorf("%s: driveWritesOf cannot read a table for every write word of %q", row.name, row.sql)
+			continue
+		}
+		if row.write == "" {
+			if len(writes) != 0 {
+				t.Errorf("%s: driveWritesOf reads %v, want no write", row.name, writes)
+			}
+			continue
+		}
+		if !slices.Equal(writes, []string{row.write}) {
+			t.Errorf("%s: driveWritesOf reads %v, want [%s]", row.name, writes, row.write)
+			continue
+		}
+		verb, table, _ := strings.Cut(row.write, " ")
+		if allowed := readMayWrite(verb, table, row.sql); allowed != row.allowed {
+			t.Errorf("%s: readMayWrite(%s, %s) = %v, want %v", row.name, verb, table, allowed, row.allowed)
+		}
+	}
 }
 
 // readMayWrite is whether a read may write table with verb, statement being the whole statement.

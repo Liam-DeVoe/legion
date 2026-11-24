@@ -22,6 +22,7 @@ export const WHOAMI_NO_CUT = {
   project: null,
   scopes: ["person"],
   cut: null,
+  sign_in_required: false,
 } satisfies WhoamiAgent;
 
 /** Whether a request is `GET /api/v1/whoami`. */

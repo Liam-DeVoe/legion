@@ -368,7 +368,8 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 // TestATradeAskingNoScopeGetsTheTokenItGetsToday: every kind of trade that asks for no scope is
 // answered exactly the token it was before trades could ask for read, its literal spelled out
 // here: a pod entry's, a workflow entry's and a Google entry's that names a person name the
-// entry's person and project; the read entry's holds read and the project scope none and names
+// entry's person and project; a pod entry's that names no person names its account as its service
+// under the project scope named; the read entry's holds read and the project scope none and names
 // its service; a Google entry's that names no person names its fleet; a person's sign-in names
 // the person and the machine; a machine login's names its approver; and each fixed-session
 // entry's names the session it fixes. None holds a scope but the read entry's, and each is bound
@@ -378,8 +379,9 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	named := oauthwire.Introspection{Active: true, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID}
 	today := map[string]oauthwire.Introspection{
-		"pod-entry":      named,
-		"workflow-entry": named,
+		"pod-entry":           named,
+		"workflow-entry":      named,
+		"pod-entry-no-person": {Active: true, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ClientID: oauthwire.ExchangeClientID},
 		"read-entry": {Active: true, Scope: oauthwire.ScopeRead, Service: readService, ProjectScope: oauthwire.ProjectScopeNone,
 			ClientID: oauthwire.ExchangeClientID},
 		"google-identity-no-person":     {Active: true, Service: signInFleet, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID},

@@ -348,14 +348,14 @@ func (w *driveWorld) seed(t *testing.T) {
 
 	// A comment and an issue message, each corrected once by its author, so the history row of
 	// each reads the one body the correction kept.
-	corrected := createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "A remark its author corrects."}, alice)
-	w.as(t, alice, http.MethodPatch, "/api/v1/comments/"+corrected.ID, map[string]any{"body": "A remark its author corrected."}, http.StatusOK)
-	w.values["correctedComment"] = corrected.ID
+	correctedComment := createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "A remark its author corrects."}, alice)
+	w.as(t, alice, http.MethodPatch, "/api/v1/comments/"+correctedComment.ID, map[string]any{"body": "A remark its author corrected."}, http.StatusOK)
+	w.values["correctedComment"] = correctedComment.ID
 	correctedMessage := createIssueMessage(t, w.rig.handler, issue.Key, map[string]any{"body": "A message its author corrects."}, alice)
 	w.as(t, alice, http.MethodPatch, "/api/v1/messages/"+correctedMessage.ID, map[string]any{"body": "A message its author corrected."}, http.StatusOK)
 	w.values["correctedMessage"] = correctedMessage.ID
-	for _, history := range []string{"/api/v1/comments/" + corrected.ID + "/history", "/api/v1/messages/" + correctedMessage.ID + "/history"} {
-		if kept := decodeBody[postHistoryRead](t, w.as(t, alice, http.MethodGet, history, nil, http.StatusOK)); len(kept.Entries) != 1 {
+	for _, history := range []string{"/api/v1/comments/" + correctedComment.ID + "/history", "/api/v1/messages/" + correctedMessage.ID + "/history"} {
+		if kept := readPostHistory(t, w.rig.handler, history); len(kept.Entries) != 1 {
 			t.Fatalf("GET %s holds %d kept bodies, want the one the correction kept", history, len(kept.Entries))
 		}
 	}
