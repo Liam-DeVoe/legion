@@ -200,7 +200,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 		want                    string
 	}{
 		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
+		{"the root accepting, its child moved to backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
 		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
 		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
 		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},

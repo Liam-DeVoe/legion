@@ -392,7 +392,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
 	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
-	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
+	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeInBacklogOrIcebox, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
 		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro, record.HeldTaskStopped,
 		record.HeldAtWork, record.HeldUnclassified}
@@ -1835,7 +1835,7 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 			added string
 		}{
 			{name: "a tenth answeredBy", field: "issues.*.waitingOn.answeredBy", added: "recalled"},
-			{name: "a fourth stranded state", field: "strandedClaims.*.state", added: "parked"},
+			{name: "a fourth stranded state", field: "strandedClaims.*.state", added: "launching"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				widened := withDeclaredValue(t, EnumeratedFields, AnswerState, tc.field, tc.added, DaemonAPIVersion)

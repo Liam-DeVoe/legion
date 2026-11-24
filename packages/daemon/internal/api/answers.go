@@ -46,16 +46,17 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219 and 220 are constants rather than their numbers, because the entries
-// that added them name them (shapedAnswersContract, the shaped answers' entry;
+// 193, 202, 205, 213, 219, 220 and 241 are constants rather than their numbers, because the
+// entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
-// owner's plan's; and assignmentPlanContract, the experiment group's): a renumber of any of those
-// entries moves its constant and this list with it, and moving one of the two alone would
-// describe a shape at a contract no entry declares. The other entries above 193 follow them as
-// numbers: 199 is version.go's entry for INFRA-4605, and 217 its entry for
-// dispatch://INFRA-3531 and dispatch://INFRA-4567.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract}
+// owner's plan's; assignmentPlanContract, the experiment group's; and
+// treeInBacklogOrIceboxContract, the held word's): a renumber of any of those entries moves its
+// constant and this list with it, and moving one of the two alone would describe a shape at a
+// contract no entry declares. The other entries above 193 follow them as numbers: 199 is
+// version.go's entry for INFRA-4605, and 217 its entry for dispatch://INFRA-3531 and
+// dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, treeInBacklogOrIceboxContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -539,12 +540,15 @@ var lineKinds = []EnumeratedValue{
 }
 
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
-// eleven words, and its list grew once: `children_before_retro`, a parent whose task's last step
-// is not the owner's acceptance, held before its retro for the issues beneath it, and
-// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
-// it is written out value by value, sorted by value, as waitAnswers is. It names each constant
-// rather than reading record.HeldReasons, because a word added to the ladder later arrives at
-// its own contract.
+// eleven words, and its list changed twice. `children_before_retro`, a parent whose task's last
+// step is not the owner's acceptance, held before its retro for the issues beneath it, and
+// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). And
+// `tree_in_backlog_or_icebox`, a member of a tree whose root stands in backlog or icebox, arrived
+// at treeInBacklogOrIceboxContract (version.go's 241) in place of the word the field carried for
+// that hold from heldContract, so ten of the eleven words stay at heldContract. So it is written
+// out value by value, sorted by value, as waitAnswers is. It names each constant rather than
+// reading record.HeldReasons, because a word added to the ladder later arrives at its own
+// contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -557,7 +561,7 @@ var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldRootAwaitingPerson), Since: heldContract},
 	{Value: string(record.HeldTaskStopped), Since: OwnerPlanContract},
 	{Value: string(record.HeldTreeClosed), Since: heldContract},
-	{Value: string(record.HeldTreeParked), Since: heldContract},
+	{Value: string(record.HeldTreeInBacklogOrIcebox), Since: treeInBacklogOrIceboxContract},
 	{Value: string(record.HeldUnclassified), Since: heldContract},
 }
 

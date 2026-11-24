@@ -121,7 +121,7 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 
 // The operator's spawn never waits for the wake pacing, whatever the daemon's wake queue holds: a
 // person is waiting on this answer, and the route answers with the claim launched rather than
-// with one parked launching for a turn minutes out (supervise's reserveWake, RequestSpawn.Exempt).
+// with one left launching under a delayed wake for a turn minutes out (supervise's reserveWake, RequestSpawn.Exempt).
 // One person's spawn is not the wave the pacing exists for.
 func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	h := newHarness(t)

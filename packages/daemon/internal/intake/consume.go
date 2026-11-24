@@ -199,7 +199,7 @@ type ConsumerSpec struct {
 	// (DispatchArtifact.Issue), before the fact is applied, within AckWait, which bounds this one
 	// preparation rather than the delivery (ReviewPermission), and returns the fact to
 	// apply: the workflow performs no I/O, and decides from Dispatch's view of the issue whether a
-	// person's approval of a parked labelled root's primary document queues that root, so the view
+	// person's approval of the primary document of a labelled root in backlog or icebox queues that root, so the view
 	// is read here, for a person's approval that is not a carried one. A failed preparation is
 	// retried after NakDelay rather than applied without it. No preparer (a test) applies the fact
 	// as decoded, with no view, which queues nothing.

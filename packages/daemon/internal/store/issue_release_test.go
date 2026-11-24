@@ -635,7 +635,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 // the mark. The pod that work came off is the pod the resumes bring back, with the work in its own
 // workspace, so the row is a second copy of a live disk's work: left behind it would hold the
 // issue's pod (workflow.IdleHoldBundleUnrestored) and wait for whatever pod the issue made next —
-// an eviction's, an update round's, a park and unpark's — to restore it over everything those
+// an eviction's, an update round's, a move to backlog and back to todo's — to restore it over everything those
 // roles pushed in the meantime.
 //
 // One transaction is what makes that true of a cancel that fails too: a resume the store cannot
@@ -900,7 +900,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // of an issue that has left run on in it with their launcher tokens and `gh` credentials.
 //
 // The sequence is the one production runs: the release's stops have suspended the pod's claims,
-// the root is parked while the save runs so the linger's rows are queued above the release's,
+// the root moves to backlog while the save runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
 	st := migratedStore(t)
@@ -912,11 +912,11 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 
-	// The root is parked: its tree lingers, its phase is done, and its close queues its own rows
+	// The root moves to backlog: its tree lingers, its phase is done, and its close queues its own rows
 	// above the release's (workflow's beginLinger).
 	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'done', status = 'backlog',
 		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
-		t.Fatalf("park the root: %v", err)
+		t.Fatalf("move the root to backlog: %v", err)
 	}
 	var closeRow int64
 	if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)

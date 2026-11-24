@@ -585,7 +585,7 @@ type Admission struct {
 	// missing from here too, other than the three roots that keep their slot through such a wait
 	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
-	// tells it from an issue a person parked, which stands in none of the three.
+	// tells it from an issue a person moved to backlog, which stands in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch

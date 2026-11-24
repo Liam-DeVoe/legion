@@ -47,7 +47,7 @@ const (
 // below is what the row stands on: the holder comes from Dispatch and the issue from the
 // daemon's own record when the row runs, never from when it was queued, because that is the
 // reading that is current when the DELETE is sent. A person who claimed the issue since, a
-// re-admission, a second park, or a holder that let the claim go on its own each end the row on
+// re-admission, a second move out of the workflow, or a holder that let the claim go on its own each end the row on
 // their own, with no generation or holder to fence it.
 //
 // Only a claim held by a session the daemon records in that issue's own tree is released. A
@@ -56,7 +56,7 @@ const (
 // and a holder no claims row accounts for is one the daemon cannot attribute, which it leaves
 // and logs rather than take a claim from a session it knows nothing about.
 //
-// A tree the operator holds is left alone whoever holds the claim, on the predicate a park of
+// A tree the operator holds is left alone whoever holds the claim, on the predicate a move out of the workflow of
 // such a root reads (record.OperatorHoldsTree): the operator's tree shares the root's key, so its
 // own session reads as a session of the issue's tree here, and the workflow may record nothing
 // that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here
@@ -94,7 +94,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 			return err
 		}
 		// The issue is live again, or its tree runs again at a later generation while Dispatch
-		// still shows it parked: the claim belongs to the run, not to the park this row answered.
+		// still shows it out of the workflow: the claim belongs to the run, not to the move this row answered.
 		if !record.Stopped(*recorded) {
 			return nil
 		}
@@ -170,13 +170,13 @@ func claimContendedWait(issue string) error {
 	return routineWaiting{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
 }
 
-// releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
+// releaseOutOfWorkflowClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
 // the boot's listing that still carries a claim while the daemon's own record says it stopped.
-// Dispatch releases a claim at a close alone (its issue PATCH), so a park leaves the claim of the
+// Dispatch releases a claim at a close alone (its issue PATCH), so a move out of the workflow leaves the claim of the
 // session the daemon stopped standing on the board.
 //
-// It is the boot's pass and not a periodic sweep because every park the daemon sees queues its
-// own row (workflow.Engine.leave), so the only claims left for this to find are the ones parked
+// It is the boot's pass and not a periodic sweep because every move out of the workflow the daemon sees queues its
+// own row (workflow.Engine.leave), so the only claims left for this to find are the ones left behind
 // before that row existed and any row lost with a restore of the database. The recovery caller
 // passes boot false (recoverRepositories) and starts no pass.
 //
@@ -196,7 +196,7 @@ func claimContendedWait(issue string) error {
 // why the operator-held test is the executor's alone and the pass makes none. The rows are
 // drained by the outbox's own sweep rather than by a commit wake: attach stores the outbox the
 // records' wake reaches (wakeOutbox) after the reconcile probe has run (daemon.go's boot stages).
-func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
+func (w *workflowRuntime) releaseOutOfWorkflowClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
 	keys := make([]string, 0, len(scope))
 	for _, summary := range scope {
 		if summary.ClaimedBy == "" && !summary.ClaimUnread {

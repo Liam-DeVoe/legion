@@ -396,7 +396,7 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 //
 // The transaction takes the shared serializer before that read, as every other writer of the
 // issue's lifecycle does (ReleaseIdleIssue, IssueRelease, IssueSuspension), and the lock rather
-// than the read is what holds the gate. A park or a close is one fact transaction that moves the
+// than the read is what holds the gate. A move to backlog or a close is one fact transaction that moves the
 // issue's status and queues the close's rows together, so without the lock a cancel can read the
 // status from before that transaction and still take its resume's id from the sequence after it:
 // a resume standing above a close that committed, which is the one order the gate exists to
@@ -433,7 +433,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		// taken off is the pod the roles resume in, with that work in its own workspace, so the
 		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
 		// (workflow.IdleHoldBundleUnrestored) and wait for a pod created after the save — an
-		// eviction's, an update round's, a park and unpark's — which would restore it over
+		// eviction's, an update round's, a move to backlog and back to todo's — which would restore it over
 		// however much its roles had pushed since. A delete that fails fails the cancel, which
 		// its row's lane runs again; a cancel that left the bundle behind and went on was that
 		// sequence's first step.

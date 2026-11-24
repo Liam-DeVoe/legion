@@ -719,7 +719,7 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 			"merger.md",
 			[]string{
 				"That is the one move forward out of `merging`, beside your own `request_backward_move` back",
-				"a child with an issue beneath it still in the workflow stays there until the last of them is done or parked",
+				"a child with an issue beneath it still in the workflow stays there until the last of them is done or out of the workflow",
 			},
 			[]string{"That is the one move out of `merging`", "and closes then; a child closes at once"},
 		},

@@ -848,7 +848,7 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
 // tree or of the child ends rather than an operator, and then for the branch row a re-admission
 // queued for the child (startRoot), whose own failures that row logs, a delivery row waiting for a
-// launch the wake pacing parked (parkedWait), which that launch's turn ends, and a role message a
+// launch the wake pacing delayed (delayedWait), which that launch's turn ends, and a role message a
 // pause held waiting for the role a pause stopped to hold its topic (roleMessage's wait on
 // notify.ErrNoHolder), which the role's return or an end of its debt ends (heldMessageOwed).
 func routineWait(err error) bool {
@@ -859,7 +859,7 @@ func routineWait(err error) bool {
 // routineWaiting is a wait that is routine (routineWait), so every attempt of its row stays at
 // debug after the first rather than turning into a warning from the seventh (waitWarnAttempts),
 // however long the wait lasts. err is the wait itself (wait.Errorf, or wait.Until for a wait that
-// names its moment, as parkedWait's does), which it unwraps to, so settle still reads the row as
+// names its moment, as delayedWait's does), which it unwraps to, so settle still reads the row as
 // waiting (wait.ErrWaiting) and retries it on its backoff, or at that moment (wait.UntilAt).
 type routineWaiting struct{ err error }
 
@@ -1064,7 +1064,7 @@ const statusWriteReads = 3
 // What this read never does is reach the engine. Dispatch's read says what the issue is now and
 // never who wrote it, so the engine would have to take every change it shows for a person's, and
 // two of the daemon's own rows exist precisely because a change was not a person's: a session's
-// own close or park, which the re-assert undoes, would be taken for a person ending the tree,
+// own close or move to backlog, which the re-assert undoes, would be taken for a person ending the tree,
 // lingering it and freeing its slot. A change Dispatch recorded reaches the engine through its
 // own event, with its actor (dispatch://INFRA-714/spec R4); this read decides one thing, whether
 // to write.
@@ -1211,7 +1211,7 @@ type personHandoverRule struct{}
 func (personHandoverRule) firstAttempt(_ context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (bool, error) {
 	// A row whose issue has moved since is superseded, which the caller settles for every kind
 	// alike, so the label is asked about only while the move this row answers still stands: a
-	// person who parked the root since is let stand silently rather than reported as one who
+	// person who moved the root to backlog since is let stand silently rather than reported as one who
 	// took the label off.
 	if statusMoved(payload, issue) {
 		return true, nil
@@ -1414,10 +1414,10 @@ func (r *outbox) personHandoverStands(row record.OutboxRow, issue dispatch.Issue
 }
 
 // statusStillWanted says whether a row may write its status after its issue changed under it: the
-// fresh read shows a status still in the workflow — neither done nor parked
+// fresh read shows a status still in the workflow — neither done nor in backlog, icebox or triage
 // (record.OutOfWorkflow) — and the record, read as it stands, still has the issue in the
 // workflow too. The read is not applied to the record: it carries no actor, and a change Dispatch
-// recorded reaches the engine through its own event (writeStatus). A close or a park is the issue's state now, and the status this
+// recorded reaches the engine through its own event (writeStatus). A close or a move out of the workflow is the issue's state now, and the status this
 // row carries is of a workflow the issue has left, so the row finishes having written nothing. An
 // issue the daemon keeps no record of is judged by the read alone.
 func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
@@ -1904,7 +1904,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-		// A child out of the workflow (record.InWorkflow: by its status, or done, as a parked child
+		// A child out of the workflow (record.InWorkflow: by its status, or done, as a child moved to backlog
 		// stays when a person writes a running status on it without a todo) has its architect
 		// suspended or retired with its launch and its generation kept, so nothing supersedes the
 		// row. It finishes here, before any publish, since no ready queues a catch-up while the
@@ -1941,12 +1941,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
 	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
-	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
+	// again at its turn or delayedWakeBound on, whichever comes first (delayedWait), and the wait is
 	// a notice held for its architect still (errNoticeWaits).
 	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
+		return fmt.Errorf("%w: %w", errNoticeWaits, r.delayedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
 			row.ID, architect, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
@@ -1954,7 +1954,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
-		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
+		// next read of the architect's delayed launch, at most delayedWakeBound out (delayedWait).
 		// This row runs once, then, rather than climbing its backoff to it — over a hold of tens
 		// of minutes that is a Warn every attempt from the seventh (settle), about one wake's
 		// worth of noise per architect in a wave. The hold itself is right: it keeps the
@@ -1999,7 +1999,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // pause's held wake, whose task says the pause stopped the session (workflow.WakeTask). The row
 // takes no wake of its own, since a delivery wake resumes the role with no task. While the wake
 // pacing holds the role's launch over no process, the row waits for that launch's turn
-// (parkedLaunch, parkedWait), as a hook prompt does.
+// (delayedLaunch, delayedWait), as a hook prompt does.
 //
 // The debt reads no ready: the woken agent says it is ready (supervise.SaidReady) before its
 // plugin claims the role's topic, and the listener answers a publish in that gap as it answers the
@@ -2024,8 +2024,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			return err
 		}
 		if stopped != 0 {
-			if turn, parked := parkedLaunch(held); parked {
-				return r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
+			if turn, delayed := delayedLaunch(held); delayed {
+				return r.delayedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
 					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
 			}
 		} else if held.Released() {
@@ -2130,8 +2130,8 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 // hour for the next session that holds the role live, and the row ends with one log line, the
 // listener being the prompt's keeper. A released role's woken session is that next holder: the
 // row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or, while the wake
-// pacing holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
-// (parkedWait), and the attempt after the resume has launched publishes before the woken session
+// pacing holds that resume, for its turn, reading the claim again at most delayedWakeBound apart
+// (delayedWait), and the attempt after the resume has launched publishes before the woken session
 // has claimed the role. A listener before #4079 keeps nothing for a claim whose holder is not
 // live; publishKeptToRole says what each answer does to the row.
 //
@@ -2160,14 +2160,14 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
 	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
 	// wake pacing holds is waited for until it runs, the claim read again at its turn or
-	// parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
+	// delayedWakeBound on, whichever comes first (delayedWait). The daemon's own wake brings the pod
 	// back whatever the listener does with the publish, a listener before #4079 included; the
 	// listener's own report of the kept publish meets the role's open resume, and the pod starts
 	// once.
 	if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return r.parkedWait(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
+		return r.delayedWait(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
 			payload.Hook, row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
@@ -2473,7 +2473,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
 	case "start":
-		// A wake's start (WakeKind) brings a released role back, and one a park, a close or a
+		// A wake's start (WakeKind) brings a released role back, and one a move out of the workflow, a close or a
 		// moved phase took over while the row waited — the pause holds a wake's row for as long as
 		// it stands — is that path's to start again, not the wake's: the row finishes here, above
 		// StartedBy, so it records no start against the claim (decision 10 of dispatch://INFRA-3759).
@@ -2484,7 +2484,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		// An issue the workflow has taken out — closed, parked, iceboxed, sent back to triage —
+		// An issue the workflow has taken out — closed, moved to backlog, iceboxed, sent back to triage —
 		// has had its Sandbox given back by the departure that took it out, so a start that
 		// reaches the runner behind that departure would build the pod again and pick up the
 		// claim that departure had just put down. The row returns here, above machine.StartedBy,
@@ -2831,7 +2831,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
-		// A linger, a park, a hand-over, a close and a stopped task all stop a claim through this
+		// A linger, a move out of the workflow, a hand-over, a close and a stopped task all stop a claim through this
 		// one body, and each takes a released claim over: the machine re-stamps the suspension's
 		// source and this drops the backstop the release left that role, so no later backstop acts
 		// on a claim this suspension now owns. Another role's backstop stays: a worker waiting on a
@@ -3003,7 +3003,7 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // moment (record.Lingering), since a tree can run again after its deadline: a root past it is
 // re-admitted all the same (record.Issue.Readmittable reads Lingers), even before the expiry
 // applies, which itself waits for any open production check of the tree (workflow's
-// lingerExpired); and a parked root whose expiry closed the tree hands over only its merging
+// lingerExpired); and a root in backlog or icebox whose expiry closed the tree hands over only its merging
 // members, so its later re-admission resumes every other member where it stood. The root waiting
 // in the line is read beside it because a re-admission clears the linger at once (admit's
 // readmit) while the tree is opened only by the promotion that gives the root its slot.
@@ -3012,7 +3012,7 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // and the start creates and spawns the claim as every first start of a child's architect does; the
 // child is handed over, adopted into a live tree or taken as a root of its own, each of which moves
 // it to a later generation, and supervise's generation fence finishes the start; or the child
-// leaves the workflow, and the fence on its own status finishes it. Its one cost is a parked tree
+// leaves the workflow, and the fence on its own status finishes it. Its one cost is a tree out of the workflow
 // that is never re-admitted: the row retries at the backoff's 64-second cap for as long as it
 // stands, two reads each try (the child and its root), and only a child whose tree left the
 // workflow between its first phase start and that start's run ever has such a row.
@@ -3329,7 +3329,7 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 	return nil
 }
 
-// suspendIssue is the issue_suspend executor, the durable effect of a close, a park, a linger or a
+// suspendIssue is the issue_suspend executor, the durable effect of a close, a move out of the workflow, a linger or a
 // production check's look: the runtime suspends the issue's Sandbox under its pod lock once the
 // store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
 // (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
@@ -3361,7 +3361,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 		return err
 	}
 	if authorized {
-		if err := r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod"); err != nil {
+		if err := r.podDeleted(ctx, row.Issue, "the issue's close, its move out of the workflow, its linger or its production check deleted its pod"); err != nil {
 			return err
 		}
 	}
@@ -3821,7 +3821,7 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	// gate above any version Dispatch wrote (a daemon that registered the caller's version unchecked
 	// could record one), so the seed resets the gate to Dispatch's version with what it read there
 	// (intake.GateAboveDispatch). A review also names its reviewer, since the seed is not fenced on
-	// the tree's linger and its review may meet a parked tree.
+	// the tree's linger and its review may meet a tree out of the workflow.
 	fact := intake.DispatchArtifact{Key: row.Issue, ArtifactID: payload.ArtifactID, Kind: intake.DispatchArtifactVersion, Version: approval.LatestVersion,
 		RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
 	review := record.EventMark{Seq: approval.Seq, At: approval.At}

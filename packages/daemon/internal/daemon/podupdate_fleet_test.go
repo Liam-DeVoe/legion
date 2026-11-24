@@ -4,7 +4,7 @@ package daemon
 // the deployment's session store here — drifts the pod of every issue of the project at once. Each
 // issue's pod is a round of its own: it is replaced only once its own workers have answered, and
 // an answer in one issue's pod replaces no other issue's. Nothing of the round suspends a root
-// architect, parks an issue or sends a root to await a person, and the daemon goes on serving every
+// architect, moves an issue out of the workflow or sends a root to await a person, and the daemon goes on serving every
 // claim in an open round — a worker tasked with the steps of its update message
 // (supervise.UpdateTask) completes its phase through the same route it would on any other day
 // (api's handoff/complete).
@@ -549,7 +549,7 @@ func (r *fleetRig) controllerNotices() []record.ControllerNotice {
 }
 
 // statusWrites is every Dispatch status the workflow queued, oldest first, with the issue each is
-// of: a park is one of them, the backlog a leaving issue is written to.
+// of: a move to backlog is one of them, the backlog a leaving issue is written to.
 func (r *fleetRig) statusWrites() map[string]string {
 	r.t.Helper()
 	writes := map[string]string{}
@@ -586,8 +586,8 @@ func (r *fleetRig) rows(kind record.OutboxKind) []record.OutboxRow {
 }
 
 // assertNoRootLeftTheWorkflow is the fleet round's second promise: the round moves no root out of
-// the workflow. No root waits on a person, none is parked — its phase done at backlog, or a
-// Dispatch status write that would park it — and no architect of either issue is suspended or
+// the workflow. No root waits on a person, none is out of the workflow — its phase done at backlog, or a
+// Dispatch status write that would take it out — and no architect of either issue is suspended or
 // holds a suspension for its turn. The controller is told of no root waiting on a person either.
 func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 	r.t.Helper()
@@ -601,10 +601,10 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 			r.t.Errorf("%s is at phase %s waiting on %+v; the round sends no root to a person", issue, got.Phase, got.Awaiting)
 		}
 		if got.Phase == phase.Done || got.Status == "backlog" {
-			r.t.Errorf("%s is parked: phase %s, status %s", issue, got.Phase, got.Status)
+			r.t.Errorf("%s is out of the workflow: phase %s, status %s", issue, got.Phase, got.Status)
 		}
 		if status, written := writes[issue]; written && status != "in_progress" {
-			r.t.Errorf("the round queued the Dispatch status %q for %s; it parks no issue", status, issue)
+			r.t.Errorf("the round queued the Dispatch status %q for %s; it moves no issue out of the workflow", status, issue)
 		}
 		architect := r.claimOf(issue, claim.RoleArchitect)
 		if architect.State == supervise.StateSuspended || architect.SuspendedBy != "" || architect.SuspensionHeld {
@@ -628,7 +628,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // update message (supervise.UpdateTask) completes its phase through the daemon's own route, the
 // issue moves on, and the round it is in stays open — the worker does those steps, answers and
 // is replaced after, which is what the round is for. And nothing of any of it moves a root out
-// of the workflow: no root waits on a person, none is parked, and no architect is suspended.
+// of the workflow: no root waits on a person, none is out of the workflow, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
 	t.Parallel()
 	rig := newFleetRig(t,

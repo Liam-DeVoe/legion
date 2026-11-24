@@ -844,7 +844,7 @@ package api
 // for the project's own controller. It refuses a
 // claim in a turn (`CLAIM_IN_A_TURN`), a claim between states — queued, with a launch in flight,
 // one whose agent has registered and is not ready yet, or stored working under a launch the wake
-// pacing parks (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
+// pacing delays (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
 // which it reaches — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
 // and the role `controller` (`INVALID_ROLE`). The controller's `legion` tool gains
 // `compact (issue, role)` beside `fresh_session`, and
@@ -1441,7 +1441,7 @@ package api
 // finds the process gone once more, a moved claim being otherwise answered as that second read
 // finds it; at the compaction, one the machine refused as working whose later view is no longer
 // working, which before this change was read and could be answered `CLAIM_IN_A_TURN`. A claim
-// under a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds
+// under a relaunch the wake pacing delays keeps `CLAIM_UNSETTLED`. The read records what it finds
 // as the sweep's report of the process would: a running verdict that clears the death charge
 // writes the claim as the machine holds it, as that report's write does, and a refusal stops,
 // suspends, forgets, takes back and starts nothing. One answer more changed: a fresh session that
@@ -3191,8 +3191,8 @@ package api
 // enumerated field (answers.go's EnumeratedFields): `memory-guard-kill` is a kind of controller
 // notice, which no answer a plugin parses carries. So a caller at 217 is served what one at 213,
 // #4553's entry above, is, `caches` as a capability row's `source` among it, and 217's answer
-// and request records are 213's under its own number; its request records hold no `POST
-// /legion/v1/children/park` (205's entry).
+// and request records are 213's under its own number; its request records hold no body for the
+// removed child route (205's entry).
 //
 // The skew is safe in both directions. A single-role launcher of an earlier image refuses the
 // metadata flags (its validateMetadata needed `--roles-dir`), one built before 151 refuses
@@ -3398,4 +3398,36 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 220
+//
+// 241: the held word of a member of a tree whose root stands in backlog or icebox is
+// `tree_in_backlog_or_icebox` (record.HeldTreeInBacklogOrIcebox), and the route table names no
+// child route of a removed operation by its path. The word is a value of
+// `admission.held[].reason` on `GET /legion/v1/state` and of `held[].reason` on the controller's
+// tick notice. It takes the place of the word the field carried for that hold since 98, which
+// this daemon no longer writes, and it arrives at this contract (answers.go's heldReasons, at
+// treeInBacklogOrIceboxContract). A caller whose contract (the one it states, else its pod's
+// lowest) is below 241 is served each such row as `unclassified` with no `heldBy` (shaping.go's
+// withoutUnadmittedHeldWords), a word every reader of the field admits. So the records of
+// `contract-shapes.json` below 241 hold the domain of `admission.held.*.reason` without the word
+// that was renamed, as the daemon serves them, and the records of 241 hold the new word.
+// `packages/contracts/src/legion-api.ts`'s `LEGION_HELD_REASONS` and the controller's
+// `references/admission.md` name the new word, `legion state`'s `admission.held:` line counts
+// under it, and the issue's `why` says "Its tree's root <root> stands in backlog or icebox, …".
+// The migration 20261124002047 moves the word in every unsent tick notice, so a notice queued
+// before the upgrade reaches the controller in the new word.
+// The child route: `POST /legion/v1/children/{op}` is registered to removedChildRoute in place of
+// the row of the one route it answered, so every child route this daemon does not serve answers
+// 410 ROUTE_REMOVED with the status to write in Dispatch, and `POST /legion/v1/children/rerun`
+// keeps its own, more specific row. An older plugin's call of the removed operation gets the
+// answer it got at 205, and a call of a child route no plugin ever sent gets that answer too
+// rather than 404 `no route`. requests.go's RemovedRoutes names the pattern, removed at 205, and
+// the request gate resolves each recorded route through the server's mux to the pattern that
+// serves it, so the request records of 193, 199 and 202 still pass. No request of a plugin moves,
+// and the request records of 241 are 220's under its own number.
+// (This entry takes 241, the lowest number above main's 220 that no open pull request declares:
+// a reading of every open pull request of cybermonklabs/legion on 2026-11-24 found each number
+// from 221 to 240 declared by at least one. From this entry the last number of answers.go's
+// SupportedContracts is `api.treeInBacklogOrIceboxContract`, after `api.assignmentPlanContract`.
+// Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
+const DaemonAPIVersion = 241

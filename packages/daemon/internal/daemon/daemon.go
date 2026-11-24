@@ -2296,14 +2296,14 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // each credit, granted before its previous correction, that the machine holding it no longer
 // holds for a refresh wake of its own, which is the backstop for a credit lost to a path
 // that gives none back, and then sets its count from the refresh wakes the machines really hold
-// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
-// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
+// — the lane's own kind, the one kind only this lane delays (supervise.WakePluginRefresh,
+// delayedWakes) — which raises the count when the lane holds wakes no admission is behind, and
 // otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
 // restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
 // fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
-// all, read from the same snapshot the correction counts (parkedWakes). The machine decides such
+// all, read from the same snapshot the correction counts (delayedWakes). The machine decides such
 // a claim nothing — refreshPlugin returns over a claim that already holds a wake of any kind, and
 // gives back whatever credit the post carried — so asking for one here would spend an admission
 // on a claim that raises no relaunch, and spend it for most of the pass, since the machine's
@@ -2331,7 +2331,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // working can have ended it. The first is posted a credit the machine gives straight back
 // (refreshPlugin, endRefreshLane) and is relaunched at that turn's end or at a later sweep; the
 // second is posted none, and raises its relaunch at the next sweep, which is one minute. One
-// sweep is what an imperfect skip costs here, as it is for the wake the parked skip reads.
+// sweep is what an imperfect skip costs here, as it is for the wake the delayed-wake skip reads.
 //
 // One line is written for the refusals of a pass, naming how many claims are left for a later
 // sweep, rather than one per claim: a boot over a fleet of several hundred refuses hundreds at
@@ -2346,7 +2346,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
 	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
-	parked, refreshes := s.parkedWakes()
+	delayed, refreshes := s.delayedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
@@ -2360,7 +2360,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			}
 			continue
 		}
-		if parked[c.Token] {
+		if delayed[c.Token] {
 			continue
 		}
 		// The two posts that take no credit, each for the reason above it: the controller's
@@ -2458,7 +2458,7 @@ func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Cl
 	return left
 }
 
-// parkedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
+// delayedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
 // with the refreshes of that same reading counted beside it: the two answers the refresh pass
 // needs come from one walk of the published views, so the claims it passes over and the count
 // it puts the gate right from are of one instant rather than of two (waitingWakes; the pass
@@ -2470,20 +2470,20 @@ func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Cl
 // gate counts.
 //
 // The reading is of the views each machine last published, so it lags a decision in flight in both
-// directions (Machine.WaitingWake): a claim whose wake was parked a moment ago can be missing from
+// directions (Machine.WaitingWake): a claim whose wake was delayed a moment ago can be missing from
 // it, and one whose wake has just run can still be in it. Neither costs anything here. The first
 // is a post the machine answers by giving its credit straight back, and the second is a claim the
 // pass leaves to the next sweep, a minute later.
-func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
-	parked := map[claim.Token]bool{}
+func (s *supervision) delayedWakes() (map[claim.Token]bool, int) {
+	delayed := map[claim.Token]bool{}
 	refreshes := 0
 	for _, wake := range s.waitingWakes() {
-		parked[wake.Claim] = true
+		delayed[wake.Claim] = true
 		if wake.Kind == supervise.WakePluginRefresh {
 			refreshes++
 		}
 	}
-	return parked, refreshes
+	return delayed, refreshes
 }
 
 // noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:

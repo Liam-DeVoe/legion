@@ -21,7 +21,7 @@ import (
 
 // A root waiting for its slot that a person or an outside session moves to a status only a running
 // tree has (in_progress, testing, needs_review, retro) leaves the line, and no slot would ever reach
-// it again. It leaves the workflow as a parked root does: its phase is done and its tree
+// it again. It leaves the workflow as a root moved to backlog does: its phase is done and its tree
 // lingers, the controller is told, and Legion starts nothing for it, so a slot that frees later goes
 // elsewhere and never starts a second copy of someone else's work. Set back to todo with the label,
 // it is queued again and takes the next slot. A root a hand-over carried into a phase past admitted

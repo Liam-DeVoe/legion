@@ -20,10 +20,10 @@ import (
 // opens its production check (openCheckIfMerged), behind the linger's rows: the root's own
 // IssueSuspend finishes without acting on the check's start (store.IssueSuspension's restarted
 // fence), and the start resumes the checking role in the still-live pod. A child ends only itself:
-// it leaves the table, its phase parked in done, so no transition or status write follows the
+// it leaves the table, its phase set at done, so no transition or status write follows the
 // human's move; the architect above it is told, and decides what the rest of its tree does, as the
 // shipped daemon routes a child's close to the architect. A later todo re-enters the child. What
-// becomes of the child's claims is the status's: a child parked in backlog, icebox or triage has
+// becomes of the child's claims is the status's: a child moved to backlog, icebox or triage has
 // every claim suspended with its session, for a later todo to resume; a child closed as done with
 // no merged pull request (close_root, a human's done) is finished, so each of its claims is
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
@@ -55,7 +55,7 @@ import (
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
 // waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
 // three that clear it: the other two are the grant of a slot and admission's release, which
-// reads the project's live issues alone (admit's releaseSlots), and a child this function parks
+// reads the project's live issues alone (admit's releaseSlots), and a child this function sets
 // at phase.Done is in neither half of that read (record.Postgres.LiveIssues), so without this
 // write nothing would ever clear it. Left standing, a person's later todo would re-enter the
 // issue carrying it, and the line would stand it among the issues whose work came back, at a
@@ -92,7 +92,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err := e.beginLinger(ctx, tx, issue, status); err != nil {
 			return err
 		}
-		if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
+		if err := e.releaseOutOfWorkflowClaim(ctx, tx, issue, status); err != nil {
 			return err
 		}
 		if status != "done" {
@@ -121,7 +121,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
 	}
-	if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
+	if err := e.releaseOutOfWorkflowClaim(ctx, tx, issue, status); err != nil {
 		return err
 	}
 	members, err := e.treeMembers(ctx, tx, issue)
@@ -219,10 +219,11 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 	return e.writeIssueOn(ctx, tx, *issue, w)
 }
 
-// releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
-// parked rather than closed: Dispatch releases a claim at a close alone. The row carries
-// nothing of the holder, which it reads with the issue's record when it runs.
-func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+// releaseOutOfWorkflowClaim queues the row that clears the issue's Dispatch claim when the issue
+// leaves the workflow at backlog, icebox or triage rather than at a close: Dispatch releases a
+// claim at a close alone. The row carries nothing of the holder, which it reads with the issue's
+// record when it runs.
+func (e *Engine) releaseOutOfWorkflowClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	if status == "done" {
 		return nil
 	}
@@ -443,11 +444,11 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // while a member whose phase is done that a person set back to todo during the linger is handed
 // over, and is admitted fresh because its phase carries no run.
 //
-// The clause for a root that did not stay done — one a person or a controller parked — is narrow
+// The clause for a root that did not stay done — one a person or a controller moved out of the workflow — is narrow
 // on purpose. Such a root can be re-admitted, and a re-admission resumes a member of any other
 // phase where it stood (admit's startMidPhaseMembers), so nothing of it is stranded by waiting.
-// The one thing a re-admission cannot do is make the merge the park stopped: the merge is the
-// merger's own call, made in its own turn, and that turn ended with the park. So the member this
+// The one thing a re-admission cannot do is make the merge the move stopped: the merge is the
+// merger's own call, made in its own turn, and that turn ended with the move. So the member this
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
 // left to merge it — green and approved, with nothing in the workflow that would ever merge it.
 // Whether that pull request is open is the one fact here that record.Issue does not carry, so it
@@ -463,9 +464,9 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // promotion's start of its architect, or the start of its phase role): the outbox's start row
 // provisions the workspace in its supervise.StateRetired branch and then relaunches the claim
 // (internal/daemon/outbox.go). The phase it comes back in is the phase its record carries, and a
-// member carried in merging is merged by its own merger under its new tree, since the park
+// member carried in merging is merged by its own merger under its new tree, since the move
 // stopped the merge that tree's merger had not made. A member added to the handed set also takes
-// the decisions parked on it with it: warnKeptDecisionsOfAClosedTree logs those as carried to the
+// the decisions kept on it with it: warnKeptDecisionsOfAClosedTree logs those as carried to the
 // child's own architect rather than warning that this close left them behind.
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a

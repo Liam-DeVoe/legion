@@ -500,7 +500,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// (releaseHeldRoot). Its test is the complement of admission's own, by construction and not
 	// by a reader's care: both ask record.Issue.Readmittable, so the two can never both fire. A
 	// root that lingers or stands done is re-admitted there at a new generation, and a root held
-	// from a phase stands at neither, which keeps the park and un-park of a lingering root on
+	// from a phase stands at neither, which keeps a move to backlog and back to todo of a lingering root on
 	// its new generation. A held child is untouched, and comes back through ReenterChild below.
 	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Readmittable() {
 		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
@@ -601,7 +601,7 @@ const restartReason = "the issue was set to todo while its task was stopped"
 // only by the architect's sign-off. Any other session on the root of a running tree — one holding
 // its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
 // — another tree's agent, or one outside Legion that took the issue for its own, has no part
-// in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
+// in the tree it would end or take out of the workflow, so the tree's architect is told who wrote what. Either way the
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
 // carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
@@ -944,7 +944,7 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
 // already stands, which is reporting a phase it finished a second time; one from a role the daemon
 // never started on this issue, which has held no phase of it to report; any while the issue stands
-// where no role works - parked, closed or held - which is past recording work at all; and any
+// where no role works - out of the workflow, closed or held - which is past recording work at all; and any
 // while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
 // completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
 // there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
@@ -1219,7 +1219,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // is told in a worker-died of that role, its reason saying the role does not work the issue's phase,
 // and nothing is held, since the phase is not that role's. A later start of the role relaunches its
 // session (the outbox executor's retry of a failed claim). An issue that left the workflow
-// suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
+// suspended its claims (a child moved to backlog) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look

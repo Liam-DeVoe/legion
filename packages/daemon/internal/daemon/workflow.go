@@ -788,7 +788,7 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // only while its issue is in the workflow there, which leaves out `triage`, `icebox` and
 // `backlog` as well (api.supersededApprovalGates, model.IssueStatusesOutOfWorkflow). A closed
 // issue is the one of those four that never comes back, so its set is the one nobody need
-// publish; a parked issue's is published, and its tree answers for it the moment a person brings
+// publish; the set of an issue out of the workflow is published, and its tree answers for it the moment a person brings
 // it back. The status read is dispatch_status, what Dispatch last showed, rather than status,
 // which is what the daemon means by the issue.
 //
@@ -1169,7 +1169,7 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
-// runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions
+// runs — which a move to backlog, a hand back to `todo` or a linger can put generations later. The decisions
 // such a task names are held by its delivery and told when the turn that takes it starts
 // (store's holdKeptDecisions, tellKeptDecisions), so sending it while the tree has nobody to act on
 // it would spend a person's decision on an architect no run of the root owns. The answer is the
@@ -1200,7 +1200,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // at the moment it is about to be sent. Such a task names the decisions a person made while nobody
 // in the root's tree could hear them, and holds those rows on its own delivery until the turn that
 // takes it confirms (the claim store's putDelivery, migration 20261101163106). An issue it names can
-// have left this tree while the task waited — a child a linger handed to Legion, a parked child a
+// have left this tree while the task waited — a child a linger handed to Legion, a child out of the workflow a
 // person's todo orphaned, a grandchild handed over beside its parent — and the tree it stands in
 // now is the one that owes the person an answer, not this one.
 //
@@ -1546,7 +1546,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			if err := w.holdForCatchUp(ctx, tx); err != nil {
 				return err
 			}
-			if err := w.releaseParkedClaims(ctx, tx, scope); err != nil {
+			if err := w.releaseOutOfWorkflowClaims(ctx, tx, scope); err != nil {
 				return err
 			}
 		}

@@ -66,7 +66,7 @@ const (
 	// It is half a second rather than the tenth the rig next door uses, because the gate's
 	// correction rests on a sweep being long enough for the admissions of the pass before it to
 	// have reached the machines' published views: the floor it holds is the admissions granted
-	// since the previous correction, so a wake still unparked two corrections after it was
+	// since the previous correction, so a wake its machine has not yet delayed two corrections after it was
 	// admitted is counted by neither and the gate hands its credit out a second time (reading 6
 	// and decision P2 of dispatch://INFRA-2712/artifact/plan-md). On the shipped daemon that is
 	// a minute against the milliseconds a post takes; at a tenth of a second, over a hundred and
@@ -296,7 +296,7 @@ func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 func awaitFullGate(t *testing.T, d *daemon) bool {
 	t.Helper()
 	// The bound is generous rather than a few sweeps, because what it waits on is a pass over
-	// every machine of the rig and then each admitted machine's own park, published through each
+	// every machine of the rig and then each admitted machine's own delay of its refresh wake, published through each
 	// machine's view: a run of this package whole, with the race detector on and every other
 	// test's goroutines beside it, takes that longer than a run of this test alone. A tight
 	// bound read a gate the pass had not finished filling and reported a run that never filled
@@ -601,7 +601,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		//
 		// What does take a credit out of the gate is every path that drops a waiting wake
 		// without running it (letGo), and an operator's suspension of such a claim is one of
-		// them: it ends the very process the refresh wake was parked over. The credit comes
+		// them: it ends the very process the refresh wake was delayed over. The credit comes
 		// back inside that same decision, which ends with no refresh wake of this machine's own
 		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
 		// what spends it, posting another stale claim on it. The correction stays the backstop

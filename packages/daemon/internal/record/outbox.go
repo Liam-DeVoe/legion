@@ -260,7 +260,7 @@ type OutboxPayload interface{ OutboxKind() OutboxKind }
 
 // ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
 // it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
+// queued, so a re-admission, a second move to backlog or a person who claims the issue meanwhile each end
 // the row on their own, with no generation or holder to fence it.
 type ClaimRelease struct{}
 
@@ -1289,7 +1289,7 @@ type SuperviseRequest struct {
 	Issue string `json:"issue,omitempty"`
 	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
 	// the pods wake kinds (validWakeKind), as the resume the wake took records it. The start
-	// finishes without acting when its claim is suspended by the daemon, since a park, a close or
+	// finishes without acting when its claim is suspended by the daemon, since a move out of the workflow, a close or
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
@@ -2639,7 +2639,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // stepping, with the task it was serving still owed (internal/daemon's backstopStalledTurns),
 // which is a fact of that worker's issue and so the issue's architect's to read, as
 // `worker-died` is. What it did is usually the turn ended and the session brought back; where
-// the wake pacing parked the relaunch, it is the task taken back with that launch queued and
+// the wake pacing delayed the relaunch, it is the task taken back with that launch queued and
 // the stalled process still running until the launch's turn, which the notice names. The notice
 // says what became of that stalled process as well, where the end let it go: that it was
 // stopped, or that the runtime did not confirm the stop and it may be running still

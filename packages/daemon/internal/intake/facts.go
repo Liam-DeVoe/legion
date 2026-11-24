@@ -270,7 +270,7 @@ type DispatchArtifact struct {
 	// artifact.approved or artifact.changes_requested event wherever one is decoded (the live
 	// consumer, the boot catch-up's DecodeDispatchEvent). It is zero for a version event and for a
 	// fact the gate seed builds from its read of Dispatch's approval, which names nobody. A
-	// person's (Actor.Person()) approval of a parked labelled root's primary document is what has
+	// person's (Actor.Person()) approval of the primary document of a labelled root in backlog or icebox is what has
 	// the workflow queue that root; a review a session or Dispatch itself wrote queues nothing.
 	Actor dispatch.Actor
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
@@ -296,7 +296,7 @@ const CarriedApprovalReasonPrefix = "Carried forward from the approval of versio
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
 // (CarriedApprovalReasonPrefix). A carry is Dispatch's bookkeeping of an earlier approval, not a
-// person's new act, so it queues no parked root. An empty reason (a null `reason` on the event, as
+// person's new act, so it queues no root in backlog or icebox. An empty reason (a null `reason` on the event, as
 // an approval given with none carries) is not a carry.
 func (a DispatchArtifact) CarriedApproval() bool {
 	return strings.HasPrefix(a.Reason, CarriedApprovalReasonPrefix)
@@ -305,7 +305,7 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // PersonApproval says whether the review is an approval a person made themselves: an approval,
 // not a changes request or a version, by an actor Dispatch names a person, and not a carried one
 // (CarriedApproval). It is the one review the daemon reads the issue for when it prepares the
-// fact, and the one that can queue a parked labelled root as the person's handover, so the read
+// fact, and the one that can queue a labelled root in backlog or icebox as the person's handover, so the read
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()

@@ -519,7 +519,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
-	// and a parked root's tree is neither.
+	// and the tree of a root in backlog or icebox is neither.
 	whyStates(&projected, own, record.RunningRoots(own, facts), in.Stranded, rows, facts.ChildWaits)
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long

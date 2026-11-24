@@ -775,7 +775,7 @@ func (t bundleDeleteRefused) DeleteWorkspaceBundle(context.Context, string) erro
 // off, so it is answered nothing and spends nothing, and the row held the issue's pod
 // (workflow.IdleHoldBundleUnrestored) rather than being replaced by another release. P's roles
 // worked and pushed for hours. Then some later pod of the issue — an eviction's, an update
-// round's replacement, a park and unpark's — asked for the bundle, was created after the save,
+// round's replacement, a move to backlog and back to todo's — asked for the bundle, was created after the save,
 // and was sent it: `jj bookmark set --allow-backwards` and `jj edit` over a workspace
 // provisioned from the branch those hours had been pushed to.
 //
@@ -922,12 +922,12 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 // tokens and its `gh` credentials — with it.
 //
 // The sequence is the one the lane runs. The release's save and role stop have run, so the
-// implementer is suspended as `released`; the root is parked under the teardown's pod lock, so
+// implementer is suspended as `released`; the root moves to backlog under the teardown's pod lock, so
 // the linger's own rows — the role suspends and the issue_suspend that deletes the Sandbox —
 // are queued above the release's; the teardown then reads the issue as no longer the workflow's
 // and cancels. A resume queued for the claim the release suspended would land above the close's
 // rows and supersede them: store.IssueSuspension would read a start newer than its own row,
-// finish the close without acting, and leave the roles of a parked issue running in a Sandbox
+// finish the close without acting, and leave the roles of an issue in backlog running in a Sandbox
 // nothing deletes.
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
 	t.Parallel()
@@ -942,16 +942,16 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	rig.runner.handlers = []intake.Handler{engine}
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
 
-	// Under the teardown's pod lock, before the store is asked: a person parks the root, which
+	// Under the teardown's pod lock, before the store is asked: a person moves the root to backlog, which
 	// lingers its tree and queues the close's own rows. The close's SuspendIssue runs through
-	// the same hook, and parks nothing a second time.
-	var parked sync.Once
+	// the same hook, and moves nothing to backlog a second time.
+	var movedToBacklog sync.Once
 	rig.rt.beforeAuthorize = func() {
-		parked.Do(func() {
-			if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "park", intake.DispatchIssue{
+		movedToBacklog.Do(func() {
+			if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "backlog", intake.DispatchIssue{
 				Key: rig.issue.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: rig.issue.Title, Rank: rig.issue.Rank}, engine); err != nil {
-				t.Errorf("park the root: %v", err)
+				t.Errorf("move the root to backlog: %v", err)
 			}
 		})
 	}
@@ -959,7 +959,7 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	rig.drain(t)
 
 	if !strings.Contains(logs.String(), "resumed=[]") {
-		t.Fatalf("the cancel queued a resume; want none, since the claims of a parked issue are its close's and a start above the close's rows supersedes them: %s",
+		t.Fatalf("the cancel queued a resume; want none, since the claims of an issue in backlog are its close's and a start above the close's rows supersedes them: %s",
 			logs.String())
 	}
 	if _, suspended := rig.rt.reads(); suspended != 1 {

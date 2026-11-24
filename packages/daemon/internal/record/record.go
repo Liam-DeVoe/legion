@@ -2825,10 +2825,10 @@ func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 // Lingering says whether the root's linger is still running at now: its deadline is set and now
 // is before it. It is not Lingers, which answers whether a deadline was ever armed and stays
 // true for ever after: nothing clears LingerUntil but a re-admission (admit's readmit), so a
-// tree whose linger expired long ago, and a root a person parked, each still answer Lingers.
+// tree whose linger expired long ago, and a root a person moved to backlog, each still answer Lingers.
 // Where a rule asks whether the tree is being torn down now, rather than whether it ever left
 // the workflow, it asks this: the held list's tree_closed word (HeldReasonOf), which reads a
-// parked root's member as tree_parked once that root's linger has run out, and the route that
+// member of a root in backlog or icebox as tree_in_backlog_or_icebox once that root's linger has run out, and the route that
 // takes a closed tree's member into a live tree (workflow's AdoptionRefusal), which C4 of
 // dispatch://INFRA-3107 opens only once no linger is left to run.
 //
@@ -2866,7 +2866,7 @@ func (i Issue) Standing() pods.Standing {
 }
 
 // CarriesRun says whether the issue carries a run: it started a phase, and its tree neither left
-// it admitted nor finished or parked it (phase done). It is one reading with two uses, and the
+// it admitted nor finished it or took it out of the workflow (phase done). It is one reading with two uses, and the
 // only definition of it.
 //
 // A child moving to a root of its own carries its run there when it has one: a child still

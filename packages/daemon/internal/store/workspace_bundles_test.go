@@ -373,7 +373,7 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 		created time.Time
 	}{
 		{"pod-after-an-eviction", at.Add(time.Hour)},
-		{"pod-after-a-park-and-unpark", at.Add(2 * time.Hour)},
+		{"pod-after-a-backlog-and-todo", at.Add(2 * time.Hour)},
 	} {
 		got, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", pod.uid, pod.created)
 		if err != nil || take != runtime.WorkspaceBundleNone {

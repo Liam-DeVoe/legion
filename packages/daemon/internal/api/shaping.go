@@ -1034,6 +1034,19 @@ const cachesSourceContract = 213
 // the constant rather than its number for that reason.
 const assignmentPlanContract = 220
 
+// treeInBacklogOrIceboxContract is the daemon contract at which the held word of a member of a
+// tree whose root stands in backlog or icebox became `tree_in_backlog_or_icebox`
+// (record.HeldTreeInBacklogOrIcebox, version.go's 241). The word rides a value strip and no band:
+// a caller whose restore is below this contract is served each such row as `unclassified` with no
+// `heldBy` (withoutUnadmittedHeldWords), which every reader of the field admits. The number is
+// written once as the word's arrival, in the declared table (answers.go's heldReasons).
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the word arrived at stays where it is. It moves only with this
+// change's own number, and it is the last number of answers.go's SupportedContracts, which names
+// the constant rather than its number for that reason.
+const treeInBacklogOrIceboxContract = 241
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
@@ -1529,16 +1542,19 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
 // reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract, and tomorrow any word the
-// table gives a later arrival. A reader from heldContract up to that contract reads `reason` with
-// a `z.enum` of the eleven words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
+// `tree_in_backlog_or_icebox` of treeInBacklogOrIceboxContract, and tomorrow any word the table
+// gives a later arrival. A reader from heldContract up to the contract before a word reads
+// `reason` with a `z.enum` of the words before it and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
 // withoutUnadmittedStrandedStates: an older word does stand for it. Each issue of the two holds
-// read `unclassified`, with no `heldBy`, at every daemon before that contract, and `unclassified`
-// arrived with the field, so every reader that knows the field admits it. So the row is served
-// as that reader read it before: the issue, `unclassified` and no `heldBy`, and every other row
-// as it stands.
+// of OwnerPlanContract read `unclassified`, with no `heldBy`, at every daemon before that
+// contract. The word of treeInBacklogOrIceboxContract took the place of the word the field had for
+// the same hold since heldContract, which this daemon no longer writes, so `unclassified` stands
+// for it too. `unclassified` arrived with the field, so every reader that knows the field admits
+// it. So the row is served as the issue, `unclassified` and no `heldBy`, and every other row as
+// it stands.
 //
 // A state whose rows name no such word is returned as it is, with no copy made. Otherwise the
 // rows are copied before one is written, so the state the source answered is left as it was. It
