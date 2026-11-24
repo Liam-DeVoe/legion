@@ -432,11 +432,19 @@ func buildBroker(t *testing.T) string {
 }
 
 // runRefusedBroker runs the broker binary with env and returns its output, failing t unless it
-// exits non-zero without ever logging "broker listening".
+// exits non-zero without ever logging "broker listening". The run reads no AWS configuration of
+// the machine's (noAWSEnv) and no Postgres password from outside its URL: PGPASSWORD is empty and
+// PGPASSFILE an empty file, since a password from either makes an IAM-form BROKER_DATABASE_URL
+// sign in by password (config.databaseIAM), and the IAM refusals these tests read would not come.
 func runRefusedBroker(t *testing.T, binPath string, env ...string) string {
 	t.Helper()
+	noPassfile := filepath.Join(t.TempDir(), "pgpass")
+	if err := os.WriteFile(noPassfile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(binPath)
-	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), noAWSEnv(t)...), env...)
+	cmd.Env = append(append(append(append(os.Environ(), productionEnv(t)...), noAWSEnv(t)...),
+		"PGPASSWORD=", "PGPASSFILE="+noPassfile), env...)
 	out, err := cmd.CombinedOutput()
 	exitErr, isExit := err.(*exec.ExitError)
 	if err == nil || !isExit || exitErr.ExitCode() == 0 {
