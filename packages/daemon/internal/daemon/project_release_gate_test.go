@@ -263,6 +263,9 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		sup := newSupervisor(ctx, outboxTreeStore(t, pool), "legion", t.TempDir(), quietLogger())
+		// The relaunch reads the machines' clock as it reserves the turns of the launches it
+		// relaunches (reserveUnfinishedTurns), and a supervisor built bare holds none.
+		sup.deps.Clock = stillClock{}
 		rt := fake.NewRuntime()
 		release := releasedMark(t)
 		s := &supervision{log: quietLogger(), plan: plan{clock: stillClock{}, project: "legion", orphanSweep: 5 * time.Millisecond, release: release},
