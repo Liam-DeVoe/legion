@@ -40,6 +40,14 @@ The daemon ended a stalled turn of the tree's architect, took the turn off its c
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
+## `intake-gave-up`
+
+The daemon's intake gave up messages it could not apply and keeps each as an open record, which `giveUps` names. Your tools show no record's error: a `replay_give_up` of one `giveUp` that still fails answers `failed` with it. A cause outside the daemon (an outage, a rate limit): replay once it has cleared. A daemon defect: send it to the tree that owns that code, or hand it over as a clear defect, and replay once a release carries the fix. A message that can never apply (it does not decode, or it is obsolete): `discard_give_up` it with a `reason`.
+
+## `memory-guard-kill`
+
+Your pod's memory guard ended one of your programs near the pod's memory limit; your session goes on. Do not run that program again unchanged: bound its output, or send heavy work where your deployment's instructions say.
+
 ## GitHub mentions
 
 Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
