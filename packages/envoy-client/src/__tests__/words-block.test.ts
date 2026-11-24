@@ -83,6 +83,44 @@ describe("cutDrawn", () => {
       splitWordsBlocks(cut).blocks.map(({ text, by, rest, more }) => ({ text, by, rest, more }))
     ).toEqual([{ text: "0123", by: "user:x more=", rest: 6, more: true }]);
   });
+
+  // A cut by UTF-16 units can fall between the two halves of a character outside the Basic
+  // Multilingual Plane. The half left alone reads as U+FFFD once the text goes out as UTF-8 (one
+  // argument of `codex queue`), and `rest` counted half of the character as cut. Each cut falls one
+  // unit earlier there, inside a block and outside one.
+  test("a cut never splits a surrogate pair, inside a block or outside one, and rest counts whole characters", () => {
+    const grin = "\u{1F600}";
+    const card = `${fields}\n${wordsBlocks(fields, [{ name: "answer", words: { text: `0123${grin}456` } }])}`;
+    const words = card.indexOf(`\n0123${grin}`) + 1;
+
+    // The cut falls between the halves of the character, five units into the words.
+    const inside = cutDrawn(card, words + 5);
+    expect(inside).toEndWith('\n<answer rest="5">\n0123\n</answer>');
+    expect(inside).not.toMatch(/\p{Cs}/u);
+    expect(splitWordsBlocks(inside).blocks.map(({ text, rest }) => ({ text, rest }))).toEqual([
+      { text: "0123", rest: 5 },
+    ]);
+    // A cut past the character keeps it whole.
+    expect(cutDrawn(card, words + 6)).toEndWith(`\n<answer rest="3">\n0123${grin}\n</answer>`);
+
+    const line = `one ${grin} line`;
+    expect(cutDrawn(line, 5)).toBe("one ");
+    expect(cutDrawn(line, 6)).toBe(`one ${grin}`);
+    const ahead = `envoy:\n  title: ${grin}x\n${wordsBlocks(`envoy:\n  title: ${grin}x`, [
+      { name: "answer", words: { text: "Yes." } },
+    ])}`;
+    expect(cutDrawn(ahead, ahead.indexOf(grin) + 1)).toBe(ahead.slice(0, ahead.indexOf(grin)));
+  });
+
+  // A text no card drew, such as a person's own message, can hold a block whose opening line the
+  // rule does not write. Its block still closes after the words that fit, under its opening line
+  // as written: the rule's reader refuses that line, so no `rest` goes in it.
+  test("a cut in a block whose opening line breaks the rule closes it under that line as written", () => {
+    const text = 'Notes:\n<note kind="x">\n0123456789\n</note>';
+    expect(cutDrawn(text, text.indexOf("\n0123") + 1 + 4)).toBe(
+      'Notes:\n<note kind="x">\n0123\n</note>'
+    );
+  });
 });
 
 describe("inFront", () => {

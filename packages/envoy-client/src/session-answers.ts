@@ -9,6 +9,7 @@ import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
 import { jsonLineRecord } from "./json-line-record";
+import { oneLine } from "./line-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 import { type NamedWords, TextInFront, wordsBlocks } from "./words-block";
 
@@ -98,13 +99,10 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
       : owner === undefined
         ? item.ref
         : `${item.ref} · ${owner}`;
-  // A title or a name is another author's words on one of the plugin's lines, so each run of
-  // white space in it, a new line included (U+0085 too, which `\s` leaves out), is one space: a
-  // line it started could stand as an item's head line, or open a block that a list's draw
-  // (`inFront`) takes for one of the item's.
-  const before = [head.join(" · "), where]
-    .map((line) => line.replace(/[\s\u0085]+/g, " "))
-    .join("\n");
+  // A title or a name is another author's words on one of the plugin's lines, so it is made one
+  // line (`oneLine`): a line it started could stand as an item's head line, or open a block that
+  // a list's draw (`inFront`) takes for one of the item's.
+  const before = [head.join(" · "), where].map(oneLine).join("\n");
   const blocks: NamedWords[] = [];
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -
@@ -314,16 +312,18 @@ export function renderSessionAnswersList(
   return list.text();
 }
 
-/** A read's failure reason as the end of a sentence: whitespace collapsed, and a full stop added
- *  only when the reason does not already end in `.`, `?` or `!`. */
+/** A read's failure reason as the end of a sentence: on one line (`oneLine`), since the reason
+ *  can quote other authors' words, and a full stop added only when it does not already end in
+ *  `.`, `?` or `!`. */
 function failureSentence(reason: string): string {
-  const text = reason.replace(/\s+/g, " ").trim();
+  const text = oneLine(reason).trim();
   return /[.?!]$/.test(text) ? text : `${text}.`;
 }
 
-/** The line a request carries in place of the list when no list it could carry renders. */
+/** The line a request carries in place of the list when no list it could carry renders: one line,
+ *  whatever the reason holds (`oneLine`). */
 export function sessionAnswersFailureLine(reason: string): string {
-  return `${FAILURE_MARKER}${reason.replace(/\s+/g, " ").trim()}); run \`dispatch answers\`.]`;
+  return `${FAILURE_MARKER}${oneLine(reason).trim()}); run \`dispatch answers\`.]`;
 }
 
 /** The last list read for a session from one Dispatch, as memory and `answers.json` keep it. */

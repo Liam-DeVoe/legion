@@ -499,38 +499,46 @@ export type ModUnreadMessage =
   | { readonly kind: "card"; readonly text: string }
 
 /**
- * How many characters a prompt's fence holds, and the mark one message's label carries.
+ * How many characters a fence holds, and the mark one message's label carries.
  *
- * The fence is the router's word for "this line is mine": it is minted for one prompt, it is
- * checked absent from every message that prompt quotes, and the prompt tells the model that a
- * label is a label only where it carries this mark. A card's text is quoted under the same
- * prompt and any client on the bus can send a card, so without the mark a card carrying the
- * line `Dispatch message <id>, the person's own words:` took the person's authority for
- * whatever it put after it (INFRA-1026 review, security[prompt]). The text is fixed before the
- * mark exists, so no text can carry it.
- *
- * `Math.random` is what the mod mints its own instance id with (`./mod.ts`), so it is there
- * where this runs; the rule it must meet is that the writer of a message cannot know the mark,
- * not that the mark resists a cryptanalyst with the prompt in hand.
+ * The fence is the router's word for "this line is mine": it is minted for one text, it is
+ * checked absent from every message that text quotes, and the text tells the model that a label
+ * is a label only where it carries this mark. A card's text is quoted under the same text and any
+ * client on the bus can send a card, so without the mark a card carrying the line `Dispatch
+ * message <id>, the person's own words:` took the person's authority for whatever it put after it
+ * (INFRA-1026 review, security[prompt]). The text is fixed before the mark exists, so no text can
+ * carry it. Two texts mint one: the prompt at the rows a turn never read (`unreadRowPrompt`) and
+ * the Codex inbox's hook text (`inboxContext`, `../src/codex/codex-inbox.ts`).
  */
-const PROMPT_FENCE_CHARS = 8
+const FENCE_CHARS = 8
 
-/** A fence for one prompt: eight characters of `[0-9a-z]`, at least one of them a letter, drawn
- *  again while any message that prompt quotes holds the draw. A text of any length holds finitely
- *  many eight-character runs, so the draw that misses them all comes, and in practice it is the
- *  first. The letter keeps the fence out of a card's text after the prompt draws the card's blocks
- *  again (`TextInFront`): that changes only the dash and the digits after a tag's name, and the
- *  digits stand between that dash and a space or a `>`, so a run of eight that the change made
- *  and that holds no dash is digits alone. */
-function promptFence(unread: readonly ModUnreadMessage[]): string {
+/** A fence for one text that quotes `quoted`: eight characters of `[0-9a-z]`, each a byte of
+ *  `randomBytes` taken modulo 36, at least one of them a letter, drawn again while any quoted text
+ *  holds the draw. A text of any length holds finitely many eight-character runs, so the draw that
+ *  misses them all comes, and in practice it is the first. The letter keeps the fence out of a
+ *  card's text after the text draws the card's blocks again (`TextInFront`): that changes only the
+ *  dash and the digits after a tag's name, and the digits stand between that dash and a space or a
+ *  `>`, so a run of eight that the change made and that holds no dash is digits alone.
+ *
+ *  The rule that must hold is that the writer of a message cannot know the mark, which a fresh
+ *  draw for every text gives. `randomBytes` is the caller's, since this module imports nothing a
+ *  mod cannot: the Codex inbox, which runs under bun, draws from `node:crypto`, and the prompt the
+ *  mod builds from `Math.random` (`MOD_RANDOM_BYTES`), the one source of randomness a mod's realm
+ *  is known to have. */
+export function quoteFence(
+  quoted: readonly string[],
+  randomBytes: (count: number) => ArrayLike<number>,
+): string {
   for (;;) {
-    const drawn = Math.random().toString(36).slice(2).padEnd(PROMPT_FENCE_CHARS, "0")
-    const fence = drawn.slice(0, PROMPT_FENCE_CHARS)
-    if (/[a-z]/.test(fence) && !unread.some((message) => message.text.includes(fence))) {
-      return fence
-    }
+    const fence = Array.from(randomBytes(FENCE_CHARS), (byte) => (byte % 36).toString(36)).join("")
+    if (/[a-z]/.test(fence) && !quoted.some((text) => text.includes(fence))) return fence
   }
 }
+
+/** `count` random bytes as the mod can draw them: `Math.random` is what the mod mints its own
+ *  instance id with (`./mod.ts`), so it is there where the mod runs. */
+const MOD_RANDOM_BYTES = (count: number): number[] =>
+  Array.from({ length: count }, () => Math.floor(Math.random() * 256))
 
 /** One unread message as the prompt quotes it, under a label of the router's own: what the
  *  message is, behind the mark that says the line is the router's and not the message's. A
@@ -560,10 +568,10 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * code, or a message carrying one — is a card still.
  *
  * What each message is, the prompt says in a label of its own, and the label carries this
- * prompt's fence (`promptFence`): the label is the router's, never the text's. A card that
+ * prompt's fence (`quoteFence`): the label is the router's, never the text's. A card that
  * wrote the person's label into its own text took their authority for what followed it, and
  * any client on the bus can send a card (INFRA-1026 review, security[prompt]). The mark is
- * minted here and nowhere else, fresh for every call: a mark a caller could name is a mark a
+ * minted for this prompt here, fresh for every call: a mark a caller could name is a mark a
  * message could carry.
  *
  * A card draws another author's words after its fields in blocks, under tags nothing else in the
@@ -576,7 +584,10 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * as it came.
  */
 export function unreadRowPrompt(unread: readonly ModUnreadMessage[]): string {
-  const fence = promptFence(unread)
+  const fence = quoteFence(
+    unread.map((message) => message.text),
+    MOD_RANDOM_BYTES,
+  )
   const one = unread.length === 1
   const them = one ? "it" : "them"
   const count = one ? "a message" : `${unread.length} messages`

@@ -24,6 +24,8 @@
  * tag, and one new line joins a block to the next.
  */
 
+import { headUnits } from "./line-text";
+
 /** The words of one block, and what its opening tag says of them. */
 export interface Words {
   /** The words exactly as their event carried them. */
@@ -84,19 +86,7 @@ export function wordsBlocks(before: string, blocks: readonly NamedWords[]): stri
     blocks.map(({ name, words }) => ({ name, text: words.text }))
   );
   return blocks
-    .map(({ words }, index) => {
-      let attributes = "";
-      if (words.by !== undefined && words.by !== "") attributes += attribute("by", words.by);
-      if (words.at !== undefined && words.at !== "") attributes += attribute("at", words.at);
-      if (words.field !== undefined && words.field !== "") {
-        attributes += attribute("field", words.field);
-      }
-      if (words.rest !== undefined && words.rest > 0) {
-        attributes += attribute("rest", String(words.rest));
-      }
-      if (words.more === true) attributes += attribute("more", "true");
-      return drawBlock(tags[index] ?? "", attributes, words.text);
-    })
+    .map(({ words }, index) => drawBlock(tags[index] ?? "", openingAttributes(words), words.text))
     .join("\n");
 }
 
@@ -239,35 +229,60 @@ export function drawnBlocks(text: string): DrawnBlock[] {
  * A cut inside a block (`drawnBlocks`) keeps the block's opening line and the words before the
  * cut (none where the cut falls in the opening line, all where it falls in the closing tag), and
  * closes the block after them under its own tag: words that held none of that tag hold none once
- * cut. The block's `rest` counts the units of its words cut off, added to any it held, and the
- * blocks after it are left out. Any other cut, ahead of the blocks, between two, after the last,
- * or in a text with no drawn block, is the text's first `length` units. So each word kept stays
- * inside its block, and a line a host joins after the cut stands outside every block. A text no
- * longer than `length` is itself.
+ * cut. The block's `rest` counts the units of its words cut off, added to any it held: its opening
+ * tag is read back (`attributes`) and written again with that `rest` (`openingAttributes`, which
+ * `wordsBlocks` writes every opening tag with). The blocks after it are left out. Any other cut,
+ * ahead of the blocks, between two, after the last, or in a text with no drawn block, is the
+ * text's first `length` units. Neither cut splits a character outside the Basic Multilingual
+ * Plane: where the unit before it is the first half of a surrogate pair, the cut falls one unit
+ * earlier (`headUnits`), so `rest` counts whole characters. So each word kept stays inside its
+ * block, and a line a host joins after the cut stands outside every block. A text no longer than
+ * `length` is itself.
+ *
+ * A text no card drew can hold a block whose opening line breaks the rule (an attribute the rule
+ * has not, or the rule's attributes out of its order), such as a person's message that holds
+ * `<note kind="x">` on a line of its own and closes it: that block closes after the words that fit
+ * under its opening line as written, with no `rest`, since the rule's reader refuses that line
+ * whatever it holds.
  */
 export function cutDrawn(text: string, length: number): string {
   if (text.length <= length) return text;
   const block = drawnBlocks(text).find(({ start, end }) => start < length && length < end);
-  if (block === undefined) return text.slice(0, length);
+  if (block === undefined) return headUnits(text, length);
   const words = lineEnd(text, block.start) + 1;
-  const kept = block.text.slice(0, Math.max(0, length - words));
+  const kept = headUnits(block.text, Math.max(0, length - words));
   if (kept.length === block.text.length) return text.slice(0, block.end);
-  const { attributes } = block;
-  // The `rest` the block holds is counted on; else one goes where the rule's order puts it, after
-  // `by`, `at` and `field` and before `more`. Each is found as an attribute (`ATTRIBUTE`), never
-  // inside another's value, which may end in ` more=`.
-  const held = REST.exec(attributes);
-  const more = [...attributes.matchAll(ATTRIBUTE)].find(([, key]) => key === "more")?.index;
-  const at = held?.index ?? more ?? attributes.length;
-  const rest = Number(held?.[1] ?? 0) + block.text.length - kept.length;
-  const cutAttributes = `${attributes.slice(0, at)}${attribute("rest", String(rest))}${attributes.slice(at + (held?.[0].length ?? 0))}`;
-  return `${text.slice(0, block.start)}${drawBlock(block.tag, cutAttributes, kept)}`;
+  const before = text.slice(0, block.start);
+  let read: Omit<Words, "text">;
+  try {
+    read = attributes(block.tag, block.attributes);
+  } catch {
+    return `${before}${drawBlock(block.tag, block.attributes, kept)}`;
+  }
+  const rest = (read.rest ?? 0) + block.text.length - kept.length;
+  return `${before}${drawBlock(block.tag, openingAttributes({ ...read, rest }), kept)}`;
 }
 
 /** The block of `text` under `tag`: the opening tag with `attributes` as written, a new line, the
  *  words, a new line and the closing tag. */
 function drawBlock(tag: string, attributes: string, text: string): string {
   return `<${tag}${attributes}>\n${text}\n</${tag}>`;
+}
+
+/** The attributes of the opening tag of a block that holds `words`, as the rule writes them: each
+ *  of `ATTRIBUTE_ORDER` in that order, only where it is set (a text that is not empty, a `rest`
+ *  over 0, a `more` that is true), its value escaped (`attribute`). The one writer of an opening
+ *  tag's attributes: `wordsBlocks` writes each block's, and `cutDrawn` those it read back of the
+ *  block it cuts, with the `rest` it counted. */
+function openingAttributes(words: Omit<Words, "text">): string {
+  let written = "";
+  for (const key of ATTRIBUTE_ORDER) {
+    const value = words[key];
+    const set =
+      typeof value === "string" ? value !== "" : typeof value === "number" ? value > 0 : value;
+    if (set === true) written += attribute(key, String(value));
+  }
+  return written;
 }
 
 /**
@@ -480,8 +495,6 @@ const TAG_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const OPENING = /^<([A-Za-z_][A-Za-z0-9_]*)(?:-([1-9][0-9]*))?((?: [a-z]+="[^"<>]*")*)>$/;
 const ATTRIBUTE = / ([a-z]+)="([^"<>]*)"/g;
 const ATTRIBUTE_ORDER = ["by", "at", "field", "rest", "more"] as const;
-/** The `rest` attribute of an opening tag as the rule writes it. */
-const REST = / rest="([1-9][0-9]*)"/;
 const REFERENCE = /&(?:(amp|lt|gt|quot)|#([0-9]+));/y;
 const NAMED_REFERENCES: Readonly<Record<string, string>> = {
   amp: "&",

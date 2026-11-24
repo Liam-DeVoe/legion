@@ -257,6 +257,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { headUnits, oneLine } from "@legion/envoy-client/line-text";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -1632,10 +1633,11 @@ const separates = (token: ShellToken | undefined): boolean =>
   token?.kind === "op" && SEPARATORS[token.op] === true;
 const isPipe = (token: ShellToken | undefined) => isOp(token, "|") || isOp(token, "|&");
 
-/** Text from the call, on one line and cut, to name in a note. */
+/** Text from the call, on one line (`oneLine`) and cut, never inside a surrogate pair
+ *  (`headUnits`), to name in a note. */
 const snippet = (text: string) => {
-  const line = text.replace(/\s+/g, " ").replaceAll("`", "'").trim();
-  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+  const line = oneLine(text).replaceAll("`", "'").trim();
+  return line.length > 60 ? `${headUnits(line, 59)}…` : line;
 };
 
 /**
@@ -2024,7 +2026,7 @@ function headedMessage(message: Message): string {
     case "custom":
     case "hookMessage": {
       if (message.display === false && message.customType !== "advisor") return "";
-      return `[${escaped(String(message.customType))}] ${escaped(textOf(message.content).replace(/\s+/g, " ").trim().slice(0, 120))}`;
+      return `[${escaped(String(message.customType))}] ${escaped(headUnits(oneLine(textOf(message.content)).trim(), 120))}`;
     }
     case "compactionSummary":
       return `[compaction] ${escaped(String(message.summary ?? ""), 8 * 1024)}`;
@@ -2089,7 +2091,7 @@ function renderRequest(
       ? // Each reason is model text inside the governing request: escaped, and every whitespace run
         // (any line break included: CR, VT, FF, U+0085, U+2028, U+2029) folded to one space, so none
         // can start a line of its own, such as a forged `### Gate request`.
-        `You answered revise ${priorReasons.length} time(s) for this target since its last allowed call:\n${priorReasons.map((r) => `- ${escapeXml(r.replace(/[\s\u0085]+/g, " "))}`).join("\n")}`
+        `You answered revise ${priorReasons.length} time(s) for this target since its last allowed call:\n${priorReasons.map((r) => `- ${escapeXml(oneLine(r))}`).join("\n")}`
       : "";
   return renderTemplate(requestTemplate, {
     primarySystemPrompt: escapeXml(primarySystemPrompt),

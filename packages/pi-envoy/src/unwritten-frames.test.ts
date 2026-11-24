@@ -9,6 +9,7 @@ import {
   type HeldStoredCard,
   heldStoredCards,
   REPLAY_DELIVERED_ENTRY,
+  replaySnapshot,
   STORED_CARD_ENTRY,
   storedCardRecord,
 } from "./missed-messages";
@@ -487,7 +488,7 @@ describe("an inert card", () => {
       // The host wrote the second card before the stop.
       storedEntry({ event_id: "event-2" }),
     ];
-    const held = heldStoredCards(transcript);
+    const held = heldStoredCards(transcript, replaySnapshot(transcript).ledger);
     expect(held).toEqual([
       { identity: late, content: "late BTW", dispatchMessageId: "message-1", deliverAs: "inert" },
     ]);
@@ -728,7 +729,7 @@ describe("a stored card", () => {
       storedEntry({ event_id: "event-2" }),
       { type: "custom", customType: REPLAY_DELIVERED_ENTRY, data: { event_id: "event-3", at: 1 } },
     ];
-    const held = heldStoredCards(transcript);
+    const held = heldStoredCards(transcript, replaySnapshot(transcript).ledger);
     expect(held).toEqual([
       { identity: low, content: "low", dispatchMessageId: "message-1", deliverAs: "stored" },
     ]);

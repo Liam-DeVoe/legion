@@ -26,6 +26,7 @@ import {
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
+import { oneLine } from "../line-text";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
@@ -123,7 +124,7 @@ async function readUploadedFile(
       shown?.add(address);
       return {
         text:
-          `Picture ${artifact.name.replace(/[\s\u0085]+/g, " ")}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
+          `Picture ${oneLine(artifact.name)}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
           shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
         details,
         images: [image],
@@ -178,7 +179,7 @@ async function listDocumentBlocks(
   for (const block of blocks) {
     while (holders.length > 0 && block.from >= (holders.at(-1)?.to ?? 0)) holders.pop();
     const indent = "  ".repeat(holders.length);
-    const flat = decoder.decode(bytes.subarray(block.from, block.to)).replace(/\s+/g, " ").trim();
+    const flat = oneLine(decoder.decode(bytes.subarray(block.from, block.to))).trim();
     // Cut by code point, never inside a surrogate pair, which would print U+FFFD.
     const points = Array.from(flat);
     const opening =

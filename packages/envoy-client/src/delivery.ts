@@ -41,6 +41,7 @@ import { pictureAddresses } from "./dispatch-pictures";
 import { messageFor } from "./errors";
 import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
+import { oneLine } from "./line-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 import { type NamedWords, wordsBlocks } from "./words-block";
 
@@ -617,9 +618,14 @@ export async function wholeCarriedBody(
   }
 }
 
+/** Who sent `envelope`, as a card's `from:` names it: the sending session, else its source, with
+ *  the session's title after it. The title is the sender's own words, made one line (`oneLine`):
+ *  TOON writes U+0085, U+2028 and U+2029 in a value as they are, so a title holding one would break
+ *  the card's line where a model reads a break. */
 export function senderLabel(envelope: DeliveryEnvelope): string {
   const sender = sendingSession(envelope) ?? envelope.source ?? "unknown";
-  return envelope.sender?.title === undefined ? sender : `${sender} (${envelope.sender.title})`;
+  const title = envelope.sender?.title;
+  return title === undefined ? sender : `${sender} (${oneLine(title)})`;
 }
 
 /** The session that sent `envelope`: the `source_session` its body names, else the session the
@@ -1210,6 +1216,13 @@ const WORDS_PATH =
  *  brackets. */
 const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
 
+/** A payload's field as a card lays it out: the value it shows among the card's fields, and the
+ *  words of another author it took out of that value, each for a block of its own. */
+interface LaidPayload {
+  readonly fields: unknown;
+  readonly words: readonly NamedWords[];
+}
+
 /**
  * What a card shows of a notice or a role message of the Legion daemon published as an object:
  * its fields in the payload's key order, and a block for each field that holds another author's
@@ -1239,7 +1252,7 @@ const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
 function daemonFields(
   payload: Readonly<Record<string, unknown>>,
   topics: readonly (string | undefined)[]
-): { readonly fields: unknown; readonly words: readonly NamedWords[] } {
+): LaidPayload {
   const named = payload["words"];
   const paths = isObject(named) && !Array.isArray(named) ? named : undefined;
   // `Object.fromEntries` defines each key as an own field, `__proto__` too: JSON.parse makes it an
@@ -1446,29 +1459,44 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
 
 /**
  * The card's fields under `envoy:` as TOON: `shown`, then `after` (the note and the issues the
- * render found), with the fields of `shown` the card holds and why it shows the payload as text.
+ * render found), with the fields of `shown` the card holds, the words that go in blocks after
+ * them, and why it shows the payload as text.
  *
- * The card's TOON encoder recurses once per level of a value, so a payload nested some thousands
- * of levels deep overflows the stack (an object chain 7,000 deep does in Bun 1.4.4). A throw out of
- * `renderInbound` throws in every host's render and in the consumer's give-up alike, so the frame
- * would go back to the stream on every delivery and nobody would be told of it. The payload is the
- * text its sender sent, so the card shows it as that text in the field that lays it out
- * (`payloadKey`: `message`, or a Dispatch frame's `dispatch`), `payloadShownAsText` says what the
- * encoder threw, and the host takes the frame. That text is bounded as every message's is: by the
- * frame, at most the hub's 1 MiB. A throw the payload is not behind is thrown as before.
+ * `layPayload`, where given, lays the payload's field out first: a daemon payload's fields, less
+ * the words its `words` object names, which it answers too (`daemonFields`). The fields replace the
+ * payload's field in place.
+ *
+ * The card's TOON encoder recurses once per level of a value, and so does `daemonFields`' walk
+ * (`withoutWords`), so a payload nested some thousands of levels deep overflows the stack (an
+ * object chain 7,000 deep does in the encoder in Bun 1.4.4, and one 40,000 deep that holds a
+ * `words` object does in the walk). A throw out of `renderInbound` throws in every host's render
+ * and in the consumer's give-up alike, so the frame would go back to the stream on every delivery
+ * and nobody would be told of it. So both run here, inside one fallback. The payload is the text
+ * its sender sent, so the card shows it as that text in the field that lays it out (`payloadKey`:
+ * `message`, or a Dispatch frame's `dispatch`), with no block of its words, `payloadShownAsText`
+ * says what threw, and the host takes the frame. That text is bounded as every message's is: by
+ * the frame, at most the hub's 1 MiB. A throw the payload is not behind is thrown as before.
  */
 function encodeCardFields(
   shown: Readonly<Record<string, unknown>>,
   after: Readonly<Record<string, unknown>>,
   payloadKey: "dispatch" | "message",
-  payload: string | undefined
+  payload: string | undefined,
+  layPayload?: () => LaidPayload
 ): {
   readonly toon: string;
   readonly shown: Readonly<Record<string, unknown>>;
+  readonly words: readonly NamedWords[];
   readonly payloadShownAsText?: string;
 } {
   try {
-    return { toon: encode({ envoy: { ...shown, ...after } }), shown };
+    const laid = layPayload?.();
+    const fields = laid === undefined ? shown : { ...shown, [payloadKey]: laid.fields };
+    return {
+      toon: encode({ envoy: { ...fields, ...after } }),
+      shown: fields,
+      words: laid?.words ?? [],
+    };
   } catch (error) {
     if (payload === undefined || !(payloadKey in shown)) throw error;
     // The payload's field keeps its place among the card's fields.
@@ -1476,6 +1504,7 @@ function encodeCardFields(
     return {
       toon: encode({ envoy: { ...asText, ...after } }),
       shown: asText,
+      words: [],
       payloadShownAsText: messageFor(error),
     };
   }
@@ -1760,6 +1789,9 @@ export function renderInbound(
   const fromDaemon = daemonSent(envelope);
   let message: unknown;
   let messageText: string | undefined;
+  // A daemon payload's fields, laid out with the card's own inside the encoder's fallback
+  // (`encodeCardFields`), since the walk that takes its words out recurses as the encoder does.
+  let layPayload: (() => LaidPayload) | undefined;
   if (sessionSent) {
     // The listener carries a message of one line as its summary alone.
     messageText =
@@ -1778,9 +1810,9 @@ export function renderInbound(
       parsedPayload = envelope.payload;
     }
     if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
-      const shown = daemonFields(parsedPayload, [envelope.topic, subject]);
-      message = shown.fields;
-      blocks.push(...shown.words);
+      const payload = parsedPayload;
+      message = payload;
+      layPayload = () => daemonFields(payload, [envelope.topic, subject]);
     } else if (fromDaemon && !isObject(parsedPayload)) {
       messageText = typeof parsedPayload === "string" ? parsedPayload : envelope.payload;
     } else {
@@ -1851,7 +1883,8 @@ export function renderInbound(
   };
   const issues = unrecognised === undefined ? {} : { unrecognised };
   const payloadKey = dispatchRendered ? "dispatch" : "message";
-  const laidOut = encodeCardFields(shownFields, issues, payloadKey, envelope.payload);
+  const laidOut = encodeCardFields(shownFields, issues, payloadKey, envelope.payload, layPayload);
+  blocks.push(...laidOut.words);
   let fields = laidOut.toon;
   let payloadShownAsText = laidOut.payloadShownAsText;
   // The note names a session that the card's words name and its fields do not, as a message sent

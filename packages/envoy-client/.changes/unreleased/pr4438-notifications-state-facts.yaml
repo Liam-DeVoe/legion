@@ -30,4 +30,10 @@ body: |-
   document's name or a question prints as one space. So does each run in a picture's name and in
   the reason a picture is not shown, on the `Pictures:` lines Pi appends after a delivered card.
   `cutDrawn` cuts a card to its first N characters with no block left open: a block the cut falls
-  in closes after the words that fit, and its `rest` counts the characters cut off.
+  in closes after the words that fit, and its `rest` counts the characters cut off. No cut splits a
+  character outside the Basic Multilingual Plane (`headUnits`), and neither does the head of an
+  event's text (`textHead`). The sender's title on a card's `from:` line, and a document's name and
+  its editors on an `edit:` line, stay on that line: each run of white space in them, NEXT LINE
+  (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). A
+  daemon card whose payload is nested too deep to lay out shows that payload as text, as any other
+  card does, also where the payload holds `words`.

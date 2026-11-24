@@ -1,12 +1,15 @@
+import { headUnits, oneLine } from "./line-text";
+
 /** Head length, in UTF-16 units, for one-line summaries of event text. */
 const HEAD_LENGTH = 120;
 
-/** The first `length` units of `text` on one line (whitespace collapsed), with an ellipsis when
- *  cut. `length` defaults to the event summaries' `HEAD_LENGTH`; a surface whose line is shorter,
- *  such as `dispatch inbox`'s rows, names its own. */
+/** The first `length` units of `text` on one line (`oneLine`), with an ellipsis when cut, and one
+ *  unit fewer where the cut would split a surrogate pair (`headUnits`). `length` defaults to the
+ *  event summaries' `HEAD_LENGTH`; a surface whose line is shorter, such as `dispatch inbox`'s
+ *  rows, names its own. */
 export function textHead(text: string, length: number = HEAD_LENGTH): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > length ? `${flat.slice(0, length)}…` : flat;
+  const flat = oneLine(text).trim();
+  return flat.length > length ? `${headUnits(flat, length)}…` : flat;
 }
 
 /** Head length, in UTF-16 units, for an ask's question where a surface quotes it: enough to tell

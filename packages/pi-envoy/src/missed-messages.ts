@@ -65,7 +65,6 @@ export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
  * handed as and how (`stored` or `inert`). The card's frame is answered `done` once this record
  * is written, so the stream keeps no copy of it. A card recorded here whose write the session's
  * entries do not show is held again on restore (`heldStoredCards`), and handed as the record says.
- * A record an earlier build wrote names no `deliver_as`: that build recorded stored cards alone.
  */
 export const STORED_CARD_ENTRY = "envoy-stored-card";
 
@@ -99,7 +98,7 @@ const StoredCardRecordSchema = z.object({
     ),
   ]),
   dispatch_message_id: z.string().min(1).optional(),
-  deliver_as: z.enum(["stored", "inert"]).optional(),
+  deliver_as: z.enum(["stored", "inert"]),
 });
 
 /** The data of the `STORED_CARD_ENTRY` that records `card`. */
@@ -275,20 +274,24 @@ export function heldReplayNotices(entries: readonly unknown[]): HeldReplayNotice
 
 /**
  * The cards a session's entries record as waiting (`STORED_CARD_ENTRY`) and show no write of, in
- * the order recorded, each frame once, each to be handed as its record says: `inert` or `stored`,
- * and `stored` where the record names neither, as one an earlier build wrote. A write is a card the
- * host wrote that names the frame (`writtenCardIdentity`, on any branch) or a ledger record of the
- * frame (`REPLAY_DELIVERED_ENTRY`). A frame is known by its event id and by a dedupe key that names
- * its event (`ledgerIdentity`), as the ledger knows it. An entry that does not parse is passed over.
+ * the order recorded, each frame once, each to be handed as its record says: `inert` or `stored`.
+ * A write is a ledger record of the frame among `written`, the records of the session's entries
+ * (`replaySnapshot(entries).ledger`, which the caller builds once for its restore too): a
+ * `REPLAY_DELIVERED_ENTRY`, or a card the host wrote that names the frame (`writtenCardIdentity`,
+ * on any branch). A frame is known by its event id and by a dedupe key that names its event
+ * (`ledgerIdentity`), as the ledger knows it. An entry that does not parse is passed over.
  */
-export function heldStoredCards(entries: readonly unknown[]): HeldStoredCard[] {
+export function heldStoredCards(
+  entries: readonly unknown[],
+  written: readonly LedgerIdentity[]
+): HeldStoredCard[] {
   const events = new Set<string>();
   const keys = new Set<string>();
   const note = (identity: LedgerIdentity): void => {
     if (identity.event_id !== undefined) events.add(identity.event_id);
     if (identity.dedupe_key !== undefined) keys.add(identity.dedupe_key);
   };
-  for (const written of replaySnapshot(entries).ledger) note(written);
+  for (const record of written) note(record);
   const held: HeldStoredCard[] = [];
   for (const data of customEntries(entries, STORED_CARD_ENTRY)) {
     const parsed = StoredCardRecordSchema.safeParse(data);
@@ -297,7 +300,7 @@ export function heldStoredCards(entries: readonly unknown[]): HeldStoredCard[] {
       identity,
       content,
       dispatch_message_id: dispatchMessageId,
-      deliver_as: deliverAs = "stored",
+      deliver_as: deliverAs,
     } = parsed.data;
     const frame = ledgerIdentity(identity);
     if (frame.event_id === undefined && frame.dedupe_key === undefined) continue;

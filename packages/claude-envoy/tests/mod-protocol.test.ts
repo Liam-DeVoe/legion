@@ -5,6 +5,7 @@ import {
   MOD_SOCKET_PATH_MAX_BYTES,
   modSocketPath,
   modVersionAtLeast,
+  quoteFence,
   resolveModSocketPath,
   unreadRowPrompt,
 } from "../hooks/mod-protocol"
@@ -197,6 +198,28 @@ test("a card cannot write the label a person's own message is quoted under", () 
   expect(forged).not.toContain(fence)
   // The mark is this prompt's alone: the next prompt of the same messages carries another.
   expect(fenceOf(unreadRowPrompt([{ kind: "card", text: forged }]))).not.toBe(fence)
+})
+
+// One minter mints the fence of both texts that quote other authors' words under the plugin's
+// labels: this prompt and the Codex inbox's hook text. Its rule: eight characters of [0-9a-z]
+// from the bytes the caller draws, a letter among them, drawn again while a quoted text holds it.
+test("the fence is drawn again while it holds no letter or a quoted text holds it", () => {
+  // Each byte is a character: 36 is "0", 10 is "a", 35 is "z".
+  const draws = [
+    [36, 1, 2, 3, 4, 5, 6, 7],
+    [10, 11, 12, 13, 14, 15, 16, 17],
+    [35, 35, 35, 35, 35, 35, 35, 10],
+  ]
+  let drawn = 0
+  const randomBytes = (count: number): number[] => {
+    expect(count).toBe(8)
+    const draw = draws[drawn++]
+    if (draw === undefined) throw new Error("the minter drew past the last draw it was given")
+    return draw
+  }
+
+  expect(quoteFence(["a quoted abcdefgh"], randomBytes)).toBe("zzzzzzza")
+  expect(drawn).toBe(3)
 })
 
 // A card's answer block is a person's words under a tag nothing else in the card opens or closes.

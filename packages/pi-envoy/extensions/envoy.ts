@@ -98,6 +98,7 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import type { InboundSubscription } from "@legion/envoy-client/inbound-connection";
+import { headUnits } from "@legion/envoy-client/line-text";
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
@@ -449,8 +450,8 @@ const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
  *  it goes out with that part and the note saying so. */
 const WHOLE_BODY_TIMEOUT_MS = 10_000;
 /** How often the check for stored cards runs while one waits (`checkStoredCards`), and how many
- *  checks one arming runs at most: 10 s, after which the next run's end, automatic compaction's
- *  end or heartbeat checks. */
+ *  checks one arming runs at most: 10 s, after which the next run's end, a compaction's end
+ *  (automatic or asked for) or heartbeat checks. */
 const STORED_CHECK_MS = 100;
 const STORED_CHECKS = 100;
 /** The most BTW event ids an instance remembers, so a failure notice naming one stays inert. */
@@ -569,7 +570,7 @@ const ASK_SELF_CHECK_PROMPT = (asks: readonly Pick<OpenAsk, "question">[]): stri
             const question =
               firstLine.length <= questionLimit
                 ? firstLine
-                : `${firstLine.slice(0, questionLimit - 1)}…`;
+                : `${headUnits(firstLine, questionLimit - 1)}…`;
             return `- ${question}`;
           }),
           ...(asks.length > askLimit ? [`+${asks.length - askLimit} more`] : []),
@@ -1131,8 +1132,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // The delivery ledger, from every entry of the session file as handled attempts are: what
     // this session was shown, on any branch, with the cards the host wrote, and the topics it
     // follows. The notices it records held and not handed, which a
-    // restart or a session change cut short, are held again for the first settled heartbeat.
-    ledger?.restore(replaySnapshot(entries));
+    // restart or a session change cut short, are held again for the first settled heartbeat. The
+    // snapshot is read once: the held cards below are checked against the same ledger records.
+    const snapshot = replaySnapshot(entries);
+    ledger?.restore(snapshot);
     unwritten.requeueNotices(heldReplayNotices(entries));
     // The pictures the live context of the transcript the session is now on already shows (a
     // fork's, a handoff's, a resume's, a restart's) are in the history every request sends, so
@@ -1169,7 +1172,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // heartbeat. Their frames were answered `done` once they were recorded, and a copy the relay
     // sends again is that held card (`UnwrittenFrames.sendCard`). This comes after the release
     // above, so no card of the session left stands under a frame's keys.
-    unwritten.requeueStored(heldStoredCards(entries));
+    unwritten.requeueStored(heldStoredCards(entries, snapshot.ledger));
     if (unwritten.waitsOnStored()) checkStoredCards();
   };
 
@@ -1682,14 +1685,14 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
   // settles, when one held while it was busy is handed, nor its write to the session file. So a
   // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
-  // run's end that no continuation follows, an automatic compaction's end, a stored card's
-  // hand-over, a restore that holds recorded cards again, and each heartbeat of a settled host,
-  // until no stored card waits or `STORED_CHECKS` checks have run. A run that starts in between
-  // holds the card again, as the host is not settled, and its end checks again; so does the next
-  // heartbeat for a session whose file Oh My Pi has not written yet. A new arming counts the
-  // checks again from the first. While one chain of checks is live (`storedCheckLive`) an arming
-  // starts no other, so two never run side by side, and a card that comes while a check awaits
-  // keeps the live chain going.
+  // run's end that no continuation follows, the end of a compaction (an automatic one, and one the
+  // session asked for), a stored card's hand-over, a restore that holds recorded cards again, and
+  // each heartbeat of a settled host, until no stored card waits or `STORED_CHECKS` checks have
+  // run. A run that starts in between holds the card again, as the host is not settled, and its
+  // end checks again; so does the next heartbeat for a session whose file Oh My Pi has not written
+  // yet. A new arming counts the checks again from the first. While one chain of checks is live
+  // (`storedCheckLive`) an arming starts no other, so two never run side by side, and a card that
+  // comes while a check awaits keeps the live chain going.
   let storedChecksLeft = 0;
   let storedCheckLive = false;
   const checkStoredCards = (): void => {
