@@ -44,29 +44,33 @@ const (
 	coverageBackoffCeiling = 10 * time.Minute
 )
 
-// coverageLoopBound is the fill's timeout and the recount's bound, one constant so that a raise is
-// a one-line change. R7's design (dispatch://INFRA-4864/spec) sets each of the two as the larger
-// of two times. The first is four times the fill's, or the recount's, own longest time in the
-// coverage-scale Job. The second is four times the longer of two production runs of main's
-// coverage statement, a first run and a second run right after it, through INFRA-4863's read
-// login. Where that login's 30 s statement bound cut a run, the bound is at least 120 s.
+// coverageFillTimeoutSetting and coverageRecountTimeoutSetting are the fill's timeout and the
+// recount's bound. R7's design (dispatch://INFRA-4864/spec) sets each as the larger of two times.
+// The first is four times the fill's, or the recount's, own longest time in the coverage-scale
+// Job, rounded up to the next 10 s. The second is four times the longer of two production runs of
+// main's coverage statement, a first run and a second run right after it, through INFRA-4863's
+// read login; where that login's 30 s statement bound cut a run, the bound is at least 120 s.
+// Both rest on the first time alone so far; no production run is in them.
 //
-// The Job is the builds Job infra-4864-coverage-scale-h96p8 at f28566f1 (2026-11-24), at scale 3.6
+// The Job is the builds Job infra-4864-coverage-scale-dgpdj at 4c73bcc9 (2026-11-24), at scale 3.6
 // of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
-// 2026-11-24. Its longest fill was the server's own at its first start, 15,104 ms; the scale
-// test's fill took 10,659 ms. Its longest whole recount took 16,213 ms, in the state where no page
-// of embeddings is all-visible ("all"). Four times each, rounded up to the next 10 s, is 70 s.
-//
-// 70 s rests on the first of the two times alone; no production run is in it. A raise lengthens
-// the span CoverageDeltaBound is sized over, one recount bound and one fold period.
-const coverageLoopBound = 70 * time.Second
+// 2026-11-24. Its longest fill was the server's own at its first start, 39,039 ms; the scale
+// test's fill took 19,212 ms. Four times 39,039 ms, rounded up, is 160 s. Its longest whole
+// recount took 18,167 ms, in the state where no page of embeddings is all-visible ("all"), and
+// the server's recount at its second start 8,472 ms. Four times 18,167 ms, rounded up, is 80 s.
+// A raise of the recount's bound lengthens the span CoverageDeltaBound is sized over, one
+// recount bound and one fold period.
+const (
+	coverageFillTimeoutSetting    = 160 * time.Second
+	coverageRecountTimeoutSetting = 80 * time.Second
+)
 
 // The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage); a fill that reaches it fails.
-	coverageFillTimeout = coverageLoopBound
+	coverageFillTimeout = coverageFillTimeoutSetting
 	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage).
-	coverageRecountTimeout = coverageLoopBound
+	coverageRecountTimeout = coverageRecountTimeoutSetting
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval
 	// plus up to the jitter after the one before started (recountGap). Both follow from T
 	// (recountSchedule).
