@@ -1,7 +1,8 @@
-"""The sources check-ts-filters.sh derives the TypeScript half of each Bun gate's reads from: a
-filter of ci.yaml's changes job and either the tsc project the job that filter gates typechecks
-(PROGRAMS) or the entry a step of that job runs with Bun (BUNDLES). The script's header says what
-it proves, which gates it leaves out and why.
+"""The sources the TypeScript half of each Bun gate's reads is derived from: a filter of ci.yaml's
+changes job and either the tsc project the job that filter gates typechecks (PROGRAMS) or the
+entry a step of that job runs with Bun (BUNDLES). The changes job's filter generation lists them
+(ci_ts_listing.py) into the LISTED blocks, and check-ts-filters.sh, whose header says what it
+proves, which gates it leaves out and why, holds every filter to them.
 
 Each entry of PROGRAMS is (filter, project, why):
   filter   a filter of the changes job, the gate of the job whose typecheck this program is
@@ -72,33 +73,17 @@ PROGRAMS = [
 #           refusal carries
 BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
-     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42-46 runs "
+     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:52-56 runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
 ]
 
-# The files a program lists that no commit holds, each with the committed files it is rendered
-# from: git ignores the file and every `bun install` writes it (the root package.json's
-# postinstall), so no change ever carries it, and a filter holding it would select nothing. What
-# changes it is a change to its sources, so check-ts-filters.sh holds a program's filter to those
-# in its place, and a listed block lists the sources under its tree, never the file.
-#
-# Each entry is generated file: (source, ...), every path repository-relative.
-GENERATED = {
-    "packages/contracts/src/dispatch-api.generated.ts": (
-        "packages/contracts/schemas/dispatch-openapi.json",
-        "packages/contracts/scripts/gen-api.ts",
-    ),
-}
-
-# The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
-# filter a listed block holding one pattern per file under `tree` that the programs PROGRAMS pairs
-# with filters `sources` compile or the bundles BUNDLES pairs with them load, in sorted order, and
-# refuses a committed block that is not exactly those files. A filter that took the whole tree
-# would select its job for a change to a module no program or bundle of it reaches; a hand-kept
-# list of the modules would go stale the day one more is imported. Derived, it moves with the
-# imports: a new one fails the lint job on the pull request that writes it until
-# `.github/scripts/check-ts-filters.sh write` adds it, and a module no longer imported is dropped
-# by the same command rather than kept.
+# The trees a filter names file by file rather than whole: the changes job's generation writes
+# into the filter a listed block holding one pattern per file under `tree` that the programs
+# PROGRAMS pairs with filters `sources` compile or the bundles BUNDLES pairs with them load, in
+# sorted order, and check-ts-filters.sh lists them again in the lint job and refuses a block that
+# is not exactly those files. A filter that took the whole tree would select its job for a change
+# to a module no program or bundle of it reaches; a hand-kept list of the modules would go stale
+# the day one more is imported. Derived when the changes job runs, it moves with the imports.
 #
 # Each entry is (filter, tree, sources, why):
 #   filter   the changes filter whose list holds the block
