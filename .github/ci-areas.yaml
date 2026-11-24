@@ -78,7 +78,7 @@ ts: &tsa # ts and web-cold
   - *bun # test bun install
   - ['**/AGENTS.md', &dss docs/site/src/**, *sk, *tpn, *its] # test the guide tests, dispatch-ui
   - [packages/envoy/internal/dispatch/**, packages/envoy/**/testdata/**, packages/envoy/internal/contracts/generated.go, packages/envoy/listenerwire/envelope_generated.go, packages/envoy/scripts/fixtures/**, packages/envoy/cmd/dispatch/*.md] # test dispatch-ui, contracts
-  - [packages/envoy/scripts/lib/pg-url.sh, scripts/e2e/lib/held-port.py, .github/workflows/dispatch-unit-repeat.yaml] # test the harness's psql, unit-repeat
+  - [packages/envoy/scripts/lib/pg-url.sh, scripts/e2e/lib/held-port.py, &dur .github/workflows/dispatch-unit-repeat.yaml] # test the harness's psql, unit-repeat
   - &o8 .github/actions/ts/** # own
 pi: &pa # pi, pi-held and claude-envoy-names
   - [*tsp, *plug, *cl, *cc, *tf] # pkg+ws bun run test in each plugin
@@ -126,13 +126,13 @@ go-envoy: &gea # go-envoy and envoy-held
   - [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts] # test session-stall's rig
   - *dsp # test read-token-live.ts, the dispatch:local stack it reads
   - [*scr, &dsa .dispatch/**, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
-  - [*gh, *ihl] # test spec-check guard, cluster.test.sh's helm; own go-envoy/**
+  - [*gh, *ihl, *dur] # test spec-check guard, cluster.test.sh's helm; own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
   - [*cc, *cl, *tsp, *plug, *dsp, *pd, *pe] # pkg+test internal/textcheck
   - [*scr, *sk, docs/**, deploy/**, *b4, *dsa, *ag, .claude-plugin/**, .superpowers/**, .github/ci-notes/**] # test
   - ['!docs/plans/**', '!docs/superpowers/**'] # no text check reads them
   - [*b3, *pins, *di, *gi, .mcp.json, *omp, '*.md', LICENSE, *bj, *b2, *gw, *b1] # test
-  - [*gh, *bd, *tgt] # test; own text-checks/**
+  - [*gh, *bd, *tgt, *dur] # test; own text-checks/**
 scripts-held: *sca
 pi-held: *pa
 web-cold: *tsa
