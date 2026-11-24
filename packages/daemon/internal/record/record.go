@@ -1076,12 +1076,13 @@ type ConflictRead struct {
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
 // Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
 // MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
-// again. SentLaunch is the launch of the asked role's claim (intake.ClaimReady.Launch) at whose
-// ready the ask was last sent, 0 while no ready has sent it: the ask the act writes goes to
-// whichever launch then holds the role, and the ready of a later launch of that role, while the
-// merge of the head is still owed to it, sends the ask again and records that launch here
-// (workflow's askAgainAtLaunch), since a claim that failed, that an operator stopped or whose agent
-// reported its own exit takes no row of the ask queued after it ended. It is stored as the jsonb of
+// again. SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) the
+// ask was told to: the launch a row of it was delivered to (workflow's MergeForwardAskDelivered),
+// or the launch at whose ready it was sent again, 0 while neither happened. The ready of a later
+// launch of that role, while the merge of the head is still owed to it and no row of the ask is
+// queued for it, sends the ask again and records that launch here (workflow's askAgainAtLaunch),
+// since a claim that failed, that an operator stopped or whose agent reported its own exit takes no
+// row of the ask queued after it ended. It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
 // Role, Withdrawn and SentLaunch with no migration of their own, and leaves each out while it is
 // empty, and a release before them reads the jsonb without them.
@@ -1827,6 +1828,10 @@ type Store interface {
 	// waiting line may hold under a live root on a chain key is on (Waiting), whose Ancestry an
 	// event of key reads again.
 	QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]Issue, error)
+	// QueuedMergeForwardAsk says whether the outbox still holds a merge-forward ask of head to role
+	// on issue (MergeForwardMessage, MergeForwardAsk): a row the executor has neither delivered
+	// nor ended, which reaches the role's next session by its own delivery.
+	QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, head string) (bool, error)
 	// SlottedIssues is the record of each issue of project that holds an admission slot, in slot
 	// order, in one read: another project's slot in the shared table, and every issue holding no
 	// slot, are left out of the read rather than of the caller's loop.

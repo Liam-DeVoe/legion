@@ -161,7 +161,8 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// row's end on a claim that failed or retired, and the delivery. onDelivery, where set, runs once
+// the message is published, with the launch of the claim whose session took it.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -171,6 +172,7 @@ type heldMessage struct {
 	attributes []any
 	claimEnded string
 	delivered  string
+	onDelivery func(ctx context.Context, launch uint64)
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -229,6 +231,9 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
+		if m.onDelivery != nil {
+			m.onDelivery(ctx, r.supervisedClaim(m.token).Generation)
+		}
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):
 		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -38,6 +39,12 @@ import (
 // already came.
 // What follows - a claim that failed or retired, the design gate, the wake and the publish - is
 // deliverHeld's, as it is a merge-queue removal's.
+//
+// A delivered ask records the launch of the asked role's claim it reached on the record's ask
+// (workflow.MergeForwardAskDelivered), in a transaction that holds the fact serializer, so the
+// ready of that launch, which can come after the delivery, asks nothing again (the workflow's
+// askAgainAtLaunch). The row is finished either way: a record write that fails leaves at most one
+// more copy of an ask that is still owed, and is logged.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -67,9 +74,22 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		r.log.Info("outbox merge-forward message finished undelivered: the workflow no longer delivers it", append(attributes, "why", left)...)
 		return nil
 	}
+	var onDelivery func(context.Context, uint64)
+	if payload.Step == record.MergeForwardAsk {
+		onDelivery = func(ctx context.Context, launch uint64) {
+			if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				if err := intake.SerializeFacts(ctx, tx); err != nil {
+					return err
+				}
+				return workflow.MergeForwardAskDelivered(ctx, r.records, tx, row.Issue, payload.Role, payload.Head, launch)
+			}); err != nil {
+				r.log.Error("outbox merge-forward ask delivered, and its launch was not recorded", append(attributes, "launch", launch, "error", err)...)
+			}
+		}
+	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
 		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
-		delivered:  "outbox merge-forward message delivered"})
+		delivered:  "outbox merge-forward message delivered", onDelivery: onDelivery})
 }
