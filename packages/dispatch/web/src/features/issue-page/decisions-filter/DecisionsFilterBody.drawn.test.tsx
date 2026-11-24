@@ -1813,7 +1813,7 @@ test("a deleted comment an address named draws its deleted line, never the model
   const row = rowOf(view, gone.id);
   const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
   expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
-  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(deletedLine).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
   expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
   expect(row.textContent).not.toContain(DELETED_AT);
 });
@@ -1860,7 +1860,7 @@ test("an entry whose parent is a deleted comment draws the parent line as the de
     made: [decision("under", { links: [shaped(specRef("s1"))] })],
   });
   const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
-  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  expect(line).toHaveAttribute("data-parent-id", "c-gone");
   const deletedLine = line?.querySelector("a [data-post-deleted]");
   expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
   expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
@@ -1906,7 +1906,7 @@ test("an entry whose parent is an edited comment draws · edited after the paren
   expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
     ` · ${CONTROL_LABELS.post_edited}`
   );
-  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(link).toHaveAttribute("href", `/issues/${KEY}/comments/c-edited`);
   expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
     `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
   );
@@ -2165,7 +2165,7 @@ test("a Change its author edited draws its words, then · edited, and one nobody
   );
   const mark = changeWords("second")?.lastElementChild;
   expect(mark?.textContent).toBe(" · edited");
-  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(mark).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
   expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
   expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
