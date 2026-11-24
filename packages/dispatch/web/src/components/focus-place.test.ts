@@ -1183,7 +1183,7 @@ test("an armed press on a control held before the press is disarmed a frame and 
       const line = armedLineIn(main, { held: ["Two"], labels: LINE });
       try {
         clickPress(line.button("Two"));
-        for (const _ of [0, 1, 2]) await settled();
+        for (const _ of [0, 1, 2]) await frameAndTasks();
         line.redraw({ labels: ["One", "Three"] });
         expect(document.activeElement).toBe(document.body);
       } finally {

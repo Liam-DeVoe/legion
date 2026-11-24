@@ -15,7 +15,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
