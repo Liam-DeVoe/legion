@@ -1823,17 +1823,61 @@ async function openLinkView(page: Page, seed: LinkSeed, view: LinkView): Promise
   return links;
 }
 
+/**
+ * Runs `open`, which opens a new page of `page`'s context and answers it, or `undefined` when it
+ * opened none, and hands what it answered to `read`; then closes that page and waits until
+ * `page`'s window has the size it had before `open` ran. Answers what `read` answers. Every row
+ * here that closes a new page and goes on with the first page closes it here, and the size is
+ * read here, before `open`, so no row can leave it unread.
+ *
+ * Firefox under Playwright gives the first page's window the closed page's size and keeps it:
+ * 1280x806 outside, where it was 1440x986, the page still reading 1440x900 inside. A press then
+ * lands away from its aim. A click near the bottom of the viewport reached no element of the
+ * page (builds Jobs `infra-2160-probe-how-qp655` and `infra-2160-probe-low-8858d`, 2026-11-23).
+ * A press aimed past x 1280, as at the spec margin's card, is outside the window: the page moves
+ * 160 px left in the window as the press reaches it, and the press's first events can land where
+ * the page stood before it moved. A click aimed at the margin card's `dispatch://` link at
+ * x 1316 went down at 1156, on the web link beside it, and came up at 1316, the page's left edge
+ * on the screen going from x 4 to -156 between the two, so the click went to the card's preview,
+ * which unfolded the card and opened no link (builds Job `infra-2160-ffl-probe2-click-4dvtv`,
+ * 2026-11-24). That is the harness's window around its emulated viewport: a person's press
+ * reaches the page where their pointer is. Setting the viewport again sizes the window to the
+ * page again, and the wait holds until the window has the size it had before `open`, since the
+ * window can take it after `setViewportSize` has answered (18 of 82 reads straight after it
+ * still found 1280x806, builds Job `infra-2160-ffl-probe3-click-cxzpd`).
+ */
+async function withNewPage<Opened extends Page | undefined, T>(
+  page: Page,
+  open: () => Promise<Opened>,
+  read: (opened: Opened) => T | Promise<T>
+): Promise<T> {
+  const size = await page.evaluate(() => [window.outerWidth, window.outerHeight] as const);
+  const opened = await open();
+  const answer = await read(opened);
+  if (opened === undefined) return answer;
+  await opened.close();
+  await page.setViewportSize(page.viewportSize() ?? WIDE);
+  await page.waitForFunction(
+    ([width, height]) => window.outerWidth === width && window.outerHeight === height,
+    size
+  );
+  return answer;
+}
+
 /** What `act` opens in a new page of `context`, whose address it answers once loaded; the page is
- *  closed. A press that opens no page fails by `what`, the press's own words (`newPageAt`). */
+ *  closed (`withNewPage`). A press that opens no page fails by `what`, the press's own words
+ *  (`newPageAt`). */
 async function openedAddress(
   context: BrowserContext,
+  page: Page,
   act: () => Promise<unknown>,
   what: string
 ): Promise<string> {
-  const opened = await newPageAt(context, act, what);
-  const address = opened.url();
-  await opened.close();
-  return address;
+  return withNewPage(
+    page,
+    () => newPageAt(context, act, what),
+    (opened) => opened.url()
+  );
 }
 
 /** Whether `page` shows the other issue's page, reached with no new load of the application. */
@@ -1863,18 +1907,13 @@ async function clickEachLink(
   expect(
     await openedAddress(
       context,
+      page,
       () => links.away.click(),
       `k-link-click: in ${view}, a click on the web link`
     ),
     `k-link-click: in ${view}, a click on the web link opens a new page at ${AWAY}`
   ).toBe(AWAY);
   expect(page.url(), `k-link-click: in ${view}, the Dispatch page stays at its address`).toBe(at);
-  // Firefox under Playwright gives this page's window the new page's size once the new page
-  // closes (outer 1440x986 became 1280x806, the page still reading 1440x900), and a pointer's
-  // click near the bottom of the viewport then reached no element of the page (builds Jobs
-  // `infra-2160-probe-how-qp655` and `infra-2160-probe-low-8858d`, 2026-11-23): set the
-  // viewport again, which sizes the window again.
-  await page.setViewportSize(page.viewportSize() ?? WIDE);
 
   await markDocument(page);
   await links.issue.click();
@@ -1905,6 +1944,7 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
   expect(
     await openedAddress(
       context,
+      page,
       () => commented.click(),
       "k-link-click: in the editable spec, a click on the link inside commented text"
     ),
@@ -1935,6 +1975,7 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
     expect(
       await openedAddress(
         context,
+        page,
         () => link.click({ modifiers: ["ControlOrMeta"] }),
         `k-link-click: a Ctrl+click on ${what}`
       ),
@@ -1943,6 +1984,7 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
     expect(
       await openedAddress(
         context,
+        page,
         () => link.click({ button: "middle" }),
         `k-link-click: a middle click on ${what}`
       ),
@@ -1985,6 +2027,7 @@ test("k-link-click: in the spec the reader edits and in a project document, a pl
     expect(
       await openedAddress(
         context,
+        page,
         () => link.click({ modifiers: ["ControlOrMeta"] }),
         step("a Ctrl+click on the dispatch:// link")
       ),
@@ -2167,7 +2210,8 @@ test("k-link-click: in the plan the reader edits and in its past version, a plai
  *  down for 150 ms, as a hand holds it, where Playwright's own `click` releases it at once, at the
  *  middle of the link's first line box, since a link the card wraps over two lines has words that
  *  are not its own inside its bounding box. Answers the address of the page it opened in
- *  `context` once that page has left `about:blank`, or `none` when no page opened within 5 s. */
+ *  `context` once that page has left `about:blank`, or `none` when no page opened within 5 s; a
+ *  page it opened is closed (`withNewPage`). */
 async function heldPressOpens(
   context: BrowserContext,
   page: Page,
@@ -2184,21 +2228,26 @@ async function heldPressOpens(
       : { x: line.left + line.width / 2, y: line.top + line.height / 2 };
   });
   if (point === undefined) throw new Error(`k-link-click: the link to ${how} is drawn`);
-  const opened = context.waitForEvent("page", { timeout: 5000 }).catch(() => undefined);
-  await page.mouse.move(point.x, point.y);
-  if (how === "Ctrl+click") await page.keyboard.down("ControlOrMeta");
-  const button = how === "middle click" ? "middle" : "left";
-  await page.mouse.down({ button });
-  // Held 150 ms, as a hand holds a button down, where Playwright's own click releases at once.
-  await page.waitForTimeout(150);
-  await page.mouse.up({ button });
-  if (how === "Ctrl+click") await page.keyboard.up("ControlOrMeta");
-  const tab = await opened;
-  if (tab === undefined) return "none";
-  await tab.waitForURL((url) => url.href !== "about:blank", { timeout: 5000 }).catch(() => {});
-  const address = tab.url();
-  await tab.close();
-  return address;
+  return withNewPage(
+    page,
+    async () => {
+      const opened = context.waitForEvent("page", { timeout: 5000 }).catch(() => undefined);
+      await page.mouse.move(point.x, point.y);
+      if (how === "Ctrl+click") await page.keyboard.down("ControlOrMeta");
+      const button = how === "middle click" ? "middle" : "left";
+      await page.mouse.down({ button });
+      // Held 150 ms, as a hand holds a button down, where Playwright's own click releases at once.
+      await page.waitForTimeout(150);
+      await page.mouse.up({ button });
+      if (how === "Ctrl+click") await page.keyboard.up("ControlOrMeta");
+      return opened;
+    },
+    async (tab) => {
+      if (tab === undefined) return "none";
+      await tab.waitForURL((url) => url.href !== "about:blank", { timeout: 5000 }).catch(() => {});
+      return tab.url();
+    }
+  );
 }
 
 /** Runs `press` on `link` and holds the element it pressed to still being in the page once the
@@ -2457,6 +2506,7 @@ test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a l
   expect(
     await openedAddress(
       context,
+      page,
       () => page.keyboard.press("Alt+Enter"),
       "k-link-keys: Alt+Enter in the web link"
     ),
@@ -2568,6 +2618,7 @@ test("k-link-keys: in the past version and the reading pane, Tab reaches each li
     expect(
       await openedAddress(
         context,
+        page,
         () => page.keyboard.press("Enter"),
         `k-link-keys: in ${view}, Enter on the web link`
       ),
@@ -3404,7 +3455,7 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
 // ---------------------------------------------------------------------------
 
 /** Presses Shift+O on `page` and reads that one new page of `context` opened at `address`, and
- *  that `page` kept its own address. */
+ *  that `page` kept its own address; the new page is closed (`withNewPage`). */
 async function shiftOOpens(
   context: BrowserContext,
   page: Page,
@@ -3413,12 +3464,21 @@ async function shiftOOpens(
 ): Promise<void> {
   const before = page.url();
   const pages = context.pages().length;
-  const opened = await test.step(`k-new-tab: ${place}, Shift+O opens a new page`, () =>
-    newPageAt(context, () => page.keyboard.press("Shift+O"), `k-new-tab: ${place}, Shift+O`));
-  expect(opened.url(), `k-new-tab: ${place}, the new page is at the address o opens`).toBe(address);
-  expect(context.pages().length, `k-new-tab: ${place}, Shift+O opens one new page`).toBe(pages + 1);
-  expect(page.url(), `k-new-tab: ${place}, the first page keeps its address`).toBe(before);
-  await opened.close();
+  await withNewPage(
+    page,
+    () =>
+      test.step(`k-new-tab: ${place}, Shift+O opens a new page`, () =>
+        newPageAt(context, () => page.keyboard.press("Shift+O"), `k-new-tab: ${place}, Shift+O`)),
+    (opened) => {
+      expect(opened.url(), `k-new-tab: ${place}, the new page is at the address o opens`).toBe(
+        address
+      );
+      expect(context.pages().length, `k-new-tab: ${place}, Shift+O opens one new page`).toBe(
+        pages + 1
+      );
+      expect(page.url(), `k-new-tab: ${place}, the first page keeps its address`).toBe(before);
+    }
+  );
 }
 
 /** The absolute address of the owner link in `scope`, the link `o` follows. */
@@ -3681,18 +3741,22 @@ test("k-new-tab: in the command bar Ctrl+Enter on an issue's hit and a Ctrl+clic
     "aria-activedescendant",
     issueHit
   );
-  const fromKey =
-    await test.step("k-new-tab: in the command bar, Ctrl+Enter opens a new page", () =>
-      newPageAt(
-        context,
-        () => box.press("Control+Enter"),
-        "k-new-tab: in the command bar, Ctrl+Enter on the issue's hit"
-      ));
-  expect(
-    new URL(fromKey.url()).pathname,
-    "k-new-tab: Ctrl+Enter opens the issue's page in the new page"
-  ).toBe(`/issues/${issue.key}`);
-  await fromKey.close();
+  await withNewPage(
+    page,
+    () =>
+      test.step("k-new-tab: in the command bar, Ctrl+Enter opens a new page", () =>
+        newPageAt(
+          context,
+          () => box.press("Control+Enter"),
+          "k-new-tab: in the command bar, Ctrl+Enter on the issue's hit"
+        )),
+    (fromKey) => {
+      expect(
+        new URL(fromKey.url()).pathname,
+        "k-new-tab: Ctrl+Enter opens the issue's page in the new page"
+      ).toBe(`/issues/${issue.key}`);
+    }
+  );
   expect(page.url(), "k-new-tab: after Ctrl+Enter the first page keeps its address").toBe(before);
   await expect(box, "k-new-tab: after Ctrl+Enter the bar keeps its words").toHaveValue(issue.key);
   await expect(box, "k-new-tab: after Ctrl+Enter the bar keeps its highlight").toHaveAttribute(
@@ -3706,17 +3770,21 @@ test("k-new-tab: in the command bar Ctrl+Enter on an issue's hit and a Ctrl+clic
   const documentHit = bar.getByRole("option", { name: /^doc / });
   await expect(documentHit, "k-new-tab: the bar lists the document").toBeVisible();
   await expect(documentHit).toHaveAttribute("aria-selected", "true");
-  const fromClick =
-    await test.step("k-new-tab: in the command bar, a Ctrl+click opens a new page", () =>
-      newPageAt(
-        context,
-        () => documentHit.click({ modifiers: ["Control"] }),
-        "k-new-tab: in the command bar, a Ctrl+click on the document's hit"
-      ));
-  expect(fromClick.url(), "k-new-tab: a Ctrl+click opens the document in the new page").toMatch(
-    new RegExp(`/projects/CORE/documents/${runbook.artifact.slug}\\?q=reseed$`)
+  await withNewPage(
+    page,
+    () =>
+      test.step("k-new-tab: in the command bar, a Ctrl+click opens a new page", () =>
+        newPageAt(
+          context,
+          () => documentHit.click({ modifiers: ["Control"] }),
+          "k-new-tab: in the command bar, a Ctrl+click on the document's hit"
+        )),
+    (fromClick) => {
+      expect(fromClick.url(), "k-new-tab: a Ctrl+click opens the document in the new page").toMatch(
+        new RegExp(`/projects/CORE/documents/${runbook.artifact.slug}\\?q=reseed$`)
+      );
+    }
   );
-  await fromClick.close();
   expect(page.url(), "k-new-tab: after a Ctrl+click the first page keeps its address").toBe(before);
   await expect(bar, "k-new-tab: after a Ctrl+click the bar stays open").toBeVisible();
   await expect(box, "k-new-tab: after a Ctrl+click the bar keeps its words").toHaveValue("reseed");
