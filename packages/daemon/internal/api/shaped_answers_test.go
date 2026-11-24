@@ -1125,7 +1125,7 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				// below it is served the task without it, on a copy: the body the route built
 				// keeps it.
 				taken := PlanRegisterResponse{Plan: RegisteredPlan{Version: 2, Tasks: []RegisteredTask{
-					{ID: "a", Steps: []string{"implementer"}, Running: &RunningStep{Kind: "step", Place: 1, Role: "implementer"}}}}}
+					{ID: "a", Steps: []string{"implementer"}, Running: []RunningStep{{Kind: "step", Place: 1, Role: "implementer"}}}}}}
 				below, _ := shapeAnswer(AnswerPlanRegister, taken, runningStepContract-1, runningStepContract-1)
 				if shaped, isTaken := below.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running != nil {
 					t.Errorf("register_plan's answer served below runningStepContract = %+v, want its task without `running`", below)

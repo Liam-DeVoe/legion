@@ -3401,11 +3401,12 @@ package api
 //
 // 235: a later version of an owner's plan can change the text of a running task alone, and
 // register_plan's answer names where each running task stands once the version is taken. Each
-// task of `api.PlanRegisterResponse` gains `running` (`api.RunningStep`: `kind`, one of `step`,
-// `retro` and `merge`; `place`, from 1 for a step and 0 for the retro and the merge; and `role`,
-// the role whose agent works that act), left out for a task that waits, is stopped or is done. The
-// workflow reads it in the transaction that takes the version, and a retry of a registration taken
-// reads it as the record holds it at the retry. A retry whose read of the record fails answers
+// task of `api.PlanRegisterResponse` that runs gains `running`, the list of each of its steps that
+// runs or waits, in their order (`api.RunningStep`: `kind`, one of `step`, `retro` and `merge`;
+// `place`, from 1 for a step and 0 for the retro and the merge; and `role`, the role whose agent
+// works that act), left out for a task that waits, is stopped or is done. The workflow reads it in
+// the transaction that takes the version, and a retry of a registration taken reads it as the
+// record holds it at the retry. A retry whose read of the record fails answers
 // `500 RECORD_UNAVAILABLE`, a code register_plan did not answer before, and a value of the
 // refusal's `code`, which no reader enumerates. A caller below 235 is served each task without
 // `running` (shaping.go's AnswerPlanRegister row, `withoutRunningSteps`), the answer its reader

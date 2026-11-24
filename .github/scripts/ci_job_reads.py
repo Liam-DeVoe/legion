@@ -571,6 +571,8 @@ RULES = {
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1069")),
+    f"{DAEMON}/internal/api/plan_test.go": reads(
+        (f"{FIX}/dispatch-version-blocks/*", "internal/api/plan_test.go:178 servedVersion reads each answer a real Dispatch served, for the route's tests")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
     # internal/supervise declares, which it reads by parsing that package's own sources.
     f"{DAEMON}/internal/api/reachstates_test.go": [
@@ -617,6 +619,8 @@ RULES = {
     f"{DAEMON}/internal/daemon/supervision_test.go": [
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
+    f"{DAEMON}/internal/dispatch/client_plan_test.go": reads(
+        (f"{FIX}/dispatch-version-blocks/*", "internal/dispatch/client_plan_test.go:22 versionBlocksFixture reads each answer a real Dispatch served, for PlanDocument's tests")),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),

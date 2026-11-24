@@ -105,13 +105,13 @@ func TestAPlanStoredByTheReleaseBeforeComparesAsItWasGiven(t *testing.T) {
 			t.Fatalf("the default task of the release before after its gate opened = %+v in %s, want default running in planning", task, before.issue.Phase)
 		}
 
-		const under = "dispatch://ACME-1/artifact/plan-md#b-default"
+		const document = "dispatch://ACME-1/artifact/plan-md"
 		blocks := []plan.Block{{ID: plan.DefaultTask, Type: plan.TaskBlockType, Text: "Plan the widget, then build it."}}
 		for _, id := range []string{"t1", "t2", "t3"} {
 			blocks = append(blocks, plan.Block{ID: id, Type: plan.TaskBlockType, Parent: plan.DefaultTask, Text: "The planner's " + id + ".",
-				Attributes: map[string]string{"parent": under, "serves": requirementOne}})
+				Attributes: map[string]string{"parent": document + "#b-default", "serves": requirementOne}})
 		}
-		given, err := plan.FromBlocks(planArtifact, 1, blocks)
+		given, err := plan.FromBlocks(planArtifact, document, 1, blocks)
 		if err != nil {
 			t.Fatalf("read version 1 from its blocks: %v", err)
 		}

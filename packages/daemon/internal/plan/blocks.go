@@ -31,17 +31,18 @@ type Block struct {
 
 // FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
-// other block is skipped. Places says where each task block stands: a task at the top, a part of a
-// task, which is a task of the plan with that task in its PartOf, or an element of a task, which is
-// no task of the plan and is kept in Elements for Validate. Each task keeps who its parent is, its
-// `parent` whole, in ParentRef. A task block whose Parent names an id that no block of blocks holds
-// stands at the top with that id in Task.MissingParent, which Validate refuses. A `needs` word that
-// names an element moves to Task.ElementNeeds (elementNeeds). A document with no task block is read
-// as a plan with no task, which Validate refuses. It answers an error only for a block it cannot
-// read at all: a task or a role with no id, one id on two such blocks, a task block whose `steps`
-// is outside the grammar (ParseSteps), and task blocks whose parents make a cycle (Places); the
-// error names the block.
-func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
+// other block is skipped. document is the plan's document as a reference to one of its blocks
+// names it, as ParentOf takes it. Places says where each task block stands: a task at the top, a
+// part of a task, which is a task of the plan with that task in its PartOf, or an element of a
+// task, which is no task of the plan and is kept in Elements for Validate. Each task keeps who its
+// parent is, its `parent` whole, in ParentRef. A task block whose Parent names an id that no block
+// of blocks holds stands at the top with that id in Task.MissingParent, which Validate refuses. A
+// `needs` word that names an element of document moves to Task.ElementNeeds (elementNeeds). A
+// document with no task block is read as a plan with no task, which Validate refuses. It answers an
+// error only for a block it cannot read at all: a task or a role with no id, one id on two such
+// blocks, a task block whose `steps` is outside the grammar (ParseSteps), and task blocks whose
+// parents make a cycle (Places); the error names the block.
+func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
 	var taskBlocks []Block
@@ -87,7 +88,7 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		task.PartOf = place.Task
 		p.Tasks = append(p.Tasks, task)
 	}
-	return elementNeeds(p), nil
+	return elementNeeds(p, document), nil
 }
 
 // taskOf is one `plan_task` block as a task, before Places says where it stands. `needs` is its
@@ -129,11 +130,13 @@ func elementOf(block Block, task Task, place Place) Element {
 	return element
 }
 
-// elementNeeds is p with each task's `needs` words that name an element of p (Plan.Elements),
-// by the id each holds (neededID), moved to Task.ElementNeeds in the block's order, each once.
-// Every other word stays whole in Task.Needs, in its order. Validate refuses each word it moves,
-// since Legion does not carry out an element, and Supported refuses each word it keeps.
-func elementNeeds(p Plan) Plan {
+// elementNeeds is p with each task's `needs` words that name an element of p (Plan.Elements)
+// moved to Task.ElementNeeds in the block's order, each once. A word names an element where it
+// names a block of the plan's document whose id is an element's (idInDocument). A reference to a
+// block of another document or another issue names none, whatever its id. Every other word stays
+// whole in Task.Needs, in its order. Validate refuses each word it moves, since Legion does not
+// carry out an element, and Supported refuses each word it keeps.
+func elementNeeds(p Plan, document string) Plan {
 	if len(p.Elements) == 0 {
 		return p
 	}
@@ -147,7 +150,7 @@ func elementNeeds(p Plan) Plan {
 		task.Needs = nil
 		for _, word := range words {
 			switch {
-			case !elements[neededID(word)]:
+			case !elements[idInDocument(word, document)]:
 				task.Needs = append(task.Needs, word)
 			case !slices.Contains(task.ElementNeeds, word):
 				task.ElementNeeds = append(task.ElementNeeds, word)
@@ -157,6 +160,18 @@ func elementNeeds(p Plan) Plan {
 	}
 	p.Tasks = tasks
 	return p
+}
+
+// idInDocument is the id of the block of document that word names, read as neededID reads it: a
+// reference to a block of document (`<document>#b-<id>`, as ParentOf reads a `parent`), or a word
+// that is no `dispatch://` reference, the id of a block of the plan's own document. It is "" for a
+// reference to anything else: a block of another document or another issue, an ask, a comment or
+// a message.
+func idInDocument(word, document string) string {
+	if strings.HasPrefix(word, "dispatch://") && !strings.HasPrefix(word, document+"#b-") {
+		return ""
+	}
+	return neededID(word)
 }
 
 // pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.

@@ -873,10 +873,10 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 });
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
-// issue of the architect's tree, and answers the plan Legion took, a running task with the act it
-// runs (contract 235); each refusal of the call itself comes before any lookup, grant or request,
-// and the daemon's refusal reaches the agent with its code. stop_task names the task to stop by
-// its block's id.
+// issue of the architect's tree, and answers the plan Legion took, a running task with each step
+// that runs or waits (contract 235); each refusal of the call itself comes before any lookup, grant
+// or request, and the daemon's refusal reaches the agent with its code. stop_task names the task to
+// stop by its block's id.
 test("register_plan takes the document reference the Dispatch tools take and answers the plan Legion took", async () => {
   const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
   const taken = {
@@ -886,7 +886,10 @@ test("register_plan takes the document reference the Dispatch tools take and ans
         {
           id: "a",
           steps: ["implementer", "reviewer"],
-          running: { kind: "step", place: 1, role: "implementer" },
+          running: [
+            { kind: "step", place: 1, role: "implementer" },
+            { kind: "step", place: 2, role: "reviewer" },
+          ],
         },
       ],
     },

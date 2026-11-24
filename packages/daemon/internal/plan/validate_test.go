@@ -11,8 +11,12 @@ const yet = " This release of Legion does not carry it out yet."
 // builtin is the deployment of Legion's own roles alone.
 var builtin = Deployment{Roles: BuiltinRoles()}
 
+// planDocument is the plan document of these tests, ACME-1's plan.md, as a reference to one of its
+// blocks names it (FromBlocks, ParentOf).
+const planDocument = "dispatch://ACME-1/artifact/plan-md"
+
 // needWord is a need written as Dispatch writes a reference to the block id of the plan document.
-func needWord(id string) string { return "dispatch://ACME-1/artifact/plan-md#b-" + id }
+func needWord(id string) string { return planDocument + "#b-" + id }
 
 // What no release carries out, as this release checks it: a step that names a role neither the
 // deployment nor the plan defines is refused, naming the step, its task and the role. Validate
@@ -61,7 +65,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 // control: a plan of one block with no `steps` is taken.
 func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	empty, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
+	empty, err := FromBlocks("plan-md", planDocument, 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(no task block): %v", err)
 	}
@@ -75,7 +79,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Supported(empty); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
-	taken, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
+	taken, err := FromBlocks("plan-md", planDocument, 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}
