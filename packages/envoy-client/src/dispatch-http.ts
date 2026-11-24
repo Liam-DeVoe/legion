@@ -161,7 +161,7 @@ export class DispatchGatewayError extends DispatchServiceError {
   readonly transient: boolean;
   /**
    * Whether the request may have reached Dispatch before the gateway answered, so a write may
-   * have taken effect (`mayHaveReachedServer`: only after a 5xx).
+   * have taken effect (`mayHaveReachedServer`: after a 5xx or a 408).
    */
   readonly mayHaveReachedDispatch: boolean;
 
@@ -216,10 +216,10 @@ export class DispatchWriteUnsettledError extends Error {
     unanswered?: string
   ) {
     let answer: string;
-    // A 5xx can itself come after Dispatch committed the write; any other refusal says the
-    // landing was an earlier attempt's.
+    // A 5xx or a 408 can itself come after Dispatch committed the write (`mayHaveReachedServer`);
+    // any other refusal says the landing was an earlier attempt's.
     let why =
-      last instanceof DispatchServiceError && last.status >= 500
+      last instanceof DispatchServiceError && mayHaveReachedServer(last.status)
         ? "an attempt of the write may have reached Dispatch"
         : "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
@@ -758,7 +758,7 @@ function answerEvent(
   }
   if (retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
-    return status >= 500 ? "server-error" : "try-later";
+    return mayHaveReachedServer(status) ? "may-have-run" : "try-later";
   }
   if (answer.replayed || answer.code === IDEMPOTENCY_KEY_COMMITTED) return "judged";
   if (answer.keyEcho !== requestKey || !isStoredKeyStatus(status)) return "unjudged";
@@ -876,7 +876,7 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
  * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
  * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
  * of which writes twice. A write answered so may already have taken effect only when the request
- * may have reached Dispatch (`mayHaveReachedServer`: after a gateway's 5xx, not its 408 or 429),
+ * may have reached Dispatch (`mayHaveReachedServer`: after a gateway's 5xx or 408, not its 429),
  * where a blind retry could apply it twice; otherwise it did not, and a retry may succeed as for
  * a read.
  */

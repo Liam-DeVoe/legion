@@ -116,8 +116,9 @@ interface Kind {
   /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
    *  keyed write, whatever the process knows of the layer. */
   readonly notJson?: boolean;
-  /** Whether it can come after Dispatch committed the write: a 5xx, `KEY_IN_FLIGHT`, a silence
-   *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. */
+  /** Whether it can come after Dispatch committed the write: a 5xx, a gateway's 408 (its timeout
+   *  can run out after it forwarded the write), `KEY_IN_FLIGHT`, a silence cut, a reset after the
+   *  request went out, a 2xx whose body did not arrive whole. */
   readonly followsCommit?: boolean;
   /** Whether Dispatch may still be running the write when it comes (a silence cut,
    *  `KEY_IN_FLIGHT`), which lets the client ask for longer. */
@@ -639,7 +640,7 @@ const KINDS: readonly Kind[] = [
     name: "408 page",
     role: "repeatable",
     at: "attempt",
-    own: { as: "refusal", status: 408 },
+    followsCommit: true,
     respond: () => page(408, "Request Timeout"),
   },
   {

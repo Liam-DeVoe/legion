@@ -356,11 +356,12 @@ const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
 /** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent: a
- * refused connection, or a 408 or a 429 whose body is not the daemon's refusal shape, which a
- * proxy in front of the daemon sent before it forwarded anything); `dropped` may have reached it
- * (a connection reset or closed before a response, or a 5xx whose body is not the daemon's
- * refusal shape: a proxy's page, which it may have sent once the daemon had the request). Each of
- * those statuses is an outage (`outage`), and `mayHaveReachedServer` says which of the two it is.
+ * refused connection, or a 429 whose body is not the daemon's refusal shape, a proxy in front of
+ * the daemon turning the request away before it forwarded anything); `dropped` may have reached it
+ * (a connection reset or closed before a response, or a 5xx or a 408 whose body is not the
+ * daemon's refusal shape: a proxy's page, which it may have sent once the daemon had the request,
+ * as a proxy whose own timeout ran out after it forwarded the request answers 408). Each of those
+ * statuses is an outage (`outage`), and `mayHaveReachedServer` says which of the two it is.
  * Undefined for everything else, which is never retried: a body in the daemon's refusal shape
  * (`refusalShape`), which is the daemon's answer whatever its status and whether or not it
  * carries a code, such as a claim route's 500 that names no code or the 502 `DISPATCH_FAILED`;

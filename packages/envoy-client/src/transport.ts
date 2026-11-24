@@ -898,14 +898,15 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 /**
  * A send that ended without the listener's word that it was stored: an attempt got no answer at
  * all (the request timed out, its connection failed, or a 2xx answer's body did not arrive or did
- * not parse) or got a 5xx, so the message may or may not have reached its target, even when a
- * later attempt was refused. Every attempt carried `idempotencyKey`. The listener sends under the
- * dedupe key `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
+ * not parse), or got a 5xx or a 408 (a hop's timeout, which can come after the hop forwarded the
+ * send), so the message may or may not have reached its target, even when a later attempt was
+ * refused. Every attempt carried `idempotencyKey`. The listener sends under the dedupe key
+ * `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
  * (`MINTED_DEDUPE_KEY_PATTERN`: a lower-case UUID and a target with no dot), the stream stores
  * one copy and the recipient's plugin drops a repeat inside `DELIVERY_DUPLICATE_WINDOW_MS`, which
  * states the rare cases where a recipient that restarted still sees it twice (`resendSafe`). A
- * send refused with a 4xx on every attempt it made, a 408 that was sent again among them, stays an
- * `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
+ * send refused with a 4xx other than a 408 on every attempt it made stays an `EnvoyApiError`.
+ * `last` (also the `cause`) is what the last attempt got.
  */
 export class EnvoySendUnconfirmedError extends Error {
   override readonly name = "EnvoySendUnconfirmedError";
@@ -981,9 +982,8 @@ export type EnvoyClient = {
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
-  /** Called for each attempt that got no answer or a 5xx: one the listener may have acted on. A
-   *  408, sent before anything was forwarded, is retried without it, as an attempt that reached
-   *  nothing. */
+  /** Called for each attempt that got no answer, a 5xx or a 408: one the listener may have acted
+   *  on (`mayHaveReachedServer`). */
   readonly onUnanswered?: () => void;
   /**
    * Called when the call fails on an attempt that reached no route of the listener: its
@@ -1201,20 +1201,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         },
         { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
       );
+      // An attempt answered with a 5xx or a 408 may have reached the listener, which may have
+      // acted on it (`mayHaveReachedServer`, `onUnanswered`). The listener writes no 408, so one is
+      // a hop's timeout, and a hop can count it after it forwarded the whole request.
+      if (mayHaveReachedServer(response.status)) options.onUnanswered?.();
       // An outage (`outage`) is sent again, but for a 429: the listener's 429 is
       // `sender_rate_limited`, its answer to this message, whose sentence the agent reads to decide
-      // when to send it again. Any other 4xx is the listener's answer too. An attempt answered
-      // with a 5xx may have reached the listener (`mayHaveReachedServer`), which may have acted on
-      // it (`onUnanswered`).
-      // The listener writes no 408, so one is a hop's timeout on the request, sent before it
-      // forwarded anything: an attempt that reached nothing, so a send answered 408 on every
-      // attempt stays that refusal.
-      if (outage(response.status) && response.status !== 429) {
-        if (mayHaveReachedServer(response.status)) options.onUnanswered?.();
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
+      // when to send it again. Any other 4xx is the listener's answer too.
+      if (outage(response.status) && response.status !== 429 && attempt + 1 < tries) {
+        await waitForRetry(retryDelayMs);
+        continue;
       }
       throw error;
     }

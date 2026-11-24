@@ -761,11 +761,12 @@ function behindAProxy(status: number): { client: LegionDaemonClient; attempts: (
 
 // An outage whose body is not the daemon's refusal shape (`@legion/contracts/http-status`), a
 // proxy's page, is no answer of the daemon's, so the restart retry waits it out. The daemon writes
-// no 408 and no 429, so a proxy sent either before it forwarded anything: that attempt reached
-// nothing. After a 5xx it may have, so the daemon's refusal that follows says the earlier attempt
-// may have been applied.
+// no 429, so a proxy turned the request away before it forwarded anything: that attempt reached
+// nothing. After a 5xx or a 408 it may have (a proxy whose own timeout runs out after it forwarded
+// the request answers 408), so the daemon's refusal that follows says the earlier attempt may have
+// been applied.
 test.each([
-  [408, "refused"],
+  [408, "dropped"],
   [429, "refused"],
   [500, "dropped"],
   [502, "dropped"],

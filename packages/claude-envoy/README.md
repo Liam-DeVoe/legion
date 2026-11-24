@@ -192,7 +192,9 @@ message from Dispatch's Agents page as that person's own turn.
   counts its messages. A send the listener stored without this machine's credential (a listener
   that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and
   writes one line to stderr naming why it went without the credential, and where the refusal is
-  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived is not a
+  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived (an attempt
+  that got no answer, a 408 or a 5xx: the listener writes no 408, and a hop in front of it can
+  answer one after it forwarded the send) is not a
   failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the command that sends it again
   under that key, which the listener drops as a repeat if the first copy arrived: `cd <dir> &&
   [ENVOY_CONFIG_FILE=<file>] [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…] [ENVOY_SESSION_ID=…] bun <the

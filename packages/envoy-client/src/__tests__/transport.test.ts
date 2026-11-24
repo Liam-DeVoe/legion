@@ -1655,8 +1655,9 @@ describe("EnvoyClient", () => {
     });
   });
 
-  // The listener writes no 408, so one is a hop's timeout on the send before it forwarded it: the
-  // attempt reached nothing, and the send goes again under the same key.
+  // The listener writes no 408, so one is a hop's timeout on the send, which may come after the
+  // hop forwarded it: the send goes again under the same key, and the second attempt's answer is
+  // the send's.
   test("retries a send answered 408 under the same key, and the second attempt delivers it", async () => {
     const recorded = recordFetch([
       new Response("<html>408 Request Timeout</html>", { status: 408 }),
@@ -2059,11 +2060,10 @@ describe("EnvoyClient", () => {
     expect((error as Error).message).toBe("no live session ses_target");
   });
 
-  // Each outage on every attempt of a send: a 5xx may have been stored, so the send is not
-  // confirmed; a 408 reached nothing (the listener writes none), so after its retry the send is
-  // that refusal, never "may or may not have arrived"; a 429 is the listener's word and is not
-  // sent again.
-  test("a send answered with an outage on every attempt: a 408 is a refusal sent twice, a 5xx is unconfirmed, a 429 is one request", async () => {
+  // Each outage on every attempt of a send: a 5xx may have been stored, and so may a 408 (the
+  // listener writes none, and a hop can answer 408 after it forwarded the send), so the send is not
+  // confirmed; a 429 is the listener's word and is not sent again.
+  test("a send answered with an outage on every attempt: a 408 or a 5xx is unconfirmed, a 429 is one request", async () => {
     const outcomes: Record<number, readonly [number, string]> = {};
     for (const status of [408, 429, 500, 501, 503]) {
       const recorded = recordFetch(
@@ -2079,7 +2079,7 @@ describe("EnvoyClient", () => {
       outcomes[status] = [recorded.requests.length, (error as Error).name];
     }
     expect(outcomes).toEqual({
-      408: [2, "EnvoyApiError"],
+      408: [2, "EnvoySendUnconfirmedError"],
       429: [1, "EnvoyApiError"],
       500: [2, "EnvoySendUnconfirmedError"],
       501: [2, "EnvoySendUnconfirmedError"],

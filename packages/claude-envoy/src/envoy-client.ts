@@ -79,7 +79,8 @@ function recorded(credential: RequestCredential): {
  *   once however many attempts reach it;
  * - an attempt that got no answer, a 408 or a 5xx is sent again under that key, after 250 ms;
  * - a send that may have arrived is told so (`EnvoySendUnconfirmedError`), naming the key that
- *   resends it safely, never "failed";
+ *   resends it safely, never "failed": one an attempt of which got no answer, a 5xx or a 408, which
+ *   a hop in front of the listener can send after it forwarded the send;
  * - each attempt's credential waits the attempt less the request's reserve
  *   (`credentialDeadline`), and a credential that could not be minted lets the request go
  *   without it, which a listener that asks for no credential answers. A listener that wants one

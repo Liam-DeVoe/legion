@@ -17,14 +17,15 @@ test("an outage is a 408, a 429 and every 5xx, and no other status from 100 to 5
   expect(STATUSES.filter(outage)).toEqual([408, 429, ...SERVER_ERRORS]);
 });
 
-// A hop's answer may have come after the request reached the server only for a 5xx: so of the
-// statuses from 100 to 599 it holds of exactly the 5xx, each of them an outage, and the outages it
-// does not hold of are the 408 and the 429 a hop sends before it forwards anything.
-test("a request a hop answered may have reached the server after every 5xx, and after no other status from 100 to 599", () => {
-  expect(STATUSES.filter(mayHaveReachedServer)).toEqual(SERVER_ERRORS);
+// A failed request may have reached the server and taken effect after a 5xx or a 408: a hop can
+// send a 408 once it forwarded the whole request. So of the statuses from 100 to 599 the rule holds
+// of exactly those, each of them an outage, and the one outage it does not hold of is the 429,
+// which turns the request away before it runs.
+test("a failed request may have reached the server after every 5xx and a 408, and after no other status from 100 to 599", () => {
+  expect(STATUSES.filter(mayHaveReachedServer)).toEqual([408, ...SERVER_ERRORS]);
   expect(STATUSES.filter((status) => mayHaveReachedServer(status) && !outage(status))).toEqual([]);
   expect(STATUSES.filter((status) => outage(status) && !mayHaveReachedServer(status))).toEqual([
-    408, 429,
+    429,
   ]);
 });
 
