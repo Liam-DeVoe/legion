@@ -181,10 +181,8 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(placed).toContain(
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
   );
-  // The host's `after` comes after the template's own operations.
-  expect(placed.indexOf(PHASE_OP_SENTENCES.requestBackwardMove)).toBeGreaterThan(
-    placed.indexOf("ready_for_update")
-  );
+  // The host's `after` passes through: the bare description names no request_backward_move.
+  expect(placed).toContain(PHASE_OP_SENTENCES.requestBackwardMove);
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
 
