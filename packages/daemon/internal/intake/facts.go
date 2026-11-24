@@ -1227,10 +1227,10 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // (plan.OwnershipRefusals): the owner of the issue the tasks of the top level, and the sub-owner
 // of a task its parts. It stores the plan (workflow's planGiven) where its task has not started,
 // and applies the rules of a later version. It answers PLAN_REFUSED (NoSubOwnedTask; the reasons of
-// plan.OwnershipRefusals; RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an
-// issue that ran before Legion took plans; or AgentUnnamed for a version in which a fresh agent
-// would need the name of its role that another agent of the plan holds from an earlier version,
-// refused before anything is written),
+// plan.OwnershipRefusals; RunningTaskChanged; MergeOfStartedActChanged; DoneTaskWouldMerge;
+// StartedBeforePlans for an issue that ran before Legion took plans; or AgentUnnamed for a version
+// in which a fresh agent would need the name of its role that another agent of the plan holds from
+// an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1272,14 +1272,20 @@ func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
 // task's branch, Branch, on GitHub at the work of Needs, the task's needs in their order as its row
 // read them, at Generation, and GitHub refused as a conflict the merge of each need in Conflicts
 // into the branch the join is made on: the task's join branch where it has one
-// (record.StoredPlan.BaseOf), else Branch. Unmerged says GitHub refused as a conflict the merge of
-// that join branch into Branch, which the task's own work there makes at a start again; it is false
-// for a task with no join branch. The workflow ends the wait of the task's step for its join and
-// starts that step, where the step waits for this join: the task, running at Generation, on Branch
-// with Needs. Any other end of a join changes nothing, so a row that a stop and a later version of
-// the task left behind, whose start again queued a join of its own, starts nothing. The outbox
-// names it by the issue, the generation, the task and the row (internal/daemon's taskBranch), so a
-// row that runs again applies one fact.
+// (record.StoredPlan.BaseOf), else Branch. A need in Conflicts is one whose work GitHub refused: for
+// a need whose work did not merge, the merge of its own branch; for the default branch, the merge
+// of that branch, which holds the work of each need that merged, so each of those needs is named.
+// Unmerged says GitHub refused as a conflict the merge of that join branch into Branch, which the
+// task's own work there makes at a start again; it is false for a task with no join branch. Base,
+// "" at a join, is the default branch where the row served the start of the task's merge instead:
+// it joined nothing, and set the base of the task's open pull request to Base where GitHub's
+// differed, which the workflow records on the pull request and as the task's base before it starts
+// the merge. The workflow ends the wait of the task's step for its join and starts that step,
+// where the step waits for this join: the task, running at Generation, on Branch with Needs. Any
+// other end of a join changes nothing, so a row that a stop and a later version of the task left
+// behind, whose start again queued a join of its own, starts nothing. The outbox names it by the
+// issue, the generation, the task and the row (internal/daemon's taskBranch), so a row that runs
+// again applies one fact.
 type TaskJoined struct {
 	Issue      string
 	Generation uint64
@@ -1288,6 +1294,7 @@ type TaskJoined struct {
 	Needs      []string
 	Conflicts  []string
 	Unmerged   bool
+	Base       string
 }
 
 func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }
@@ -1869,10 +1876,11 @@ type Refusal struct {
 // reason for each cause: register_plan answers it for a plan that plan.Supported or plan.Validate
 // refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), one that
 // changes a task its giver does not write (plan.OwnershipRefusals), one that changes or removes a
-// running or held task (RunningTaskChanged, HeldTaskChanged), one that needs the task that merges
-// where it merges (NeedOfMergingTask), one that moves the base of a running or held task
-// (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The message
-// holds every reason in its order, so a reader of the sentence alone reads every cause.
+// running or held task (RunningTaskChanged, HeldTaskChanged), one that changes whether the work of
+// a task merges once its retro or its merge has started or is held (MergeOfStartedActChanged), one
+// that leaves a done task whose work did not merge needed by no task (DoneTaskWouldMerge), or one
+// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
+// order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1902,25 +1910,29 @@ func HeldTaskChanged(task, at string) plan.Refusal {
 		"task %s is held at %s: retry or escalate its hold with retry_or_escalate, or stop it with stop_task, before you change it.", task, at)}
 }
 
-// NeedOfMergingTask is the reason a later version of the plan is refused when it gives task a
-// need of merging, the task whose work is the issue's that merges, which stands at its at (retro
-// or merge) or is done: the work of the issue merges there, and this release does not carry out
-// a need of it then.
-func NeedOfMergingTask(task, merging, at string) plan.Refusal {
+// MergeOfStartedActChanged is the reason a later version of the plan is refused when it changes
+// whether the work of task merges by itself (record.StoredPlan.Merging) while task stands at act,
+// its retro or its merge, which has started, or which a hold keeps back (held): a retro whose task
+// would no longer merge, and a task past its last step that would now merge, cannot be carried out.
+// The owner keeps the needs on the task until it is done.
+func MergeOfStartedActChanged(task, act string, held bool) plan.Refusal {
+	stands := "has started"
+	if held {
+		stands = "is held"
+	}
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
-		"task %s needs task %s, which stands at its %s, where the work of the issue merges. This release of Legion does not carry it out yet.", task, merging, at)}
+		"task %s stands at its %s, which %s, so this version cannot change whether its work merges. Keep each need on task %s as it is until it is done.",
+		task, act, stands, task)}
 }
 
-// StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the
-// base of task, the branch its pull request is based on (the workflow reads it from the plan), from
-// base to next while task has started and is not stopped: it is running or held. The task started
-// on base, and its later steps would be told next, which no start of it made: a version that adds
-// the first task that needs the task that merges moves that task's base to its join branch, and one
-// that removes the one task that needed a task moves its base to the default branch. Its owner
-// stops it first.
-func StartedTaskBaseMoved(task, base, next string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
-		"task %s has started on the base %s, and this version would base it on %s: stop it with stop_task before you change its base.", task, base, next)}
+// DoneTaskWouldMerge is the reason a later version of the plan is refused when it leaves task, done
+// and with work that did not merge (record.StoredPlan.WorkMerged), needed by no task, so its work
+// would merge by itself (record.StoredPlan.Merging): a done task does not start again, and no act
+// of the engine leads from done to a retro. The owner keeps a need on it, or adds a task that
+// needs it, so no work is lost in silence.
+func DoneTaskWouldMerge(task string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is done and its work did not merge, and in this version no task needs it, "+
+		"so its work would merge by itself; a done task does not start again. Add a task that needs task %s, or keep a need on it.", task, task)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,

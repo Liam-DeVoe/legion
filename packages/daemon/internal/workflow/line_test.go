@@ -523,8 +523,7 @@ func TestTheWalkOfATaskWithASubOwner(t *testing.T) {
 	h := record.PlanTask{Issue: key, Generation: 1, Task: "h", Needs: []string{"f"}, State: record.TaskWaiting}
 	walkOfF := func(tasks ...record.PlanTask) Walk {
 		stored := &record.StoredPlan{Version: record.PlanVersion{Issue: key, Generation: 1, Version: 1}, Tasks: tasks, Steps: map[string][]record.PlanStep{}}
-		merging, _ := stored.MergingTask()
-		return walkOfTask(key, stored, f, merging)
+		return walkOfTask(key, stored, f, stored.Merging())
 	}
 	parts := record.TaskPlace{Kind: record.PlaceParts}
 

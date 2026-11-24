@@ -151,16 +151,20 @@ import (
 // outbox's check, and restates 20261122122826's kinds with task_copy_remove
 // (migration_20261123072431_test.go).
 // The production check of each merge (20261123154051) stands above every other version of this
-// list but the sub-owners, so an upgrade applies it just before that one: it keys
-// production_checks by the issue and the moment the check opened and adds
+// list but the sub-owners and the base a task's start fixed, so an upgrade applies it just before
+// them: it keys production_checks by the issue and the moment the check opened and adds
 // production_checks.generation and production_checks.task at their defaults, which every row it
 // finds reads as a check of run 0 and of no task (migration_20261123154051_test.go), and it
 // touches no outbox_kind_check.
-// The sub-owners (20261123180305) stand above every other version of this list, so an upgrade
-// applies them last, and they need the plan's table: they write the running kind's check of
+// The sub-owners (20261123180305) stand above every other version of this list but the base a
+// task's start fixed, and they need the plan's table: they write the running kind's check of
 // `plan_tasks` again with parts and reported, add `plan_tasks.parts_conflicts` at a default every
 // row reads as no part whose join conflicted, and restate 20261123072431's kinds with parts_join,
 // so that list is the last word of outbox_kind_check now (migration_20261123180305_test.go).
+// The base a task's start fixed (20261123221142) stands above them, so an upgrade applies it last
+// of all: it adds plan_tasks.base and writes it for each task that runs at the upgrade, which a
+// store main migrated holds none of, since main runs no plan, and it touches no outbox_kind_check
+// (migration_20261123221142_test.go).
 // The branch of a pending delivery (20261122131321) is applied after all of these and touches no
 // outbox_kind_check: it adds pending_task_deliveries.branch at its default, the empty string, on
 // every row it finds, so it needs no row of its own here (migration_20261122131321_test.go).
@@ -186,7 +190,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261120012547,
 	20261120042902, 20261120055717, 20261121165047, 20261121183336, 20261122072945, 20261122074350,
-	20261122122826, 20261122131321, 20261123072431, 20261123154051, 20261123180305,
+	20261122122826, 20261122131321, 20261123072431, 20261123154051, 20261123180305, 20261123221142,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -209,9 +213,9 @@ var thisBranchsMigrations = []int{
 // task copies add, the working copies of a saved bundle (20261117204629), the held task
 // (20261117224125), the copies of a plan's tasks (20261121165047), the pull requests by task
 // (20261122122826) and the removal of a removed task's working copy (20261123072431), the
-// production check of each merge's 20261123154051, and the sub-owners' 20261123180305. That is
-// why the loop below holds the list rather than counting it, so that a version added above any of
-// them is named here rather than read as main's.
+// production check of each merge's 20261123154051, the sub-owners' 20261123180305, and the base a
+// task's start fixed (20261123221142). That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

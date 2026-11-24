@@ -168,25 +168,21 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 	return nil
 }
 
-// Supported is what this release does not carry out yet: more than one task that no task needs
-// (Sinks, over the task ids FromBlocks reads), whose work would each merge by itself where this
-// release merges an issue's work as one change, a role block, and, for each task, `owner`, a task
-// that is a part of another (Places), the key owner on a role but acceptance, acceptance with a key
-// but owner or with none, a role named at two steps, no implementer, each step of a role that reads
-// the implementer's pull request with no implementer step before it, and each step after the
+// Supported is what this release does not carry out yet: a role block, and, for each task,
+// `owner`, a task that is a part of another (Places), the key owner on a role but acceptance,
+// acceptance with a key but owner or with none, a role named at two steps, no implementer, each
+// step of a role that reads the implementer's pull request with no implementer step before it,
+// and each step after the
 // implementer's whose role d gives the type implementation, since Legion's retro is done by the
 // implementer. A plan of several tasks, and a task's `needs`, are taken: each task runs once the
-// tasks it needs are done. Any other key is taken: it names the agent of its steps (AgentOf). Its
-// steps stand in any other order: the planner at any place, the tester, the reviewer and the
-// acceptance in any order after the implementer, and a role of the deployment at any place. A
-// task that names no steps runs the project's default steps, which the configuration loader holds
-// to these same checks, so none of its step causes apply.
+// tasks it needs are done. So is a plan in which the work of several tasks merges, each by itself
+// (Merging). Any other key is taken: it names the agent of its steps (AgentOf). Its steps stand in
+// any other order: the planner at any place, the tester, the reviewer and the acceptance in any
+// order after the implementer, and a role of the deployment at any place. A task that names no
+// steps runs the project's default steps, which the configuration loader holds to these same
+// checks, so none of its step causes apply.
 func Supported(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
-	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
-		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
-			"the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), strings.Join(sinks, ", ")) + notYet})
-	}
 	for _, role := range p.RoleBlocks {
 		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role + "." + notYet})
 	}
