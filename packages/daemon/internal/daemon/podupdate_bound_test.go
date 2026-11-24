@@ -880,6 +880,48 @@ const podUpdateDeployReset = `update claims
 	set update_opened_at = $1, update_tasked_at = null, update_told_at = null
 	where update_round like 'pod:%'`
 
+// afterTheDeploy is the daemon of a later release over a store an earlier release left: the rig is
+// seeded with roles, its clock moves to deploy, the store is reset as migration 20261113110610
+// resets it where reset is set (podUpdateDeployReset), and a second daemon starts from the store
+// (restart).
+func afterTheDeploy(t *testing.T, deploy time.Time, reset bool, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	rig := newPodUpdateRig(t, roles...)
+	rig.clockAt(deploy)
+	if reset {
+		if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
+			t.Fatalf("reset the open pod round as the migration does: %v", err)
+		}
+	}
+	return rig.restart()
+}
+
+// leftByTheEarlierRelease is a ready worker the earlier release left in the rig's open round, its
+// ask marked; answered is whether it answered that round.
+func leftByTheEarlierRelease(role claim.Role, answered bool) podUpdateRole {
+	r := readyWorker(role)
+	r.round, r.reasons, r.signalled = podUpdateRound, podUpdateDrift, answered
+	return r
+}
+
+// wantAsked holds the sweep's asks since the deploy to want, by role: each role is asked as many
+// times as want says, and each ask states the round's end at deploy plus pod_update_grace_minutes.
+func (r *podUpdateRig) wantAsked(deploy time.Time, want map[claim.Role]int) {
+	r.t.Helper()
+	asked := map[claim.Role]int{}
+	for _, ask := range r.asks() {
+		asked[ask.Role]++
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
+			r.t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
+		}
+	}
+	for role, n := range want {
+		if asked[role] != n {
+			r.t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		}
+	}
+}
+
 // The earlier release left a pod round open with no bound, its claims opened at the rig's start
 // and each marked tasked, because that release queued a task. This release deploys three hours
 // later, which is far past the round's bound, and its daemon starts from the store.
@@ -893,11 +935,6 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
-	leftByTheEarlierRelease := func(role claim.Role) podUpdateRole {
-		r := readyWorker(role)
-		r.round, r.reasons = podUpdateRound, podUpdateDrift
-		return r
-	}
 	for _, tc := range []struct {
 		name  string
 		reset bool
@@ -906,14 +943,8 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 		{name: "the round keeps the clock the earlier release left", reset: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newPodUpdateRig(t, leftByTheEarlierRelease(claim.RoleImplementer), leftByTheEarlierRelease(claim.RoleTester))
-			rig.clockAt(deploy)
-			if tc.reset {
-				if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
-					t.Fatalf("reset the open pod round as the migration does: %v", err)
-				}
-			}
-			next := rig.restart()
+			next := afterTheDeploy(t, deploy, tc.reset,
+				leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, false))
 			for _, role := range roles {
 				c := next.claimOf(role)
 				if c.UpdateRound != podUpdateRound || c.UpdateOpenedAt == nil {
@@ -939,18 +970,7 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			for range 3 {
 				next.tick()
 			}
-			asked := map[claim.Role]int{}
-			for _, ask := range next.asks() {
-				asked[ask.Role]++
-				if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
-					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-				}
-			}
-			for _, role := range roles {
-				if asked[role] != 1 {
-					t.Errorf("the %s was asked %d times after the deploy, want once", role, asked[role])
-				}
-			}
+			next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 1})
 			if calls := next.replacements(); len(calls) != 0 {
 				t.Fatalf("the pod was replaced %d times after the deploy, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
 			}
@@ -972,18 +992,10 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
-	unanswered := readyWorker(claim.RoleImplementer)
-	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
-	answeredBefore := readyWorker(claim.RoleTester)
-	answeredBefore.round, answeredBefore.reasons, answeredBefore.signalled = podUpdateRound, podUpdateDrift, true
 	failed := podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
 		contract: readyWorker(claim.RolePlanner).contract, round: podUpdateRound, reasons: podUpdateDrift}
-	rig := newPodUpdateRig(t, unanswered, answeredBefore, failed)
-	rig.clockAt(deploy)
-	if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
-		t.Fatalf("reset the open pod round as the migration does: %v", err)
-	}
-	next := rig.restart()
+	next := afterTheDeploy(t, deploy, true,
+		leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, true), failed)
 	if c := next.claimOf(claim.RoleTester); c.UpdateRound != podUpdateRound || c.UpdateSignalledAt == nil {
 		t.Errorf("the tester after the deploy is in round %q with answer %v, want round %s and the answer it gave the earlier release", c.UpdateRound, c.UpdateSignalledAt, podUpdateRound)
 	}
@@ -998,19 +1010,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
-	asked := map[claim.Role]int{}
-	for _, ask := range next.asks() {
-		asked[ask.Role]++
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
-			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-		}
-	}
-	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
-	for role, n := range want {
-		if asked[role] != n {
-			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
-		}
-	}
+	next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0})
 	if calls := next.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times while the implementer had not answered, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
 	}
@@ -1035,16 +1035,8 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 func TestPodUpdateRoundOpenAtTheDeployAsksNoRoleThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)
-	unanswered := readyWorker(claim.RoleImplementer)
-	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
-	answeredBefore := readyWorker(claim.RoleTester)
-	answeredBefore.round, answeredBefore.reasons, answeredBefore.signalled = podUpdateRound, podUpdateDrift, true
-	rig := newPodUpdateRig(t, unanswered, answeredBefore)
-	rig.clockAt(deploy)
-	if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
-		t.Fatalf("reset the open pod round as the migration does: %v", err)
-	}
-	next := rig.restart()
+	next := afterTheDeploy(t, deploy, true,
+		leftByTheEarlierRelease(claim.RoleImplementer, false), leftByTheEarlierRelease(claim.RoleTester, true))
 	if c := next.claimOf(claim.RoleTester); c.UpdateSignalledAt == nil || c.UpdateTaskedAt != nil {
 		t.Fatalf("the tester after the deploy answered at %v and was asked at %v, want the earlier release's answer and no ask mark", c.UpdateSignalledAt, c.UpdateTaskedAt)
 	}
@@ -1059,16 +1051,7 @@ func TestPodUpdateRoundOpenAtTheDeployAsksNoRoleThatAnsweredWhileItsMachineDecid
 	for range 2 {
 		next.tick()
 	}
-	asked := map[claim.Role]int{}
-	for _, ask := range next.asks() {
-		asked[ask.Role]++
-	}
-	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0}
-	for role, n := range want {
-		if asked[role] != n {
-			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
-		}
-	}
+	next.wantAsked(deploy, map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0})
 }
 
 // The bound has come and no claim has answered, so the walk lets the replacement through. The

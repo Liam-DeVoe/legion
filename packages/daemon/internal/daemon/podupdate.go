@@ -468,18 +468,16 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// on it, so no ask would reach it, and the round would run to its bound waiting for a worker
 	// nothing had asked anything of.
 	//
-	// The replacement reads that set masked (masked), and the post and the ask read it as the
-	// claims hold it (told). Read masked, the ask would ask again a claim that answered while its
-	// machine was deciding something, wherever that claim holds no ask mark: the deploy's reset
-	// (migration 20261113110610) leaves every member that answered so.
+	// The replacement reads that set masked (live), and the post and the ask read it as the claims
+	// hold it (told): unaskedClaims says why the ask may not read it masked.
 	var told []supervise.Claim
 	if open != "" {
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
-		var deciding []bool
-		told, deciding = s.roundGroup(group)
+		var live []supervise.Claim
+		told, live = s.liveGroup(group)
 		terms = roundReasons(group, open)
-		if replace, decided := s.completePodUpdate(ctx, issue, group, masked(told, deciding), open, pod, terms, clock); decided {
+		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, clock); decided {
 			return replace
 		}
 	}
@@ -1089,8 +1087,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		}
 		return
 	}
-	told, deciding := s.roundGroup(claimsOf(claims, issue))
-	live := masked(told, deciding)
+	told, live := s.liveGroup(claimsOf(claims, issue))
 	clock := s.roundClockAt(s.plan.clock.Now(), replace.holds)
 	reading := readReplacement(live, round, clock)
 	switch reading.wait {
@@ -1134,7 +1131,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
 		return
 	}
-	read := s.readRoundWorkspace(ctx, issue, round, live, reading.process, clock)
+	read := s.readRoundWorkspace(ctx, issue, round, told, reading.process, clock)
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn, which is the
@@ -1272,10 +1269,14 @@ const (
 )
 
 // readRoundWorkspace is the round's one read of the issue's workspace before its pod's
-// replacement (replacePodForRound), or why the replacement makes none. live and clock are what the
-// replacement's own reading was taken over, and process is the claim the pod is replaced
-// through, whose process runs in the round's pod: the read goes through that claim's role,
-// since only a process in the pod can read the disk that the replacement takes from the pod
+// replacement (replacePodForRound), or why the replacement makes none. told is the claims the
+// replacement's own reading was taken from, as they hold their answers (noticeGroup), and clock is
+// what it was taken at. The read stops nothing in the pod and deletes no disk, so it weighs the
+// answers as given, as the replacement's line beside it names them (notWaitedFor): read masked, a
+// claim that answered while its machine was deciding would drop the read past the bound with a
+// reason that says a claim had not answered. process is the claim the pod is replaced through,
+// whose process runs in the round's pod: the read goes through that claim's role, since only a
+// process in the pod can read the disk that the replacement takes from the pod
 // (runtime.WorkspaceWorkReader). The replacement deletes that disk unless it is a kept volume
 // that the issue's next pod mounts (roundKeptVolume).
 //
@@ -1299,14 +1300,14 @@ const (
 // A kept read is answered before the bound is weighed again, because it was made once every claim
 // the round asks had answered and no turn ran. The read is bounded to one sweep interval, and a
 // read its bound ends is a read that failed.
-func (s *supervision) readRoundWorkspace(ctx context.Context, issue, round string, live []supervise.Claim, process runtime.Known, clock roundClock) workspaceRead {
-	if len(passedOverClaims(live, round, clock)) == 0 {
+func (s *supervision) readRoundWorkspace(ctx context.Context, issue, round string, told []supervise.Claim, process runtime.Known, clock roundClock) workspaceRead {
+	if len(passedOverClaims(told, round, clock)) == 0 {
 		return workspaceRead{round: round, notMade: nothingPassedOverRead}
 	}
 	if kept, ok := s.keptWorkspaceRead(issue, round); ok {
 		return kept
 	}
-	if !readRoundEnd(live, round, clock).settled() {
+	if !readRoundEnd(told, round, clock).settled() {
 		return workspaceRead{round: round, notMade: boundSteppedOverRead}
 	}
 	reader, ok := s.runtime.(runtime.WorkspaceWorkReader)
@@ -1607,8 +1608,7 @@ func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(
 		if err != nil {
 			return fmt.Errorf("%w: the claims of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		told, deciding := s.roundGroup(claimsOf(claims, issue))
-		group := masked(told, deciding)
+		told, group := s.liveGroup(claimsOf(claims, issue))
 		clock, err := s.clockUnderTurn(ctx, issue, group)
 		if err != nil {
 			return fmt.Errorf("%w: the holds of a project's pause on the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
@@ -1815,8 +1815,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		}
 		return
 	}
-	told, deciding := s.roundGroup(claimsOf(claims, issue))
-	live := masked(told, deciding)
+	told, live := s.liveGroup(claimsOf(claims, issue))
 	clock := s.roundClockAt(s.plan.clock.Now(), replace.holds)
 	if err := s.issuePodKept(live, round, clock); err != nil {
 		s.log.Info("supervise: the pod of this update round is kept now the sweep has reached its replacement by issue; nothing was replaced and the round stays open",
@@ -1862,8 +1861,7 @@ func (s *supervision) issueReplacementDue(issue, round string, ended *roundEnd) 
 		if err != nil {
 			return fmt.Errorf("%w: the claims of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		told, deciding := s.roundGroup(claimsOf(claims, issue))
-		group := masked(told, deciding)
+		told, group := s.liveGroup(claimsOf(claims, issue))
 		clock, err := s.clockUnderTurn(ctx, issue, group)
 		if err != nil {
 			return fmt.Errorf("%w: the holds of a project's pause on the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
@@ -1922,7 +1920,7 @@ func (s *supervision) issueReplacementDue(issue, round string, ended *roundEnd) 
 // It runs inside the launching machine's decision and under the pod's launch turn. So it reads
 // which claims there are from the store and what each holds from its machine's published view and
 // Deciding alone, never from Machine.Claim, which waits out a decision that may wait on this very
-// launch turn (replacementDue). It reads every claim unmasked (roundGroup's read, never masked),
+// launch turn (replacementDue). It reads every claim unmasked (noticeGroup, never masked),
 // unlike the other readers that may delete a disk. They mask the answer of a claim whose machine
 // is deciding, because that decision may start a turn in the pod that the view does not show yet.
 // No sibling here can start such a turn unseen. A sibling with no process in this pod cannot
@@ -1973,7 +1971,7 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if err != nil {
 		return false, fmt.Errorf("read the claims of the update round over pod %s: %w", podUID, err)
 	}
-	group, _ := s.roundGroup(claimsOf(claims, issue))
+	group := s.noticeGroup(claimsOf(claims, issue))
 	if !recordsRound(group, round) {
 		return false, nil
 	}
@@ -2154,19 +2152,22 @@ func claimsOf(claims []supervise.Claim, issue string) []supervise.Claim {
 	return of
 }
 
-// liveGroup is the group as its claims' own machines hold them now, in the group's order, masked
-// (masked): it is what the decision to replace a pod no claim records a process in is read from
-// (podlessRound).
-func (s *supervision) liveGroup(group []supervise.Claim) []supervise.Claim {
-	return masked(s.roundGroup(group))
+// liveGroup is one read of the group as its claims' own machines hold them now, in the group's
+// order, given twice: as the claims hold their answers (told, which noticeGroup gives alone), and
+// masked (live, masked). A caller that decides from live and asks or reports from told reads both
+// at one moment, and the mask is applied here alone, so no caller pairs a claim with another
+// claim's machine.
+func (s *supervision) liveGroup(group []supervise.Claim) (told, live []supervise.Claim) {
+	told, deciding := s.roundGroup(group)
+	return told, masked(told, deciding)
 }
 
-// noticeGroup is the group as the operator's side is told of it: the same fresh read, unmasked.
-// The mask is a decision the replacement makes — a claim whose machine is deciding has not
-// answered, for the purpose of deleting a disk — and it is not a fact about the claim. Told to
-// the controller it would be a false one: the notice marks each claim the round asks with
-// whether it answered (record.UpdateWaiting.Answered), and a masked claim would read as one that
-// said nothing although it answered.
+// noticeGroup is the group as its claims hold their answers: liveGroup's told alone. It is what
+// every reader that decides no deletion of a disk reads — the round's post and ask, the operator's
+// notices, and the names on the lines and messages of a round's end — because the mask is a
+// decision the replacement makes (masked), not a fact about a claim. The controller's notice, for
+// one, marks each claim the round asks with whether it answered (record.UpdateWaiting.Answered),
+// and a masked claim would read there as one that said nothing although it answered.
 func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 	read, _ := s.roundGroup(group)
 	return read
@@ -2204,12 +2205,11 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 // A retired claim is weighed by no round: it runs nothing in any pod.
 //
 // Each claim is read as its machine published it, its answer included, which is a fact about the
-// claim. Whether its machine was deciding something at the same read (Machine.Deciding, which
-// waits on nothing either) is kept beside it, for the one kind of reader that weighs it: a
-// decision to replace the pod reads the claims masked (masked). A caller that both decides and
-// asks or reports takes both from this one read, so the claims it weighs and the claims it names
-// are one set at one moment.
-func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Claim, deciding []bool) {
+// claim. Where its machine was deciding something at the same read (Machine.Deciding, which
+// waits on nothing either), its position in read is kept in deciding, nil where no machine was
+// deciding, for the one kind of reader that weighs it: a decision to replace the pod, which
+// reads the claims masked. liveGroup alone pairs the two.
+func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Claim, deciding []int) {
 	read = make([]supervise.Claim, 0, len(group))
 	for _, c := range group {
 		viewed, busy := c, false
@@ -2228,44 +2228,37 @@ func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Clai
 			continue
 		}
 		if busy {
-			if deciding == nil {
-				deciding = make([]bool, len(group))
-			}
-			deciding[len(read)] = true
+			deciding = append(deciding, len(read))
 		}
 		read = append(read, viewed)
 	}
 	return read, deciding
 }
 
-// masked is roundGroup's read as a decision to replace the pod reads it: a claim whose
-// machine was deciding something at the read (deciding) reads as not having answered. The view of
-// such a claim is what the decision in flight last tried to write, and the decision may be a turn
-// starting that the view does not show yet, so a reader about to delete a disk before the round's
-// bound masks it: the cost is one sweep, and the cost of the other way is a turn cut before the
-// bound. Those readers are the walk's reading (readReplacement) and what it decides of a pod with
-// no process in it (roundWithNoProcessInItsPod, roundPodEnds), the replacement's read again before
-// the pod's launch turn and its last word under it (replacePodForRound, replacementDue,
-// issuePodKept). The launch hook may delete a disk and masks nothing (roundPodEndsAtLaunch says
-// why).
+// masked is roundGroup's read as a decision to replace the pod reads it: a claim whose machine
+// was deciding something at the read (at a position deciding names) reads as not having answered.
+// The view of such a claim is what the decision in flight last tried to write, and the decision
+// may be a turn starting that the view does not show yet, so a reader about to delete a disk
+// before the round's bound masks it: the cost is one sweep, and the cost of the other way is a
+// turn cut before the bound. Those readers are the walk's reading (readReplacement) and what it
+// decides of a pod with no process in it (roundWithNoProcessInItsPod, roundPodEnds), and the
+// replacement's read again before the pod's launch turn and its last word under it
+// (replacePodForRound, replacementDue, issuePodKept). The launch hook may delete a disk and masks
+// nothing (roundPodEndsAtLaunch says why).
 //
-// Every other reader takes the answer as the claim holds it, because the mask is not a fact about
-// the claim (noticeGroup): the ask (unaskedClaims), which read masked would ask a claim that
-// answered again wherever it holds no ask mark, the notices, and the lines and messages of a
-// round's end. The read of the workspace before a replacement is the replacement's own, and reads
-// it masked (readRoundWorkspace).
+// Every other reader takes the answer as the claim holds it (noticeGroup): the ask
+// (unaskedClaims says why), the notices, the read of the workspace before a replacement, which
+// stops nothing in the pod (readRoundWorkspace), and the lines and messages of a round's end.
 //
 // Where no machine was deciding, masked is read itself, so no reader of either may write it;
 // otherwise it is a copy.
-func masked(read []supervise.Claim, deciding []bool) []supervise.Claim {
+func masked(read []supervise.Claim, deciding []int) []supervise.Claim {
 	if deciding == nil {
 		return read
 	}
 	live := slices.Clone(read)
-	for i := range live {
-		if deciding[i] {
-			live[i].UpdateSignalledAt, live[i].UpdateHead = nil, ""
-		}
+	for _, i := range deciding {
+		live[i].UpdateSignalledAt, live[i].UpdateHead = nil, ""
 	}
 	return live
 }
@@ -2352,7 +2345,8 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 			return nil
 		}
 		if read {
-			if replace := s.replacementByIssue(issue, s.liveGroup(group), round, sandboxPod, roundReasons(group, round), clock); replace != nil {
+			_, live := s.liveGroup(group)
+			if replace := s.replacementByIssue(issue, live, round, sandboxPod, roundReasons(group, round), clock); replace != nil {
 				return replace
 			}
 		}
@@ -2566,8 +2560,8 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // pod, a failed claim and a claim the round passes over are asked nothing (roundAsks,
 // roundClock.passesOver).
 //
-// The ask reads the group the tick already read, as the claims hold it (roundGroup's read, never
-// masked: masked says why), and takes no machine's lock: the outbox's row takes the claim's lock
+// The ask reads the group the tick already read, as the claims hold it (noticeGroup; unaskedClaims
+// says why never masked), and takes no machine's lock: the outbox's row takes the claim's lock
 // when it publishes, and waits rather than block where a decision holds it (supervise's
 // Machine.PublishUpdateAsk). So whether this tick's posts land before or after the ask changes
 // nothing it decides.

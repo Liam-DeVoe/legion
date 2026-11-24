@@ -2596,7 +2596,8 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 	read := make(chan []supervise.Claim, 1)
 	rig.rt.HoldResume(func() {
 		rig.rt.HoldResume(nil)
-		read <- rig.s.liveGroup(rig.snapshot())
+		_, live := rig.s.liveGroup(rig.snapshot())
+		read <- live
 		<-released
 	})
 	relaunching := rig.tokens[claim.RoleTester]
