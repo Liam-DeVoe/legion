@@ -275,11 +275,11 @@ func WithPersonPod(account, service, person string) Option {
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
 // request from any session makes an approval request to her, and TEST_AUTO_SECRET, agent-tier,
 // which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
-// an enroll.K8sPodVerifier, mirroring cmd/cipherd/main.go's own wiring), which is also what
-// authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
-// on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
-// no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
+// the identity registry's kubernetes provider, mirroring cmd/cipherd/main.go's own wiring), which
+// is also what authenticates the listed caller of the routes Dispatch's server calls, and mounts
+// api.Register on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount
+// it, but with no answer recorder in front (answer.Middleware): its answers carry no answer id,
+// and its Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
@@ -319,10 +319,6 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
 	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
@@ -351,7 +347,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// every pod principal enrollment and requests act on, as cmd/cipherd's does.
 	identities := rigIdentities(t, issuer)
 	enr := &enroll.Service{
-		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
+		Store: st, Lease: config.lease, Pod: identities.Pods().PodVerifier(podAudience),
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 		Projects: config.projectAccess, Subjects: identities, Policy: identities.Policy(),
 	}
@@ -496,12 +492,26 @@ func Identities(t testing.TB) *identity.Registry {
 // BROKER_K8S_OIDC_AUDIENCE), so a rig of another package needs no provider package of its own.
 func ClusterCallers(t testing.TB, issuer, audience string) []identity.CallerVerifier {
 	t.Helper()
-	identities, err := identityboot.Open(context.Background(), config.Config{K8sOIDCIssuer: issuer, K8sOIDCAudience: audience},
+	return clusterBoot(t, issuer, audience).Registry.Callers(identity.UseAPI)
+}
+
+// ClusterPods is the same cluster's pod verifier at audience, which an enroll.Service of another
+// package's rig verifies a pod's enrollment token with (Pod).
+func ClusterPods(t testing.TB, issuer, audience string) identity.PodVerifier {
+	t.Helper()
+	return clusterBoot(t, issuer, audience).Pods
+}
+
+// clusterBoot is the identity registry of a broker told about one cluster, whose projected tokens
+// issuer signs, held to audience.
+func clusterBoot(t testing.TB, issuer, audience string) identityboot.Boot {
+	t.Helper()
+	b, err := identityboot.Open(context.Background(), config.Config{K8sOIDCIssuer: issuer, K8sOIDCAudience: audience},
 		func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
 	if err != nil {
 		t.Fatalf("identityboot.Open: %v", err)
 	}
-	return identities.Registry.Callers(identity.UseAPI)
+	return b
 }
 
 // ClusterAccount is the Kubernetes service account subject names, as BROKER_API_ACCOUNTS lists
@@ -729,9 +739,9 @@ func (r *Rig) DecideMachineLoginAs(t *testing.T, approver, code string, approve 
 	return decideMachineLogin(t, r.UI, approver, code, approve, "")
 }
 
-// MintPodToken mints a projected service-account token bound to podUID — the shape
-// enroll.K8sPodVerifier.Verify reads — signed by this Rig's own local OIDC issuer, which the
-// Rig's enroll.Service trusts as its PodVerifier (wired in NewRig). Mirrors
+// MintPodToken mints a projected service-account token bound to podUID — the shape the
+// kubernetes identity provider's pod verifier reads — signed by this Rig's own local OIDC issuer,
+// which the Rig's enroll.Service trusts as its PodVerifier (wired in NewRig). Mirrors
 // internal/cipher/enroll/enroll_test.go's own mintPodToken helper.
 func (r *Rig) MintPodToken(t *testing.T, podUID string) string {
 	t.Helper()
