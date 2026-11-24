@@ -1388,8 +1388,9 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to its task's next step (accepting, in the default steps) once the pull
-    // request is mergeable, and the reviewer completes after it.
+    // once, an approval to its task's next step (accepting, in the default steps), or to its retro
+    // where the review is the task's last step, once the pull request is mergeable, and the
+    // reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],

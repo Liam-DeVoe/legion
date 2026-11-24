@@ -2271,10 +2271,11 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // merging (in the default steps, the phases after the review), a phase of done and a Dispatch
 // status out of the workflow, and no promotion moves an issue into or out of any of them. A first
 // phase starts at the phase of the task's first step from a record standing at admitted —
-// planning or implementing, since every tester, reviewer and acceptance step stands after the
-// implementer — an answered root goes from awaiting_person back to admitted, a returning issue
-// keeps the worker phase it stands in, and a root whose tree is opened keeps the phase it ran in
-// the tree it left.
+// planning, implementing or step, each of which keeps a slot, since every tester, reviewer and
+// acceptance step stands after the implementer while the planner and a role of the deployment can
+// stand first (plan.Supported) — an answered root goes from awaiting_person back to admitted, a
+// returning issue keeps the worker phase it stands in, and a root whose tree is opened keeps the
+// phase it ran in the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
