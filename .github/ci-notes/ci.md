@@ -72,6 +72,23 @@ The hand-kept facts the sets are computed from are each in a file of their owner
 package (.github/scripts/ci_filter_sources.py). Two pull requests that each add a read of a
 different test, or a gate of a different job, edit different files.
 
+## The changes job's limit, and the chain a merge group waits on
+
+The job's 34 minutes are above the sum of its steps' own timeouts, 33: the filter generation's 9
+(`ci-filters-generate.sh` stops this tree's run at 300 s and kills it 15 s later, and bounds the
+base's fetch at 65 s and its install at 125 s, so it ends within 505 s), Bun's install's 8
+(`network-install.sh`'s bound for bun, three attempts of 120 s with their kills and pauses, 425 s),
+3 each for the checkout, setup-go, Bun's setup, the upload and the paths filter, and 1 for the ref.
+
+Every other job of a merge-group run waits on this one, so its limit is part of the longest chain
+a merge group can run before ci-ok judges it, which main's merge-queue rule fails 180 minutes in.
+Over every job ci-ok needs that a merge group runs (48 of its 50 needs; dispatch-browser-pr and
+worker-image run on pull requests only), the longest chain of job limits is this job's 34 and
+daemon-go's 135, 169 minutes, which leaves ci-ok's judging step its 10 under the 180. A job that
+sets no `timeout-minutes` counts at GitHub's default of 360 and so carries that chain past the
+rule by itself, as `conflicts-script` did until it took a limit of its own
+(`ci-job-conflicts-script.md`).
+
 ## How a filter is computed
 
 Each filter is every file its job reads: the package and what its tests, typecheck and build read
