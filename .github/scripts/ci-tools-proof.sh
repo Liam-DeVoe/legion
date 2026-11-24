@@ -999,9 +999,9 @@ esac
 [ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
-# (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
-# github.com and x.github.com, and it does not hold github.com.invalid, the reserved control
-# name the probe verb asks for.
+# (the host test that opens .github/scripts/ci-fault-proxy.py's `Fault.faults` is that same
+# rule): github.com holds github.com and x.github.com, and it does not hold github.com.invalid,
+# the reserved control name the probe verb asks for.
 faulted() {
   local host=${1,,} held
   local IFS=,

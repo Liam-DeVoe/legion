@@ -19,15 +19,30 @@ that cannot report is no proof of anything. An empty --hosts faults every host.
 
 --port 0 takes a free port from the kernel and --port-file writes it, so a workflow step starts
 the proxy, reads the port and sets http_proxy and https_proxy for the step under test. The file
-is written whole, by rename, so a reader never sees half a port; the recovery window starts the
-moment it appears, which is the first moment a caller can use the proxy.
+is written whole, by rename, so a reader never sees half a port; by default the recovery window
+starts the moment it appears, which is the first moment a caller can use the proxy, and is one
+window for every host.
+
+--per-host-window gives --mode recover one window per host instead. Each host the --hosts list
+faults answers 504 for --recover-after seconds counted from that host's own first request, and is
+passed on at every request after its window closes: a window opens once per host and never
+again. "A host" is the host a request names, lower-cased: the host of a CONNECT's authority or of
+a plain request's absolute URI, without its port, and not the --hosts entry it matched. An entry
+covers every host under it (golang.org covers proxy.golang.org, sum.golang.org and
+google.golang.org), and one window per entry would open at the first of them and could close
+before a client first asks for the next, which would then never meet the fault. A step that first
+reaches a host minutes in, as a docker build reaches the hosts of its last RUN, still meets that
+host's fault on its first request. When a host's window opens it logs one line,
+`window <host> opened <seconds>s after the proxy started`, on the same clock as the window. The
+other two modes have no window, so they refuse the flag, and a caller that does not pass it keeps
+the one window.
 
 --bind is the address it listens on, 127.0.0.1 by default. A `RUN` of a docker build runs in a
 network namespace of its own, where 127.0.0.1 is the build container and not the runner, so a
 build reaches this proxy only on an address the container can route to: the docker bridge
-gateway, which the download-retry-images job of .github/workflows/ci-job-download-retry.yaml binds to and passes into
-the build as http_proxy. Nothing else changes: a caller that names no --bind listens where it
-always did.
+gateway, which the download-retry-images and download-retry-images-worker jobs of
+.github/workflows/ci-job-download-retry.yaml bind to and pass into the build as http_proxy.
+Nothing else changes: a caller that names no --bind listens where it always did.
 
 It makes no fetch of its own: every byte it sends upstream is one a client sent it. It is Python
 3 from the runner image, with nothing to install.
@@ -41,6 +56,7 @@ import select
 import socket
 import socketserver
 import sys
+import threading
 import time
 
 READ_SIZE = 65536
@@ -55,19 +71,36 @@ def log(message: str) -> None:
 class Fault:
     """Which hosts fail, how they fail, and until when."""
 
-    def __init__(self, mode: str, hosts: list[str], recover_after: float) -> None:
+    def __init__(self, mode: str, hosts: list[str], recover_after: float, per_host_window: bool = False) -> None:
         self.mode = mode
         self.hosts = [h.lower() for h in hosts]
         self.recover_after = recover_after
+        self.per_host_window = per_host_window
         self.started = time.monotonic()
+        # Under --per-host-window, the moment of each faulted host's first request, on the clock
+        # of `started`. A window is read from it and never reset, so a host's window opens once.
+        # The server runs a thread per connection, so two first requests for one host can arrive
+        # together: the lock makes exactly one of them the first.
+        self.first_request: dict[str, float] = {}
+        self.lock = threading.Lock()
 
     def faults(self, host: str) -> bool:
         host = host.lower()
         if self.hosts and not any(host == h or host.endswith("." + h) for h in self.hosts):
             return False
-        if self.mode == "recover":
+        if self.mode != "recover":
+            return True
+        if not self.per_host_window:
             return (time.monotonic() - self.started) < self.recover_after
-        return True
+        with self.lock:
+            now = time.monotonic()
+            opened = self.first_request.get(host)
+            if opened is None:
+                opened = self.first_request[host] = now
+                # Logged under the lock, so this line comes before the line of any request this
+                # window answers, the first among them.
+                log(f"window {host} opened {now - self.started:.1f}s after the proxy started")
+        return (now - opened) < self.recover_after
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -257,7 +290,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("fail", "recover", "stall"), required=True)
     parser.add_argument("--hosts", default="", help="comma-separated hosts to fault; empty faults every host")
     parser.add_argument("--recover-after", type=float, default=60.0,
-                        help="seconds of 504s before --mode recover passes requests on, counted from the port file")
+                        help="seconds of 504s before --mode recover passes requests on, counted from the port file, "
+                             "or under --per-host-window from each host's own first request")
+    parser.add_argument("--per-host-window", action="store_true",
+                        help="--mode recover only: give each faulted host (the host a request names, lower-cased) "
+                             "a window of its own, opened at that host's first request and never again, in place "
+                             "of one window for every host from the port file; logs a line as each window opens")
     parser.add_argument("--stall-seconds", type=float, default=600.0,
                         help="how long --mode stall holds one connection open before dropping it")
     parser.add_argument("--bind", default="127.0.0.1",
@@ -265,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0, help="0 takes a free port from the kernel")
     parser.add_argument("--port-file", default="", help="where to write the port it listens on")
     args = parser.parse_args(argv)
+    if args.per_host_window and args.mode != "recover":
+        parser.error(f"--per-host-window gives --mode recover a window per host, and --mode {args.mode} has no window")
 
     hosts = [h.strip() for h in args.hosts.split(",") if h.strip()]
     Handler.stall_seconds = args.stall_seconds
@@ -274,9 +314,11 @@ def main(argv: list[str] | None = None) -> int:
         write_port_file(args.port_file, port)
     # The clock of --mode recover starts here, after the port is announced and before a single
     # request is served: between bind and serve_forever a connection waits in the backlog, so no
-    # request can be answered out of the window it belongs to.
-    Handler.fault = Fault(args.mode, hosts, args.recover_after)
-    log(f"mode={args.mode} bind={args.bind} port={port} hosts={','.join(hosts) or 'every host'} pid={os.getpid()}")
+    # request can be answered out of the window it belongs to. Under --per-host-window each
+    # window opens later, at its host's first request, and its line gives that moment on this clock.
+    Handler.fault = Fault(args.mode, hosts, args.recover_after, args.per_host_window)
+    window = " window=per-host" if args.per_host_window else ""
+    log(f"mode={args.mode}{window} bind={args.bind} port={port} hosts={','.join(hosts) or 'every host'} pid={os.getpid()}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

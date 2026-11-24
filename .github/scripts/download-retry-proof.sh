@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# The fault rig of the download-retry and download-retry-images jobs of ci-job-download-retry.yaml: it starts
+# The fault rig of the download-retry, download-retry-images and download-retry-images-worker jobs
+# of ci-job-download-retry.yaml: it starts
 # .github/scripts/ci-fault-proxy.py in front of one step, reads the proxy's log after that step,
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #
-#   start <name> --mode <recover|stall> [--hosts <csv>] [--recover-after <s>] [--bind <address>]
+#   start <name> --mode <recover|stall> [--hosts <csv>] [--recover-after <s>] [--per-host-window]
+#         [--bind <address>]
 #       Starts a proxy of its own for the step that follows, waits for its port, and writes
 #       `proxy`, `port` and `started` to $GITHUB_OUTPUT, so the step names the proxy in its own
 #       `env:` and nowhere else. One proxy per step and not one per job, because a recovery
 #       window is counted from the proxy's first moment: a second step under the first step's
-#       proxy would run after the window closed and prove nothing.
+#       proxy would run after the window closed and prove nothing. --per-host-window is passed
+#       to the proxy as it is: each faulted host then gets a window of its own from its own first
+#       request (ci-fault-proxy.py's header), which is what a docker build needs, since it first
+#       reaches the hosts of a late RUN long after one window from the start has closed.
 #
 #   report <name> --what <phrase> --outcome <the step's outcome> --attempts <n> --floor <s>
 #          --budget <s>
 #       Reads that proxy's log and says, in lines a person reading the run can count, which site
 #       it was, how many attempts reached the proxy, the offset of each from the first, the
 #       seconds between the first attempt and the last, the requests it passed on counted by
-#       host, and the step's own elapsed seconds against its budget. Then it checks what the mode
-#       promises (below) and stops the proxy. The count by host is printed and checked against
-#       nothing.
+#       host, the requests it faulted counted by host with the second each host's first request
+#       came after the proxy started, and the step's own elapsed seconds against its budget.
+#       Then it checks what the mode promises (below) and stops the proxy. The two counts by host
+#       are printed and checked against nothing.
 #
 #   build <name|none> --file <Dockerfile> --tag <tag> [--build-arg K=V]... [--secret <spec>]...
 #       `docker buildx build` of one Dockerfile, with <name>'s proxy passed in as the build's
@@ -61,7 +67,11 @@
 #       unfaulted host to read: there the verb says so and the faulted reading stands alone.
 #
 #       The probe's own two requests are the proxy's first lines, and `report` leaves them out
-#       of the site's counts: the state file carries the line count they reached.
+#       of the site's counts: the state file carries the line count they reached. Under
+#       --per-host-window the faulted request also opens the window of the host it names, the
+#       first entry of --hosts as written, and that line is the probe's too. A site that fetches
+#       that very host would meet a window already running, so a proxy started with that flag
+#       lists first an entry its site never fetches by that bare name.
 #
 #       Two things here are worth reusing in any fault rig, and both are about not depending on
 #       a client's behaviour. Read every probe twice — what the client read, and whether the
@@ -181,13 +191,14 @@ docker_bridge_gateway() {
 }
 
 start() {
-  local name=$1 mode="" hosts="" recover_after=60 bind=127.0.0.1
+  local name=$1 mode="" hosts="" recover_after=60 per_host_window="" bind=127.0.0.1
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
       --mode) mode=$2; shift 2 ;;
       --hosts) hosts=$2; shift 2 ;;
       --recover-after) recover_after=$2; shift 2 ;;
+      --per-host-window) per_host_window=$1; shift ;;
       --bind) bind=$2; shift 2 ;;
       *) die "start: unknown argument '$1'" ;;
     esac
@@ -207,14 +218,15 @@ start() {
   # a process.
   (
     python3 "$root/.github/scripts/ci-fault-proxy.py" \
-      --mode "$mode" --hosts "$hosts" --recover-after "$recover_after" \
+      --mode "$mode" --hosts "$hosts" --recover-after "$recover_after" ${per_host_window:+"$per_host_window"} \
       --bind "$bind" --port 0 --port-file "$port_file" 2>&1 \
       | while IFS= read -r line; do printf '%s %s\n' "$EPOCHSECONDS" "$line"; done > "$log"
   ) &
   local started
   started=$(date +%s)
   # The port file is written whole, by rename, before the proxy serves a request, and the
-  # recovery window starts the moment it appears (ci-fault-proxy.py's header).
+  # recovery window starts the moment it appears (ci-fault-proxy.py's header); under
+  # --per-host-window the proxy's clock starts then, and each host's window at its first request.
   local waited=0
   while [ ! -s "$port_file" ]; do
     sleep 0.1
@@ -248,7 +260,7 @@ start() {
       echo "started=$started"
     } >> "$GITHUB_OUTPUT"
   fi
-  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode, faulting ${hosts:-every host})"
+  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode${per_host_window:+ $per_host_window}, faulting ${hosts:-every host})"
 }
 
 # One request through the proxy, made the way the site makes its own fetch: the two variables
@@ -283,11 +295,14 @@ spent_its_bound() {
 # The line the proxy wrote for the request just made, or nothing where it wrote none. The log is
 # `start`'s stamping loop, a line at a time, so a line lands a moment after the answer it belongs
 # to and is waited for rather than missed; a request that never reached the proxy leaves none
-# however long this waits, which is the reading that catches a bypass whatever caused it.
+# however long this waits, which is the reading that catches a bypass whatever caused it. A
+# `window` line is passed over: under --per-host-window the proxy writes one as the faulted
+# host's window opens, just before the request's own line, and waiting for that request's own
+# line is what keeps it from being read as the line of the request made after it.
 proxy_line_after() {
   local log=$1 skip=$2 waited=0 line=""
   while [ -z "$line" ] && [ "$waited" -lt 50 ]; do
-    line=$(awk -v skip="$skip" 'NR > skip { print; exit }' "$log")
+    line=$(awk -v skip="$skip" 'NR > skip && $3 != "window" { print; exit }' "$log")
     [ -n "$line" ] || sleep 0.1
     waited=$((waited + 1))
   done
@@ -419,7 +434,7 @@ report() {
   local site_log="$log.site"
   awk -v skip="${probe_lines:-0}" 'NR > skip' "$log" > "$site_log"
 
-  local faults passes fault_count first last fault_line pass_line pass_hosts
+  local faults passes fault_count first last fault_line pass_line pass_hosts fault_hosts
   # One line per request the proxy refused or stalled, as offsets from the step's start, and the
   # same for the ones it passed on. An attempt may open more than one connection — a package
   # manager fetches in parallel — so these are requests, not attempts; the count below is held
@@ -435,18 +450,39 @@ report() {
   # client retries the two differently.
   fault_line=$(awk '$3 == "504" || $3 == "stall" { print; exit }' "$site_log")
   pass_line=$(awk '$3 == "pass" || $3 == "502" { print; exit }' "$site_log")
+  # The host a request's line names, which both counts by host below read: the host of a
+  # CONNECT's `host:port`, of a plain request's absolute URI, or of a stall's bare host, without
+  # its port.
+  local request_host='function request_host(   target) {
+                        target = $5
+                        if ($4 != "CONNECT") { sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", target); sub(/\/.*$/, "", target) }
+                        sub(/:[0-9]*$/, "", target)
+                        return target
+                      }'
   # The requests it passed on, counted by the host each one named, as
-  # .github/workflows/ci-job-proof-sdk-offline.yaml's tally counts its own proxy's: the host of a
-  # CONNECT's `host:port`, or of a plain request's absolute URI, without its port. It names every
+  # .github/workflows/ci-job-proof-sdk-offline.yaml's tally counts its own proxy's. It names every
   # host the proxy passed a request of this site on to, a faulted one after its window among
   # them, which the count alone does not: a host the site fetches from that --hosts leaves out
   # shows here by name. The lines are printed as the two above are, and checked against nothing.
-  pass_hosts=$(awk '$3 == "pass" {
-                      target = $5
-                      if ($4 != "CONNECT") { sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", target); sub(/\/.*$/, "", target) }
-                      sub(/:[0-9]*$/, "", target)
-                      print target
-                    }' "$site_log" | LC_ALL=C sort | uniq -c | awk '{ printf "    %s %s\n", $1, $2 }')
+  pass_hosts=$(awk "$request_host"' $3 == "pass" { print request_host() }' "$site_log" |
+    LC_ALL=C sort | uniq -c | awk '{ printf "    %s %s\n", $1, $2 }')
+  # The requests it faulted, counted the same way, each host with the second its first request
+  # reached the proxy, counted from the proxy's start: what shows whether a host the site first
+  # reached late met its fault at all. Under --per-host-window that second is the proxy's own,
+  # from the line it writes as the host's window opens, read from the whole log, since a window
+  # the probe opened is still the one the site met; the proxy names that host lower-cased, so the
+  # request's host is too. With one window for every host a faulted host's first request is its
+  # first refused one, as no request is refused after one is passed, so it is that line's stamp.
+  # Printed beside the passes and checked against nothing.
+  fault_hosts=$(awk -v t="$started" -v skip="${probe_lines:-0}" "$request_host"'
+                  $3 == "window" { opened[$4] = $6; sub(/s$/, "", opened[$4]) }
+                  NR > skip && ($3 == "504" || $3 == "stall") {
+                    host = tolower(request_host())
+                    count[host]++
+                    if (!(host in first)) first[host] = $1 - t
+                  }
+                  END { for (host in count) print host, count[host], ((host in opened) ? opened[host] : first[host]) }' "$log" |
+    LC_ALL=C sort | awk '{ printf "    %s %s, first request at %s s\n", $2, $1, $3 }')
 
   echo "download-retry: $what, under --mode $mode"
   echo "  the step's own outcome: $outcome"
@@ -459,6 +495,8 @@ report() {
   echo "  the proxy's own line for the first request it answered itself: ${pass_line:-none at all, it answered no request of this site itself}"
   echo "  requests the proxy passed on: $passes, by host:"
   [ -z "$pass_hosts" ] || printf '%s\n' "$pass_hosts"
+  echo "  requests the proxy faulted: $fault_count, by host, each with its first request in seconds after the proxy started:"
+  [ -z "$fault_hosts" ] || printf '%s\n' "$fault_hosts"
   echo "  it ran ${elapsed}s from the proxy's start, against a budget of ${budget}s and a floor of ${floor}s for its $attempts attempt(s)"
 
   kill "$pid" 2> /dev/null || true

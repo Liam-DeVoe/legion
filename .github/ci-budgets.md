@@ -47,11 +47,11 @@ without it retry_fetch has nothing to retry.
 A bound is per attempt, so neither a step's nor a job's `timeout-minutes` is a bound:
 each is a sum of them, and the Budgets note of this note says how every one of them was computed. .github/workflows/ci-caches.yaml, which fills the families the Caches paragraph of .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists, carries the same rule at every download of its own.
 Each `bun install --frozen-lockfile` step is named for the command it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install by.
-Two lanes prove all of it against the fault it answers, rather than by reading, the two jobs of .github/workflows/ci-job-download-retry.yaml, which ci.yaml's one download-retry job calls:
+Two lanes prove all of it against the fault it answers, rather than by reading, the jobs of .github/workflows/ci-job-download-retry.yaml, which ci.yaml's one download-retry job calls:
 download-retry runs each of those sites — a curl of a release asset, install-omp's curl of its release archive through `retry_fetch` (a `mise install` until main's #4877), `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
 — behind .github/scripts/ci-fault-proxy.py, once with the proxy refusing for 60 s and then serving, where every site must recover, and once with it accepting the connection and sending nothing, where every site must end at its own bound instead of hanging;
-download-retry-images does the same for the inline retries of the four Dockerfiles.
-The two are one ci.yaml job, gated on the download_retry filter, which is both lanes' filters together, and each lane is gated in that file on an input its caller fills from its own filter's output, download_retry_sites or download_retry_images, so each lane runs on exactly the changes its own filter selects:
+download-retry-images and download-retry-images-worker do the same for the inline retries of the four Dockerfiles, the worker image's in the second job and the other three in the first.
+The lanes are one ci.yaml job, gated on the download_retry filter, which is both lanes' filters together, and each lane is gated in that file on an input its caller fills from its own filter's output, download_retry_sites or download_retry_images, so each lane runs on exactly the changes its own filter selects:
 ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it, and a call of a file of each lane's own would be one more.
 Their filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose own downloads run under that fault, and nothing those downloads read:
 a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither lane.
@@ -286,6 +286,9 @@ That refusal is the parser reading one `env:` map, which is why the bypass this 
 an environment file is lines and not a map, so it carries both spellings of no_proxy without the workflow refusing to start.
 
 A proxy per site, not one per job: a recovery window is counted from the proxy's first moment, so a second site under the first site's proxy would run after that window closed and would meet no fault.
+recover-changie, recover-omp and recover-go count it per host instead (ci-fault-proxy.py's `--per-host-window`, since round 63 of dispatch://INFRA-1545):
+each first reaches a listed host only once another listed host has passed, release-assets.githubusercontent.com behind github.com's redirect, and storage.googleapis.com and sum.golang.org behind proxy.golang.org, so one window from the proxy's start had closed before those hosts were asked for, and they met no fault.
+.github/ci-notes/ci-job-download-retry.md, "The sites lane's arms with a window per host", derives the 70 s each such host adds to its arm's budget.
 
 Every site carries continue-on-error, and its report step is what passes or fails the job:
 under the stalling fault a site is supposed to fail, after five bounded attempts, and under the recovering one it is supposed to succeed.
@@ -299,7 +302,7 @@ The stall half's reports hold that cleaning to account — a site that fetched n
 No matrix, though two lanes would halve the wall time:
 ci-ok's report is one artifact per job id (`ci-ok-<job>-<run attempt>-<status>`, .github/actions/ci-ok-report), so two lanes would upload one name twice, and ci-ok.sh refuses a reported job CI_OK_SELECTED_BY does not map, which a lane's name can never be (check-ci-filters.sh holds that map to ci.yaml's jobs).
 
-The recover half of the job's derivation moved from 3640 s to 6740 s in round 30, when its arms were priced at the ladder their retry guarantees rather than at two bounds.
+The recover half of the job's derivation moved from 3640 s to 6740 s in round 30, when its arms were priced at the ladder their retry guarantees rather than at two bounds, and to 7020 s in round 63, when three of them took 70 s for each host they first reach late.
 THE JOB'S KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that 221 came from 11310 + 1932 = 13242 s
 — the measured term before the stall arm's budget grew by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to 1281 s.
 The lane is the one job whose cancellation this whole issue exists to prevent, and its derivation is written above the job's id in `.github/workflows/ci.yaml` rather than above its key.
@@ -313,11 +316,12 @@ Only a stalling fault spends a whole bound
 — but the term is the bound either way, since what a budget may not do is depend on the fault answering quickly.
 
 A recover site's budget is the ladder its own retry guarantees, the same figure its stall twin carries:
-every attempt at its bound, the sleeps between them, the probe and a minute.
+every attempt at its bound, the sleeps between them, the probe and a minute;
+recover-changie, recover-omp and recover-go add 70 s for each listed host they first reach late (780, 600 and 1270 s).
 THE RECOVER ARM CHECKS THAT THE RETRY RECOVERS - the step succeeds through the fault - AND NOT HOW FAST A SITE RECOVERS, nor that each attempt holds its bound, which the stall arms check.
 Its report also holds the step's time to this budget, and in six of the seven arms that can never fire:
-the faulted step's own `timeout-minutes` and the 20 s probe come to no more than the budget (install-omp 500 s against 530 s; install-claude-code, the workspace install and the Go download 1100 s against 1130 s; Playwright 1700 s against 1730 s; the gh read 380 s against 380 s), so the step's own key ends it first.
-Only install-changie's 29 minutes, 1760 s with the probe, can run past its 710 s.
+the faulted step's own `timeout-minutes` and the 20 s probe come to no more than the budget (install-omp 500 s against 600 s; install-claude-code and the workspace install 1100 s against 1130 s, and the Go download 1100 s against 1270 s; Playwright 1700 s against 1730 s; the gh read 380 s against 380 s), so the step's own key ends it first.
+Only install-changie's 29 minutes, 1760 s with the probe, can run past its 780 s.
 
 The rule the recover arms' budgets were written to until round 30 of dispatch://INFRA-1545 was that an attempt in flight when the window closes runs to its bound and the next one succeeds, so each carried two bounds.
 Two readings of the workspace install broke it:
@@ -325,7 +329,7 @@ Two readings of the workspace install broke it:
 — attempts 2 and 3 having started after the fault had cleared, on a healthy network
 — and attempt 4 installed.
 The step succeeded both times, so the retry held; what was false was the arm's model of recovery.
-All seven recover arms carried that rule, and each now carries its stall twin's budget.
+All seven recover arms carried that rule, and each now carries its stall twin's budget, three of them with 70 s for each host they first reach late on top.
 
 Each stall site ends at its own bound instead of hanging: five attempts of the helper's loop, or curl's eight, and then the step fails.
 The floor is what the sleeps between the attempts cost on their own (10 + 20 + 40 + 80 for the helper, curl's 127 for its eight), so a step that ended under it did not make its attempts;
@@ -374,6 +378,10 @@ it differed by how many of the two ladders the drive ran.
 ## The download-retry-images job's rig
 
 The same recovering fault, inside the four Dockerfiles whose network RUN lines carry the inline retry (dispatch://INFRA-1545, T7, check #23856666).
+The rig is two jobs' since round 63: download-retry-images builds the Envoy, held-port and browser images, and download-retry-images-worker the worker image, because the four builds priced together came to 29280 s, above the 360 minutes GitHub gives a job on a hosted runner; .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build derives each budget and both keys.
+Each build's proxy runs ci-fault-proxy.py's `--per-host-window`, so each host its `--hosts` lists answers 504 for 60 s from that host's own first request, however late in the build that comes, and is passed on after it:
+with one window from the proxy's start, a host a build first reached after its first minute met no fault at all, as the worker image's model-catalog hosts did in its last RUN.
+Each report prints, beside the requests its proxy passed on by host, the requests it faulted by host, with the second each host's first request came after the proxy started.
 A build reads none of the runner's environment, so each one is passed the proxy as http_proxy and https_proxy build arguments:
 those are Docker's own predefined build arguments, which BuildKit sets as environment variables of every RUN and keeps out of the cache key, so no Dockerfile names a proxy anywhere.
 
@@ -381,7 +389,10 @@ How a build reaches the proxy: a RUN runs in a network namespace of its own, whe
 The gateway is the build container's default route and needs no entitlement, where `--network=host` would need one the default docker driver does not grant.
 
 What is faulted is what each build fetches, and never ghcr.io:
-a FROM is resolved by the daemon, which reads its own configuration and not these build arguments, so every base image is pulled first, unfaulted, and the smoke image the held-port wrapper builds on is built first too, with no proxy at all.
+a FROM is resolved by the daemon, which reads its own configuration and not these build arguments, so no base image pull meets the fault.
+download-retry-images pulls its builds' bases first, unfaulted, and builds the smoke image the held-port wrapper builds on first too, with no proxy at all;
+download-retry-images-worker lets BuildKit pull the worker image's bases inside the build, as worker-image.yaml's own build does.
+Every one of those bases is an image this repository publishes, so a failed pull is seen and not retried over (.github/scripts/check-download-retry.sh, exception (a)).
 Each faulted build is --no-cache, since a reused layer fetches nothing and would meet no fault, and every build is --load into the runner's own daemon:
 nothing is pushed, and no registry credential is held.
 
@@ -397,7 +408,7 @@ a request to a host the fault names must be refused and one to that host under t
 A build reads none of the runner's environment, so no bypass of this job's own can carry a build past the fault;
 what the probe answers for here is the proxy, which binds to the docker bridge gateway rather than to localhost
 — a fault nothing can reach refuses nothing, and a build that fetched freely for 45 minutes would read like a build that survived one.
-This job clears the bypass for its own steps all the same, since the probe is one of them and a client honouring `no_proxy=*` would read past the proxy it is probing.
+Each job clears the bypass for its own steps all the same, since the probe is one of them and a client honouring `no_proxy=*` would read past the proxy it is probing.
 
 ## The proof-sdk-offline job
 

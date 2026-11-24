@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests for `ci-fault-proxy.py`: each of its three modes over plain HTTP and over CONNECT, a
-# host outside --hosts passed on in every one of them, and --bind; and the count by host that
-# download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on.
+# host outside --hosts passed on in every one of them, --bind, and the window of its own that
+# --per-host-window gives each host under --mode recover; and the counts by host that
+# download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on and as
+# faulted.
 #
 # Nothing here touches the real internet. The host that is passed on is an origin this test
 # starts, a `python3 -m http.server` on a loopback port, and the host that is faulted is either
@@ -156,6 +158,92 @@ check "the same plain-HTTP request after the window reaches the origin" "$(is "$
 run_curl -x "$proxy" --proxytunnel "http://localhost:$origin_port/hello.txt"
 check "and the same CONNECT reaches it too" "$(is "$out" 'the origin answered')"
 
+# The recover case above holds no window to the proxy's start rather than to a host's first
+# request: it asks for the faulted host at once, so its first request and the proxy's start fall
+# in the same second, and a window of either kind answers it the same way. This case holds it,
+# by asking for the host only after one window from the start has closed.
+echo "case: without --per-host-window, --mode recover keeps one window from the start, which a host first reached after it never meets"
+start_proxy oneshot --mode recover --recover-after 2 --hosts localhost
+sleep 3
+run_curl -x "$proxy" "http://localhost:$origin_port/hello.txt"
+echo "  measured: 3 s after the proxy started, the faulted host's first request answered '$out' (curl exit $status)"
+check "a faulted host first reached after the one window is passed on at its first request" \
+  "$(is "$out" 'the origin answered')"
+check "and the proxy logged no window of its own for it" \
+  "$(is "$(contains "$(cat "$work/oneshot.log")" 'ci-fault-proxy: window ')" false)"
+
+echo "case: --per-host-window gives a host first reached late a full window of its own, and never a second one"
+# A 4 s window, and each reading at least a second clear of its edge: the host is first asked for
+# 5 s after the proxy started, a second after one window from the start would have closed; then
+# 2.5 s into its own window, 1.5 s before that window closes; then a second after it closed; and
+# then once more after as long again as a window, where a second window would answer it.
+start_proxy late --mode recover --recover-after 4 --per-host-window --hosts localhost
+sleep 5
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' "http://localhost:$origin_port/hello.txt"
+late_first=$out
+sleep 2.5
+run_curl -x "$proxy" --proxytunnel "http://localhost:$origin_port/hello.txt"
+late_inside_status=$status
+late_opened=$(sed -n 's/^ci-fault-proxy: window localhost opened \([0-9.]*\)s after the proxy started$/\1/p' "$work/late.log")
+echo "  measured: the first request, 5 s after the proxy started, answered $late_first; 2.5 s later a CONNECT gave curl exit $late_inside_status; the proxy logged the window opening at ${late_opened:-no second at all}s"
+check "a host first asked for after one window from the start has closed answers 504 at its first request" \
+  "$(is "$late_first" 504)"
+check "and a CONNECT 2.5 s into its own 4 s window is refused too" "$(is "$late_inside_status" 56)"
+check "and the proxy logged its window opening at that first request, more than 4 s after it started" \
+  "$(awk -v s="${late_opened:-0}" 'BEGIN { print (s > 4 ? "true" : "false") }')"
+sleep 2.5
+run_curl -x "$proxy" "http://localhost:$origin_port/hello.txt"
+echo "  measured: 5 s into the host's window, plain HTTP answered '$out' (curl exit $status)"
+check "the same request after its window closed reaches the origin" "$(is "$out" 'the origin answered')"
+run_curl -x "$proxy" "http://localhost:$origin_port/hello.txt"
+late_again=$out
+sleep 4.5
+run_curl -x "$proxy" --proxytunnel "http://localhost:$origin_port/hello.txt"
+echo "  measured: the next request answered '$late_again', and a CONNECT 4.5 s later '$out' (curl exit $status)"
+check "and the request after that reaches it too: a closed window opens no second one" \
+  "$(is "$late_again" 'the origin answered')"
+check "and so does a CONNECT as long as a window after that" "$(is "$out" 'the origin answered')"
+check "the proxy logged one window for the host, and only one" \
+  "$(is "$(grep -c '^ci-fault-proxy: window ' "$work/late.log" || true)" 1)"
+check "and its first line says it runs a window per host" \
+  "$(contains "$(cat "$work/late.log")" '^ci-fault-proxy: mode=recover window=per-host bind=127\.0\.0\.1 ')"
+
+echo "case: --per-host-window keeps each host's window its own, two hosts under one --hosts entry among them"
+# Both hosts are names under fetch.invalid, the one entry, so the windows are told apart by the
+# host a request names and not by the entry it matched. A name under .invalid resolves nowhere,
+# so a request the proxy passes on is answered by the proxy itself with 502, as the rig's probe
+# reads its unfaulted host: 504 is the fault, and 502 is the request passed on. b is first asked
+# for 3 s into a's 4 s window, and the pair is read again 2 s later, a second after a's window
+# closed and 2 s into b's own, b first since a's 502 waits on a resolver; and b once more 3 s
+# after that, a second after its own window closed.
+start_proxy hosts --mode recover --recover-after 4 --per-host-window --hosts fetch.invalid
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://a.fetch.invalid/tool.tar.gz
+a_first=$out
+sleep 3
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://b.fetch.invalid/tool.tar.gz
+b_first=$out
+sleep 2
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://b.fetch.invalid/tool.tar.gz
+b_inside=$out
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://a.fetch.invalid/tool.tar.gz
+a_after=$out
+sleep 3
+run_curl -x "$proxy" -o /dev/null -w '%{http_code}' http://b.fetch.invalid/tool.tar.gz
+b_after=$out
+echo "  measured: a answered $a_first, then b 3 s later $b_first; 2 s on, b $b_inside and a $a_after; 3 s on again, b $b_after"
+check "the first host's first request answers 504" "$(is "$a_first" 504)"
+check "and the second host, first asked for while the first host's window is closing, answers 504" "$(is "$b_first" 504)"
+check "while the second host, in its own window, still answers 504" "$(is "$b_inside" 504)"
+check "and once the first host's window has closed, the first host is passed on" "$(is "$a_after" 502)"
+check "and the second host is passed on once its own window has closed" "$(is "$b_after" 502)"
+# Bounded, so a proxy that took the flag and served would end here rather than hold the test.
+set +e
+timeout 10 python3 "$proxy_script" --mode fail --per-host-window --hosts fetch.invalid > "$work/refused.out" 2>&1
+refused=$?
+set -e
+check "--per-host-window is refused with a mode that has no window, as a usage error" \
+  "$(is "$refused:$(contains "$(cat "$work/refused.out")" 'has no window')" 2:true)"
+
 echo "case: --mode stall sends nothing, so each attempt ends at the client's own bound"
 start_proxy stall --mode stall --hosts fetch.invalid
 # The body file is created here, not left to curl: a curl that receives nothing writes no file
@@ -247,4 +335,53 @@ check "and the two lines after it name both hosts with their own counts, the CON
   "$(is "$(sed -n '/^  requests the proxy passed on: 3, by host:$/{n;p;n;p;}' <<<"$rig_out")" \
     "$(printf '    2 127.0.0.1\n    1 localhost')")"
 
-summary "ci-fault-proxy.py and download-retry-proof.sh's count by host"
+echo "case: download-retry-proof.sh passes --per-host-window on, and its report counts the requests the proxy faulted by host, with each host's first request"
+# The rig again, under --mode recover with a window per host, the 60 s `start` gives by default,
+# which nothing here outlasts. The site asks for two faulted hosts, a.fetch.invalid twice, over
+# plain HTTP and through CONNECT, and localhost once, and for 127.0.0.1, off the list, once: the
+# one pass the report's recover check asks for.
+rig_state="$work/rig/download-retry/perhost.state"
+set +e
+rig start perhost --mode recover --per-host-window --hosts fetch.invalid,localhost > "$work/rig-perhost-start.out" 2>&1
+rig_start=$?
+set -e
+[ ! -f "$rig_state" ] || pids+=("$(sed -n 's/^pid=//p' "$rig_state")")
+indent "$(cat "$work/rig-perhost-start.out")"
+check "the rig's start exits 0, and says it passed the flag on" \
+  "$(is "$rig_start:$(contains "$(cat "$work/rig-perhost-start.out")" '(--mode recover --per-host-window, faulting fetch.invalid,localhost)$')" 0:true)"
+check "and the proxy it started runs a window per host" \
+  "$(contains "$(cat "$work/rig/download-retry/perhost.log")" ' ci-fault-proxy: mode=recover window=per-host ')"
+set +e
+rig probe perhost > "$work/rig-perhost-probe.out" 2>&1
+rig_probe=$?
+set -e
+indent "$(cat "$work/rig-perhost-probe.out")"
+check "and its probe reads the pair as it must" "$(is "$rig_probe" 0)"
+check "and prints the 504 as the proxy's line for its faulted request, not the line of the window that request opened" \
+  "$(contains "$(cat "$work/rig-perhost-probe.out")" "^  the proxy's own line for it: [0-9]* ci-fault-proxy: 504 GET http://fetch\.invalid/\$")"
+rig_proxy=$(sed -n 's/^proxy=//p' "$rig_state" 2> /dev/null || true)
+run_curl -x "$rig_proxy" http://a.fetch.invalid/tool.tar.gz
+run_curl -x "$rig_proxy" --proxytunnel http://a.fetch.invalid/tool.tar.gz
+run_curl -x "$rig_proxy" "http://localhost:$origin_port/hello.txt"
+run_curl -x "$rig_proxy" "http://127.0.0.1:$origin_port/hello.txt"
+# The probe's own refusal and the site's three, and the site's one pass, waited for as above.
+for _ in $(seq 100); do
+  [ "$(grep -c 'ci-fault-proxy: 504 ' "$work/rig/download-retry/perhost.log" 2> /dev/null || true)" -lt 4 ] ||
+    [ "$(grep -c 'ci-fault-proxy: pass ' "$work/rig/download-retry/perhost.log" 2> /dev/null || true)" -lt 1 ] || break
+  sleep 0.05
+done
+set +e
+rig_out=$(rig report perhost --what "the faulted-by-host case" --outcome success --attempts 1 --floor 0 --budget 600 2>&1)
+rig_report=$?
+set -e
+indent "$rig_out"
+check "the report exits 0" "$(is "$rig_report" 0)"
+faulted_header='^  requests the proxy faulted: 3, by host, each with its first request in seconds after the proxy started:$'
+check "it counts the requests the proxy faulted, and says a count by host with each first request follows" \
+  "$(contains "$rig_out" "$faulted_header")"
+check "and the first line after it names a.fetch.invalid, faulted twice, the CONNECT's port taken off, with the second its window opened" \
+  "$(contains "$(sed -n "/$faulted_header/{n;p;}" <<<"$rig_out")" '^    2 a\.fetch\.invalid, first request at [0-9][0-9]*\.[0-9] s$')"
+check "and the second names localhost, faulted once, with its own" \
+  "$(contains "$(sed -n "/$faulted_header/{n;n;p;}" <<<"$rig_out")" '^    1 localhost, first request at [0-9][0-9]*\.[0-9] s$')"
+
+summary "ci-fault-proxy.py and download-retry-proof.sh's counts by host"

@@ -101,13 +101,16 @@ def ci_retry(why):
 # `mod` is not one of the verbs ci_filter_coverage.py's GO_COMMAND matches, so the step claims no
 # Run of its own.
 GO_DOWNLOAD_STEP = "Download the Go modules this job builds"
-# The two jobs that prove the retry against the fault it answers (dispatch://INFRA-1545, T7):
-# the fault, the rig that puts one in front of one step or one image build at a time, and the
-# steps their gates cite.
+# The jobs that prove the retry against the fault it answers (dispatch://INFRA-1545, T7): the
+# fault, the rig that puts one in front of one step or one image build at a time, and the steps
+# their gates cite. The worker image's build has a job of its own beside the other three builds'
+# (dispatch://INFRA-1545, round 63, which priced the four together above a hosted runner's 360
+# minutes), and both read the one images input.
 FAULT_PROXY = ".github/scripts/ci-fault-proxy.py"
 RETRY_RIG = ".github/scripts/download-retry-proof.sh"
 RETRY_JOB = "download-retry"
 IMAGES_JOB = "download-retry-images"
+IMAGES_WORKER_JOB = "download-retry-images-worker"
 RETRY_FIRST_PROXY = "Start the recovering fault for install-changie"
 RETRY_FIRST_REPORT = "What install-changie's curl did under the recovering fault"
 RETRY_GO_STEP = "Download packages/envoy's Go modules under the recovering fault"
@@ -2851,10 +2854,11 @@ GUIDE_LAYOUT_READS = reads(
 # so its on.push.paths stands in for the docs filter on main.
 PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 
-# The two lanes of ci.yaml's download-retry job, each a job of .github/workflows/ci-job-download-retry.yaml
-# gated by an input of its own (dispatch://INFRA-1545, T7; the gates below say why each declares
+# The two lanes of ci.yaml's download-retry job, each in .github/workflows/ci-job-download-retry.yaml
+# and gated by an input of its own (dispatch://INFRA-1545, T7; the gates below say why each declares
 # the machinery alone). download-retry runs each real site under .github/scripts/ci-fault-proxy.py,
-# and download-retry-images builds the four Dockerfiles under the same fault.
+# and download-retry-images and download-retry-images-worker build the four Dockerfiles under the
+# same fault, the worker image's in the second and the other three in the first.
 RETRY_FILE = job_file(RETRY_JOB)
 RETRY_SITE_READS = reads(
     *ci_retry(f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
@@ -2868,13 +2872,14 @@ RETRY_SITE_READS = reads(
     (".github/actions/install-omp/**", at(RETRY_JOB, "./.github/actions/install-omp")),
 )
 RETRY_IMAGE_READS = reads(
-    (f"{DAEMON}/docker/worker.Dockerfile", f"{at(IMAGES_JOB, IMAGES_WORKER_STEP, RETRY_FILE)} builds it"),
+    (f"{DAEMON}/docker/worker.Dockerfile", f"{at(IMAGES_WORKER_JOB, IMAGES_WORKER_STEP, RETRY_FILE)} builds it"),
     (f"{ENVOY}/docker/Dockerfile", f"{at(IMAGES_JOB, 'Build the Envoy image under the recovering fault', RETRY_FILE)} builds it, and "
                                    f"{at(IMAGES_JOB, 'Build the smoke image the held-port wrapper takes as its base, with no proxy', RETRY_FILE)} builds it unfaulted first"),
     (f"{ENVOY}/infra/host/heldportwrapper/Dockerfile", f"{at(IMAGES_JOB, 'Build the held-port image under the recovering fault', RETRY_FILE)} builds it"),
     (".github/docker/browser.Dockerfile", f"{at(IMAGES_JOB, 'Build the browser image under the recovering fault', RETRY_FILE)} builds it"),
-    (FAULT_PROXY, f"{at(IMAGES_JOB, 'Start the recovering fault for the worker image build', RETRY_FILE)} runs it, bound to the docker bridge"),
-    (RETRY_RIG, f"{at(IMAGES_JOB, IMAGES_WORKER_STEP, RETRY_FILE)} builds through it"),
+    (FAULT_PROXY, f"{at(IMAGES_WORKER_JOB, 'Start the recovering fault for the worker image build', RETRY_FILE)} and every "
+                  f"other image build's proxy step run it, bound to the docker bridge"),
+    (RETRY_RIG, f"{at(IMAGES_WORKER_JOB, IMAGES_WORKER_STEP, RETRY_FILE)} builds through it"),
 )
 
 
@@ -4269,13 +4274,15 @@ GATES = [
         *ci_retry(f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh sources it for every registry read that has to succeed"),
     )),
 
-    # The two jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
+    # The jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
     # download-retry runs each real site under .github/scripts/ci-fault-proxy.py, and
-    # download-retry-images builds the four Dockerfiles under the same fault. Each gate declares
+    # download-retry-images and download-retry-images-worker build the four Dockerfiles under the
+    # same fault, both on the download_retry_images input, which the gate below names through the
+    # first of them; its reads are both jobs'. Each gate declares
     # the machinery alone — the retry loop, the fault, the rig, and the composite actions or
     # Dockerfiles whose own downloads run under it — and nothing those downloads read. A
     # manifest, a lockfile, a pin or a module file moves the bytes that come down the wire; what
-    # these two jobs prove is that a download survives a faulting host, which those bytes cannot
+    # these jobs prove is that a download survives a faulting host, which those bytes cannot
     # change. So this gate declares none of them, and the filter beside it names none either:
     # between them the bun install set, the Go workspace and the two tool pins made an ordinary
     # dependency bump select a job of about two hours. The job that proves a version is the one
