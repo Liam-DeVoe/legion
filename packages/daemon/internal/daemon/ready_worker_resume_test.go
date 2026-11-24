@@ -368,12 +368,7 @@ func (r *readyWorkerRig) resumeRow() int64 {
 	if rows := outboxRows(r.t, r.pool); rows != 1 {
 		r.t.Fatalf("the come-back left %d outbox rows, want the one start that carries the phase's task", rows)
 	}
-	var row int64
-	if err := r.pool.QueryRow(context.Background(), "select id from outbox where kind = $1 and payload->>'op' = 'start'",
-		string(record.OutboxKindSupervise)).Scan(&row); err != nil {
-		r.t.Fatalf("read the start row the come-back queued: %v", err)
-	}
-	return row
+	return theOneStartRow(r.t, r.pool, r.issue.Key).row.ID
 }
 
 // holdsResume fails the test unless the tester holds the testing phase's resume task delivered

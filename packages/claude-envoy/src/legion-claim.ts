@@ -229,8 +229,8 @@ export interface LegionClaim {
  * carries every line in the order it is written, so every card — one the role's kept lane hands
  * over at the claim, or one sent to the session before it — waits behind the take of each value
  * the ready decision wrote (the plan's decision 16): the relaunch record's task, or the phase's
- * resume task, which the daemon queues in that decision (`supervise.Deps.ReadyResume`). Only a
- * task queued after the ready decision reaches the bridge as the listener relays it, and a card
+ * resume task, which the daemon queues in that decision (`supervise.Deps.ReadyResume`). A task
+ * queued after the ready decision reaches the bridge only as the listener relays it, and a card
  * that arrives before it may start a turn first, which the take then waits behind.
  *
  * A claim the listener refuses naming this very session is waited out rather than stopped on:

@@ -45,7 +45,7 @@ import (
 //     claims the role, whose kept lane the listener hands over at the claim, so every card of
 //     that lane waits behind the take as well. A value the ready decision writes is the relaunch
 //     record's task or the phase's resume task, which the daemon queues in that decision
-//     (supervise.Deps.ReadyResume). Only a task queued after the ready decision reaches the inbox
+//     (supervise.Deps.ReadyResume). A task queued after the ready decision reaches the inbox only
 //     as the listener relays it, and a card that arrived before it may start a turn first, which
 //     the take then waits behind;
 //   - an accepted take's text starts a turn of its own ahead of every queued delivery, and that

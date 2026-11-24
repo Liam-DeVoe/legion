@@ -104,8 +104,8 @@ export interface LegionClaimBoot {
  * addressed to the session itself can arrive while the ready or that read is still on its way:
  * the host holds every card until that read has answered — Oh My Pi's take from the registration
  * on, until `afterReadyRead` ends its hold; the Claude bridge until the ready line
- * `afterReadyRead` writes — so none starts a turn ahead of a task the ready decision wrote. Only a
- * task queued after the ready decision reaches the session as the listener relays it, and a card
+ * `afterReadyRead` writes — so none starts a turn ahead of a task the ready decision wrote. A task
+ * queued after the ready decision reaches the session only as the listener relays it, and a card
  * that arrives before it may take a turn first, which the take then waits behind. A read that
  * fails is logged and the boot goes on, its hold ended all the same: the daemon's next write of
  * the value reaches the session as well. Nothing of a message is held, delayed, reordered or read

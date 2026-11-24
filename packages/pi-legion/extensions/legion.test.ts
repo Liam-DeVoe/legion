@@ -2308,15 +2308,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    // The plan's decision 15, at the pane: the registration
-    // answers no value and the ready decision writes one, as it writes the relaunch record's task.
-    // The session's agent subject is open from its start, so a card sent to the session itself
-    // can reach it while the ready, or the read of the claim's value after it, is on its way. The
-    // take holds the task-turn mark from the registration until that read has answered, so
-    // pi-envoy's card wake hands such a card over with no turn, and the task is the first turn.
-    test("a card that reaches the pane while its ready and the read after it are on their way starts no turn: the take holds the task-turn mark from the registration until that read answers, and the task the ready decision wrote is the first turn", async () => {
-      const text = "Implement REPO-43 on its branch.";
-      const tasks = taskStandIn();
+    /** A card's hand-over by pi-envoy's card wake to an idle host, recorded where it is asked. */
+    const cardHandOvers = () => {
       // pi-envoy's own card wake, reading the marks the pane keeps as the Envoy entry wires it,
       // and an idle host outside any startup phase: what decides a card's hand-over is the mark.
       const cardWake = new CardWake({
@@ -2332,6 +2325,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       const cardAt = (at: string) => {
         handOvers.push({ at, triggerTurn: cardWake.deliveryFor(false, idleHost).triggerTurn });
       };
+      return { handOvers, cardAt };
+    };
+
+    // The plan's decision 15, at the pane: the registration
+    // answers no value and the ready decision writes one, as it writes the relaunch record's task.
+    // The session's agent subject is open from its start, so a card sent to the session itself
+    // can reach it while the ready, or the read of the claim's value after it, is on its way. The
+    // take holds the task-turn mark from the registration until that read has answered, so
+    // pi-envoy's card wake hands such a card over with no turn, and the task is the first turn.
+    test("a card that reaches the pane while its ready and the read after it are on their way starts no turn: the take holds the task-turn mark from the registration until that read answers, and the task the ready decision wrote is the first turn", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const { handOvers, cardAt } = cardHandOvers();
       const worker = await bootStalling({
         idle: () => true,
         routes: (url, body) => {
@@ -2368,18 +2374,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     test("a take of the task the ready decision wrote that the daemon refuses for a hold frees a card waiting at the ready at once: the card starts its turn, and the task's text starts none", async () => {
       const text = "Implement REPO-43 on its branch.";
       const tasks = taskStandIn();
-      const cardWake = new CardWake({
-        now: () => Date.now(),
-        sendMessage: () => undefined,
-        startupTurn: () => envoyPluginInterface().startupTurn,
-        taskTurnPending: () => envoyPluginInterface().taskTurnPending,
-        isOwnSession: (session) => session === "ses_stall",
-      });
-      const idleHost = { isIdle: () => true, setTimeout: () => undefined, sessionManager: {} };
-      const handOvers: { readonly at: string; readonly triggerTurn: boolean }[] = [];
-      const cardAt = (at: string) => {
-        handOvers.push({ at, triggerTurn: cardWake.deliveryFor(false, idleHost).triggerTurn });
-      };
+      const { handOvers, cardAt } = cardHandOvers();
       let written: TaskValue | undefined;
       const takes: unknown[] = [];
       const worker = await bootStalling({
