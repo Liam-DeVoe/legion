@@ -20,7 +20,8 @@ import {
 import { appendToDraft, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { type DocumentOwner, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -68,7 +69,8 @@ function AskReply({
       ref={markRef}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody
+        <PostBody
+          deleted={postDeletion(comment)}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
           tree={comment.body_tree}
@@ -78,9 +80,11 @@ function AskReply({
       <p
         className={`mt-1 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurfaceMuted}`}
       >
-        <AgentName actor={comment.author} inline />
-        <span aria-hidden="true">·</span>
+        {/* The spaces around the dot draw nothing between the row's items; they keep the
+            byline's text reading `alice · <time> · edited`, as every other byline's does. */}
+        <AgentName actor={comment.author} inline /> <span aria-hidden="true">·</span>{" "}
         <Timestamp at={comment.created_at} />
+        <EditedMark at={comment.edited_at} deleted={postDeletion(comment)} />
         {/* A reply is a node like any other, so it carries the one copy control for its own
             reference (`dispatch://<KEY>/comment/<id>`), as a margin thread's comments do. */}
         {reference === undefined ? null : <CopyRefButton route={reference} />}
