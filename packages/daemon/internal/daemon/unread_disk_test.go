@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -156,6 +157,12 @@ func keptOverPasses(t *testing.T, rig *idleRig, publisher *outboxPublisher, pass
 //
 // control:_a_kept_volume_needs_no_read: the issue's Sandbox keeps a volume the issue's next pod
 // mounts, so the release deletes no disk and reads nothing first.
+//
+// a_kept_volume_with_a_standing_unread_decline_is_released: the issue's Sandbox keeps a volume the
+// issue's next pod mounts, and a decline stands whose read failed, made through a role's shim
+// before the roles stopped (INFRA-341's reviewer's point 1 on R6's review fixes). The release
+// deletes no disk, so no read is owed and the failed one holds nothing: the release takes the pod
+// at its first pass, with no read and no unowned_workspace_unread hold.
 func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -209,6 +216,32 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 		if _, present := rig.rt.IssueSandbox(rig.issue.Key); !present || !rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()) {
 			t.Fatalf("after the release the issue's Sandbox stands = %t and keeps its volume = %t, want both: the release keeps the volume the next pod mounts",
 				present, rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()))
+		}
+	})
+
+	t.Run("a_kept_volume_with_a_standing_unread_decline_is_released", func(t *testing.T) {
+		rig, publisher := noRoleRig(t, false)
+		rig.rt.ScriptKeptVolume(rig.issue.Key, time.Now().Add(-time.Hour))
+		if _, err := rig.pool.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, started_row, pod_uid)
+			values ('legion', $1, now() - interval '30 minutes', now() - interval '30 minutes', 'implementer', $2,
+				(select coalesce(max(last_start_row), 0) from claims where issue = $1), '')`,
+			rig.issue.Key, pods.DeclineWorkspaceUnread); err != nil {
+			t.Fatalf("record the decline of the implementer's read that failed: %v", err)
+		}
+		rig.w.releaseUnownedPods(ctx)
+		rig.drain(t)
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the release, which keeps the Sandbox and its volume: a failed read holds no pod whose disk the release keeps", asked)
+		}
+		if launcher, role := launcherReads(rig), roleReads(rig); launcher != 0 || role != 0 {
+			t.Fatalf("workspace reads = %d through the pod's launcher and %d through a role, want none: a kept volume the next pod mounts is not deleted", launcher, role)
+		}
+		if held := holdsNamed(t, rig, workflow.IdleHoldUnownedWorkspaceUnread.String()); len(held) != 0 {
+			t.Fatalf("holds = %+v, want no %s hold: the release deletes no disk, so a failed read holds nothing", held, workflow.IdleHoldUnownedWorkspaceUnread)
+		}
+		if notices := keptNotices(t, rig, publisher); len(notices) != 0 {
+			t.Fatalf("notices to the architect = %+v, want none: the pod was not kept", notices)
 		}
 	})
 
