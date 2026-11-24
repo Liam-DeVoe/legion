@@ -243,8 +243,8 @@ func TestTheOperatorsRetryOfAnOwnerWhoseStepIsStillQueuedTellsNothingMore(t *tes
 // An owner-step still queued for another run of the step — an earlier run, which the daemon's
 // executor finishes undelivered when the row next runs (ownerStepRuns) — holds back no telling of
 // the open run: the operator's retry tells the open run's step once, and so does a launch's
-// catch-up. Only an owner-step of the open run itself, or one that names no run, is the telling
-// that a second would repeat (record.Store.OwnerStepPending).
+// catch-up. Only an owner-step of the open run itself is the telling that a second would repeat
+// (record.Store.OwnerStepPending); an owner-step that names no run holds back nothing.
 //
 // Before, any owner-step of the issue still queued stopped both (the store's read of a pending
 // notice of the kind, NoticePending), so the owner of the open run was told nothing until the

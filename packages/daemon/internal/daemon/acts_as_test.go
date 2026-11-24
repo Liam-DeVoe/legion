@@ -29,6 +29,7 @@ import (
 // the role it is given for the others, each claim's stored role. Every writer of a slot's gh files
 // of both runtimes judges the slot's App through that one function (daemon.go, kubernetes.go).
 func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

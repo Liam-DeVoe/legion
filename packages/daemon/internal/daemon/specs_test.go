@@ -95,6 +95,7 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 // parts Legion composes for it (prompts.Composer.Compose) and names no model, as Legion's other
 // roles do; neither the deployment nor the plan defines it, and it is not refused.
 func TestTheFreshAgentOfAcceptanceLaunchesWithLegionsComposedPrompt(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

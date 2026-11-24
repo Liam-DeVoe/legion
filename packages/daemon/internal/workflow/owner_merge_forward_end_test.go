@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -39,15 +40,25 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 }
 
 // Every end of a merge forward asked of the owner writes the owner's slot back to its own App, so
-// no path leaves the slot on the implement App the ask gave it (record.OwnersMergeForward names the
-// ends, and the daemon's ActsAs reads them). On `implementer:owner reviewer` at the reviewer's step,
-// with the ask open, each end queues one supervise slot_credential of the owner's claim: the merge
-// forward's landing, the move back into implementing that clears the ask, the close and the merge of
-// the pull request, the owner's stop of the task, the hold a failed reviewer's claim leaves, and the
-// issue's leave of the workflow.
+// no path leaves the slot on the implement App the ask gave it. One predicate says whether the ask
+// is open (record.OwnersMergeForward); the workflow asks it before and after each write of the
+// issue or its pull request (ownersMergeForwardWritten), and a write after which it no longer holds
+// is an end. On `implementer:owner reviewer` at the reviewer's step, with the ask open, each end
+// this test drives queues one supervise slot_credential of the owner's claim: the merge forward's
+// landing; the move back into implementing, which clears the ask; the close of the pull request;
+// its merge; the owner's stop of the task; the hold that a failed reviewer's claim leaves; the
+// issue's leave of the workflow; and a newer ask that reaches another claim, written as every write
+// of the pull request is (putPullRequest). A new generation (clearGeneration) is an end too, which
+// TestAChildSetBackToTodoGivesItsOwnersSlotItsOwnAppBack drives. The linger of the tree and the
+// daemon's delete of a pull request record whose name another issue holds (a rename collision)
+// write nothing: every role of a tree that lingers is suspended, the rename pass deletes no record
+// of an issue whose pod may still run, and the owner's next launch writes the App the record gives.
 //
-// The control: on `implementer reviewer` the ask went to the implementer's own claim, so its
-// landing and the pull request's close queue no write of the owner's slot.
+// The controls: on `implementer reviewer` the ask reached the implementer's own claim, so its
+// landing and the close of the pull request queue no write of the owner's slot. Each case first
+// checks that the ask is open, and that it is the owner's exactly where the first step is the
+// owner's; after the end it checks that the ask it started with is no longer open. So a control
+// that queues nothing shows an end that wrote nothing, not an end that did not happen.
 func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.T) {
 	ends := map[string]func(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue record.Issue){
 		"the landing": func(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue record.Issue) {
@@ -76,6 +87,15 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 			applyRefusingNothing(t, pool, engine, intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: "root", Rank: "U"})
 		},
+		"a newer ask of another claim": func(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue record.Issue) {
+			pr := recordedPR(t, pool, issue.Key)
+			newer := *pr.MergeForward
+			newer.Agent, newer.Role = claim.Token(treeRoleToken(t, issue.Key, claim.RoleImplementer)), claim.RoleImplementer
+			pr.MergeForward = &newer
+			factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+				return engine.putPullRequest(ctx, tx, pr)
+			})
+		},
 	}
 	for _, tc := range []struct {
 		name   string
@@ -90,19 +110,25 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 		{name: "the owner's stop of the task", steps: []string{"implementer:owner", "reviewer"}, end: "the owner's stop of the task", queued: 1},
 		{name: "a hold", steps: []string{"implementer:owner", "reviewer"}, end: "a hold", queued: 1},
 		{name: "the issue's leave", steps: []string{"implementer:owner", "reviewer"}, end: "the issue's leave", queued: 1},
+		{name: "a newer ask of another claim", steps: []string{"implementer:owner", "reviewer"}, end: "a newer ask of another claim", queued: 1},
 		{name: "control: the landing of an ask of a fresh implementer", steps: []string{"implementer", "reviewer"}, end: "the landing"},
 		{name: "control: the close of an ask of a fresh implementer", steps: []string{"implementer", "reviewer"}, end: "the pull request's close"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, issue := askedAtReview(t, tc.steps...)
 			before := superviseRowsOf(t, pool, issue.Key, "slot_credential")
-			if pr := recordedPR(t, pool, issue.Key); pr.MergeForward == nil || pr.MergeForward.Landed != "" || pr.State != record.PullRequestOpen ||
-				issue.Hold != nil || !record.InWorkflow(issue) {
+			pr := recordedPR(t, pool, issue.Key)
+			if !issue.ActiveInWorkflow() || !pr.MergeForwardOpen() {
 				t.Fatalf("%s before %s stands in %s with the pull request %+v, want an open ask: this case proves nothing", issue.Key, tc.end, issue.Phase, pr)
 			}
+			if owners := tc.steps[0] == "implementer:owner"; record.OwnersMergeForward(issue, &pr) != owners {
+				t.Fatalf("%s before %s: the ask %+v is the owner's: %t, want %t: this case proves nothing", issue.Key, tc.end, pr.MergeForward, !owners, owners)
+			}
+			asked := *pr.MergeForward
 			ends[tc.end](t, pool, engine, issue)
-			if pr := recordedPR(t, pool, issue.Key); record.OwnersMergeForward(issueOf(t, pool, engine, issue.Key), &pr) {
-				t.Fatalf("%s left the merge forward %+v open, want it ended: this case proves nothing", tc.end, pr.MergeForward)
+			after, afterPR := issueOf(t, pool, engine, issue.Key), recordedPR(t, pool, issue.Key)
+			if after.ActiveInWorkflow() && afterPR.MergeForwardOpen() && afterPR.MergeForward.Agent == asked.Agent && afterPR.MergeForward.Head == asked.Head {
+				t.Fatalf("%s left the ask %+v open, want it ended: this case proves nothing", tc.end, afterPR.MergeForward)
 			}
 			rows := superviseRowsOf(t, pool, issue.Key, "slot_credential")
 			if len(rows) != len(before)+tc.queued {

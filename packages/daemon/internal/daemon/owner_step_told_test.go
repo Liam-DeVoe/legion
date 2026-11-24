@@ -155,6 +155,7 @@ func (r *ownerHoldRig) tellQueued(t *testing.T, want int) {
 // launch of the mark deciding a ready of that launch whatever session it ran in, so the last
 // case's fresh session was told nothing.
 func TestALaunchTellsTheOwnersStepAgainOnlyToASessionNotToldIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a ready of the launch told the step", func(t *testing.T) {
 		r := newToldRig(t)
 		r.tell(t, stepOneTold(), 1)

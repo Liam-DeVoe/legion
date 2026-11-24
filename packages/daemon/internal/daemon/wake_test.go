@@ -226,6 +226,7 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 // worker of the open phase alone, none at the owner's place; the control of the acceptance is the
 // release that armed the owner wherever the place is its own, accepting included.
 func TestTheReleaseOfAPodAtTheOwnersStepArmsTheOwnersBackstop(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-208"
 	for _, tc := range []struct {
 		name   string
