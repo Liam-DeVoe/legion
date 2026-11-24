@@ -289,6 +289,19 @@ func xidHoldThread() (release func(), held bool) {
 			var empty [16]uint64
 			unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&empty[0])), uintptr(len(empty)*64))
 			return
+		// PLANT restorewide (scratch): the let-go puts back the mode with each node it read and the
+		// node above each.
+		case "restorewide":
+			wide := nodes
+			for i := range wide {
+				wide[i] |= nodes[i] << 1
+				if i > 0 {
+					wide[i] |= nodes[i-1] >> 63
+				}
+			}
+			_, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)*64))
+			os.Stderr.WriteString("PLANT: the let-go's set_mempolicy of the wider mask answered " + errno.Error() + "\n")
+			return
 		}
 		unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64))
 	}, true
