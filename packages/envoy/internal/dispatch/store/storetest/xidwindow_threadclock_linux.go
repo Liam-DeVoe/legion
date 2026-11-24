@@ -220,7 +220,7 @@ func xidFields(line []byte, into []int64) bool {
 // syscalls but not the modes.
 const (
 	xidMempolicyDefault = 0
-	xidMempolicyLocal   = 4
+	xidMempolicyLocal   = 0 // PLANT localzero (scratch): the holds' MPOL_LOCAL is wrong
 )
 
 // xidNUMABalancing reports whether the kernel balances this machine's memory across NUMA nodes:
