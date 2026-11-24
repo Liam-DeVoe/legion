@@ -1502,6 +1502,7 @@ func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHolders
 // SetModel and Answers are written by the end of a step alone. SetModel is the model the step's
 // role was set to. Answers is each model that answered the step's agent, with its calls. A nil
 // Answers says the end does not know them, and a pointer to an empty list is a step with no call.
+// A pointer to a nil list is refused where it is queued (validateOutboxPayload).
 type StepRecord struct {
 	ID         string        `json:"id"`
 	Task       string        `json:"task"`
@@ -2630,8 +2631,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		// Dispatch refuses a whole write whose set model or answers break its rules (400
 		// STEP_INPUT), which ends the row, and the step's end would never land. The workflow
-		// builds both within those rules, so a write outside them is a defect of the daemon.
-		if value.SetModel != nil && !steprecord.AgentTextHolds(*value.SetModel) {
+		// builds both within those rules, so a write outside them is a defect of the daemon. A set
+		// model of "" is left out, as Dispatch takes any text field sent as "".
+		if value.SetModel != nil && *value.SetModel != "" && !steprecord.AgentTextHolds(*value.SetModel) {
 			return fmt.Errorf("a step record's set model %q is not an agent's text Dispatch takes", *value.SetModel)
 		}
 		if err := answersHold(value.Answers); err != nil {
@@ -2650,12 +2652,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 }
 
 // answersHold is nil where answers keep the rules Dispatch holds a step record's answers to, and
-// else the first rule they break. Nil answers state nothing and keep every rule. There are at most
-// steprecord.AnswersMax entries. Each names a model in the form of a step's agent text, with 1 call
-// or more, and no model is named twice.
+// else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
+// list is refused: it is stored as null, which reads back as not known, so a step with no call
+// states an empty list. There are at most steprecord.AnswersMax entries. Each names a model in the
+// form of a step's agent text, with 1 call or more, and no model is named twice.
 func answersHold(answers *[]ModelCalls) error {
 	if answers == nil {
 		return nil
+	}
+	if *answers == nil {
+		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
 	}
 	if len(*answers) > steprecord.AnswersMax {
 		return fmt.Errorf("a step record's answers hold %d entries, more than the %d a step record holds", len(*answers), steprecord.AnswersMax)

@@ -1262,8 +1262,10 @@ func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T
 // which ends the row, and the step's end would never land. So the record is held to Dispatch's
 // rules where it is queued and where a stored row is read: at most the 16 answers a step record
 // holds, at least one call each, each model once, and every name in the form of a step's agent
-// text. A list with no entry, a step with no call, is taken and stored as one. A record that
-// does not know its answers leaves the field out.
+// text. A list with no entry, a step with no call, is taken and stored as one. A pointer to a nil
+// list is refused where it is queued: stored as null, it would read back as not known. A record
+// that does not know its answers leaves the field out. A set model of "" is taken, since Dispatch
+// takes any text field sent as "" as left out.
 func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
 	ended := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
 	end := func(setModel *string, answers *[]ModelCalls) StepRecord {
@@ -1292,6 +1294,7 @@ func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
 			setModel: `"anthropic/claude-opus-5"`,
 			answers:  `[{"model":"anthropic/claude-opus-5","calls":41},{"model":"anthropic/claude-haiku-4-5","calls":3}]`},
 		{name: "a step the most models answered", record: end(nil, &sixteen), setModel: "<absent>", answers: string(sixteenJSON)},
+		{name: "a set model of nothing", record: end(new(""), &[]ModelCalls{}), setModel: `""`, answers: `[]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row, err := NewOutboxRow("LEG-1", tc.record, ended)
@@ -1315,10 +1318,14 @@ func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
 			}
 		})
 	}
+	var noList []ModelCalls
 	for _, tc := range []struct {
 		name   string
 		record StepRecord
 		reason string
+		// queuedOnly is a record the store never holds: its JSON is a row of another record, so
+		// only the queue can refuse it.
+		queuedOnly bool
 	}{
 		{name: "17 answers", record: end(nil, &seventeen), reason: "answers hold 17 entries, more than the 16 a step record holds"},
 		{name: "a model with no call", record: end(nil, &[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 2}, {Model: "anthropic/x", Calls: 0}}),
@@ -1331,10 +1338,15 @@ func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
 			reason: `answers entry 1 names "", which is not an agent's text`},
 		{name: "a set model outside the form", record: end(new("a b"), nil),
 			reason: `set model "a b" is not an agent's text`},
+		{name: "answers that point to no list", record: end(nil, &noList), queuedOnly: true,
+			reason: "answers point to no list: a step with no call states an empty list"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := NewOutboxRow("LEG-1", tc.record, ended); err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, tc.reason)
+			}
+			if tc.queuedOnly {
+				return
 			}
 			payload, err := json.Marshal(tc.record)
 			must(t, err)

@@ -358,11 +358,13 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 // struct of the same fields of the same types under the same JSON names: the record's answers
 // (record.ModelCalls) to the write's (dispatch.ModelCalls), and its rating (record.PlanRating) to
 // the rating route's own argument (dispatch.PlanRating, Client.PutStepRating). So a field added to
-// one alone fails here or stops the build. The fixtures are the two writes production makes, to a
+// one alone fails here or stops the build. The fixtures are the writes production makes, to a
 // value in every field between them, which a new field must get in the write that carries it: the
 // end of a step carries every field but the rating, and the retro's rating (workflow's rateRetro)
-// carries the step's identity and the rating. The run (outbox.run) sends each to its own route,
-// and each write carries its own record's value of each field.
+// carries the step's identity and the rating. A third fixture is the end of a step with no call,
+// whose empty list of answers must reach the write as an empty list, not as nil. The run
+// (outbox.run) sends each to its own route, and each write carries its own record's value of each
+// field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	t.Parallel()
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
@@ -404,11 +406,16 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 			}
 		}
 	}
+	// The end of a step with no call states an empty list of answers, which Dispatch keeps apart
+	// from not knowing them: the write must carry the empty list, never nil.
+	noCall := stepRecordOf()
+	noCall.Answers = &[]record.ModelCalls{}
 	fixtures := []struct {
 		name string
 		rec  record.StepRecord
 	}{
 		{"the end of a review that asked for changes", stepRecordOf()},
+		{"the end of a step with no call", noCall},
 		{"the rating of a retro", ratingRecordOf()},
 	}
 	for i := range recordType.NumField() {
