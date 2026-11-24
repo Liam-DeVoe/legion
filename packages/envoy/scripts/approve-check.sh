@@ -335,7 +335,7 @@ run_scan "${scan_paths[@]}"
 if [ "$(jq '(.hash_matches // []) + (.key_matches // []) | length' <<<"$scan")" != 0 ]; then
   result "1e scan" FAIL "$(jq -c . <<<"$scan")"
 elif [ "$scan_exit" = 0 ] && [ "$(jq -r .result <<<"$scan")" = clean ]; then
-  result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, environment_variables: (.environment_names | length), environment_matches}' <<<"$scan")"
+  result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, dangling_links, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, environment_variables: (.environment_names | length), environment_matches}' <<<"$scan")"
 elif [ "$scan_exit" = 3 ]; then
   result "1e scan" UNKNOWN "$(jq -c '{unknown, files_read, files_skipped, logged_hashes, logged_bindings}' <<<"$scan")"
 else
