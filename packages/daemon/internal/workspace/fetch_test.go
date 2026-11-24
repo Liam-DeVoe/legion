@@ -1029,7 +1029,10 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 // would run or follow; and a pod's clone reads the feed's objects through its alternates, so a feed
 // replaced under it would take the clone's history with it. Fetch takes an existing feed only in
 // the shape it writes, and otherwise fails, naming why, runs no git, and leaves the feed where it
-// stands: no planted hook runs, and nothing is removed or cloned in its place.
+// stands: no planted hook runs, and nothing is removed or cloned in its place — not even the stale
+// lock and the partial pack a killed fetch leaves, which Fetch's sweep removes only from a feed it
+// takes as its own (RemoveStaleFeedLocks). Before, that sweep ran first and removed both from a
+// feed Fetch then refused.
 func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, feed, marker string){
 		"a hook": func(t *testing.T, feed, marker string) {
@@ -1111,6 +1114,16 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 			}
 			marker := filepath.Join(t.TempDir(), "the hook ran")
 			plant(t, first.Feed, marker)
+			var stale []string
+			if info, err := os.Lstat(first.Feed); err == nil && info.IsDir() {
+				for _, name := range []string{"packed-refs.lock", filepath.Join("objects", "pack", "tmp_pack_Stale1")} {
+					path := filepath.Join(first.Feed, name)
+					if err := os.WriteFile(path, []byte("interrupted\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					stale = append(stale, path)
+				}
+			}
 			advanceRemote(t, run.remote)
 			before := len(run.Calls())
 			owner, err := os.Lstat(filepath.Dir(first.Feed))
@@ -1140,6 +1153,11 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 			}
 			if info, err := os.Lstat(first.Feed); err != nil || info.Mode().Type() != planted.Mode().Type() {
 				t.Errorf("the feed is %v (%v) after the fetch, want it as it stood, %v", info, err, planted.Mode().Type())
+			}
+			for _, path := range stale {
+				if _, err := os.Lstat(path); err != nil {
+					t.Errorf("the foreign feed's %s after the fetch: %v, want it left as it stood", path, err)
+				}
 			}
 		})
 	}
