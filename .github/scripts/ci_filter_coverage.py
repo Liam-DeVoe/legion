@@ -261,10 +261,6 @@ class TagRun:
     workflow: str = WORKFLOW
 
 
-# A why's citation of the line a call is on: `<file>.go:<line> calls <name>`, or a line range
-# `<line>-<line>`. check_table holds each one that cites its own row's file to that file's line.
-OWN_CALL_CITATION = re.compile(r"([\w./-]+\.go):(\d+)(?:-(\d+))? calls ([\w.]+)")
-
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
 # Each entry is (the workflow file that holds the step, the job, the step).
 CITED: list = []
@@ -276,6 +272,21 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
     that calls a reusable workflow keeps its gate here and its steps there."""
     CITED.append((workflow, job, step))
     return f'{os.path.basename(workflow)} {job} "{step}"'
+
+
+# Every line of a file a why cites through calls() as the one a call is on, checked to call it so
+# a line added above the call fails here. Each entry is (the file's path from the repository's
+# root, the first line cited, the last, the name the call is to).
+CALLED: list = []
+
+
+def calls(source: str, line: int, name: str, rest: str = "", last: int | None = None) -> str:
+    """A citation of the line of `source` that calls `name`, or with `last` of the lines `line`
+    to `last`, one of which does, followed by `rest`. `source` is the path from the repository's
+    root of the file that makes the call. The check reads what is recorded here, never the why's
+    words, so a why worded another way is held to the same line."""
+    CALLED.append((source, line, line if last is None else last, name))
+    return f"{source}:{line}{'' if last is None else f'-{last}'} calls {name}{rest}"
 
 
 # ---------------------------------------------------------------- the workflow documents
@@ -1740,30 +1751,32 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
         if source not in files:
             problems.append(error(".github/scripts/ci_job_reads.py", f"RULES names {source}, which is not "
                                                                       f"in the repository; update or remove the rule"))
-    # A why that cites the line of its own row's file a call is on - `<file>:<line> calls <name>`,
-    # or a range `<line>-<line>`, with <file> the end of the row's path - names a line that calls
-    # <name>: ci_job_reads.py's header asks for the line that performs the read, and a line added
-    # above the call moves the call while the citation stays where it was.
-    for source, entries in data.RULES.items():
+    # A why that cites through calls() the line a call is on names a file of the repository and a
+    # line of it that calls the name: ci_job_reads.py's header asks for the line that performs the
+    # read, and a line added above the call moves the call while the citation stays where it was.
+    # What is read is the file, the lines and the name calls() recorded, never the why's words. A
+    # citation recorded more than once, as a why built for each read of a list is, is read once.
+    sources: dict = {}
+    for source, first, last, name in dict.fromkeys(CALLED):
+        span = f"{source}:{first}" + (f"-{last}" if last != first else "")
         if source not in files:
+            problems.append(error(".github/scripts/ci_job_reads.py", f"a why cites {span} as calling {name}, but "
+                                                                      f"{source} is not in the repository; cite the "
+                                                                      f"file that makes the call by its path from the "
+                                                                      f"repository's root"))
             continue
-        held = None
-        for entry in entries:
-            for cited, first, last, name in OWN_CALL_CITATION.findall(entry.why):
-                if source != cited and not source.endswith("/" + cited):
-                    continue
-                if held is None:
-                    held = read_repository_text(REPO / source).splitlines()
-                name = name.rstrip(".")
-                call = re.compile(re.escape(name) + r"\s*\(")
-                if any(call.search(held[n - 1]) for n in range(int(first), int(last or first) + 1) if 0 < n <= len(held)):
-                    continue
-                at = [str(n) for n, line in enumerate(held, 1) if call.search(line)]
-                problems.append(error(".github/scripts/ci_job_reads.py",
-                                      f"RULES' row for {source} cites {cited}:{first}{'-' + last if last else ''} as "
-                                      f"calling {name}, which that line does not; "
-                                      + (f"the call is at :{', :'.join(at)}" if at else f"no line of the file calls {name}")
-                                      + ", so cite the line the call is on"))
+        if source not in sources:
+            sources[source] = read_repository_text(REPO / source).splitlines()
+        lines = sources[source]
+        call = re.compile(re.escape(name) + r"\s*\(")
+        if any(call.search(lines[n - 1]) for n in range(first, last + 1) if 0 < n <= len(lines)):
+            continue
+        on = [str(n) for n, line in enumerate(lines, 1) if call.search(line)]
+        problems.append(error(".github/scripts/ci_job_reads.py",
+                              f"a why cites {span} as calling {name}, which "
+                              + ("that line does not; " if last == first else "none of those lines does; ")
+                              + (f"the call is at :{', :'.join(on)}" if on else f"no line of the file calls {name}")
+                              + ", so cite the line the call is on"))
     # A citation names the workflow file that holds the step: ci.yaml, or a workflow one of its
     # jobs calls. The step must still be there, so a rename or a move fails here. The set already
     # holds every workflow ci.yaml calls, so only a citation naming another file is read here.
