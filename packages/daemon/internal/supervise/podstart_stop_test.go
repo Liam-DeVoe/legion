@@ -305,7 +305,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.insideDecision(r.m, func() error {
 				now := h.clock.Now()
 				return r.m.delayWake(h.ctx, &wake{at: now.Add(time.Hour), reserved: now, kind: WakeLaunch, state: StateLaunching,
-					run: func(context.Context) error { return nil }}, time.Hour)
+					run: func(context.Context) error { return nil }})
 			})
 		}},
 		// A path added later that drops the waiting wake and takes nothing out of the gate: the

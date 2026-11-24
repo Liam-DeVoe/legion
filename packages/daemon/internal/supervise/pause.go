@@ -266,7 +266,7 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 		m.wake = nil
 		return m.runWake(ctx, waiting, true)
 	}
-	return m.delayWake(ctx, waiting, at.Sub(now))
+	return m.delayWake(ctx, waiting)
 }
 
 // resumePause is the resume's event (ResumePause): what this claim holds of the pause that ended
