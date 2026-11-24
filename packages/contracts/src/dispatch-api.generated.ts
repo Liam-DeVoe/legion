@@ -4078,6 +4078,7 @@ export interface components {
       /** @enum {string} */
       kind: "named" | "pull_request" | "branch";
       learned_at?: components["schemas"]["BasisLearnedAt"];
+      merged?: boolean;
       pull_request?: number;
       repo?: string;
     };
@@ -4109,8 +4110,11 @@ export interface components {
     };
     CheckCI: {
       case: string;
+      commit?: string;
       detail: string;
       line: string;
+      repo?: string;
+      result?: string;
       run: string;
       /** @enum {string} */
       state: "pass" | "fail" | "no_result" | "unread";
@@ -4118,7 +4122,11 @@ export interface components {
     CheckPassStands: {
       /** @enum {string} */
       answer: "yes" | "no" | "unknown";
+      /** @enum {string} */
+      reason?: "pass_and_fail" | "read_failed";
+      results?: string[];
       roles?: string[];
+      subjects?: components["schemas"]["PassStandsSubject"][];
     };
     CheckResult: {
       actor: components["schemas"]["Actor"];
@@ -4143,6 +4151,7 @@ export interface components {
       id: string;
       issue_key: string;
       negative_control: string;
+      not_counted?: string;
       observed: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       observed_tree?: {
@@ -6209,6 +6218,16 @@ export interface components {
       /** Format: date-time */
       started_at: string;
       state: string;
+    };
+    PassStandsSubject: {
+      /** @enum {string} */
+      answer: "yes" | "no" | "unknown";
+      basis: components["schemas"]["CheckBasis"];
+      ci?: components["schemas"]["CheckCI"];
+      /** @enum {string} */
+      reason?: "fail" | "no_result" | "pass_and_fail" | "read_failed";
+      results?: string[];
+      roles?: string[];
     };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -15742,6 +15761,7 @@ export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PassStandsSubject = components["schemas"]["PassStandsSubject"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonNode = components["schemas"]["PersonNode"];
 export type PersonNodes = components["schemas"]["PersonNodes"];

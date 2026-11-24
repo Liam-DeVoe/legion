@@ -1441,7 +1441,9 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// of the pull request whose head the commit is. Merged is set on a `pull_request` basis whose
+// pull request merged, whose commit is its final head: a reader tells it from an open pull
+// request's head, and counts it apart. Repo is the `owner/repo` of a basis in a linked
 // repository, one the check's issue links a pull request in and does not resolve to: the head
 // of a pull request the issue links there, and a branch of it that a result whose commit is
 // that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
@@ -1454,6 +1456,7 @@ type CheckBasis struct {
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 
@@ -1469,10 +1472,57 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, the newest merged one's final head. A
+// pass stands only when one stands at each subject, and Subjects says the state of each. Reason
+// is PassStandsReasonPassAndFail where the answer is unknown because a pass and a fail that count
+// at one commit of a `before_merge` check, from any role, make that commit's state unknown (R4),
+// and PassStandsReasonReadFailed where it is unknown because a read Dispatch makes did not answer:
+// the check runs of a check CI proves that has no subject, or the time each merged pull request of
+// an issue with none open merged, so that Dispatch cannot tell which of them is the newest.
+// Results names the results that decide the answer, where the rule that answers names them.
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,read_failed"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
+}
+
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit of a `before_merge` check, from any role.
+// PassSubjectReasonReadFailed is a subject alone: the check runs at that head, of a check CI
+// proves, could not be read. PassStandsReasonReadFailed is the check's own: a read that decides
+// it did not answer, with no subject to name it at (CheckPassStands).
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonReadFailed  = "read_failed"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
+)
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
@@ -1528,6 +1578,10 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does. No surface counts such a
+	// result as evidence, a reader prints it after "It counts for nothing: ", and it is left out of
+	// the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
@@ -1611,7 +1665,9 @@ type CheckBlock struct {
 
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
 // proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
-// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+// the check either way, or a read that decides it did not answer: GitHub's, or Dispatch's own read
+// of when each merged pull request of an issue with none open merged, where it cannot tell which
+// of them is the newest (the case read_failed). Only a pass and a fail carry a result.
 const (
 	CIStatePass     = "pass"
 	CIStateFail     = "fail"
@@ -1619,16 +1675,30 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch read no head (the cases no_head and read_failed). Result is the id of the
+// result the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set
+// where the run passed or failed and only there: a reader picks the derived result of a head by
+// this id, never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
