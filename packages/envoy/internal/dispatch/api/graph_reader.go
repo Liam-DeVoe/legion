@@ -46,10 +46,11 @@ func (s *server) requestReader(r *http.Request) model.Actor {
 //     the event's topics and every reader of the issue's event log;
 //   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
 //     read again by every reader of the conversation, not by the person who wrote the message;
-//   - the record of a comment thread a document projects (ProjectMark, from reopenComment,
-//     editComment, commentAction and createCommentFor) is written into the document every
-//     reader of that document reads;
-//   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
-//     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//   - the record of a comment thread a document projects (ProjectMark, from reopenCommentAs,
+//     editCommentAs, commentActionAs and writeComment, which both versions' comment writes run)
+//     is written into the document every reader of that document reads;
+//   - a comment list (answerCommentList, and the pages of it /api/v2 answers,
+//     listIssueCommentsV2 and listArtifactCommentsV2) is kept in listAnswers under its owner and
+//     its ETag and handed to the next reader whose request names the same pair, so an answer read
+//     for one person would be served to another.
 var everyReader = model.Actor{}

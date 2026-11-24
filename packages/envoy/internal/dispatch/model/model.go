@@ -1896,12 +1896,15 @@ type Ask struct {
 	OpenedEventID *int64         `json:"opened_event_id,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	// ReferencedByCount is batched with ask-list reads so a card can suppress an empty backlink
-	// disclosure without issuing one graph request per ask. It is absent from mutation responses.
+	// disclosure without issuing one graph request per ask. It is absent from /api/v1's ask write
+	// answers and present in /api/v2's, whose write and no-op alike count the backlinks as the
+	// caller (api.writtenAskV2's readBack).
 	ReferencedByCount *int `json:"referenced_by_count,omitempty"`
 	// Revision is the current revision of the ask's parts, the number a reference to one of them
 	// pins (`dispatch://<key>/ask/<id>#b-<part>@v<N>`). Batched with the part ids of the options
-	// and the answer (api.attachAskPartIDs), so it is absent from mutation responses and zero
-	// while the ask's parts are not indexed yet, where no revision can be pinned.
+	// and the answer (api.attachAskPartIDs), so it is absent from /api/v1's ask write answers,
+	// present in /api/v2's (api.writtenAskV2's readBack), and zero while the ask's parts are not
+	// indexed yet, where no revision can be pinned.
 	Revision int     `json:"revision,omitempty"`
 	EditedAt *string `json:"edited_at"`
 	// Approval names the document an approval ask is about; nil for questions.
@@ -3546,10 +3549,10 @@ type PlanTask struct {
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
 // run's work started and replaced it at each later version of the owner's plan that Legion took
-// (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
-// and the version of it the plan was read from (both null for the source default, the default
-// steps of an issue whose owner gave none, or whose experiment's group takes none from its
-// owner), and its tasks.
+// (PUT /api/v1/issues/{key}/plans/{id}, and PUT /api/v2/issues/{key}/plans/{id}): its run
+// (Generation), its source, the owner's document and the version of it the plan was read from
+// (both null for the source default, the default steps of an issue whose owner gave none, or
+// whose experiment's group takes none from its owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`

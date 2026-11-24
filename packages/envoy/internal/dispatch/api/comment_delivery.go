@@ -1671,9 +1671,9 @@ type answeredDelivery struct {
 // the answer, what that answer makes of the attempt it answers. An answer flips its attempt to
 // `sent` whatever the row recorded before: a failed attempt - a stale receipt, an error the
 // session itself reported, a reply callback that failed a frame the session plainly received -
-// reads as sent and answered (replyComment, replyMessage). An attempt that reads sent is one
-// the listener took, so the session it names is one the store owes a node for (R14,
-// graphcensus's recordedSessions), and this answer is the write that moves the attempt into
+// reads as sent and answered (answerCommentDelivery, answerMessageDelivery). An attempt that
+// reads sent is one the listener took, so the session it names is one the store owes a node for
+// (R14, graphcensus's recordedSessions), and this answer is the write that moves the attempt into
 // that set: without it the census holds the store to a node no writer ever wrote, for good.
 //
 // The node is written as a settle writes one (graphstore.QueueReached): `do nothing`, so a

@@ -463,11 +463,12 @@ type server struct {
 	// appended, to read whether any of them reaches a subscriber before the commit, and how it
 	// ends one in a rollback.
 	beforeCommentCommit func(ctx context.Context, events []model.Event) error
-	// betweenPersonPageReads runs on a person page's request once the route has decided it
-	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
-	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
-	// test sets it: it is how a case commits a write between the decision and the list, to read
-	// that the list answers the snapshot the decision read.
+	// betweenPersonPageReads runs on a person page's read once it has decided the page is shown
+	// and before it lists the rows (readPersonNodes, which GET /api/v1/people/{login}/nodes and
+	// GET /api/v2/nodes both run), inside the transaction both reads share; nil, which every
+	// server the deployment builds leaves it, runs nothing. Only a test sets it: it is how a case
+	// commits a write between the decision and the list, to read that the list answers the
+	// snapshot the decision read.
 	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the

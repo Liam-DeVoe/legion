@@ -132,8 +132,9 @@ func (s *server) v2IssueRows() []routeRow {
 				"native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every "+
 				"create names its project, an import included: external with no project, or an empty one, is 400 "+
 				"INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 "+
-				"EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the "+
-				"personal token's owner, the parent's assignee, or the project's default assignee. A title over %d "+
+				"EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the personal token's owner, "+
+				"the parent's assignee when the parent is of the issue's own project, or the project's default "+
+				"assignee. A title over %d "+
 				"characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 "+
 				"POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an "+
 				"external ref already imported. After the write commits, a related-item check searches the project by "+
