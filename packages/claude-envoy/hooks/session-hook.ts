@@ -88,6 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { deviceLoginFile, loginLockHeldBy } from "@legion/cipher-client/device-login-file"
 import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { urlForText } from "@legion/contracts/log-text"
 import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
@@ -119,8 +120,9 @@ import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { procStarted } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { endOnceWritten } from "./end-once-written"
 import { parseHookArguments } from "./hook-arguments"
-import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./session-hook-budgets"
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./open-asks-bounds"
 
 // Every line this hook writes, the context Claude Code hands the model on stdout included, passes
 // the scrub of the secrets it holds (`@legion/contracts/held-secrets`).
@@ -250,11 +252,6 @@ const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
  *  rather than adds to. */
 const JJ_CONFIG_EXPORT = "export JJ_CONFIG="
-// `JJ_BASE_CHAIN_TIMEOUT_MS`, the bound on resolving jj's own user config chain for the overlay,
-// and `OPEN_ASKS_TIMEOUT_MS`, the bound on the Dispatch read, are both in
-// `./session-hook-budgets`, where a test can read them. With envoy-client's `COMMAND_TIMEOUT_MS`
-// for the token command `sessionDispatchSettings` runs between them, their sum has to stay inside
-// the timeout `hooks.json` gives this hook, and tests/hooks-timeout.test.ts asserts it.
 
 /** `value` as a single-quoted shell word: Claude Code sources this file before every bash command
  *  of the session, so a path or a config chain holding a space, a quote or a `$` must reach the
@@ -662,6 +659,22 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
+/** Whether this process holds the machine's device-login lock: `<login>.lock`, beside the login at
+ *  the path cipher-client keeps it (`deviceLoginFile`: `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else
+ *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid. cipher-client
+ *  reads it, synchronously (`loginLockHeldBy`, as `endOnceWritten` needs): a named pipe or a link
+ *  there is read as no lock, at once, so it cannot hold the hook open. */
+function holdsDeviceLoginLock(): boolean {
+  let login: string
+  try {
+    login = deviceLoginFile(process.env)
+  } catch {
+    // Neither the variable nor HOME names a place: this machine keeps no login, so holds no lock.
+    return false
+  }
+  return loginLockHeldBy(login, process.pid)
+}
+
 if (mode === "answers-refresh") {
   const [session, cwd] = modeArguments
   if (session === undefined || cwd === undefined) {
@@ -677,5 +690,9 @@ if (mode !== "open-asks" && mode !== "dispatch-first" && mode !== "answers") {
 const text = await Bun.stdin.text()
 if (mode === "answers") await answers(text)
 const input: unknown = JSON.parse(text)
-if (mode === "open-asks") await openAsks(input)
-else dispatchFirst(input)
+if (mode === "open-asks") {
+  await openAsks(input)
+  await endOnceWritten([process.stdout, process.stderr], holdsDeviceLoginLock, (code) =>
+    process.exit(code),
+  )
+} else dispatchFirst(input)

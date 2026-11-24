@@ -17,6 +17,7 @@ import {
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -127,6 +128,7 @@ async function startChannelServer(
         // The base the server and the mod below both resolve the link's socket from.
         XDG_RUNTIME_DIR: home,
         ENVOY_HEARTBEAT_MS: FREEZE_HEARTBEAT_MS,
+        ...NO_TRANSPILER_CACHE,
       },
       stdin: "pipe",
       stdout: "pipe",
