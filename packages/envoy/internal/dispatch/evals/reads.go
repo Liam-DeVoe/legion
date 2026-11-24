@@ -232,7 +232,7 @@ func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo strin
 // by series: the day its input begins. From that day on a series has a row of every day the
 // refresher has written, an explicit zero row on a day with no input, so a range that starts
 // before it reads "no data" and names it (R12). A project's rows are its own and those of the
-// owner keys its published default repository attributes (eval_project_owners, owners.go), whose
+// owner keys it reads under the published defaults (eval_project_owners, owners.go), whose
 // first day is the first of any of them: each owner writes its zero rows from its own first day,
 // so the project holds a row of every day from the first on. Each series is one probe of
 // eval_days' primary key for each owner, its first day, under its own eval's slug and among its
@@ -337,8 +337,8 @@ type Counted struct {
 // name for those the evals that read it counted with it as the deploy repository; DeployRepoOf),
 // those of repos where repos names any, by day and then by row key, through eval_day_members_day:
 // the pull requests and deploy runs the delivery evals' rows of those days count, or the runs the
-// CI evals' rows do, the project's own and those of the owner keys its published default
-// repository attributes (eval_project_owners, owners.go). An items read answers them, so it lists
+// CI evals' rows do, the project's own and those of the owner keys it reads under the published
+// defaults (eval_project_owners, owners.go). An items read answers them, so it lists
 // the items the window's numbers fold.
 func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployRepo string, repos []string, window Range) ([]Counted, error) {
 	filter := `m.family = $2 and m.deploy_repo = $3 and m.day >= $4::date and m.day < $5::date`
@@ -392,11 +392,12 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 // repository its read reads, where the rows are recorded under deployRepo ("" where none is set;
 // DeployRepoIn, DeployRepoOf): of an eval keyed by the deploy repository that repository's rows,
 // and of every other the rows of none, so a move of the deploy repository is this selection
-// (deploy_repos.go). A project's rows are its own and those of the owner keys its published
-// default repository attributes, less those it shares (eval_project_owners, owners.go), each under
-// the project's eval id of its slug: a selection at read time too, which a move of the default
-// repository rewrites no row for. A project and its default repository can each hold a row of one
-// series and day, and the folds add the two as they add two days' (WindowRow is a part, not a day).
+// (deploy_repos.go). A project's rows are its own and those of the owner keys it reads under the
+// published defaults, less those it shares (eval_project_owners, owners.go), each under the
+// project's eval id of its slug and its via_repository as the project reads it (viaAsRead): a
+// selection at read time too, which a move of a default repository rewrites no row for. A project
+// and an owner key can each hold a row of one series and day, and the folds add the two as they
+// add two days' (WindowRow is a part, not a day).
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
@@ -433,7 +434,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 			from (
 				select o.owner, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
 					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
-					d.via_repository, d.updated_at
+					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and d.listed
 				  and (d.repo = any($2) or (d.repo = '` + legionfactsDefault + `' and d.project_key = o.project_key and exists (

@@ -228,7 +228,7 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 		r.write(t, largest("e", index), alice, rows...)
 	}
 	statements := &sentStatements{}
-	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	window, compare := Range{From: day, To: day.AddDate(0, 0, 1)}, Range{From: day.AddDate(0, 0, -7), To: day.AddDate(0, 0, -6)}
 	days, err := traced.DayWindow(t.Context(), []string{r.project}, entries, "", nil, window, &compare)
 	if err != nil {

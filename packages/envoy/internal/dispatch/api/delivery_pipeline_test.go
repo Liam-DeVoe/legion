@@ -377,7 +377,7 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, fixture.Project); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, fixture.Project); err != nil {
 		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
 	}
 	publishDefaultRepos(t, database.Pool)

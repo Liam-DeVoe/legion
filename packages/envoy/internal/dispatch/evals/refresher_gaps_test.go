@@ -58,6 +58,7 @@ func (r *refresherRig) failingPass(t *testing.T) {
 func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main := deliveries.Project
@@ -119,6 +120,7 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	main := deliveries.Project
 	var picked delivery.DeliveryPullRequest
 	var oldDay, merged time.Time
@@ -238,6 +240,7 @@ func (r *refresherRig) pageAlone(t *testing.T) refreshed {
 func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	if report := r.pageAlone(t); len(report.days) != 0 {
 		t.Fatalf("the boot's pages wrote %v, and the check needs none: a page with no cursor writes no day", report.sorted())
 	}
@@ -303,6 +306,7 @@ func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
 	}
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	open(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "the change read before the first walk", walk)

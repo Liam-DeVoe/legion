@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -46,7 +48,7 @@ func refresh(t *testing.T, database *store.Store) *evals.Store {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})
-	registry := evals.New(database, documents, broker)
+	registry := evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{}))
 	deps := evals.RefresherDeps{Horizon: events.NewHorizon(database.Pool), Build: "evalfixture-test"}
 	if err := registry.RefreshThrough(t.Context(), deps, now); err != nil {
 		t.Fatalf("refresh the day rows as of %s: %v", now.Format(time.RFC3339), err)

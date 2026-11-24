@@ -205,7 +205,7 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 // the median's verdict, met, and no upper-bound verdict.
 func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 	_, database := newTestHandlerWithStore(t)
-	catalogue, err := evals.New(database, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
+	catalogue, err := evals.New(database, nil, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
 	if err != nil {
 		t.Fatalf("read the catalogue's delivery evals: %v", err)
 	}

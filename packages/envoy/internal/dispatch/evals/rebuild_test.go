@@ -266,7 +266,7 @@ func flipLength(records []slog.Record) []time.Duration {
 // figures of a second database that walked the same history whole (expectSameAsWalk). Before, the
 // new build's walk wrote each day in a commit of its own.
 func TestARebuildThatMovesValuesLandsInOneCommit(t *testing.T) {
-	r, deliveries := newSettingsRig(t, 2)
+	r, deliveries := newSettingsRigByIssue(t, 2)
 	main := deliveries.Project
 	r.corruptDays(t, main)
 	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
@@ -276,7 +276,7 @@ func TestARebuildThatMovesValuesLandsInOneCommit(t *testing.T) {
 	wrote := recordWrites(t, r.rig)
 	prints := &commitPrints{t: t, rig: r.rig}
 	before := prints.read()
-	r.registry = New(storetest.TracedStore(t, r.database, prints), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, prints), r.documents, r.registry.events, r.registry.attributor)
 	log := &logtest.Recorder{}
 	logtest.SetDefault(t, log)
 	r.release("release-build")
@@ -326,7 +326,7 @@ func TestARebuildThatMovesValuesLandsInOneCommit(t *testing.T) {
 			t.Errorf("the restart logged %d eval_days changes of %s, want one", count, evalID)
 		}
 	}
-	walk, _ := newSettingsRig(t, walkBatch)
+	walk, _ := newSettingsRigByIssue(t, walkBatch)
 	r.expectSameAsWalk(t, "the rebuild of a release", walk)
 	t.Logf("%d passes wrote in the transactions %v, logged %v, and left %d states between %d commits; the flip took %v",
 		passes, transactions, logged, len(states), len(prints.seen), flipLength(log.Records()))
@@ -439,7 +439,7 @@ func (r *refresherRig) stagedMerges(t *testing.T, project string) map[time.Time]
 func TestAChangeDuringARebuildIsNeitherLostNorOverwritten(t *testing.T) {
 	for _, writer := range []string{"the rebuild's own build", "the build before it", "a process that queues nothing"} {
 		t.Run(writer, func(t *testing.T) {
-			r, deliveries := newSettingsRig(t, 2)
+			r, deliveries := newSettingsRigByIssue(t, 2)
 			main := deliveries.Project
 			r.corruptDays(t, main)
 			old := *r
@@ -478,6 +478,7 @@ func TestAChangeDuringARebuildIsNeitherLostNorOverwritten(t *testing.T) {
 				t.Errorf("the rebuild of %s is still building after the passes settled", pending)
 			}
 			walk, _ := newSettingsHistory(t, walkBatch)
+			walk.leaveInputsUnread(t)
 			if writer != "a process that queues nothing" {
 				walk.moveMerge(t, pr)
 			}
@@ -498,6 +499,7 @@ func TestAFreshDatabasesFirstWalkCommitsDayByDay(t *testing.T) {
 	r := newRefresherRig(t)
 	r.batch = 2
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	for _, statement := range []string{
 		`create table evals_test_days (txid bigint not null, day date not null, primary key (txid, day))`,
 		`create function evals_test_record_day() returns trigger language plpgsql as $$
@@ -673,7 +675,7 @@ func TestTheFlipSendsNoArrayAndTheStagingStaysUnderTheBound(t *testing.T) {
 	r.settle(t)
 	r.corruptDays(t, deliveries.Project)
 	statements := &rebuildStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	r.release("release-build")
 	r.settle(t)
 	if len(statements.flip) == 0 {

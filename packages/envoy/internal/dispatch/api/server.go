@@ -125,8 +125,9 @@ type Deps struct {
 	// a link stored under either name of a pair. The zero value holds no pairs.
 	Renames refs.Renames
 	// Attributor attributes the pull requests a results read or a recorded result reads through
-	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
-	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	// for (delivery.Attributor.ReadThroughCommitPulls), and those the eval registry's delivery day
+	// rows count (evals.New). NewDeps builds it of Renames, so it attributes by the same pairs
+	// renamedRepo and resolveIssueRef read.
 	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a

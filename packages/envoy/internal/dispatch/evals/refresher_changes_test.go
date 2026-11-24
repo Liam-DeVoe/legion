@@ -55,8 +55,9 @@ func line(family, project string, day time.Time) string {
 	return family + " " + project + " " + day.Format(time.DateOnly)
 }
 
-// TestEachDeliveryChangeRewritesExactlyItsDays: over the delivery history, once every day is
-// walked,
+// TestEachDeliveryChangeRewritesExactlyItsDays: over the delivery history, its pull requests'
+// attribution inputs left unread so the issue each row names is its attribution
+// (leaveInputsUnread), once every day is walked,
 //   - a pull request whose issue moves to the other project rewrites its merge day in both
 //     projects (the day eval_day_members held it under in the first), the start day of the
 //     deploy run that ships it, in both projects, since the run counts for the projects of its
@@ -78,6 +79,7 @@ func line(family, project string, day time.Time) string {
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main, other := deliveries.Project, deliveries.SecondProject
@@ -129,7 +131,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		if project := projectOf(pr); project != "" {
 			return project
 		}
-		return OwnerKey(pr.Repo, nil)
+		return OwnerKey(pr.Repo, nil, nil)
 	}
 	shipper := func(pr delivery.DeliveryPullRequest) *delivery.Apply {
 		if pr.Repo != deliveries.DeployRepo {
@@ -169,7 +171,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		if !ships || len(unissued) > 0 {
 			slices.Sort(unissued)
-			count.owner = OwnerKey(runRepos[runID], slices.Collect(maps.Keys(count.projects)))
+			count.owner = OwnerKey(runRepos[runID], slices.Collect(maps.Keys(count.projects)), nil)
 			count.unissued = strings.Join(unissued, " ")
 		}
 		return count
@@ -710,16 +712,19 @@ func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
 }
 
 // TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass: a PR-checks run counts for the
-// project its pull request counts for, whatever day it started on (attribution.check). Once every
-// day is walked, a pull request of the deploy repository whose issue is the first project's, and
-// one of whose PR-checks runs started on another day than its merge, moves to the second project
-// (a new issue of it): the one pass after the move counts each of its PR-checks runs for the
-// second project and no more for the first, and the database then holds the rows, members and
-// figures a second database holds that made the same move before its first walk. Then a write of
-// repo_projects, which no rule reads, logs no change, and the pass after it rewrites no day.
+// project its pull request counts for, whatever day it started on (attribution.check). Over the
+// delivery history, its pull requests' attribution inputs left unread so the issue each row names
+// is its attribution (leaveInputsUnread), once every day is walked, a pull request of the deploy
+// repository whose issue is the first project's, and one of whose PR-checks runs started on
+// another day than its merge, moves to the second project (a new issue of it): the one pass after
+// the move counts each of its PR-checks runs for the second project and no more for the first, and
+// the database then holds the rows, members and figures a second database holds that made the same
+// move before its first walk. Then a write of repo_projects, which no rule reads, logs no change,
+// and the pass after it rewrites no day.
 func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main, other := deliveries.Project, deliveries.SecondProject
@@ -769,6 +774,7 @@ func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
 	}
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	move(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "after "+PullRequestMember(moved.Repo, moved.Number)+" moved to "+other, walk)
@@ -806,7 +812,9 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 	`, repo, day, day.AddDate(0, 0, 1))
 }
 
-// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: once every day is walked,
+// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: over the delivery
+// history, its pull requests' attribution inputs left unread so the issue each row names is its
+// attribution (leaveInputsUnread), once every day is walked,
 // every pull request one repository merged on one day is merged again a day earlier, so the
 // repository's last pull request leaves that day. The one pass after it deletes each of the
 // repository's rows of that day, in every project and owner key (owners.go) that held one, where
@@ -822,6 +830,7 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	// The third repository's pull requests are tracked by no deploy, so moving them moves the pull
@@ -883,6 +892,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	walk.mergeDayEarlier(t, repo, day)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "after "+repo+"'s pull requests of "+day.Format(time.DateOnly)+" merged a day earlier", walk)
@@ -914,7 +924,9 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 }
 
 // TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt: the boundary of the
-// stored rows (dispatch://INFRA-2916, items 5 and 8, R12). Over the delivery history, once every
+// stored rows (dispatch://INFRA-2916, items 5 and 8, R12). Over the delivery history, its pull
+// requests' attribution inputs left unread so the issue each row names is its attribution
+// (leaveInputsUnread), once every
 // day is walked, the deploy runs of the deploy repository's first deploy day and of its last are
 // deleted. The pass after it leaves the main project's deploy-frequency of that repository with no
 // row on the first of those days, which is no first input day of it any more, so a window over it
@@ -925,6 +937,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	ctx := t.Context()
 	repo, main := deliveries.DeployRepo, deliveries.Project
@@ -955,6 +968,7 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 	r.settle(t)
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	drop(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "the deploy runs of "+first.Format(time.DateOnly)+" and "+last.Format(time.DateOnly)+" deleted", walk)

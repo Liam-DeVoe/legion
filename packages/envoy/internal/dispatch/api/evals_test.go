@@ -683,12 +683,29 @@ func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 // seedEvalHistories writes into database, behind handler, the two histories the eval reads are
 // checked over, and then refreshes their day rows as the server's refresher writes them, as of
 // the later end of the two (refreshEvalDays), which seeds every project's evals too:
-// deliverytest's (DELIV, every pull request of it, and DELIVX, which holds none) over days of
-// history, and the legiontest history legion/metrics' golden files were recorded over (GOLDEN).
-// It answers the delivery fixture and the golden windows.
+// deliverytest's (DELIV, whose issues every pull request names, and DELIVX, which holds none) over
+// days of history, and the legiontest history legion/metrics' golden files were recorded over
+// (GOLDEN). It answers the delivery fixture and the golden windows.
 func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
 	t.Helper()
+	return seedEvalHistoriesAs(t, database, deps, days, false)
+}
+
+// seedEvalHistoriesByIssue is seedEvalHistories with the delivery history's attribution inputs left
+// unread before the refresh (leaveAttributionInputsUnread), so every pull request counts for DELIV,
+// the project of the issue its row names: the history of a test whose oracle is that issue.
+func seedEvalHistoriesByIssue(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
+	t.Helper()
+	return seedEvalHistoriesAs(t, database, deps, days, true)
+}
+
+// seedEvalHistoriesAs is seedEvalHistories, and with byIssue seedEvalHistoriesByIssue.
+func seedEvalHistoriesAs(t *testing.T, database *store.Store, deps Deps, days int, byIssue bool) (deliverytest.Fixture, []goldenLegionWindow) {
+	t.Helper()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: days})
+	if byIssue {
+		leaveAttributionInputsUnread(t, database.Pool)
+	}
 	windows := readGoldenLegionWindows(t)
 	spec := windows[0].Spec
 	history := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
@@ -697,7 +714,7 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 	if fixture.To.After(end) {
 		end = fixture.To
 	}
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, end.Add(-time.Minute))
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, end.Add(-time.Minute))
 	return fixture, windows
 }
 
@@ -724,8 +741,9 @@ func nearly(got *float64, want, tolerance float64) bool {
 	return got != nil && math.Abs(*got-want) <= tolerance
 }
 
-// TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with
-// written day rows, the list read answers for one window the numbers the delivery routes answer
+// TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with written day rows, every pull
+// request of whose history counts for it by the issue its row names (seedEvalHistoriesByIssue),
+// the list read answers for one window the numbers the delivery routes answer
 // (GET /api/v1/delivery/measures for that window, and /pipeline at its last second, whose seven
 // days are the window's, since the Pipeline reads at alone; both build the same parts from the
 // population and fold them through the same folds), and the Legion evals answer the numbers the
@@ -737,7 +755,7 @@ func nearly(got *float64, want, tolerance float64) bool {
 // measured when its value was (itemMeasuredAt).
 func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture, windows := seedEvalHistories(t, database, deps, 14)
+	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
 
 	// The delivery evals against the delivery routes, over seven whole days of the history.
 	from, to := fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)
@@ -1037,7 +1055,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	if series, days := deploys("flip"); series.Window["value"] == nil || *series.Window["value"] != 500 || days != 1 {
 		t.Fatalf("while flip is logged it reads %v and lists %d day rows; want the reading's 500 and its day's row", series.Window, days)
 	}
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, "SQL"); err != nil {
 		t.Fatalf("seed the evals of SQL: %v", err)
 	}
 	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
@@ -1111,7 +1129,7 @@ func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
 	if written.Code != http.StatusCreated || len(registered.Items) != 1 || !registered.Items[0].Wrote || registered.Items[0].Definition.Version != 2 {
 		t.Fatalf("a register write of target null: status %d, body %s; want 201 with version 2, the version that records the choice", written.Code, written.Body.String())
 	}
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, "SQL"); err != nil {
 		t.Fatalf("seed the evals of SQL: %v", err)
 	}
 	after := target("after the seed")

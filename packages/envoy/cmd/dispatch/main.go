@@ -472,8 +472,9 @@ func main() {
 
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
-	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
-	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
+	// (refs.Renames). The delivery reconcile, the intakes and the evals refresher share the one
+	// Attributor built of it here (delivery.NewAttributor), and the API builds its own of the same
+	// pairs (api.NewDeps).
 	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
 	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
 	// name reads as a repository of its own until a later boot reads the pairs.
@@ -1345,8 +1346,9 @@ func main() {
 	// build's catalogue changed, and each later pass seeds a project made by SQL since. It takes
 	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
 	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
-	// records the build it runs as against every row and walk, as the facts consumer does.
-	evalStore := evals.New(database, documentService, broker)
+	// records the build it runs as against every row and walk, as the facts consumer does, and
+	// attributes each pull request its day rows count by the boot's one Attributor.
+	evalStore := evals.New(database, documentService, broker, attributor)
 	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
 		Horizon:    background.EventHorizon(),
 		Build:      processBuild(),

@@ -106,7 +106,7 @@ func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.
 		t.Fatalf("the history holds a deploy that reached production on %d days, and the check needs at least twenty", len(runs))
 	}
 	trace := &pageTrace{writing: map[*pgx.Conn]bool{}}
-	r.registry = New(storetest.TracedStore(t, r.database, trace), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, trace), r.documents, r.registry.events, r.registry.attributor)
 	seq := r.latestSeq(t)
 	r.exec(t, "complete the production job of one deploy run of each day a minute later", `
 		update delivery_run_jobs set completed_at = completed_at + interval '1 minute'
@@ -283,7 +283,7 @@ func TestAPagesDeliveryDaysAreTimed(t *testing.T) {
 	var times *statementTimes
 	if os.Getenv(dayWriteTimingEnv) == "statements" {
 		times = &statementTimes{total: map[string]time.Duration{}, count: map[string]int{}}
-		r.registry = New(storetest.TracedStore(t, r.database, times), r.documents, r.registry.events)
+		r.registry = New(storetest.TracedStore(t, r.database, times), r.documents, r.registry.events, r.registry.attributor)
 	}
 	// pass moves the production job of the deploy run n of each of the first count days of the load
 	// by shift seconds, makes one pass, and answers its time and the delivery days it wrote; with

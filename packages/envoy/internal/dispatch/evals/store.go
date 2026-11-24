@@ -22,18 +22,22 @@ import (
 // Store is the registry over one Dispatch database. Its writes join the document service's
 // transaction (docs.API.Join), so the sections they write to `evals-md` commit with their rows,
 // and append the documents' events through the server's broker, which publishes them once the
-// transaction has committed.
+// transaction has committed. Its delivery day rows attribute each pull request by the candidates
+// attributor resolves (delivery_days.go's readAttribution), under the rename pairs it was built of.
 type Store struct {
-	database  *store.Store
-	documents docs.API
-	events    *events.Broker
+	database   *store.Store
+	documents  docs.API
+	events     *events.Broker
+	attributor *delivery.Attributor
 }
 
 // New is the registry over database, writing `evals-md` through documents and its events
-// through broker: the server's own three, so a document the registry writes is one its readers
-// and its live rooms already know.
-func New(database *store.Store, documents docs.API, broker *events.Broker) *Store {
-	return &Store{database: database, documents: documents, events: broker}
+// through broker, and reading what attributes its delivery day rows through attributor: the
+// server's own four, so a document the registry writes is one its readers and its live rooms
+// already know, and a pull request is attributed by the rename pairs every reader of a repository
+// name reads.
+func New(database *store.Store, documents docs.API, broker *events.Broker, attributor *delivery.Attributor) *Store {
+	return &Store{database: database, documents: documents, events: broker, attributor: attributor}
 }
 
 // slugPattern is the slug check of eval_versions, so a write is refused with a stable code

@@ -125,7 +125,7 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	seedLoggedAggs(t, registry, fixture.Project, fixture.DeployRepo, measures.Midnight(now))
 	refreshEvalDays(t, registry, database, now)
 	exec := func(statement string, args ...any) {
@@ -383,7 +383,7 @@ func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	shape := evalShape{name: "7 days", window: evalDaysEnding(7, measures.Midnight(now)), offered: true}
 	if built, err := registry.FiguresThrough(t.Context(), []string{fixture.Project}); err != nil || built[fixture.Project].Before(shape.window.To) {
 		t.Fatalf("%s's figures stand built through %v (%v), so the read of %s answers from the day rows", fixture.Project, built, err, shape.name)

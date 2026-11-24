@@ -2,19 +2,27 @@ package evals
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The attribution of what a repository holds to the projects whose default repository it is
 // (dispatch://INFRA-2916, D1 and R15 after the person's answer A; plan T7): a pull request with no
-// known issue, a CI job of such a pull request or of none, and a deploy run that ships such a pull
+// issue, a CI job of such a pull request or of none, and a deploy run that ships such a pull
 // request or none count for each project whose default repository (projects.default_repo) is
-// their repository; a deploy counts once in each project, through an issue where any of the pull
-// requests it ships reached that project through one.
+// their repository; a pull request whose issue is held only through its project's default
+// repository counts for that project while that default is its repository, a selection the
+// published defaults make at read time; a deploy counts once in each project, through an issue
+// where any of the pull requests it ships reached that project through one.
 
 // defaultTally is what one eval's series counts for a project over a read: its rows' n and how many
 // of them came through a default repository.
@@ -143,4 +151,283 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 			}
 		}
 	}
+}
+
+// A pull request whose issue is held only through its project's default repository counts by a
+// read-time selection, which a move of that default makes within the page that publishes it and
+// with no day row written (dispatch://INFRA-2916, R15 and R14, the architect's ruling of 14:07Z):
+// acme/quay is QUAY's default repository and the deploy repository, and acme/quay#1, merged
+// yesterday, names PIER-1 alone, an issue of PIER that owns no repository and has no parent, while
+// PIER's default is acme/pier. So no issue is held for the pull request, and QUAY counts it, the
+// deploy run that ships it and its PR-checks run through the repository, and PIER counts none of
+// them. Once PIER's default moves to acme/quay and a page publishes it, PIER-1 resolves to
+// acme/quay: PIER counts all three through its issue (via 0) and QUAY none, no day row or member
+// is written by the move, and each project's eval list read of every offered range answers the
+// fold of its day rows, as do the stored figures. The move back restores the first answer the same
+// way. Red where the day rows follow delivery_pull_requests.issue_key alone, which the move leaves
+// null: PIER then reads the repository's rows as QUAY does, through the repository.
+func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	day := refresherToday.AddDate(0, 0, -1)
+	at := func(hour int) time.Time { return day.Add(time.Duration(hour) * time.Hour) }
+	const pierRepo, quayRepo = "acme/pier", "acme/quay"
+	actor := model.Actor{Kind: "system", ID: "default-repository-test"}
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('PIER', 'Pier', 'alice', 2, $1), ('QUAY', 'Quay', 'alice', 1, $2)`, pierRepo, quayRepo)
+	r.exec(t, "the issue", `insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('PIER-1', 'PIER', 1, 'Pier work', 'in_progress', '00000001', '{"kind":"system","id":"default-repository-test"}', $1)`,
+		day.AddDate(0, 0, -1))
+	production := "production / apply"
+	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+		DeployRepo: quayRepo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
+	}, actor); err != nil {
+		t.Fatalf("write the delivery settings: %v", err)
+	}
+	// The attribution's inputs, as GitHub gave them: the title names PIER-1, which resolves to
+	// acme/pier, so no issue is held and the row names none.
+	if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+		Repo: quayRepo, Number: 1, Title: "PIER-1: change the pier", URL: "https://github.com/" + quayRepo + "/pull/1", Author: "dev-ana",
+		CreatedAt: new(at(8)), MergedAt: new(at(9)), Sessions: []string{},
+		Attribution: &delivery.AttributionInputs{TitleKeys: []string{"PIER-1"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}},
+	}); err != nil {
+		t.Fatalf("write %s#1: %v", quayRepo, err)
+	}
+	for _, run := range []struct {
+		id      int64
+		kind    delivery.DeliveryRunKind
+		created time.Time
+		job     string
+	}{
+		{301, delivery.DeliveryRunKindDeploy, at(10), production},
+		{401, delivery.DeliveryRunKindPRChecks, at(8).Add(30 * time.Minute), "lint"},
+	} {
+		started, completed := run.created.Add(time.Minute), run.created.Add(20*time.Minute)
+		stored := delivery.DeliveryRun{
+			Repo: quayRepo, RunID: run.id, Kind: run.kind, HeadSHA: fmt.Sprintf("%040d", run.id), HeadCommitAt: run.created.Add(-time.Minute),
+			StartedAt: started, CreatedAt: new(run.created), CompletedAt: &completed, Conclusion: new(delivery.DeliveryRunConclusionSuccess),
+			URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", quayRepo, run.id), HeadBranch: new("main"), Event: new("push"),
+		}
+		if run.kind == delivery.DeliveryRunKindPRChecks {
+			stored.PRNumber, stored.HeadBranch, stored.Event = new(1), new("feature/pier"), new("pull_request")
+		}
+		if err := delivery.UpsertRun(ctx, pool, stored); err != nil {
+			t.Fatalf("write run %d: %v", run.id, err)
+		}
+		job := delivery.DeliveryRunJob{Name: run.job, StartedAt: new(started.Add(time.Minute)), CompletedAt: new(completed.Add(-time.Minute)),
+			Conclusion: new(delivery.DeliveryJobConclusionSuccess)}
+		if err := delivery.UpsertRunJobs(ctx, pool, quayRepo, run.id, []delivery.DeliveryRunJob{job}, true); err != nil {
+			t.Fatalf("write the job of run %d: %v", run.id, err)
+		}
+	}
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+
+	series := map[string]string{
+		SlugPROpenToMerge: measures.SeriesMinutes, SlugReworkShare: measures.SeriesPRs,
+		SlugDeployFrequency: measures.SeriesDeploys, SlugPRCI: measures.SeriesMinutes,
+	}
+	type shape struct {
+		name            string
+		window, compare Range
+	}
+	var shapes []shape
+	for _, n := range []int{7, 14, 28, 84} {
+		compare := rangeOf(n, refresherToday.AddDate(0, 0, -n))
+		shapes = append(shapes, shape{fmt.Sprintf("%d days", n), rangeOf(n, refresherToday), compare},
+			shape{fmt.Sprintf("the live %d days", n), rangeOf(n+1, refresherToday.AddDate(0, 0, 1)), compare})
+	}
+	// check reads both projects' tallies of the day against want (each of series counted once, by
+	// the project that counts the pull request, through the repository where via), and each
+	// project's eval list read of every offered range against the fold of its day rows.
+	check := func(what, counting string, via int) {
+		t.Helper()
+		for _, project := range []string{"PIER", "QUAY"} {
+			got, rows := r.readTallies(t, project, series, day)
+			for slug, name := range series {
+				want := defaultTally{}
+				if project == counting {
+					want = defaultTally{n: 1, via: via}
+				}
+				if got[slug] != want {
+					t.Errorf("%s: %s's %s.%s counts %d, %d through a default repository; want %d and %d (%d day rows read)",
+						what, project, slug, name, got[slug].n, got[slug].via, want.n, want.via, rows)
+				}
+			}
+			fromFigures := 0
+			for _, one := range shapes {
+				stated, folded, figures := r.listValues(t, project, nil, one.window, &one.compare)
+				fromFigures += figures
+				for _, id := range slices.Sorted(maps.Keys(folded)) {
+					if stated[id] != folded[id] {
+						t.Errorf("%s: the read of %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
+							what, one.name, id, len(stated[id]), len(folded[id]), firstDiffering(stated[id], folded[id]))
+					}
+				}
+			}
+			if fromFigures == 0 {
+				t.Errorf("%s: the stored figures answered none of %s's evals over the offered ranges", what, project)
+			}
+		}
+		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+	}
+	check("before the move", "QUAY", 1)
+
+	show := func(xmin string) string { return "written by " + xmin }
+	for _, move := range []struct {
+		name, repo, counting string
+		via                  int
+	}{
+		{"after PIER's default moves to " + quayRepo, quayRepo, "PIER", 0},
+		{"after PIER's default moves back to " + pierRepo, pierRepo, "QUAY", 1},
+	} {
+		rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
+		r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, move.repo)
+		r.settle(t)
+		if published, err := PublishedDefaultIn(ctx, pool, "PIER"); err != nil || published != move.repo {
+			t.Fatalf("%s: PIER publishes %q as its default (%v), want %s", move.name, published, err, move.repo)
+		}
+		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
+			t.Errorf("%s: the move wrote day rows, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
+			t.Errorf("%s: the move wrote members, first ones:\n\t%s", move.name, strings.Join(differ, "\n\t"))
+		}
+		check(move.name, move.counting, move.via)
+	}
+}
+
+// Clearing the last default repository a project holds (PUT /api/v1/projects/{key}/default-repository
+// with {"repo": null}) is published by one page: the page's commit drops the published default and
+// logs one eval_days change of no eval for the project (delivery.EvalDaysWrittenByDefaults), and
+// the passes after it find every default published and publish nothing. Red where the commit hands
+// the published projects over as a nil slice, which the database reads as null: its delete of the
+// defaults no project holds then deletes none, and every page publishes the clear again.
+func TestClearingTheLastDefaultRepositoryIsPublishedOnce(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.exec(t, "give EVAL a default repository", `update projects set default_repo = 'acme/web' where key = $1`, r.project)
+	r.pass(t)
+	if published, err := PublishedDefaultIn(ctx, pool, r.project); err != nil || published != "acme/web" {
+		t.Fatalf("%s publishes %q as its default (%v), want acme/web", r.project, published, err)
+	}
+	published := func(after int64) int {
+		t.Helper()
+		changes, err := delivery.ChangesSince(ctx, pool, after, 100000)
+		if err != nil {
+			t.Fatalf("read the delivery changes after %d: %v", after, err)
+		}
+		logged := 0
+		for _, change := range changes {
+			if change.Kind == delivery.ChangeKindEvalDays && change.RunKind == delivery.EvalDaysWrittenByDefaults {
+				if change.Repo != r.project || change.Ref != "" {
+					t.Errorf("a page logged the defaults change %+v, want one of %s and of no eval", change, r.project)
+				}
+				logged++
+			}
+		}
+		return logged
+	}
+
+	r.exec(t, "clear EVAL's default repository", `update projects set default_repo = null where key = $1`, r.project)
+	seq := r.latestSeq(t)
+	r.pass(t)
+	if held, err := PublishedDefaultIn(ctx, pool, r.project); err != nil || held != "" {
+		t.Errorf("after the pass %s publishes %q as its default (%v), want none", r.project, held, err)
+	}
+	if logged := published(seq); logged != 1 {
+		t.Errorf("the pass after the clear logged %d defaults changes, want one", logged)
+	}
+	seq = r.latestSeq(t)
+	for range 3 {
+		r.pass(t)
+	}
+	if logged := published(seq); logged != 0 {
+		t.Errorf("the three passes after the clear was published logged %d defaults changes, want none: the clear is published again", logged)
+	}
+}
+
+// The readers of an owner key are decided at read time by the published defaults
+// (eval_project_owners, eval_owner_readers): a plain key is read by each project whose default is
+// its repository, through the repository, less its sharers; a key that carries lists is read by the
+// project each list picks (its first condition whose default is the key's repository, else its
+// terminal), through its issue, and, where a list picks none, by each project whose default is the
+// repository, through the repository, less its sharers; a project reached both ways reads through
+// its issue. Once GAMMA's default moves to the repository, the keys whose lists name it as a
+// condition are read by GAMMA alone, and the plain key by GAMMA too.
+func TestTheReadersOfAnOwnerKeyAreTheProjectsThePublishedDefaultsPick(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const repo, other = "acme/r", "acme/other"
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee) values
+		('ALPHA', 'Alpha', 'alice'), ('BETA', 'Beta', 'alice'), ('GAMMA', 'Gamma', 'alice'), ('DELTA', 'Delta', 'alice')`)
+	r.exec(t, "publish the defaults", `insert into eval_days_defaults (project_key, repo) values ('ALPHA', $1), ('BETA', upper($1)), ('GAMMA', $2)`,
+		repo, other)
+	keys := map[string]string{
+		"plain":                 OwnerKey(repo, nil, nil),
+		"plain with a sharer":   OwnerKey(repo, []string{"ALPHA"}, nil),
+		"a condition picks":     OwnerKey(repo, nil, []attributionList{{conditions: []string{"GAMMA", "ALPHA"}}}),
+		"the terminal picks":    OwnerKey(repo, nil, []attributionList{{conditions: []string{"GAMMA"}, terminal: "DELTA"}}),
+		"none picks":            OwnerKey(repo, nil, []attributionList{{conditions: []string{"GAMMA"}}}),
+		"a sharer and two ways": OwnerKey(repo, []string{"BETA"}, []attributionList{{conditions: []string{"GAMMA"}}, {conditions: []string{"ALPHA"}}}),
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := recordOwners(ctx, tx, slices.Collect(maps.Values(keys))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	readers := func() map[string]string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `select owner, project_key, via from eval_project_owners where owner <> project_key order by owner, project_key`)
+		if err != nil {
+			t.Fatalf("read the readers: %v", err)
+		}
+		read := map[string][]string{}
+		var owner, project string
+		var via bool
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &project, &via}, func() error {
+			read[owner] = append(read[owner], fmt.Sprintf("%s via=%t", project, via))
+			return nil
+		}); err != nil {
+			t.Fatalf("read the readers: %v", err)
+		}
+		byCase := map[string]string{}
+		for name, key := range keys {
+			byCase[name] = strings.Join(read[key], ", ")
+		}
+		return byCase
+	}
+	check := func(what string, want map[string]string) {
+		t.Helper()
+		got := readers()
+		for _, name := range slices.Sorted(maps.Keys(keys)) {
+			if got[name] != want[name] {
+				t.Errorf("%s: %s (%s) is read by [%s], want [%s]", what, name, keys[name], got[name], want[name])
+			}
+		}
+	}
+	check("GAMMA's default elsewhere", map[string]string{
+		"plain":                 "ALPHA via=true, BETA via=true",
+		"plain with a sharer":   "BETA via=true",
+		"a condition picks":     "ALPHA via=false",
+		"the terminal picks":    "DELTA via=false",
+		"none picks":            "ALPHA via=true, BETA via=true",
+		"a sharer and two ways": "ALPHA via=false",
+	})
+	r.exec(t, "publish GAMMA's move", `update eval_days_defaults set repo = $1 where project_key = 'GAMMA'`, repo)
+	check("GAMMA's default the repository", map[string]string{
+		"plain":                 "ALPHA via=true, BETA via=true, GAMMA via=true",
+		"plain with a sharer":   "BETA via=true, GAMMA via=true",
+		"a condition picks":     "GAMMA via=false",
+		"the terminal picks":    "GAMMA via=false",
+		"none picks":            "GAMMA via=false",
+		"a sharer and two ways": "ALPHA via=false, GAMMA via=false",
+	})
 }

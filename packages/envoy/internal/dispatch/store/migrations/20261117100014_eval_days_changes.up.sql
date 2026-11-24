@@ -69,14 +69,17 @@
 -- input left goes, and a view of its numbers wakes to the change. A project's deletion logs one
 -- change of each of its evals, which no view of the deleted project reads.
 --
--- A row of an owner key, what a repository attributes rather than an issue (evals.OwnerKey,
--- migration 20261117100006), is read by no view of its own: a project reads it for each
--- repository it publishes as its default (eval_project_owners). So its change is logged once for
--- each project whose read folds it, under that project's key and its eval id of the same slug,
--- with the same span, and none for a repository no project publishes, so the hub's arm
+-- A row of an owner key, what counts for a project only through a default repository rather than
+-- whatever the defaults are (evals.OwnerKey, migration 20261117100006), is read by no view of its
+-- own: a project reads it where the published defaults make it one of the key's readers
+-- (eval_project_owners: the projects whose default is its repository for a plain key, and those
+-- eval_owner_readers picks for a key that carries lists). So its change is logged once for each
+-- project whose read folds it, under that project's key and its eval id of the same slug, with the
+-- same span, and none for a key no project reads, so the hub's arm
 -- `view.spec.project == change.Repo` (api/delivery_live_hub_intake.go) wakes exactly the views
 -- that read it (dispatch://INFRA-2916/artifact/plan-md, T3). The same call records the owner key
--- in eval_day_owners the first time a statement writes a row of it, where the reads find it.
+-- in eval_day_owners the first time a statement writes a row of it, with its repository, its
+-- sharers and its lists as the key carries them, where the reads find it.
 --
 -- The census answers 0: four functions and three triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
@@ -90,9 +93,10 @@ declare
   reader text;
 begin
   if starts_with(p_project, ':') then
-    insert into eval_day_owners (owner, repo, sharers)
+    insert into eval_day_owners (owner, repo, sharers, lists)
     values (p_project, substr(split_part(p_project, '|', 1), 2),
-      coalesce(string_to_array(nullif(split_part(p_project, '|', 2), ''), ','), '{}'))
+      coalesce(string_to_array(nullif(split_part(p_project, '|', 2), ''), ','), '{}'),
+      coalesce(string_to_array(nullif(split_part(p_project, '|', 3), ''), ';'), '{}'))
     on conflict do nothing;
     for reader in
       select project_key from eval_project_owners where owner = p_project order by project_key

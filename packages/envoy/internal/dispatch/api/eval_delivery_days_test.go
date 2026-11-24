@@ -59,6 +59,26 @@ func publishDefaultRepos(t *testing.T, pool *store.Pool) {
 	}
 }
 
+// leaveAttributionInputsUnread clears every stored pull request's attribution inputs, as a row
+// stored before its GitHub facts were read for them holds none, so the issue its row names
+// (issue_key) stands as its attribution: no inputs were read, and a row with none counts by the
+// one list its issue_key gives (evals/delivery_days.go's attribution). A test whose oracle is
+// deliverytest's issue_key, the project of the issue it names each pull request after, reads its
+// rows this way: the history's issues own no repository and only its project's default is the
+// deploy repository, so with the inputs read most of its pull requests would count by the
+// published defaults (under owner keys whose lists name the issue's project), and those of its
+// other repositories, and every one naming an issue of its second project, for no project the
+// issue names.
+func leaveAttributionInputsUnread(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		update delivery_pull_requests
+		set attribution_title_keys = null, attribution_cited_issues = null, attribution_branch_keys = null, attribution_commit_keys = null
+	`); err != nil {
+		t.Fatalf("leave the pull requests' attribution inputs unread: %v", err)
+	}
+}
+
 // storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
 // refresher writes for every project), listed or not, every repository's, in key order: the rows
 // the partition is checked over, and the unlisted job series DayWindow leaves out.
@@ -492,8 +512,10 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 }
 
 // TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer: over a deliverytest history whose every
-// pull request names an issue of one project (Spec.OneProject) and whose deploy repository is that
-// project's default repository, so the project's read holds every row the deployment-wide delivery
+// pull request names an issue of one project (Spec.OneProject), its attribution inputs left unread
+// so the issue each row names is its attribution (leaveAttributionInputsUnread), and whose deploy
+// repository is that project's default repository, so the project's read holds every row the
+// deployment-wide delivery
 // routes count (what an issue attributes in its own rows, and what no issue attributes — a deploy
 // that ships none, a CI run of no population pull request — in the rows of the repository it
 // publishes as its default, R15), the day rows of every day of the history are written as the
@@ -505,12 +527,13 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
+	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
 	settings, err := delivery.GetSettings(ctx, database.Pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	entries := seededEntries(t, registry, fixture.Project)
 
 	started := time.Now()
@@ -571,8 +594,10 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 
 // TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject (the architect's
 // condition): in deliverytest's default history, whose pull requests name issues of DELIV, one in
-// twenty of DELIVX, and some none, and whose deploy repository is DELIV's default repository, the
-// deploys that ship pull requests of both are counted once by GET /api/v1/delivery/measures over a
+// twenty of DELIVX, and some none, their attribution inputs left unread so the issue each row names
+// is its attribution (leaveAttributionInputsUnread), and whose deploy repository is DELIV's default
+// repository, the deploys that ship pull requests of both are counted once by
+// GET /api/v1/delivery/measures over a
 // window holding one, and once in each project's read; a deploy that ships no pull request of
 // either project counts for DELIV alone, through the repository it publishes as its default (R15),
 // and one that ships a pull request of a project through its issue counts in that project once,
@@ -583,8 +608,9 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
+	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 
 	// The projects each deploy ships, by the attribution rule over the fixture's own containment:
 	// a pull request's issue's project, and none for one that names no issue.

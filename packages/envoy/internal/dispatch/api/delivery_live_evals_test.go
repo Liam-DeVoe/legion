@@ -1230,9 +1230,9 @@ func newRefreshedEvalsPage(t *testing.T, tracer pgx.QueryTracer, prepare func(da
 	if fixture.To.After(end) {
 		end = fixture.To
 	}
-	page := &refreshedEvalsPage{conn: newFakeLiveConn(), fixture: fixture, now: end.Add(-time.Minute), registry: evals.New(database, deps.Docs, deps.Events)}
+	page := &refreshedEvalsPage{conn: newFakeLiveConn(), fixture: fixture, now: end.Add(-time.Minute), registry: evals.New(database, deps.Docs, deps.Events, deps.Attributor)}
 	if tracer != nil {
-		page.registry = evals.New(storetest.TracedStore(t, database, tracer), deps.Docs, deps.Events)
+		page.registry = evals.New(storetest.TracedStore(t, database, tracer), deps.Docs, deps.Events, deps.Attributor)
 	}
 	if prepare != nil {
 		prepare(database, fixture)
@@ -1509,10 +1509,12 @@ func (f *figureScopeReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, dat
 
 func (f *figureScopeReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute: the delivery walk begins again
-// over inputs no change names (the main project's pull requests moved to the second project, their
-// changes taken out of the log, and the walk's record set to begin again, as a page's commit sets
-// it), and the walk rewrites the main project's days a batch a pass, each day a commit of its own,
+// TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute: over the history with its pull
+// requests' attribution inputs left unread, so the issue each row names is its attribution
+// (leaveAttributionInputsUnread), the delivery walk begins again over inputs no change names (the
+// main project's pull requests moved to the second project, their changes taken out of the log,
+// and the walk's record set to begin again, as a page's commit sets it), and the walk rewrites the
+// main project's days a batch a pass, each day a commit of its own,
 // and folds the stored figures of a batch's days in one more commit, after the last of them. Ahead
 // of every fold the hub catches up with the day commits, its clock is moved past their quiet, and
 // the page's view is recomputed: it reads the days as the batch left them and the stored figures
@@ -1522,7 +1524,9 @@ func (f *figureScopeReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQu
 // batch.
 func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T) {
 	reads := &figureScopeReads{}
-	page := newRefreshedEvalsPage(t, reads, nil)
+	page := newRefreshedEvalsPage(t, reads, func(database *store.Store, _ deliverytest.Fixture) {
+		leaveAttributionInputsUnread(t, database.Pool)
+	})
 	before := page.route(t)
 	ctx := t.Context()
 	pool := page.rig.database.Pool

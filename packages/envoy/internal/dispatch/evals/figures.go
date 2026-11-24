@@ -41,7 +41,7 @@ import (
 //     SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
 //
 // Each is a fold of the project's own rows alone (repo '', the all-repositories day rows: its own
-// and those of the owner keys its published default repository attributes, owners.go), which a
+// and those of the owner keys it reads under the published defaults, owners.go), which a
 // read that names no repository folds, the first paint of the Evals tab k8 measured. A read that
 // names a repository folds the day rows instead (FiguresOffered), about 5 ms of them at 84 days
 // with a compare range (the plan's measure): a repository's cut folds the Legion rows stored under
@@ -290,23 +290,29 @@ func decodeFigures(b []byte) (map[string]Statistics, map[string]int, error) {
 	return folded, via, nil
 }
 
-// stampedRow is what a day's stamp reads of one of its rows: its series and its updated_at.
+// stampedRow is what a day's stamp reads of one of its rows: its series, its updated_at and its
+// via_repository as the project reads it (viaAsRead).
 type stampedRow struct {
 	series    string
 	updatedAt time.Time
+	via       int
 }
 
 // rowsStamp is the fingerprint of one eval's own listed rows of one deploy repository and day
-// (eval_day_figures.rows_stamp): each row's series and updated_at to the microsecond Postgres
-// keeps, in series order and then in that of the moments, which it sorts rows into: a project's day
-// can hold a row of one series of its own and one of its default repository's (owners.go). Every
-// write that moves a row's value moves its updated_at (upsertDays, writeDays, relistDays), a row
-// deleteStaleDays deletes leaves the day's rows, and one that moves nothing, such as a new build's
-// rebuild of rows whose values stood, leaves it, so the stamp moves exactly when the day's rows
-// do, whichever build wrote them.
+// (eval_day_figures.rows_stamp): each row's series, its updated_at to the microsecond Postgres
+// keeps and its via_repository as the project reads it, in series order and then in that of the
+// moments and of the counts, which it sorts rows into: a project's day can hold a row of one
+// series of its own and one of an owner key's (owners.go), and two rows one transaction wrote
+// share a moment. Every write that moves a row's value moves its updated_at (upsertDays,
+// writeDays, relistDays), a row deleteStaleDays deletes leaves the day's rows, and one that moves
+// nothing, such as a new build's rebuild of rows whose values stood, leaves it; and a publishing
+// of the default repositories that moves which project reads an owner key's rows, or whether it
+// reads them through the repository, moves the rows a project's day holds or the via_repository
+// it reads of them (publishDefaults). So the stamp moves exactly when what the day folds does,
+// whichever build wrote the rows.
 func rowsStamp(rows []stampedRow) int64 {
 	slices.SortFunc(rows, func(a, b stampedRow) int {
-		return cmp.Or(strings.Compare(a.series, b.series), a.updatedAt.Compare(b.updatedAt))
+		return cmp.Or(strings.Compare(a.series, b.series), a.updatedAt.Compare(b.updatedAt), cmp.Compare(a.via, b.via))
 	})
 	hash := fnv.New64a()
 	var word [binary.MaxVarintLen64]byte
@@ -314,6 +320,7 @@ func rowsStamp(rows []stampedRow) int64 {
 		hash.Write(word[:binary.PutUvarint(word[:], uint64(len(row.series)))])
 		hash.Write([]byte(row.series))
 		hash.Write(binary.LittleEndian.AppendUint64(word[:0], uint64(row.updatedAt.UnixMicro())))
+		hash.Write(word[:binary.PutUvarint(word[:], uint64(row.via))])
 	}
 	return int64(hash.Sum64())
 }
@@ -396,7 +403,7 @@ func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 	}
 	stamped := make([]stampedRow, 0, last-first)
 	for _, row := range g.rows[first:last] {
-		stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt})
+		stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
 	}
 	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.parts[first:last], day), nil), rowsStamp(stamped), true
 }
@@ -476,14 +483,15 @@ type figureGroupKey struct {
 
 // movedFigureDays reads, in q, which days of spans (by eval id, each eval one of entries) hold
 // figures that no longer fold their rows: each eval, deploy repository and day whose own listed
-// rows' stamp (rowsStamp, of its rows of repo "", the project's and its owner keys') is not the one
-// the day's stored row recorded, which holds rows and no stored row or a stored row and no rows, or
-// whose stored row was folded under another fold key than the eval's definition now has (a
-// register write). A repository's rows are no part of it: no stored figure folds them. Which build
-// folded a stored row is no part of the test either: a figure whose rows stand is the fold every
-// build of these folds answers. A day on or after scope.through is the figures walks', and none of
-// it is read. Each of its two reads is one range of an index for each eval: eval_days_stamps of the
-// rows' stamps, and eval_day_figures_eval_day of the stored day rows.
+// rows' stamp (rowsStamp, of its rows of repo "", the project's and its owner keys', each with its
+// via_repository as the project reads it) is not the one the day's stored row recorded, which
+// holds rows and no stored row or a stored row and no rows, or whose stored row was folded under
+// another fold key than the eval's definition now has (a register write). A repository's rows are
+// no part of it: no stored figure folds them. Which build folded a stored row is no part of the
+// test either: a figure whose rows stand is the fold every build of these folds answers. A day on
+// or after scope.through is the figures walks', and none of it is read. Each of its two reads is
+// one range of an index for each eval: eval_days_stamps of the rows' stamps, and
+// eval_day_figures_eval_day of the stored day rows.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
 	var evalIDs, writers []string
 	var firsts, lasts []time.Time
@@ -509,7 +517,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		day   time.Time
 	}
 	rows, err := q.Query(ctx, `
-		select given.eval_id, d.deploy_repo, d.day, d.series, d.updated_at
+		select given.eval_id, d.deploy_repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
 		from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 		cross join eval_project_owners o
 		join eval_days d on d.project_key = o.owner and d.eval_id = o.owner || substr(given.eval_id, length($1) + 1)
@@ -522,7 +530,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	stamped := map[dayKey][]stampedRow{}
 	var key dayKey
 	var row stampedRow
-	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.day, &row.series, &row.updatedAt}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
 		key.day = key.day.UTC()
 		stamped[key] = append(stamped[key], row)
 		return nil
@@ -1342,9 +1350,9 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 }
 
 // readFigureDeployRepos reads, in q, each deploy repository project's own listed day rows (repo "")
-// of the days of r are recorded under, its own and those of the owner keys its published default
-// repository attributes (eval_project_owners, owners.go), in byte order: one statement,
-// one range of eval_days_window for each owner, rather than every listed row of the project.
+// of the days of r are recorded under, its own and those of the owner keys it reads under the
+// published defaults (eval_project_owners, owners.go), in byte order: one statement, one range of
+// eval_days_window for each owner, rather than every listed row of the project.
 func readFigureDeployRepos(ctx context.Context, q delivery.Querier, project string, r Range) ([]string, error) {
 	rows, err := q.Query(ctx, `
 		select distinct d.deploy_repo

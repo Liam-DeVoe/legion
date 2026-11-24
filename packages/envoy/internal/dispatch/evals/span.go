@@ -677,7 +677,7 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		// of it yet (trackKept tracks it with the rest).
 		if kept != nil {
 			for _, repo := range kept.is {
-				r.noteOwners([]string{OwnerKey(repo.name, nil)})
+				r.noteOwners([]string{OwnerKey(repo.name, nil, nil)})
 			}
 		}
 		projects = r.owners
@@ -1010,13 +1010,13 @@ func deleteDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow) error {
 // once over the history as the settings rewrite reads it (rewriteSettings): every population pull
 // request and, for each repository a tracked key reads as the deploy repository, every deploy run
 // on main with its jobs of the names the production rule judges by and the deploy cards follow
-// (delivery.ReadHistoryRows), the projects of the issues the pull requests name (readAttribution),
+// (delivery.ReadHistoryRows), the attribution lists of the pull requests (readAttribution),
 // and containment over each repository's history (historyOf). A day's rows are each repository's
 // DeliveryDay of it as readDeliveryDay builds it from those rows, and the pull requests' alone
 // where a key no deploy repository moves is active. The PR-checks runs, which the history does
 // not hold, are read of a day only where a pr-ci key is active on it and the repository holds one
 // that day (checkDays, one read of a repository's days), by the read the walk's day makes
-// (delivery.ReadCIRows), with the projects of their pull requests (readAttribution).
+// (delivery.ReadCIRows), with the attribution lists of their pull requests (readAttribution).
 func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[evalKey]*trackedKey, reach time.Time) (spanInput, error) {
 	pool := r.store.database.Pool
 	next := *r.settings
@@ -1071,18 +1071,14 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		return spanInput{}, fmt.Errorf("read the delivery history for a span: %w", err)
 	}
 	prs := history.PullRequests
-	var issueKeys []string
 	prsByDay := map[time.Time][]int{}
 	for i := range prs {
-		if prs[i].IssueKey != nil {
-			issueKeys = append(issueKeys, *prs[i].IssueKey)
-		}
 		if prs[i].MergedAt != nil {
 			day := measures.Midnight(*prs[i].MergedAt)
 			prsByDay[day] = append(prsByDay[day], i)
 		}
 	}
-	attribute, err := readAttribution(ctx, r.store, issueKeys, nil)
+	attribute, err := readAttribution(ctx, r.store, prs, nil)
 	if err != nil {
 		return spanInput{}, err
 	}

@@ -31,7 +31,9 @@ const (
 
 // seedAttribution writes, on attributionDay, the delivery history of the attribution rule over
 // three projects, ALPHA, BETA and GAMMA (no row), with acme/alpha the deploy repository. No
-// repository maps to a project: a row reaches one through an issue alone (evals' attribution).
+// project has a default repository, and no pull request's attribution inputs are stored (not read
+// from GitHub yet), so each counts by the one list its row's issue_key gives (evals'
+// attribution): its issue's project, or none, which reaches no project.
 //
 //   - acme/alpha#1 names BETA-1, so it counts for BETA;
 //   - acme/alpha#2 names no issue, so it counts for no project;
@@ -305,7 +307,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
-	wantOwners := []string{OwnerKey(alphaRepo, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}), OwnerKey(zetaRepo, nil)}
+	wantOwners := []string{OwnerKey(alphaRepo, nil, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}, nil), OwnerKey(zetaRepo, nil, nil)}
 	if got := dayProjects(read); !slices.Equal(got, slices.Concat(wantOwners, []string{"ALPHA", "BETA"})) {
 		t.Fatalf("the day's rows count for %v, want ALPHA, BETA and the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories, GAMMA holds nothing)",
 			got, wantOwners)
@@ -465,6 +467,68 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		t.Errorf("BETA's items after the move: %v, want acme/alpha#3 among them, under no deploy repository and under acme/alpha, and its PR-checks run 201", got)
 	}
 	t.Logf("compared %d day rows of three projects; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
+}
+
+// A pull request's ranked candidates make its attribution list as the attribution passes over and
+// holds them (attributionListOf): a candidate whose issue owns the pull request's repository ends
+// the list as its terminal, one whose issue owns another repository is passed over, one whose
+// issue owns none is a condition, once, in rank order, and one whose issue no row holds or whose
+// chain ran out of depth is passed over. The owner key of lists that are not constant carries them
+// after the repository and the sharers (OwnerKey), sorted and once each, and reads back as it was
+// made (parseOwner); a key whose every list is none is the plain key.
+func TestAPullRequestsCandidatesMakeItsAttributionList(t *testing.T) {
+	here := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-1", Project: project, Owned: alphaRepo, OwnedHere: true}
+	}
+	elsewhere := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-2", Project: project, Owned: betaRepo}
+	}
+	unowned := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-3", Project: project}
+	}
+	for _, c := range []struct {
+		name       string
+		candidates []delivery.ResolvedCandidate
+		want       string
+		constant   bool
+	}{
+		{"no candidate", nil, ">", true},
+		{"one that owns the repository", []delivery.ResolvedCandidate{here("ALPHA")}, ">ALPHA", true},
+		{"one that owns another, then one that owns none", []delivery.ResolvedCandidate{elsewhere("ALPHA"), unowned("BETA")}, "BETA>", false},
+		{"one that owns none", []delivery.ResolvedCandidate{unowned("ALPHA")}, "ALPHA>", false},
+		{"a chain too deep, then one that owns the repository", []delivery.ResolvedCandidate{
+			{Key: "ALPHA-4", Project: "ALPHA", TooDeep: true}, here("BETA")}, ">BETA", true},
+		{"an issue no row holds, then one that owns none", []delivery.ResolvedCandidate{{Key: "GONE-1"}, unowned("BETA")}, "BETA>", false},
+		{"two conditions, a repeat, a terminal and one after it", []delivery.ResolvedCandidate{
+			unowned("ALPHA"), elsewhere("GAMMA"), unowned("BETA"), unowned("ALPHA"), here("GAMMA"), unowned("DELTA")}, "ALPHA,BETA>GAMMA", false},
+	} {
+		list := attributionListOf(c.candidates)
+		if got := list.String(); got != c.want || list.constant() != c.constant {
+			t.Errorf("%s: the list is %q (constant %t), want %q (constant %t)", c.name, got, list.constant(), c.want, c.constant)
+		}
+	}
+
+	beta := attributionList{conditions: []string{"BETA"}}
+	for _, c := range []struct {
+		sharers            []string
+		lists              []attributionList
+		want               string
+		wantSharers, carry []string
+	}{
+		{nil, nil, ":acme/alpha|", nil, nil},
+		{[]string{"GAMMA", "ALPHA", "GAMMA"}, []attributionList{{}, {}}, ":acme/alpha|ALPHA,GAMMA", []string{"ALPHA", "GAMMA"}, nil},
+		{nil, []attributionList{beta}, ":acme/alpha||BETA>", nil, []string{"BETA>"}},
+		{[]string{"DELTA"}, []attributionList{beta, {}, {conditions: []string{"ALPHA", "BETA"}, terminal: "GAMMA"}, beta},
+			":acme/alpha|DELTA|>;ALPHA,BETA>GAMMA;BETA>", []string{"DELTA"}, []string{">", "ALPHA,BETA>GAMMA", "BETA>"}},
+	} {
+		key := OwnerKey(alphaRepo, c.sharers, c.lists)
+		if key != c.want {
+			t.Errorf("the owner key of %v and %v is %q, want %q", c.sharers, c.lists, key, c.want)
+		}
+		if repo, sharers, carried, ok := parseOwner(key); !ok || repo != alphaRepo || !slices.Equal(sharers, c.wantSharers) || !slices.Equal(carried, c.carry) {
+			t.Errorf("%q reads back as repository %q, sharers %v and lists %v (%t), want %s, %v and %v", key, repo, sharers, carried, ok, alphaRepo, c.wantSharers, c.carry)
+		}
+	}
 }
 
 // TestTheZeroDayIsTheBuildersDayWithNoRow: ZeroDeliveryDay holds the all-repositories row of every

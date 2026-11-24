@@ -401,7 +401,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
 //     repository), each project's first days (firstDays) and the running build's record of its
 //     walks (readWalks);
-//   - the projects of the issues the pull requests name (readAttribution), and beside that read
+//   - the attribution lists of the pull requests (readAttribution), and beside that read
 //     containment over each repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
 //     alone, and by its jobs of the judged names as by every job), each pull request's first
@@ -409,7 +409,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     whose first shipping apply it is (Deploys.ShippedBy's rule over every day at once); and,
 //     where it builds the days the change can move alone (below), the old rule's verdict and first
 //     shipping applies (containmentOf), the new rule's where the rule did not change. No
-//     containment reads the issues' projects, so each repository's under each rule runs on a
+//     containment reads the attribution, so each repository's under each rule runs on a
 //     goroutine of its own, as many at once as rewriteWorkers allows;
 //   - the days to build, from the delivery walk's first day through today: those whose rows the
 //     change can move (movedDeliveryDays), none for a change that moves no verdict and no card's
@@ -554,12 +554,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 	}
 	prs := history.PullRequests
-	var issueKeys []string
-	for _, pr := range prs {
-		if pr.IssueKey != nil {
-			issueKeys = append(issueKeys, *pr.IssueKey)
-		}
-	}
 	prsByDay := map[time.Time][]int{}
 	for i := range prs {
 		if prs[i].MergedAt != nil {
@@ -609,7 +603,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var attribute attribution
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			attribute, err = readAttribution(ctx, r.store, issueKeys, nil)
+			attribute, err = readAttribution(ctx, r.store, prs, nil)
 			return err
 		},
 		func(ctx context.Context) error {
@@ -1097,10 +1091,10 @@ func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.Deli
 }
 
 // historyOwners is every owner key (OwnerKey) the rewritten history counts a row for under the
-// settings histories were built by, in key order: each pull request no issue attributes
-// (attribution.of), each deploy run's (attribution.deploy) and the push runs on main of a
-// repository that are no deploy run of their day (attribution.pushRuns). A day the rewrite builds
-// builds their rows as it builds a project's.
+// settings histories were built by, in key order: each pull request's whose attribution list is not
+// constant or has no terminal (attribution.of), each deploy run's (attribution.deploy) and the
+// push runs on main of a repository that are no deploy run of their day (attribution.pushRuns). A
+// day the rewrite builds builds their rows as it builds a project's.
 func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, attribute attribution) []string {
 	owners := map[string]bool{}
 	for _, pr := range prs {
@@ -1120,7 +1114,7 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 			}
 		}
 		if len(h.pushesByDay) > 0 {
-			owners[OwnerKey(h.repo, nil)] = true
+			owners[OwnerKey(h.repo, nil, nil)] = true
 		}
 	}
 	return slices.Sorted(maps.Keys(owners))

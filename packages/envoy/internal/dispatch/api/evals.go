@@ -463,9 +463,10 @@ type evalRegisterResponse struct {
 }
 
 // registry is the eval registry over this server's database, writing `evals-md` through its
-// document service and its events through its broker.
+// document service and its events through its broker, and attributing the pull requests its day
+// rows count through its Attributor (Deps.Attributor).
 func (s *server) registry() *evals.Store {
-	return evals.New(s.deps.Store, s.deps.Docs, s.deps.Events)
+	return evals.New(s.deps.Store, s.deps.Docs, s.deps.Events, s.deps.Attributor)
 }
 
 // evalRanges is the window and the compare range one eval read asked for: each as the whole UTC

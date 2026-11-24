@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalbench"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -142,10 +143,12 @@ func (c *headChecks) k13() {
 
 // k16 prints the project's day rows by repository, and for one count, one share and one quantile
 // folds each repository's day rows of the 84-day window by hand, against the list read with that
-// repository, and the repositories' parts against the project's.
+// repository, and the repositories' parts against the project's. A project's day rows are those of
+// every key it reads (ownedDays): its own and those of the owner keys it reads under the published
+// defaults, as every eval read of it folds them.
 func (c *headChecks) k16() {
 	ctx := context.Background()
-	rows, err := c.pool.Query(ctx, `select repo, count(*) from eval_days where project_key = $1 group by repo order by repo`, c.o.project)
+	rows, err := c.pool.Query(ctx, `select d.repo, count(*) from `+ownedDays+` where o.project_key = $1 group by d.repo order by d.repo`, c.o.project)
 	if err != nil {
 		c.r.fail("k16: count the day rows by repository: %v", err)
 		return
@@ -169,9 +172,9 @@ func (c *headChecks) k16() {
 		slug, series, stat string
 		hand               string
 	}{
-		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "n", `select coalesce(sum(cardinality(samples)), 0)::float8 from eval_days`},
-		{evals.SlugReworkShare, measures.SeriesPRs, "rate", `select sum(num) / nullif(sum(den), 0) from eval_days`},
-		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "median", `select percentile_cont(0.5) within group (order by sample) from eval_days, unnest(samples) as sample`},
+		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "n", `select coalesce(sum(cardinality(d.samples)), 0)::float8 from ` + ownedDays},
+		{evals.SlugReworkShare, measures.SeriesPRs, "rate", `select sum(d.num) / nullif(sum(d.den), 0) from ` + ownedDays},
+		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "median", `select percentile_cont(0.5) within group (order by sample) from ` + ownedDays + `, unnest(d.samples) as sample`},
 	}
 	compared := 0
 	for _, fold := range folds {
@@ -189,8 +192,13 @@ func (c *headChecks) k16() {
 			if repo == "" {
 				project, projectRead = route, true
 			}
-			// A computed eval's fold reads the computation's rows alone (eval_days.writer).
-			hand, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = $4 and day >= $5 and day < $6`,
+			// A computed eval's fold reads the computation's rows alone (eval_days.writer). A
+			// repository's cut reads the Legion rows stored under legionfacts.DefaultRepo of the
+			// project's own key where the repository is its published default, as EvalDaysIn does.
+			hand, err := c.handFold(ctx, fold.hand+` where `+ownedEval+` and d.writer = 'computation' and d.series = $3
+				and (d.repo = $4 or (d.repo = '`+legionfacts.DefaultRepo+`' and d.project_key = o.project_key and exists (
+					select 1 from eval_project_repos p where p.project_key = $1 and p.repo = $4)))
+				and d.day >= $5 and d.day < $6`,
 				evals.EvalID(c.o.project, fold.slug), fold.series, repo, w84)
 			if err != nil {
 				c.r.fail("k16 %s.%s.%s repo=%q: %v", fold.slug, fold.series, fold.stat, repo, err)
@@ -208,7 +216,7 @@ func (c *headChecks) k16() {
 		}
 		// The repositories partition the project's rows: a count sums, and a share or a quantile
 		// is the fold of the union of their parts.
-		union, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and series = $3 and repo <> $4 and day >= $5 and day < $6`,
+		union, err := c.handFold(ctx, fold.hand+` where `+ownedEval+` and d.series = $3 and d.repo <> $4 and d.day >= $5 and d.day < $6`,
 			evals.EvalID(c.o.project, fold.slug), fold.series, "", w84)
 		if err != nil {
 			c.r.fail("k16 %s.%s.%s union: %v", fold.slug, fold.series, fold.stat, err)
@@ -268,6 +276,14 @@ func (c *headChecks) routeValue(ctx context.Context, w window, repo, slug, serie
 	}
 	return nil, fmt.Errorf("the list read answers no series %s of %s", series, slug)
 }
+
+// ownedDays is the day rows d of every key the project o names reads (eval_project_owners): its own
+// and those of each owner key it reads under the published defaults.
+const ownedDays = `eval_project_owners o join eval_days d on d.project_key = o.owner`
+
+// ownedEval holds ownedDays to the project $1 and its eval $2: the rows of the eval of the same
+// slug under each key the project reads, as evals.EvalDaysIn reads them.
+const ownedEval = `o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1)`
 
 // handFold runs one fold over eval_days, by hand.
 func (c *headChecks) handFold(ctx context.Context, query, evalID, series, repo string, w window) (*float64, error) {

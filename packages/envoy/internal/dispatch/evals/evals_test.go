@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -53,7 +55,7 @@ func newRig(t *testing.T) rig {
 	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ('EVAL', 'Evaluation', 'alice')`); err != nil {
 		t.Fatalf("make project EVAL: %v", err)
 	}
-	return rig{database: database, documents: documents, registry: New(database, documents, broker), project: "EVAL"}
+	return rig{database: database, documents: documents, registry: New(database, documents, broker, delivery.NewAttributor(refs.Renames{})), project: "EVAL"}
 }
 
 // row is one reading as a caller's JSON body carries it.

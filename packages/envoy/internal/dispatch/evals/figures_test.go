@@ -233,7 +233,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 						}
 					}
 					for _, row := range rows {
-						stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt})
+						stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
 					}
 					truth[dayFigureLine(project, deployRepo, day, entry.Definition.EvalID)] = figureRow{
 						foldKey: key, figures: encodeFigures(kept, nil), stamp: rowsStamp(stamped),
@@ -496,6 +496,7 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.seedLoggedQuantile(t)
 	r.settle(t)
 	recordDeletes(t, r.rig)
@@ -650,6 +651,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	state := r.figureState(t)
 	day := deliveries.To.AddDate(0, 0, -3)
@@ -2001,7 +2003,7 @@ func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
 	r.seedLoggedQuantile(t)
 	r.settle(t)
 	statements := &figureStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	r.exec(t, "make a refusal of a range row", `
 		create function evals_test_refuse_range() returns trigger language plpgsql as $$
 		begin
@@ -2065,7 +2067,7 @@ func TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert(t *testing.T) {
 	r.seedLoggedQuantile(t)
 	r.settle(t)
 	statements := &figureStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	if _, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "review-latency", Caller: alice, BuiltBy: r.build,
 		Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "review", "row_key": "few", "value": 33,
 			"measured_at": refresherToday.AddDate(0, 0, -2).Add(3 * time.Hour), "attributes": map[string]any{"repo": "acme/web"}})}}); err != nil {
@@ -2141,7 +2143,7 @@ func TestTheLargestEvalTheRoutesAcceptIsWrittenWithinTheStatementBound(t *testin
 	t.Logf("the eval took %d series; then: %s %s: %s", held, refused.Code, refused.Field, refused.Message)
 
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	rows := make([]json.RawMessage, held)
 	for index := range held {
 		rows[index] = row(t, map[string]any{"series": name(index), "row_kind": "review", "row_key": fmt.Sprint(index), "value": 1.5 + float64(index),

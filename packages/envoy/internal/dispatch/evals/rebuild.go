@@ -1258,11 +1258,12 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 
 // readOverlayGroups is readFigureGroups over the stored rows overlaid with the rebuild rb's staged
 // ones: each stored row of a computed eval a staged row of its key stands for is left out, and
-// each staged `u` row that is listed takes its place or is added. A logged eval's rows are the
+// each staged `u` row that is listed takes its place or is added, its via_repository as the project
+// reads it (viaAsRead), as DayWindowIn reads a stored row's. A logged eval's rows are the
 // readings write's, which no rebuild stages. The project's own rows of one deploy repository hold
-// one row of each owner (the project's own key, or an owner key of the repository it publishes,
-// owners.go), eval, series and day: a staged row of an owner key stands for that owner's row
-// alone, beside the project's own row of the same series and day.
+// one row of each owner (the project's own key, or an owner key it reads, owners.go), eval,
+// series and day: a staged row of an owner key stands for that owner's row alone, beside the
+// project's own row of the same series and day.
 func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, deployRepo string, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
@@ -1291,7 +1292,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(computed) > 0 {
 		rows, err := q.Query(ctx, `
 			select s.project_key, s.op, s.listed, o.project_key || substr(s.eval_id, length(o.owner) + 1), s.series, s.day, s.n, s.sum, s.num,
-				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), s.via_repository, s.updated_at
+				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), `+viaAsRead("s.via_repository")+`, s.updated_at
 			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
 			where o.project_key = $2 and s.rebuild_id = $1 and o.project_key || substr(s.eval_id, length(o.owner) + 1) = any($3)
 				and s.repo = '' and s.deploy_repo = $4 and s.day >= $5::date and s.day < $6::date

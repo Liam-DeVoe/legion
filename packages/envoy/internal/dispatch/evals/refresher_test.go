@@ -115,6 +115,22 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	return deliveries, legion
 }
 
+// leaveInputsUnread clears every stored pull request's attribution inputs, as a row stored before
+// its GitHub facts were read for them holds none, so the issue its row names (issue_key) stands as
+// its attribution: no inputs were read, and a row with none counts by the one list its issue_key
+// gives (delivery_days.go's attribution). A test whose oracle is deliverytest's issue_key, the
+// project of the issue it names each pull request after, reads its rows this way: the history's
+// issues own no repository and only its project's default is the deploy repository, so with the
+// inputs read most of its pull requests would count by the published defaults (under owner keys
+// whose lists name the issue's project), and those of its other repositories, and every one
+// naming an issue of its second project, for no project the issue names.
+func (r *refresherRig) leaveInputsUnread(t *testing.T) {
+	t.Helper()
+	r.exec(t, "leave the pull requests' attribution inputs unread", `
+		update delivery_pull_requests
+		set attribution_title_keys = null, attribution_cited_issues = null, attribution_branch_keys = null, attribution_commit_keys = null`)
+}
+
 // rowKey is a day row's identity, `<project> <eval id> <series> <repo> <day>`, and ` as <deploy
 // repo>` after it for a row of an eval keyed by the deploy repository (deploy_repos.go).
 func rowKey(row DayRow) string {
@@ -340,6 +356,22 @@ func seriesDays(rows map[string]DayRow, project, slug, series string) ([]time.Ti
 	return slices.SortedFunc(maps.Keys(n), time.Time.Compare), n
 }
 
+// readRows is every stored day row as the projects that read it read it (asReaders): a project's
+// own row, and an owner key's (owners.go) once under each project that reads the key, by the
+// stored row's rowKey and the project. A project's day can hold a row of one series of its own and
+// rows of owner keys it reads.
+func (r *refresherRig) readRows(t *testing.T) map[string]DayRow {
+	t.Helper()
+	readers := r.ownerReaders(t)
+	read := map[string]DayRow{}
+	for key, row := range r.dayRows(t) {
+		for _, one := range asReaders(row, readers) {
+			read[key+" for "+one.ProjectKey] = one
+		}
+	}
+	return read
+}
+
 // contiguous reports the first day missing from days, which should run from their first to today
 // with no gap, and false where none is.
 func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
@@ -367,6 +399,7 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	readingDay := refresherToday.AddDate(0, 0, -3)
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 12.5, "measured_at": readingDay.Add(9 * time.Hour)}))
 	if _, found, err := r.registry.RefresherAge(t.Context(), r.now); err != nil || found {

@@ -400,7 +400,8 @@ func nameLine(table, column string) repoRenameLine {
 }
 
 // ownerNamed is true where column, an owner key of the eval day rows (evals.OwnerKey), holds the
-// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers.
+// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers, and
+// '|' + its lists where it carries any, which name projects alone.
 func ownerNamed(r repoRename, column string) string {
 	return `lower(split_part(` + column + `, '|', 1)) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
 }

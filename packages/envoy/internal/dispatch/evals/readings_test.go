@@ -419,7 +419,7 @@ const dayKeyOrder = `
 func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	const slug, count = "wide-keys", 190
 	evalID := EvalID(r.project, slug)
 	day := at(3, 0, 0)
@@ -551,7 +551,7 @@ func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange 
 func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	const slug, body = "wide-body", 1 << 20
 	evalID := EvalID(r.project, slug)
 	day := at(3, 0, 0)
@@ -637,7 +637,7 @@ func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
 func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	day := at(3, 0, 0)
 	for _, shape := range []struct {
 		slug  string
@@ -827,7 +827,7 @@ func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
 	t.Logf("a batch onto %d values: %s at row %d: %s", held, refused.Code, refused.Rows[0].Index, refused.Rows[0].Message)
 
 	statements := &sentStatements{}
-	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	if _, err := traced.WriteReadings(t.Context(), batch(held, MaxDaySamples-held, day)); err != nil {
 		t.Fatalf("a batch filling the day row to %d values: %v", MaxDaySamples, err)
 	}
@@ -1111,7 +1111,7 @@ func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirs
 	pause := joinPause{API: r.documents, reached: make(chan struct{}), release: make(chan struct{})}
 	let := sync.OnceFunc(func() { close(pause.release) })
 	t.Cleanup(let)
-	held := New(r.database, pause, r.registry.events)
+	held := New(r.database, pause, r.registry.events, r.registry.attributor)
 	firstDone := make(chan error, 1)
 	go func() {
 		_, err := held.WriteReadings(context.WithValue(ctx, joinPauseKey{}, true), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
