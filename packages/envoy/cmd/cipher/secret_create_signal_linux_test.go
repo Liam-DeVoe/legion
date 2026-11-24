@@ -534,6 +534,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 // pipe closes.
 func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
 	t.Parallel()
+	requireSignalDispositions(t)
 	p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]))
 	p.waitFor("READING")
 	// The create's watch on the signals is in place by the read: a signal it watched would have a
