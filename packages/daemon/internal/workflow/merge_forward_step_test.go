@@ -57,9 +57,9 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 
 			asked := len(mergeForwardMessages(t, pool))
 			landsMergeForward(t, pool)
-			want := []string{string(tc.worker) + " landed"}
-			if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, want) {
-				t.Fatalf("the landing queued %v, want %v", got, want)
+			want := []sent{{step: record.MergeForwardLanded, role: tc.worker, claim: storedPhaseRow(t, pool, "LEGION-208", tc.worker).Claim}}
+			if got := sentOf(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, want) {
+				t.Fatalf("the landing queued %+v, want %+v", got, want)
 			}
 			if got := issuePhase(t, pool); got != tc.at {
 				t.Fatalf("after the merge landed the issue is in %s, want it still in %s", got, tc.at)

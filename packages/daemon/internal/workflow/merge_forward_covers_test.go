@@ -46,19 +46,16 @@ func sortedSent(messages []sent) []sent {
 }
 
 // standsAtStep is LEGION-208, a tree root, standing in at at step place of the plan whose steps
-// are words, with each step's phases row naming the claim agents gives its place (agents[0] for
-// step 1, and so on), and its pull request #42 at head-42, whose merge forward was asked in at of
-// pusher (record.MergeForward.Agent) and has not landed.
+// are words (seedStepsAt), with each step's phases row naming the claim agents gives its place
+// (agents[0] for step 1, and so on), and its pull request #42 at head-42, whose merge forward was
+// asked in at of pusher (record.MergeForward.Agent) and has not landed.
 func standsAtStep(t *testing.T, at phase.Phase, place int, words []string, agents []claim.Token, pusher claim.Token) *pgxpool.Pool {
 	t.Helper()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 4, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
-	seedStepsPlan(t, pool, "LEGION-208", 4, words...)
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 4, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
-	})
+	seedStepsAt(t, pool, "LEGION-208", 4, place, nil, words...)
 	steps := standingSteps(words)
 	for i, role := range steps {
 		seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: agents[i], StepTask: "a", StepPlace: i + 1, Entry: 1})
