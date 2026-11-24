@@ -211,6 +211,23 @@ const SIGN_OFF_TERMS = {
   ],
 } as const;
 
+/** The daemon's own refusal codes the description names after `sign_off`'s part, for the
+ * architect's release and rerun of a child, the controller's fresh_session and compact, and its
+ * pause and resume: values of the daemon's answers, held by their codes and by no sentence. */
+const AFTER_SIGN_OFF_CODES = [
+  "CHILD_UNDER_ACCEPTED_PARENT",
+  "INVALID_CLAIM",
+  "CLAIM_NOT_OF_ROLE",
+  "CLAIM_IN_A_TURN",
+  "CLAIM_UNSETTLED",
+  "CLAIM_NOT_RUNNING",
+  "CLAIM_NOT_ON_OMP",
+  "PROJECT_ALREADY_PAUSED",
+  "PAUSE_UNAVAILABLE",
+  "PROJECT_NOT_PAUSED",
+  "PROJECT_PAUSED",
+] as const;
+
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -235,7 +252,7 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description sets the host's sentences before handoff_complete's contract, ends on the host's Envoy publish tool, for every session, and names stop_task's and sign_off's terms", () => {
+test("the legion tool's description sets the host's sentences before handoff_complete's contract, ends on the host's Envoy publish tool, for every session, and names stop_task's and sign_off's terms and the refusal codes after them", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
     expect(description).toContain(
@@ -253,6 +270,9 @@ test("the legion tool's description sets the host's sentences before handoff_com
     }
     for (const term of SIGN_OFF_TERMS.names) {
       expect(signOff).toContain(term);
+    }
+    for (const code of AFTER_SIGN_OFF_CODES) {
+      expect(signOff).toContain(code);
     }
   }
 });
