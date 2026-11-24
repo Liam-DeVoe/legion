@@ -4,17 +4,17 @@ Read this when the skill's wake table sends you here. Wakes come on `notificatio
 
 ## `tick`
 
-Run the every-turn steps and the parked-root walk. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
+Run the every-turn steps and the walk of roots out of the workflow. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
 A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again (with `backgroundSince`, it sends nothing) and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` being `issues.<KEY>.tree` and `<KEY>` the entry's `issue`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
 ## `awaiting-person`
 
-A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
+A root that waits only on a person keeps its slot: do not move it to `backlog` or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
 
 ## `tree-stalled`
 
-Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it works; the daemon starts nothing and tells you once per stop. Read the tree and decide: ask a role what it waits on (`envoy_publish` to its role topic), or, for a tree that waits on an event outside Legion, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it works; the daemon starts nothing and tells you once per stop. Read the tree and decide: ask a role what it waits on (`envoy_publish` to its role topic), or, for a tree that waits on an event outside Legion, ask whether to move it to backlog (`skill://legion-controller/references/backlog-asks.md`).
 
 ## `architect-stalled`
 
@@ -30,7 +30,7 @@ Without `reason`, the architect that owns the issue decides: do nothing. With `r
 
 ## `worker-died` (architect)
 
-The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is out of the workflow: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. When the cause stays, ask whether to move it to backlog (`skill://legion-controller/references/backlog-asks.md`).
 
 ## `worker-stalled` (architect)
 

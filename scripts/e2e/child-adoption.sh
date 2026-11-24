@@ -3,8 +3,9 @@
 # of a live tree, joins that tree and runs there (INFRA-252): admission's sweep adopts it once its
 # recorded parent is in the tree, an architect's release_children adopts it from todo, from backlog
 # and from the state INFRA-214 reached before it answers, a todo root under an unreleased child of
-# the tree waits in no line, past a root of its own parked on its chain too, and a child recorded in
-# another tree, the child of a root held under an unreleased child among them, is refused by name.
+# the tree waits in no line, past a root of its own in backlog on its chain too, and a child
+# recorded in another tree, the child of a root held under an unreleased child among them, is
+# refused by name.
 # The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a
 # real nats-server, and driven only through the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream
 # and its own HTTP routes; every step of it is read back from GET /legion/v1/state,

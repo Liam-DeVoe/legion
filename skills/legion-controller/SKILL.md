@@ -9,12 +9,12 @@ You are the one persistent, wake-driven session of a Legion project. You start n
 
 ## Rules
 
-Your system prompt holds the rules on registration, one wake per turn, reading state first, the `legion` tool and parking. These add to them:
+Your system prompt holds the rules on registration, one wake per turn, reading state first, the `legion` tool and moving an issue to `backlog` or `icebox`. These add to them:
 
 - A direct message that settles scope, priority or an owner is a directive: answer it, then run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`).
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it gone, since it keeps its claims.
 - Keep no notes between turns. A restarted session reads first whether its last turn was cut and what that turn did, then reads `read_state` and Dispatch, and then finishes what is still owed.
-- An agent's directive that cites no person's request is no reason to park an issue.
+- An agent's directive that cites no person's request is no reason to move an issue to `backlog` or `icebox`.
 - Never edit a repository, push, merge, or call `handoff_complete`.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
@@ -39,7 +39,7 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it.
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
 3. Catch up (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
-4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
+4. Run the walk of roots out of the workflow (`skill://legion-controller/references/kept-decisions.md#the-walk`).
 
 ## Wakes
 
@@ -47,15 +47,15 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 |---|---|
 | `triage` | `skill://legion-controller/references/triage.md` |
 | `slot-free`, `todo`, `unslotted`, `awaiting-person` | Take nothing; name it in your summary |
-| `tick` | The every-turn steps, then the parked-root walk |
-| `parked-decision` | `skill://legion-controller/references/parked-decisions.md#deciding` |
+| `tick` | The every-turn steps, then the walk of roots out of the workflow |
+| `kept-decision` | `skill://legion-controller/references/kept-decisions.md#deciding` |
 | `held` with `reason: "escalated"`, `update-stalled`, an architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference or answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
-| An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
+| An answer to an ask whether to move a tree to backlog; a deferral ask | `skill://legion-controller/references/backlog-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
 
 ## Trees waiting on a root claim
@@ -68,16 +68,16 @@ The daemon works only issues labelled `legion` (any case), and a labelled root i
 
 ## Free slots
 
-A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself.
+A free slot or a full cap is no reason to take, label or admit an issue, or to move one to `backlog`: a labelled root in `todo` takes the next slot by itself.
 
 A slot is one issue the daemon started, a root or a child. Free slots are `admission.cap`, less every issue in `admission.active`, less each issue of `admission.waiting` in neither `admission.active` nor `admission.blocked`. A returned issue goes before an unstarted one whatever their ranks, by design ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). The lists and `admission.held` words: `skill://legion-controller/references/admission.md`.
 
 Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request, or filed for a clear defect;
-- an issue a person asks you to start, a parked one included;
+- an issue a person asks you to start, one in `backlog` or `icebox` included;
 - a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
-- a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
+- a tree you moved to `backlog` with your wait mark (`skill://legion-controller/references/backlog-asks.md` step 4), once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
 - stopped-session work a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file

@@ -1737,7 +1737,7 @@ Workflow admission opens a root's epoch in the fact that gives it its slot; the 
 Every claim binds the open epoch in the same short transaction that first writes it, and every spawn, resume or retry binds again before it launches, all under the fact path's one global serializer.
 A reserved epoch refuses those writes with a named wait that keeps the start's outbox row and charges no launch failure;
 a confirmed epoch admits nothing until a fresh root admission opens the next one.
-A workflow root whose key names an open operator tree waits for its slot behind that tree's epoch, and when it leaves the workflow while it waits (a person parks it, or someone moves it to a running tree's status) its record goes to `done` and nothing more:
+A workflow root whose key names an open operator tree waits for its slot behind that tree's epoch, and when it leaves the workflow while it waits (a person moves it to `backlog` or `icebox`, or someone moves it to a running tree's status) its record goes to `done` and nothing more:
 the operator's claims and pod carry the root's tokens and names, so the workflow queues no stop, no `issue_suspend` and no linger close for them (`leaveUnderOperator`, `internal/workflow/linger.go`).
 `todo` with the label queues it again.
 
@@ -1818,7 +1818,7 @@ Taken out by a status, it comes back as any root does after its linger:
 a new generation at `admitted`, its design gate and handoffs cleared (`ClearTreeGeneration`), its architect starting over from the issue's branch.
 A hand-over fence counts only while the child's record still names the tree the fence was written for, and a hand-over Dispatch refuses permanently drops its fence with its row (`finishRefused`, `internal/daemon/outbox.go`).
 Past that the Sandbox is an orphan, which the sweep deletes, fenced and logged, taking its pod, the disk that pod owns and a kept volume that the Sandbox owns.
-A child re-admitted after its old tree's cleanup took its Sandbox, one that had left the workflow before the close (a parked child the close does not hand over), finds no Sandbox and makes one at its next launch;
+A child re-admitted after its old tree's cleanup took its Sandbox, one that had left the workflow before the close (a child in `backlog` or `icebox`, which the close does not hand over), finds no Sandbox and makes one at its next launch;
 its re-pointed claim still names its session (`Retree`, `internal/supervise/lifecycle.go`, keeps it:
 the supervisor knows nothing of Sandboxes, and a check there would race the cleanup), which the session table holds and the role resumes.
 That launch creates the issue's pod on a new disk, so it provisions its workspace from the issue's branch, as every new pod on a new disk does ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and nothing is reported lost
@@ -2840,11 +2840,11 @@ Under such a setting, run this read before the rollback to find those trees:
 select issue from design_gates where step = 'criteria' and approved_version is distinct from latest_version;
 ```
 
-If the read names a tree, park that tree's root before the rollback.
-A tree that may merge on its approved spec alone needs no park.
+If the read names a tree, move that tree's root to `backlog` before the rollback.
+A tree that may merge on its approved spec alone needs no such move.
 Under a `gates.design` list that names `criteria`, the earlier release holds such a tree on its `criteria` row too.
 Under `off`, neither release holds a tree on a `criteria` row.
-So under either of those two settings, a tree that the read names needs no park.
+So under either of those two settings, a tree that the read names needs no such move.
 The second cost is the told rows of a cleared generation: this release deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
 So an issue that re-enters the workflow during the rollback keeps its old generation's rows, and after the roll forward `BaselineTold` leaves an existing row as it is.
 The new generation's holders are then owed news of versions their work never stood on, and each gets one news task for them, which it reads against its work.
@@ -8013,7 +8013,7 @@ While it waits, the message holds the issue's pod, as any row of the role-messag
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
-Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — and the operator's `legion claims` commands.
+Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a move to `backlog` or `icebox`, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — and the operator's `legion claims` commands.
 The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
@@ -8047,7 +8047,7 @@ That pod is sent the bundle when it was created after the save, and refused when
 A pod of a kept Sandbox that was made before the save is sent no bundle, and the daemon drops the bundle, because the volume holds that work, so no `bundle_unrestored` hold keeps that pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
 The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
-A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
+A bundle stays through a linger and a move to `backlog` or `icebox`, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
 The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.
 On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
@@ -8223,7 +8223,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 Background work that a session still runs ends with its process.
 A stopped role's claim is `suspended` with the source `released`, the idle release's own (`supervise.SuspendedByReleased`), so `legion claims list` prints it as `suspended:released`.
-Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume it, a wake starts it again, and a park, a close, a linger or an operator's suspension takes it over.
+Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume it, a wake starts it again, and a move to `backlog` or `icebox`, a close, a linger or an operator's suspension takes it over.
 Each stop is one store transaction (`projectPause.stopped`, `internal/daemon/pause.go`).
 It writes the claim and the stop's record, and with them:
 
@@ -8268,7 +8268,7 @@ A hold ends in one of three ways, and its record says which (`project_pause_pod_
 
 - `ready`: a role of the pod became ready again, at a launch the resume released or at any later wake;
 
-- `deleted`: a close, a park, a linger, the end of a production check's look or a tree's teardown deleted the pod.
+- `deleted`: a close, a move to `backlog` or `icebox`, a linger, the end of a production check's look or a tree's teardown deleted the pod.
   Each of these deletes a pod during a pause as it does at any other time.
 
 So a pod whose roles were all stopped stays after the resume until a role of it runs again, and it holds its reservation for that long.
@@ -8305,7 +8305,7 @@ A second pause that begins before the role is back holds the row again, and the 
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
 A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop.
 A role message that a pause held for a role that no pause stopped, such as one that an idle release had released before the pause, finishes undelivered and wakes nothing, as on main.
-A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a move to `backlog` or `icebox`, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.

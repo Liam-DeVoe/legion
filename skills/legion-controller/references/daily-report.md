@@ -5,7 +5,7 @@ Read this on your first turn of each UTC day, and when you open, follow or answe
 ## Find the report issue
 
 Use the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report` (`dispatch search --query '"Legion daily report"' --project <PROJECT>`).
-When none exists, create it once, the one issue you file unasked, and park it in `icebox`: it holds no work and never carries the `legion` label.
+When none exists, create it once, the one issue you file unasked, and move it to `icebox`: it holds no work and never carries the `legion` label.
 Assign it to the person who answers for the project (the deployment instructions name them, else the owner `dispatch whoami` names), because its asks reach that person's Inbox;
 with nobody known, leave out `--assignee`.
 
@@ -65,10 +65,10 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   The list comes on the tick alone.
 
 - **Waiting on a person.**
-  Each tree whose next step waits on a person's answer (a park, deferral, finding or any other ask), with that ask's `dispatch://` reference, while the ask is open.
+  Each tree whose next step waits on a person's answer (an ask whether to move it to backlog, a deferral, finding or any other ask), with that ask's `dispatch://` reference, while the ask is open.
 
 - **Asks resolved with no answer.**
-  For each root in `admission.active` or `admission.waiting`, the newest `Asked whether to park:` and `Asked whether to defer:` comment of each key (step 1 of `skill://legion-controller/references/park-asks.md`, once with each prefix) whose ask was resolved with no answer, unless its wait has ended.
+  For each root in `admission.active` or `admission.waiting`, the newest ask comment of each key that step 1 of `skill://legion-controller/references/backlog-asks.md` lists, and the newest deferral ask comment that step 1 of `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` lists, whose ask was resolved with no answer, unless its wait has ended.
 
 - **Free slots**, counted in issues, as the skill's "Free slots" says.
 

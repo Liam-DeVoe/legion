@@ -6,7 +6,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { procRootOf } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
-// stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
+// stop_agent_daemons (kept-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
 // start detached: a per-project daemon broker, a session leader of its own that writes broker.pid
 // in its runtime directory, and the services it supervises. On the pinned build each service runs
 // in a session of its own and ends when its broker ends; the stand-in instead keeps its two members
@@ -22,7 +22,7 @@ import { scriptFunctions } from "./script-functions";
 // ubuntu-24.04 image the job runs on already carries tmux.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
-const scriptPath = join(e2e, "parked-decision-devbox.sh");
+const scriptPath = join(e2e, "kept-decision-devbox.sh");
 const fn = scriptFunctions(scriptPath);
 const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
@@ -30,7 +30,7 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 // Read once, at module scope: a call inside the test body would print the warning per row.
 const skip = skipWithout("tmux");
 
-const dir = temporaryDirectory("parked-decision-teardown-test");
+const dir = temporaryDirectory("kept-decision-teardown-test");
 const started: number[] = [];
 // What the test started that no pid of its own names: a tmux server to kill, a session a process
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
