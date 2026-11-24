@@ -33,7 +33,7 @@ type mentionListener struct {
 	mu          sync.Mutex
 	sends       []mentionListenerSend
 	held        map[string]chan struct{}
-	heldLookups map[string]chan struct{}
+	heldLookups map[string]*heldLookup
 	// refused holds the sessions whose sends the listener answers 503: a send the recipient's
 	// host refuses, which fails its attempt.
 	refused map[string]struct{}
@@ -78,7 +78,7 @@ func (s mentionListenerSend) is(session, body string) bool {
 func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 	t.Helper()
 	state := &mentionListener{
-		held: map[string]chan struct{}{}, heldLookups: map[string]chan struct{}{},
+		held: map[string]chan struct{}{}, heldLookups: map[string]*heldLookup{},
 		refused:   map[string]struct{}{},
 		stalls:    map[string]*mentionStall{},
 		answers:   map[string]*mentionStall{},
@@ -88,11 +88,15 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			state.mu.Lock()
-			gate := state.heldLookups[r.URL.Path]
+			held := state.heldLookups[r.URL.Path]
+			if held != nil && held.reached != nil {
+				close(held.reached)
+				held.reached = nil
+			}
 			state.mu.Unlock()
-			if gate != nil {
+			if held != nil {
 				select {
-				case <-gate:
+				case <-held.gate:
 				case <-r.Context().Done():
 					return
 				}
@@ -263,14 +267,31 @@ func (l *mentionListener) stall(session string) (reached <-chan struct{}, releas
 	return stall.reached, sync.OnceFunc(func() { close(stall.release) })
 }
 
+// heldLookup is a path whose lookups the listener holds (holdLookups): every GET of it waits for
+// gate. reached, where a test awaits one (nextLookupHeld), is closed when the next GET of it
+// arrives, and is nil after; the listener's lock guards it.
+type heldLookup struct {
+	gate, reached chan struct{}
+}
+
 // holdLookups makes every GET of path wait until the returned release is called; release may be
 // called more than once.
 func (l *mentionListener) holdLookups(path string) func() {
-	gate := make(chan struct{})
+	held := &heldLookup{gate: make(chan struct{})}
 	l.mu.Lock()
-	l.heldLookups[path] = gate
+	l.heldLookups[path] = held
 	l.mu.Unlock()
-	return sync.OnceFunc(func() { close(gate) })
+	return sync.OnceFunc(func() { close(held.gate) })
+}
+
+// nextLookupHeld is closed once the next GET of path, which holdLookups holds, reaches the
+// listener from now on.
+func (l *mentionListener) nextLookupHeld(path string) <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	reached := make(chan struct{})
+	l.heldLookups[path].reached = reached
+	return reached
 }
 
 // awaitSend waits for the next send to arrive and returns the session it is for.
@@ -540,17 +561,23 @@ type unansweredLookup struct {
 }
 
 // commentWithAnUnansweredLookup posts the comment lookup describes. It checks that the comment
-// answers within mentionLookupTimeout's bound with its attempt pending - with the mention
+// answers while the listener still holds its lookup, with its attempt pending - with the mention
 // unresolved, or pinned to s1 when lookup.pinned - then lets the listener answer, waits for the
 // mention sender to send the attempt to s1, and runs the outbox until it has published
 // comment.created. The listener resolves every session of senderTestSessions, and role:reviewer
 // to s1.
+//
+// The bound on the answer is the held lookup, not the machine's clock: the listener lets the
+// lookup answer only once the comment has answered, and the listener client's own window is an
+// hour, so only the comment's bound on its lookups (mentionLookupTimeout) can end its wait on the
+// held one. A comment that waited for the lookup's answer is not answered before the test
+// binary's deadline, which fails the row by name.
 func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansweredLookupComment {
 	t.Helper()
 	listener, state := newMentionListener(t)
 	letAnswer := state.holdLookups(lookup.hungPath)
 	defer letAnswer()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "An unanswered lookup", "before")
 	if lookup.route != "" {
 		if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -567,13 +594,17 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 		input["reply_to"] = decodeMentionedComment(t, root).ID
 	}
 
-	started := time.Now()
-	response := postMentionedComment(t, handler, issue.Key, input)
-	answered := time.Since(started)
-	created := decodeMentionedComment(t, response)
-	if bound := mentionLookupTimeout + 500*time.Millisecond; answered >= bound {
-		t.Fatalf("the comment answered after %v with a lookup unanswered, want under %v", answered, bound)
+	held := state.nextLookupHeld(lookup.hungPath)
+	response := answeredBeforeTheBinaryDeadline(t, "the comment", func() *httptest.ResponseRecorder {
+		return postMentionedComment(t, handler, issue.Key, input)
+	})
+	select {
+	case <-held:
+	default:
+		t.Fatalf("the comment answered before its lookup of %s reached the listener, want it answered while the listener held that lookup",
+			lookup.hungPath)
 	}
+	created := decodeMentionedComment(t, response)
 	pinnedTo := func(sessionID *string) bool {
 		if lookup.pinned {
 			return sessionID != nil && *sessionID == "s1"

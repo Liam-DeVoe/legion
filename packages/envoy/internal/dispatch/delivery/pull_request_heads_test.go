@@ -292,6 +292,64 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	}
 }
 
+// A read-through whose second pull request fails stores the first's head and answers the
+// failure, as a read-through that wrote each head as it read it did: the heads it read before the
+// failure are written, in its one transaction, and the failing pull request's is not. The second
+// pull request names no issue in its title, body or branch, so its attribution reads its commit
+// messages, and GitHub answers that read with a rate limit, the one failure of it the attribution
+// hands back rather than writing the row incomplete (attributeHead).
+func TestAReadThroughWhoseSecondPullRequestFailsStoresTheFirstsHead(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 11)
+	const sha = "4646464646464646464646464646464646464646"
+
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		pull := func(number int, title, branch string) map[string]any {
+			return map[string]any{
+				"number": number, "title": title, "body": "",
+				"html_url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+				"state":    "open", "merged": false, "updated_at": "2026-02-03T00:00:00Z",
+				"head": map[string]any{
+					"ref": branch, "sha": sha, "repo": map[string]any{"full_name": "acme/widgets"},
+				},
+				"base": map[string]any{"ref": "main"},
+			}
+		}
+		mustEncode(t, w, []any{pull(461, issue+" the work", "legion/"+issue), pull(462, "An unrelated change", "fix")})
+	})
+	fake.handle("GET /repos/acme/widgets/pulls/462/commits", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	})
+	written, atHead, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/widgets", sha, time.Now())
+	if _, limited := githubapp.AsRateLimit(err); !limited {
+		t.Fatalf("the read-through answered %v, want the rate limit the second pull request's commit messages met", err)
+	}
+	stored := func(number int) int {
+		t.Helper()
+		var rows int
+		if err := pool.QueryRow(ctx, `
+			select count(*) from pull_request_heads where repo = 'acme/widgets' and number = $1
+		`, number).Scan(&rows); err != nil {
+			t.Fatalf("count the head rows of #%d: %v", number, err)
+		}
+		return rows
+	}
+	if first, failed := stored(461), stored(462); first != 1 || failed != 0 {
+		t.Fatalf("#461 has %d head rows and #462 %d, want one and none: the first was read before the failure, the second failed", first, failed)
+	}
+	if head := readHead(t, ctx, pool, "acme/widgets", 461); head.HeadSHA != sha || head.State != "open" || head.IssueKey == nil || *head.IssueKey != issue {
+		t.Fatalf("#461 = %+v, want its open head at %s attributed to %s", head, sha, issue)
+	}
+	if written != 1 || !atHead {
+		t.Fatalf("the read-through wrote %d rows (at the head: %t), want 1, the first pull request's, at the commit's head", written, atHead)
+	}
+}
+
 // HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling an issue's

@@ -1145,8 +1145,12 @@ func RepositoryUnreadable(err error) bool {
 // every pull request is attributed are the heads written, all in one transaction
 // (writeReadThroughHeads). So no transaction and no connection is held while GitHub answers, and a
 // request that gives its admission unit back for a stretch holds nothing the count does not see.
-// A stretch whose wait failed, and an attribution that failed, end the read-through with that
-// failure, writing nothing; a write that failed writes none of the heads (ErrHeadNotStored).
+// A first stretch that failed, its wait or its reads, writes nothing. An attribution that failed,
+// or whose stretch's wait did, ends the read-through with that failure once the heads of the pull
+// requests before it are written, in that one transaction, so a read-through that fails part way
+// leaves the heads it read before the failure stored, written counting them, as one that wrote
+// each head as it read it does; a write that failed writes none of them (ErrHeadNotStored), and is
+// answered beside the failure.
 func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
@@ -1173,7 +1177,10 @@ func (a *Attributor) ReadThroughCommitPulls(
 		}
 		attributed, err := a.attributePayload(ctx, pool, client, token, canonical, pull)
 		if err != nil {
-			return 0, atHead, err
+			if stored := writeReadThroughHeads(ctx, pool, broker, heads, repoFull); stored != nil {
+				return 0, atHead, errors.Join(err, stored)
+			}
+			return len(heads), atHead, err
 		}
 		var checkedAt *time.Time
 		if attributed.complete {

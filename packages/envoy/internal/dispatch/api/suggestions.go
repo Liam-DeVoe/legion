@@ -282,32 +282,25 @@ type relatedInput struct {
 	// record writes the check's records: write_suggestions rows for an issue or ask source and one
 	// related_checks row. The no-write route leaves it false.
 	record bool
-	// embedAway is the wait the check's embedding of its text runs through, holding no admission
-	// unit of the request that runs the check while the embedder answers: awayOnNetwork for the
-	// related route's two forms, which write nothing, so a take-back refused after the embedding
-	// is the route's answer, 429 OVERLOADED (answerRelated); and, for a check a write runs once it
-	// has committed - an issue create's, an ask create's, an edit's new decision blocks' - one that
-	// is never refused, taken back on the request's own context (embedAfterWrite), since a 429
-	// then would have its caller make the write again. A check with one embeds the text before
-	// either stage starts, on the request's own goroutine (embedRelatedFirst), and hands the
-	// vector to stage 2. A check with none - one no request runs, a test's - embeds inside stage
-	// 2, beside stage 1. The embedding cannot overlap stage 1 where it holds no unit, since stage 1
-	// holds a request-pool connection, which a request whose units are given back must not.
+	// embedAway is the wait the check waits on its embedding through once that is all it has
+	// left to wait on, holding no admission unit of the request that runs the check while the
+	// embedder answers (runRelatedCheck): awayOnNetwork for the related route's two forms, which
+	// write nothing, so a take-back refused after the embedding is the route's answer, 429
+	// OVERLOADED (answerRelated); and, for a check a write runs once it has committed - an issue
+	// create's, an ask create's, an edit's new decision blocks' - one that is never refused, taken
+	// back on the request's own context (embedAfterWrite), since a 429 then would have its caller
+	// make the write again. A check with none - one no request runs, a test's - has no unit to
+	// give back, and waits through awayOnNetwork, which gives nothing back and takes nothing for a
+	// context that carries no admission ticket.
 	//
-	// The answers and the bounds are the ones every other check gives: the meaning allowance
-	// (3 s) and the whole allowance (5 s) both still count from the check's start. What moves
-	// is when stage 1 runs: after the embedding, where it ran beside it.
-	//   - A healthy embedder answers meaning_and_keywords as before, its time now added to the
-	//     term selection's rather than overlapping it. Only where the embedding, the term
-	//     selection and the meaning query together pass the meaning allowance does the check
-	//     answer keywords only (meaning_timeout) where it answered by meaning.
-	//   - An embedder that fails answers keywords only (embed_failed), as before, once stage 1
-	//     has run after the failure.
-	//   - A slow or hung embedder holds the check until the meaning allowance ends before stage 1
-	//     starts. Stage 1 then has what is left of the whole allowance, two seconds where it had
-	//     five. The answer is keywords only (meaning_timeout), as before, at three seconds plus
-	//     stage 1's time rather than at three, and not made for time where stage 1 needs more
-	//     than those two seconds.
+	// The embedding runs beside stage 1 from the check's start, on a goroutine of its own that
+	// touches no pool, and the meaning allowance and the whole allowance both count from the
+	// check's start, so the check answers what it answered before the wait, when it did; only a
+	// take-back that queues for its unit takes longer, and on the related route one refused is
+	// answered 429. The request holds its unit while stage 1 reads, and gives it back only once
+	// stage 1 has answered and the embedding has not; it takes it back before the meaning query.
+	// An embedding that answers before stage 1 does, which is a healthy embedder's, has nothing
+	// given back.
 	embedAway func(ctx context.Context, wait func(context.Context) error) error
 	// trees is the display tree reader of the request that runs the check, made from its
 	// `Dispatch-Trees` header (readDisplayTrees of wantsDisplayTrees), and nil where the caller
@@ -336,8 +329,7 @@ type relatedRecord struct {
 }
 
 // relatedStage is one search stage's answer and how long it took from the stages' start (stage 1
-// starts with the term selection and stage 2 with the embedding, both at once, save where the
-// check embeds first, relatedInput.embedAway, whose stages count from that embedding).
+// starts with the term selection, stage 2 with the embedding, both at once).
 type relatedStage struct {
 	response model.SearchResponse
 	err      error
@@ -370,12 +362,12 @@ type relatedPick struct {
 // 1, which picks the text's rarest words (pickRelatedTerms) and runs search's keyword query over
 // them, and, when an embedder is configured and keywords alone were not asked for, the text's
 // embedding followed by stage 2, search's meaning query, which fuses the same keyword arms with
-// the nearest vectors. A route's check embeds the text first, holding no admission unit while the
-// embedder answers, and starts the stages after (relatedInput.embedAway). Stage 2's answer
-// within relatedMeaningAllowance is the result, searched by meaning and keywords; otherwise
-// stage 1's is, searched by keywords only, with the reason. If stage 1 has not answered when the
-// allowance ends, the check was not made, for time; if the request that ran it goes away first,
-// it was not made, cancelled.
+// the nearest vectors. Where stage 1 answers before the embedding does, the request waits on the
+// embedder holding no admission unit (relatedInput.embedAway). Stage 2's answer within
+// relatedMeaningAllowance is the result, searched by meaning and keywords; otherwise stage 1's
+// is, searched by keywords only, with the reason. If stage 1 has not answered when the allowance
+// ends, the check was not made, for time; if the request that ran it goes away first, it was not
+// made, cancelled.
 //
 // The source's own items are left out, each owner keeps its best-ranked item, open owners come
 // before done issues, and the best three are Related. A check whose write is a question
@@ -462,30 +454,6 @@ func (s *server) runRelatedCheck(
 	if strings.TrimSpace(input.text) == "" {
 		return notMade(relatedReasonBlankText, relatedBlankTextMissing)
 	}
-	// stagesStarted is where the stages' times count from (relatedStage.took): the embedding where
-	// the check embeds first (relatedInput.embedAway), the term selection and the embedding at
-	// once otherwise.
-	stagesStarted := time.Now()
-	// Stage 2, the embedding and the meaning query, ends at relatedMeaningAllowance from the
-	// check's start (server.meaningBound in a test), wherever the embedding runs.
-	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
-	// reason is why the check searches by keywords alone where stage 2 does not answer; empty
-	// while it may.
-	reason := ""
-	// vector is the text's embedding where the check embedded it before the stages
-	// (relatedInput.embedAway), nil otherwise: stage 2 then embeds the text itself.
-	var vector []float32
-	if input.embedAway != nil && !input.keywordsOnly && s.deps.Embedder != nil {
-		var err error
-		if vector, reason, err = s.embedRelatedFirst(ctx, input.embedAway, input.text, started.Add(meaningAllowance)); err != nil {
-			// The request was refused its units back after the embedding, or ended while it
-			// asked for them: the route answers the refusal in place of this (answerRelated).
-			return notMade(relatedReasonCancelled, relatedCancelledMissing)
-		}
-		if reason != "" {
-			record.meaningMS = milliseconds(time.Since(stagesStarted))
-		}
-	}
 
 	// Stage 1 runs on a cancel of its own so that a check which answered without it does not
 	// leave it holding a request-pool connection past the answer (the wait below).
@@ -498,6 +466,7 @@ func (s *server) runRelatedCheck(
 	}
 	exclusion := relatedExclusion{issueKey: cmp.Or(input.source.issueKey, input.excludeIssue), artifactID: input.source.artifactID}
 	excluded := input.excluded()
+	stagesStarted := time.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
@@ -530,10 +499,11 @@ func (s *server) runRelatedCheck(
 		<-keyword
 	}()
 
-	// Stage 2 runs on a context of its own ending at the meaning allowance, so the embedding,
-	// where stage 2 makes it, and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1. A question's cross-project leg runs on that context too, so the wait
-	// for it below never outlives it either.
+	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
+	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
+	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
+	// on that context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
 	var meaning chan relatedStage
 	var meaningCtx context.Context
 	endMeaning := context.CancelFunc(func() {})
@@ -555,21 +525,36 @@ func (s *server) runRelatedCheck(
 		}
 		leg.release()
 	}()
+	// embedded is where the text's embedding hands its answer over, nil where the check makes
+	// none.
+	var embedded chan relatedEmbedAnswer
+	reason := ""
 	switch {
 	case input.keywordsOnly:
 		reason = relatedReasonKeywordsRequested
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
-	case reason != "":
-		// The check embedded first and has no vector: stage 2 has nothing to search with, and
-		// reason says why (embedRelatedFirst).
 	default:
 		meaningCtx, endMeaning = context.WithDeadline(bounded, started.Add(meaningAllowance))
 		defer endMeaning()
+		// The embedding runs on a goroutine of its own, beside stage 1 from the stages' start.
+		// It touches no pool, so the check does not wait for it before it returns: the meaning
+		// context, which the return ends, is what ends a call still running.
+		embedded = make(chan relatedEmbedAnswer, 1)
+		go func() {
+			vector, reason := s.relatedEmbedding(meaningCtx, input.text)
+			embedded <- relatedEmbedAnswer{vector: vector, reason: reason, took: time.Since(stagesStarted)}
+		}()
+	}
+	// embedding is set while the embedding has not answered.
+	embedding := embedded != nil
+	// startMeaning starts stage 2's meaning query over vector, the text's embedding, on the
+	// request's unit.
+	startMeaning := func(vector []float32) {
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
 			reason = relatedReasonMeaningFailed
-			break
+			return
 		}
 		// The cross-project leg reads on a connection mark of its own, taken only where the
 		// write is a question, since no other check runs that leg. Both marks are taken here,
@@ -607,16 +592,52 @@ func (s *server) runRelatedCheck(
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, leg, project, input.text, vector, pick, excluded, input.trees != nil)
+			stage := s.relatedMeaningStage(meaningRead, leg, project, vector, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
 	}
+	// takeEmbedding takes the embedding's answer, on the request's unit: stage 2 starts over its
+	// vector, or the check searches by keywords alone for the reason it gives, meaning_ms then
+	// holding how long the embedding took, as it holds a stage 2 that gave up.
+	takeEmbedding := func(answer relatedEmbedAnswer) {
+		embedding = false
+		if answer.reason != "" {
+			reason = answer.reason
+			record.meaningMS = milliseconds(answer.took)
+			return
+		}
+		startMeaning(answer.vector)
+	}
+	// embeddingLate ends the wait for an embedding the meaning deadline overtook. An answer and
+	// the deadline can be ready at once, as for stage 2's below, so one already handed over is
+	// read without blocking: a failure is its own reason, and a vector has no time left for its
+	// query. Otherwise the meaning search did not answer in time.
+	embeddingLate := func() {
+		select {
+		case answer := <-embedded:
+			if answer.reason != "" {
+				takeEmbedding(answer)
+				return
+			}
+		default:
+		}
+		embedding = false
+		record.meaningMS = milliseconds(time.Since(stagesStarted))
+		reason = relatedReasonMeaningTimeout
+	}
 
-	select {
-	case <-pick.ready:
-	case <-bounded.Done():
-		return ended(timedOut)
+	// The terms, stage 1's first read, with the embedding taken as soon as it answers: stage 2's
+	// cross-project leg needs the vector alone, and starts with it.
+	for picked := false; !picked; {
+		select {
+		case answer := <-embedded:
+			takeEmbedding(answer)
+		case <-pick.ready:
+			picked = true
+		case <-bounded.Done():
+			return ended(timedOut)
+		}
 	}
 	if pick.err != nil {
 		return searchFailed(pick.err)
@@ -628,6 +649,49 @@ func (s *server) runRelatedCheck(
 		record.terms = append(record.terms, term.Lexeme)
 	}
 	suggestions.SearchQuery = relatedSearchQuery(pick.terms.Terms)
+
+	// stage1 is stage 1's answer once the check has taken it off its channel (keyword nil).
+	var stage1 relatedStage
+	// An embedding still to answer is waited for beside stage 1's keyword query, holding the
+	// request's unit, which that query's reads run under.
+	if embedding {
+		select {
+		case answer := <-embedded:
+			takeEmbedding(answer)
+		case stage1 = <-keyword:
+			keyword = nil
+		case <-meaningCtx.Done():
+			embeddingLate()
+		}
+	}
+	// Stage 1 has answered and the embedding has not: the request has nothing left to do but
+	// wait on the embedder, so it waits holding no unit (relatedInput.embedAway), at most until
+	// the meaning deadline, and takes the unit back before the meaning query. The answer is
+	// taken once the unit is back. A request refused its unit back, or ended while it asked for
+	// it, is answered that in place of this check (answerRelated).
+	if embedding {
+		away := input.embedAway
+		if away == nil {
+			away = awayOnNetwork
+		}
+		var answer relatedEmbedAnswer
+		got := false
+		if err := away(ctx, func(context.Context) error {
+			select {
+			case answer = <-embedded:
+				got = true
+			case <-meaningCtx.Done():
+			}
+			return nil
+		}); err != nil {
+			return notMade(relatedReasonCancelled, relatedCancelledMissing)
+		}
+		if got {
+			takeEmbedding(answer)
+		} else {
+			embeddingLate()
+		}
+	}
 
 	var answer relatedStage
 	answered := false
@@ -690,24 +754,30 @@ func (s *server) runRelatedCheck(
 		// allowance, so a check that has answered holds no request-pool connection: the next
 		// check of the same edit is admitted for its own reads, not for these as well
 		// (decisionBlockChecks).
-		select {
-		case stage := <-keyword:
-			keyword = nil
-			record.keywordMS = milliseconds(stage.took)
-		default:
+		if keyword != nil {
+			select {
+			case stage1 = <-keyword:
+				keyword = nil
+			default:
+			}
+		}
+		if keyword == nil {
+			record.keywordMS = milliseconds(stage1.took)
 		}
 	} else {
-		select {
-		case stage := <-keyword:
-			keyword = nil
-			record.keywordMS = milliseconds(stage.took)
-			if stage.err != nil {
-				return searchFailed(stage.err)
+		if keyword != nil {
+			select {
+			case stage1 = <-keyword:
+				keyword = nil
+			case <-bounded.Done():
+				return ended(timedOut)
 			}
-			answer = stage
-		case <-bounded.Done():
-			return ended(timedOut)
 		}
+		record.keywordMS = milliseconds(stage1.took)
+		if stage1.err != nil {
+			return searchFailed(stage1.err)
+		}
+		answer = stage1
 		suggestions.Search = relatedKeywordsOnly
 		suggestions.SearchNote = relatedKeywordsOnlyNote(reason, meaningAllowance)
 		record.reason = reason
@@ -721,19 +791,19 @@ func (s *server) runRelatedCheck(
 	return suggestions, record
 }
 
-// relatedMeaningStage is stage 2: the text's embedding, started at once, then, once stage 1 has
-// picked the terms, the meaning query over them, which leaves out the owners excluded names. Its
-// reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
-// allowance. vector is the embedding where the check made it before the stages
-// (embedRelatedFirst), and nil where this stage makes it itself (relatedEmbedding).
+// relatedMeaningStage is stage 2's meaning query over vector, the text's embedding, once stage 1
+// has picked the terms, which leaves out the owners excluded names. Its reason is empty when it
+// answered and names why it did not otherwise; ctx ends at the meaning allowance. The embedding
+// runs beside stage 1 from the check's start, and the check starts this stage once it is in hand
+// (runRelatedCheck).
 //
 // leg is the cross-project leg runRelatedCheck holds, with the second connection mark it took
 // for it (crossProjectLeg.read), which it takes only where the check's own write is a question
 // (relatedInput.question); it is nil where it took none or the pool refused it. With a leg in
 // hand this stage also reads the answered questions of the other projects
-// (relatedOtherProjects). That leg starts as soon as the embedding is in hand, before the wait
-// on pick.ready, because it needs the vector alone and starting it there gives it the most time.
-// It reuses this stage's own embedding, so the check calls the embedding service no more often
+// (relatedOtherProjects). That leg starts as soon as the stage does, before the wait on
+// pick.ready, because it needs the vector alone and starting it there gives it the most time.
+// It reuses the check's one embedding, so the check calls the embedding service no more often
 // than it does without it.
 //
 // The one-project response is the stage's answer whenever it has one, and the stage answers as
@@ -760,16 +830,10 @@ func (s *server) runRelatedCheck(
 // abandons the leg's answer only: it does not return before the leg's read has given its
 // request-pool connection back (crossProjectLeg.release).
 func (s *server) relatedMeaningStage(
-	ctx context.Context, leg *crossProjectLeg, project, text string, vector []float32, pick *relatedPick, excluded []string, trees bool,
+	ctx context.Context, leg *crossProjectLeg, project string, vector []float32, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		return relatedStage{reason: relatedMeaningFailure(ctx, reason, err)}
-	}
-	if vector == nil {
-		var reason string
-		if vector, reason = s.relatedEmbedding(ctx, text); reason != "" {
-			return relatedStage{reason: reason}
-		}
 	}
 	var cross chan []model.SearchResult
 	if leg != nil {
@@ -808,9 +872,10 @@ func (s *server) relatedMeaningStage(
 	return relatedStage{response: response, cross: cross}
 }
 
-// relatedEmbedding is stage 2's embedding of text under ctx, which ends at the meaning allowance:
-// the vector, or the reason the check searches by keywords alone where there is none
-// (relatedMeaningFailure of embed_failed).
+// relatedEmbedding is the check's embedding of text under ctx, the meaning context, which ends
+// at the meaning allowance: the vector, or the reason the check searches by keywords alone where
+// there is none (relatedMeaningFailure of embed_failed). It runs on a goroutine of its own beside
+// stage 1, and touches no pool (runRelatedCheck).
 func (s *server) relatedEmbedding(ctx context.Context, text string) ([]float32, string) {
 	vector, err := s.embedQuery(ctx, text)
 	if err != nil {
@@ -833,35 +898,20 @@ func relatedMeaningFailure(ctx context.Context, reason string, err error) string
 	return reason
 }
 
-// embedRelatedFirst is a route's embedding of the check's text, made before the stages start
-// (relatedInput.embedAway): on the request's own goroutine, holding no admission unit across the
-// wait on the embedder (away, the check's embedAway), and under deadline, where the meaning
-// allowance ends, or ctx's own deadline where that comes first - an edit's decision blocks share
-// one allowance (decisionBlockChecks) - as stage 2's own embedding runs (relatedEmbedding). It
-// answers the vector, or the reason the check searches by keywords alone where there is none, and,
-// ahead of both, the take-back's error: the request was refused its units back, or ended while it
-// asked for them.
-func (s *server) embedRelatedFirst(
-	ctx context.Context, away func(context.Context, func(context.Context) error) error, text string, deadline time.Time,
-) (vector []float32, reason string, err error) {
-	if bound, bounded := ctx.Deadline(); bounded && bound.Before(deadline) {
-		deadline = bound
-	}
-	err = away(ctx, func(ctx context.Context) error {
-		embedding, cancel := context.WithDeadline(ctx, deadline)
-		defer cancel()
-		vector, reason = s.relatedEmbedding(embedding, text)
-		return nil
-	})
-	return vector, reason, err
+// relatedEmbedAnswer is what the check's embedding hands over (relatedEmbedding): the vector, or
+// the reason the check searches by keywords alone, and how long it took from the stages' start.
+type relatedEmbedAnswer struct {
+	vector []float32
+	reason string
+	took   time.Duration
 }
 
 // embedAfterWrite is the embedding's wait of a check a write runs once it has committed
 // (relatedInput.embedAway): awayOnNetworkNeverRefused on request, the request's own context, which
 // the take-back waits on whichever bound the check itself runs under - an edit's decision blocks
 // run theirs under the edit's one allowance (decisionBlockChecks), whose end must not leave the
-// request running without its unit. The embedding itself keeps the check's bounds
-// (embedRelatedFirst).
+// request running without its unit. The embedding itself keeps the check's bounds, the meaning
+// allowance from the check's start (runRelatedCheck).
 func embedAfterWrite(request context.Context) func(context.Context, func(context.Context) error) error {
 	return func(_ context.Context, wait func(context.Context) error) error {
 		return awayOnNetworkNeverRefused(request, wait)

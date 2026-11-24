@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -689,18 +692,22 @@ func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
 	requireReadsHoldNoUnitOnService(t, "GitHub", handler, limiter, requests, calls.Load, release)
 }
 
-// heldEmbedder is the search tests' fake embedder with every query's embedding held: each is
-// counted in calls as it arrives and waits until release, or until its bound
-// (searchEmbedTimeout) ends it, before the fake answers it.
+// heldEmbedder is the search tests' fake embedder with query embeddings held: each one whose text
+// holds holds (every one where holds is empty) is counted in calls as it arrives and waits until
+// release, or until its bound (searchEmbedTimeout, or the related-item check's meaning allowance)
+// ends it, before the fake answers it.
 type heldEmbedder struct {
 	*fakeEmbedder
+	holds string
 	calls atomic.Int32
 	gate  chan struct{}
 	once  sync.Once
 }
 
 func (h *heldEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
-	if inputType == embed.InputQuery {
+	if inputType == embed.InputQuery && (h.holds == "" || slices.ContainsFunc(texts, func(text string) bool {
+		return strings.Contains(text, h.holds)
+	})) {
 		h.calls.Add(1)
 		select {
 		case <-h.gate:
@@ -728,26 +735,197 @@ func TestAReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
 	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release)
 }
 
+// relatedHeldWord is the word the related-item rows' reads carry and their seeds do not, so
+// their heldEmbedder holds the reads' embeddings alone (heldEmbedder.holds).
+const relatedHeldWord = "quokka"
+
+// relatedHoldServer is a server whose embedder holds the embedding of every related-item read
+// carrying relatedHeldWord, admitted by limiter, with project holding one issue the reads' words
+// find, its term statistics refreshed.
+func relatedHoldServer(t *testing.T, project string, embedder embed.Embedder, limiter *admission.Limiter) (http.Handler, *server, string) {
+	t.Helper()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder, admission: limiter})
+	createSuggestionProject(t, handler, project)
+	key := createSearchIssue(t, handler, project, "Zymurgy ledger drifts nightly", "")
+	awaitTermStatsRefresh(t, served, project)
+	refreshTermStats(t, database, project)
+	return handler, served, key
+}
+
+// relatedHoldRead is GET /api/v1/projects/{project}/related for a title of the seeded issue's
+// words and relatedHeldWord.
+func relatedHoldRead(t *testing.T, project string) *http.Request {
+	return testRequestAs(t, http.MethodGet, "/api/v1/projects/"+project+"/related?title=Zymurgy+ledger+"+relatedHeldWord+"+drifts", "alice")
+}
+
 // The embedder again, for the related-item check's read: each read is GET
-// /api/v1/projects/{key}/related, which embeds its text before its stages start
-// (relatedInput.embedFirst), and the embedder holds it. The route reads with two units at once
-// (concurrentReads), so the read class holds two of its checks, and the six waiters would need
-// twelve units.
+// /api/v1/projects/{key}/related, whose check embeds its text on a goroutine of its own beside its
+// keyword stage, and the embedder holds that embedding, up to its bound, the meaning allowance.
+// Each check's keyword stage runs at once, beside the held embedding, under the check's units,
+// and once it has answered the check waits on the embedder alone, holding none: every check's
+// keyword search has run while every embedding is held, and the read class holds nothing. The
+// route reads with two units at once (concurrentReads), so the read class holds two of its
+// checks, and the six waiters would need twelve units.
 func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
-	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, gate: make(chan struct{})}
+	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, holds: relatedHeldWord, gate: make(chan struct{})}
 	t.Cleanup(embedder.release)
 	limiter := admission.New(admission.Limits{Read: concurrentReadWeight * networkWaitReads, Write: networkWaitReads})
-	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder, admission: limiter})
-	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RHOLD", "name": "Related hold"}, "alice")
-	if project.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", project.Code, project.Body.String())
-	}
+	handler, served, _ := relatedHoldServer(t, "RHOLD", embedder, limiter)
+	var keywordSearches atomic.Int32
+	served.relatedSearchEntered = func() { keywordSearches.Add(1) }
 
 	requests := make([]*http.Request, 0, networkWaiters)
 	for range networkWaiters {
-		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/projects/RHOLD/related?title=Zymurgy+ledger+drifts", "alice"))
+		requests = append(requests, relatedHoldRead(t, "RHOLD"))
 	}
-	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release)
+	waiters := startWaiters(handler, requests)
+	t.Cleanup(func() {
+		embedder.release()
+		waiters.working.Wait()
+	})
+	requireWaitersHoldNoReadUnit(t, limiter, embedder.calls.Load, func() bool { return true })
+	if searched := keywordSearches.Load(); searched != networkWaiters {
+		t.Errorf("with %d checks' embeddings held, %d keyword searches ran, want every check's: the keyword stage runs beside the embedding, not after it",
+			networkWaiters, searched)
+	}
+	requireCachedCallersServed(t, handler, map[string]func() *http.Request{
+		"a project list": func() *http.Request { return testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice") },
+	})
+	embedder.release()
+	for _, answer := range waiters.collect(t, networkWaiters, 10*time.Second) {
+		if answer.status != http.StatusOK {
+			t.Errorf("a related-item read waiting on the embedder: status=%d after %v body=%s, want 200 once it answered",
+				answer.status, answer.elapsed, strings.TrimSpace(answer.body))
+		}
+	}
+	if stats := limiter.Stats()[admission.Read]; stats.InFlight != 0 {
+		t.Errorf("once every related-item read was answered the read class holds %d units, want none", stats.InFlight)
+	}
+}
+
+// A related-item read's keyword stage keeps its whole share of the check's allowance while the
+// embedder holds the embedding: it runs beside the embedding from the check's start, so a keyword
+// stage slower than what an embedding made first would leave it - the whole allowance less the
+// meaning allowance, two seconds - still answers. The embedder holds the embedding past its
+// bound, the meaning allowance, and the keyword search is held half a second longer than those
+// two seconds: the check answers what it finds by keywords alone, meaning search not having
+// answered within the meaning allowance, where a check that embedded first was not made, for
+// time.
+func TestARelatedItemReadsKeywordStageKeepsItsShareBesideAHeldEmbedding(t *testing.T) {
+	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, holds: relatedHeldWord, gate: make(chan struct{})}
+	t.Cleanup(embedder.release)
+	handler, served, key := relatedHoldServer(t, "RSHARE", embedder, nil)
+	keywordHold := relatedCheckAllowance - relatedMeaningAllowance + 500*time.Millisecond
+	served.relatedSearchEntered = func() { time.Sleep(keywordHold) }
+
+	request := relatedHoldRead(t, "RSHARE")
+	response := answeredBeforeTheBinaryDeadline(t, "the related-item read", func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("a related-item read with its embedding held and its keyword search held %v: status=%d body=%s, want 200",
+			keywordHold, response.Code, response.Body.String())
+	}
+	suggestions := decodeBody[model.Suggestions](t, response)
+	if suggestions.Outcome != relatedFound || suggestions.Search != relatedKeywordsOnly ||
+		suggestions.SearchNote != relatedKeywordsOnlyNote(relatedReasonMeaningTimeout, relatedMeaningAllowance) ||
+		!slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
+		t.Fatalf("suggestions = %+v, want %s found by keywords only, meaning search not having answered within %v: a keyword stage of %v answers within the check's %v",
+			suggestions, key, relatedMeaningAllowance, keywordHold, relatedCheckAllowance)
+	}
+	if calls := embedder.calls.Load(); calls != 1 {
+		t.Fatalf("the embedder held %d embeddings, want the read's one", calls)
+	}
+}
+
+// heldSeam holds what reaches a test seam of the related-item check (server.relatedSearchEntered,
+// server.meaningSearchEntered) until release, and closes entered as the first arrives.
+type heldSeam struct {
+	entered, gate  chan struct{}
+	enter, release func()
+}
+
+func newHeldSeam() *heldSeam {
+	seam := &heldSeam{entered: make(chan struct{}), gate: make(chan struct{})}
+	seam.enter = sync.OnceFunc(func() { close(seam.entered) })
+	seam.release = sync.OnceFunc(func() { close(seam.gate) })
+	return seam
+}
+
+func (s *heldSeam) hold() {
+	s.enter()
+	<-s.gate
+}
+
+// awaitEntered fails the row when nothing reached seam within bound.
+func (s *heldSeam) awaitEntered(t *testing.T, what string, bound time.Duration) bool {
+	t.Helper()
+	select {
+	case <-s.entered:
+		return true
+	case <-time.After(bound):
+		t.Errorf("%s did not start within %v", what, bound)
+		return false
+	}
+}
+
+// A related-item read whose embedding answers before its keyword stage does gives nothing back: it
+// takes the embedding beside the keyword stage, under its units, and runs the meaning query beside
+// that stage as the check always has. The read class holds one check's units here, the embedding
+// answers at once, the keyword search and the meaning query are held, and a project list queues
+// behind the check: the meaning query starts while the keyword search is held, and once the
+// keyword search is let go the list is still queued, the check holding its units, until the
+// check has answered. A check that gave its units back once its keyword stage answered would let
+// the list in while its meaning query is held.
+func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T) {
+	limiter := admission.New(admission.Limits{Read: concurrentReadWeight, Write: networkWaitReads, ReadWait: time.Minute})
+	handler, served, _ := relatedHoldServer(t, "RFIRST", &fakeEmbedder{}, limiter)
+	keyword, meaning := newHeldSeam(), newHeldSeam()
+	served.relatedSearchEntered, served.meaningSearchEntered = keyword.hold, meaning.hold
+
+	check := startWaiters(handler, []*http.Request{relatedHoldRead(t, "RFIRST")})
+	t.Cleanup(func() {
+		keyword.release()
+		meaning.release()
+		check.working.Wait()
+	})
+	if !keyword.awaitEntered(t, "the check's keyword search", 10*time.Second) {
+		return
+	}
+	list := startWaiters(handler, []*http.Request{testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice")})
+	t.Cleanup(func() {
+		keyword.release()
+		meaning.release()
+		list.working.Wait()
+	})
+	if !testwait.Holds(10*time.Second, time.Millisecond, func() bool { return limiter.Stats()[admission.Read].Queued == 1 }) {
+		t.Fatalf("the project list did not queue behind the check: read class %+v", limiter.Stats()[admission.Read])
+	}
+	meaning.awaitEntered(t, "with its keyword search held, the check's meaning query", relatedMeaningAllowance)
+
+	keyword.release()
+	givenBack := func() bool {
+		stats := limiter.Stats()[admission.Read]
+		return len(list.answers) > 0 || stats.Queued != 1 || stats.InFlight != concurrentReadWeight
+	}
+	if testwait.Holds(500*time.Millisecond, time.Millisecond, givenBack) {
+		t.Errorf("once the check's keyword stage answered with its embedding in hand, the project list queued behind it was admitted (read class %+v): the check gave its units back",
+			limiter.Stats()[admission.Read])
+	}
+	meaning.release()
+	answered := check.collect(t, 1, 10*time.Second)[0]
+	listed := list.collect(t, 1, 10*time.Second)[0]
+	var suggestions model.Suggestions
+	if err := json.Unmarshal([]byte(answered.body), &suggestions); err != nil || answered.status != http.StatusOK ||
+		suggestions.Search != relatedMeaningAndKeywords {
+		t.Errorf("the check: status=%d body=%s (%v), want 200 by meaning and keywords", answered.status, strings.TrimSpace(answered.body), err)
+	}
+	if listed.status != http.StatusOK || listed.ended.Before(answered.ended) {
+		t.Errorf("the project list: status=%d, answered %v before the check, want 200 once the check had answered",
+			listed.status, answered.ended.Sub(listed.ended))
+	}
 }
 
 // The secrets broker: each read is a person's list of the credential requests waiting on them

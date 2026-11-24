@@ -73,15 +73,10 @@ var outboundLocal = map[string]string{
 // networkWaitGuardAllowed are the functions a route's handler reaches whose outbound calls hold no
 // admission unit of a request although no network wait runs them, each with the reason. The
 // guard does not follow them, and fails on an entry it no longer reaches or whose function
-// reaches no outbound call of its own.
-var networkWaitGuardAllowed = map[string]string{
-	// Stage 2 of a related-item check embeds the text itself (relatedMeaningStage) only where the
-	// check was handed no vector, which only a check without relatedInput.embedAway is: every
-	// check a route runs sets it (answerRelated, createIssue, createAskFor, decisionBlockChecks), so
-	// a route's check embeds first, in embedRelatedFirst, inside its network wait, and stage 2 is
-	// handed the vector or not started. Only the tests' direct relatedCheck calls set none.
-	"api.server.relatedEmbedding": "stage 2 embeds only for a check without embedAway, which no route runs: a route's check embeds first, inside its wait (embedRelatedFirst)",
-}
+// reaches no outbound call of its own. None needs one: the related-item check's embedding, which
+// runs on a goroutine of its own beside the check's keyword stage, is a goroutine the guard reads
+// as waited on away (awaitedAway).
+var networkWaitGuardAllowed = map[string]string{}
 
 // outboundSet is every exported method of a client of another server, by the method, labelled
 // with that server and the method's name.
@@ -684,7 +679,8 @@ func (g *networkWaitGuard) walkTable(t *testing.T) []string {
 // everything it runs that also does: each call of its own body, a go statement's included, and
 // whatever the call runs or is handed (callees). It does not follow work handed to the server's
 // background tracker (keyedWriteGuard.detached) or a go statement on a context
-// detachedFromRequest made, which run after the request or with no ticket, nor what a network
+// detachedFromRequest made, which run after the request or with no ticket, nor a go statement
+// whose goroutine fn waits on alone only inside a network wait (awaitedAway), nor what a network
 // wait is handed (waitOf), which runs with the unit given back. An outbound call it meets is an
 // offence. A function networkWaitGuardAllowed names is not followed.
 func (g *networkWaitGuard) walk(fn *lockFunction, step networkWaitStep) {
@@ -713,7 +709,7 @@ func (g *networkWaitGuard) walk(fn *lockFunction, step networkWaitStep) {
 		return true
 	})
 	for _, call := range ownCalls(fn) {
-		if g.keyed.detached(call) || (fired[call] && g.onDetachedContext(call)) {
+		if g.keyed.detached(call) || (fired[call] && (g.onDetachedContext(call) || g.awaitedAway(fn, call))) {
 			continue
 		}
 		at := g.graph.line(fn.source, call)
@@ -735,6 +731,211 @@ func (g *networkWaitGuard) walk(fn *lockFunction, step networkWaitStep) {
 			g.walk(callee, networkWaitStep{from: fn, at: at})
 		}
 	}
+}
+
+// channelReceive is one receive from a channel in the function that starts the goroutine handing
+// it over, as awaitedAway reads it: away, inside a function handed to a network wait; polled, a
+// case of a select with a default case; or beside the channels the other cases of its select
+// receive from, nil where it is no select's case. A receive that is none of these waits on the
+// channel alone, holding the unit.
+type channelReceive struct {
+	away, polled bool
+	beside       []types.Object
+}
+
+// awaitedAway reports whether call, a go statement's in fn, starts a goroutine whose waiter gives
+// its unit back around the wait on it alone: a function literal that hands its answer over on
+// channels of fn's (a send or a close, handsOver), at least one receive of which is inside a
+// network wait, and every other receive of which, in fn, is polled or is a case of a select that
+// also receives what one of fn's own goroutines hands over - a goroutine of fn's no network wait
+// waits for, the request's own work, which the guard follows. The request then waits on the
+// goroutine holding its unit only while it waits on its own work too, and holds none once the
+// goroutine is all it has left to wait on: the related-item check's embedding, beside its keyword
+// stage (runRelatedCheck). Such a goroutine's outbound calls hold no unit of the request, and the
+// walk does not follow it. Any other goroutine - one fn waits on alone holding its unit, beside a
+// clock or a context alone, or nowhere - is followed as the request's own.
+func (g *networkWaitGuard) awaitedAway(fn *lockFunction, call *ast.CallExpr) bool {
+	aside, ok := ast.Unparen(call.Fun).(*ast.FuncLit)
+	if !ok {
+		return false
+	}
+	answers := g.handsOver(aside)
+	if len(answers) == 0 {
+		return false
+	}
+	receives := g.receives(fn, aside)
+	workers := map[types.Object]bool{}
+	ast.Inspect(fn.body, func(node ast.Node) bool {
+		statement, ok := node.(*ast.GoStmt)
+		if !ok {
+			return true
+		}
+		literal, ok := ast.Unparen(statement.Call.Fun).(*ast.FuncLit)
+		if !ok || literal == aside {
+			return true
+		}
+		channels := g.handsOver(literal)
+		for channel := range channels {
+			if slices.ContainsFunc(receives[channel], func(receive channelReceive) bool { return receive.away }) {
+				return true
+			}
+		}
+		maps.Copy(workers, channels)
+		return true
+	})
+	away := false
+	for channel := range answers {
+		for _, receive := range receives[channel] {
+			switch {
+			case receive.away:
+				away = true
+			case receive.polled:
+			case slices.ContainsFunc(receive.beside, func(other types.Object) bool { return workers[other] }):
+			default:
+				return false
+			}
+		}
+	}
+	return away
+}
+
+// handsOver is every channel literal sends on or closes, by its variable or field.
+func (g *networkWaitGuard) handsOver(literal *ast.FuncLit) map[types.Object]bool {
+	channels := map[types.Object]bool{}
+	ast.Inspect(literal.Body, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.SendStmt:
+			if channel := g.channelOf(n.Chan); channel != nil {
+				channels[channel] = true
+			}
+		case *ast.CallExpr:
+			if name, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && len(n.Args) == 1 {
+				if _, builtin := g.graph.info.Uses[name].(*types.Builtin); builtin && name.Name == "close" {
+					if channel := g.channelOf(n.Args[0]); channel != nil {
+						channels[channel] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return channels
+}
+
+// receives is every receive in fn's body from a channel, outside skip, by the channel's variable
+// or field: each read as away, polled or beside its select's other cases (channelReceive). A range
+// over a channel waits on it alone.
+func (g *networkWaitGuard) receives(fn *lockFunction, skip *ast.FuncLit) map[types.Object][]channelReceive {
+	received := map[types.Object][]channelReceive{}
+	var stack []ast.Node
+	ast.Inspect(fn.body, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if node == skip {
+			return false
+		}
+		switch n := node.(type) {
+		case *ast.UnaryExpr:
+			if channel := g.channelOf(n.X); channel != nil && n.Op == token.ARROW {
+				received[channel] = append(received[channel], g.receiveAt(stack))
+			}
+		case *ast.RangeStmt:
+			if channel := g.channelOf(n.X); channel != nil {
+				received[channel] = append(received[channel], channelReceive{})
+			}
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return received
+}
+
+// receiveAt reads a receive whose enclosing nodes are stack, outermost first.
+func (g *networkWaitGuard) receiveAt(stack []ast.Node) channelReceive {
+	var receive channelReceive
+	for index := len(stack) - 1; index > 0; index-- {
+		literal, ok := stack[index].(*ast.FuncLit)
+		if !ok {
+			continue
+		}
+		if wait, ok := stack[index-1].(*ast.CallExpr); ok && slices.Contains(wait.Args, ast.Expr(literal)) {
+			if waits, _ := g.waitOf(wait); waits {
+				receive.away = true
+				return receive
+			}
+		}
+	}
+	// A select's case is its comm statement, an expression or an assignment receiving, inside the
+	// case clause, inside the select's body, inside the select.
+	depth := len(stack)
+	if depth < 4 {
+		return receive
+	}
+	clause, ok := stack[depth-2].(*ast.CommClause)
+	if !ok || clause.Comm != stack[depth-1] {
+		return receive
+	}
+	selection, ok := stack[depth-4].(*ast.SelectStmt)
+	if !ok {
+		return receive
+	}
+	for _, other := range selection.Body.List {
+		other := other.(*ast.CommClause)
+		switch {
+		case other.Comm == nil:
+			receive.polled = true
+		case other != clause:
+			if channel := g.commChannel(other.Comm); channel != nil {
+				receive.beside = append(receive.beside, channel)
+			}
+		}
+	}
+	return receive
+}
+
+// commChannel is the channel a select case's comm statement receives from, nil for a send or for
+// a receive from what a call returns (a context's Done).
+func (g *networkWaitGuard) commChannel(comm ast.Stmt) types.Object {
+	var received ast.Expr
+	switch c := comm.(type) {
+	case *ast.ExprStmt:
+		received = c.X
+	case *ast.AssignStmt:
+		if len(c.Rhs) == 1 {
+			received = c.Rhs[0]
+		}
+	}
+	if unary, ok := ast.Unparen(received).(*ast.UnaryExpr); ok && unary.Op == token.ARROW {
+		return g.channelOf(unary.X)
+	}
+	return nil
+}
+
+// channelOf is the variable or field expression names where it is a channel, nil otherwise.
+func (g *networkWaitGuard) channelOf(expression ast.Expr) types.Object {
+	var object types.Object
+	switch e := ast.Unparen(expression).(type) {
+	case *ast.Ident:
+		if object = g.graph.info.Uses[e]; object == nil {
+			object = g.graph.info.Defs[e]
+		}
+	case *ast.SelectorExpr:
+		if selection, ok := g.graph.info.Selections[e]; ok {
+			object = selection.Obj()
+		} else {
+			object = g.graph.info.Uses[e.Sel]
+		}
+	}
+	variable, ok := object.(*types.Var)
+	if !ok {
+		return nil
+	}
+	if _, channel := variable.Type().Underlying().(*types.Chan); !channel {
+		return nil
+	}
+	return variable.Origin()
 }
 
 // callees is what call runs while the request holds its unit: what keyedWriteGuard.callees says,
@@ -847,14 +1048,18 @@ func (g *networkWaitGuard) staleAllowed() []string {
 // through a variable, field or parameter is handed when every value the module hands that
 // carrier is a network wait - a helper, or a function that hands its callback on to one and runs
 // it nowhere else (waitOf) - nor a function handed for a parameter that the called function runs
-// only inside such a wait (callees). givenBackAlready runs what it is handed in place, so a
-// reference to it in a function a request reaches holding its unit is refused
-// (networkWaitInPlace). Work outside the request is not followed either: what goes to the
-// server's background tracker (goDetached), and a go statement whose goroutine runs on a context
-// detachedFromRequest made. A call on such a context on the request's own goroutine is followed,
-// since that goroutine still holds the unit. Every outbound call left is refused, named with its
-// path from the handler. networkWaitGuardAllowed names, with their reasons, the functions it does
-// not follow; an entry that is no longer reached, or that reaches no outbound call, fails it.
+// only inside such a wait (callees). Nor is a goroutine the request waits on alone only inside
+// such a wait, and otherwise only beside a goroutine of its own work or by a poll - an outbound
+// call run beside the request's own reads, whose waiter gives its unit back once the call is all
+// it has left to wait on, as the related-item check's embedding runs (awaitedAway).
+// givenBackAlready runs what it is handed in place, so a reference to it in a function a request
+// reaches holding its unit is refused (networkWaitInPlace). Work outside the request is not
+// followed either: what goes to the server's background tracker (goDetached), and a go statement
+// whose goroutine runs on a context detachedFromRequest made. A call on such a context on the
+// request's own goroutine is followed, since that goroutine still holds the unit. Every outbound
+// call left is refused, named with its path from the handler. networkWaitGuardAllowed names, with
+// their reasons, the functions it does not follow; an entry that is no longer reached, or that
+// reaches no outbound call, fails it.
 func TestNoRequestHoldsItsAdmissionUnitAcrossAnOutboundCall(t *testing.T) {
 	t.Parallel()
 	graph := copyLockGraph(t)
@@ -877,7 +1082,9 @@ func TestNoRequestHoldsItsAdmissionUnitAcrossAnOutboundCall(t *testing.T) {
 // wait: awayOnNetwork on a read, on a write before its transaction, around an errgroup's lookups
 // and around a function a caller hands in; delivery.onGitHub through the hook a request's results
 // read and a result's read-through set; awayOnNetworkNeverRefused after a side effect, and as a
-// take-over loop's carrier; a related-item check's embedAway; and awayOnNetworkForGood.
+// take-over loop's carrier; a related-item check's embedding, a goroutine beside its keyword
+// stage that the check waits on alone only through embedAway (awaitedAway); and
+// awayOnNetworkForGood.
 var networkWaitFixedSites = []string{
 	"api.server.writeSubscribers",
 	"api.server.issueLegionAgents",
@@ -894,7 +1101,7 @@ var networkWaitFixedSites = []string{
 	"api.server.sendResolvedDelivery",
 	"api.server.queueForUnknownSession",
 	"api.server.deliverMessageResuming",
-	"api.server.embedRelatedFirst",
+	"api.server.runRelatedCheck",
 	"api.server.approveCredentialRecord",
 }
 
@@ -966,14 +1173,16 @@ func TestTheNetworkWaitGuardSeesWhatItGuards(t *testing.T) {
 		got[offence.route] = offence
 	}
 	for route, calls := range map[string]string{
-		"GET /held":     "the Envoy listener envoy.Client.Sessions",
-		"GET /deep":     "GitHub githubapp.Client.Installed",
-		"POST /group":   "the Envoy listener envoy.Client.Send",
-		"GET /value":    "the embedder embed.Embedder.Embed, handed on as a value",
-		"GET /carried":  "the secrets broker cipher.Client.Pending",
-		"POST /fired":   "the Envoy listener envoy.Client.Sessions",
-		"POST /through": "the Envoy listener envoy.Client.Sessions",
-		"POST /inplace": "api.givenBackAlready, which runs its wait in place, so only where the unit is given back already",
+		"GET /held":       "the Envoy listener envoy.Client.Sessions",
+		"GET /deep":       "GitHub githubapp.Client.Installed",
+		"POST /group":     "the Envoy listener envoy.Client.Send",
+		"GET /value":      "the embedder embed.Embedder.Embed, handed on as a value",
+		"GET /carried":    "the secrets broker cipher.Client.Pending",
+		"POST /fired":     "the Envoy listener envoy.Client.Sessions",
+		"POST /through":   "the Envoy listener envoy.Client.Sessions",
+		"POST /inplace":   "api.givenBackAlready, which runs its wait in place, so only where the unit is given back already",
+		"GET /asideheld":  "the embedder embed.Embedder.Embed",
+		"GET /asideclock": "the embedder embed.Embedder.Embed",
 	} {
 		offence, named := got[route]
 		switch {
@@ -988,10 +1197,12 @@ func TestTheNetworkWaitGuardSeesWhatItGuards(t *testing.T) {
 		t.Errorf("the guard names the planted %s, whose outbound calls hold no unit: %s", route, offence)
 	}
 	for route, function := range map[string]string{
-		"GET /deep":     "api.server.installed",
-		"GET /carried":  "api.server.through",
-		"POST /group":   "api.server.group",
-		"POST /through": "api.server.throughMixed",
+		"GET /deep":       "api.server.installed",
+		"GET /carried":    "api.server.through",
+		"POST /group":     "api.server.group",
+		"POST /through":   "api.server.throughMixed",
+		"GET /asideheld":  "api.server.asideHeld",
+		"GET /asideclock": "api.server.asideClock",
 	} {
 		for _, offence := range plantedGuard.offences {
 			if offence.route == route && !strings.Contains(strings.Join(offence.path, " -> "), function) {
@@ -1027,6 +1238,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	dispatch "github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 )
 
@@ -1064,6 +1276,9 @@ func (s *server) routes() []routeRow {
 		{http.MethodPost, "/detached", "any", "work that outlives the request", s.detachedWork},
 		{http.MethodGet, "/allowed", "any", "an allowlisted call beside one whose entry has no reason", s.allowed},
 		{http.MethodPost, "/inplace", "any", "the listener inside givenBackAlready, holding its unit", s.inPlace},
+		{http.MethodGet, "/aside", "any", "the embedder beside the request's own work, waited on alone inside awayOnNetwork", s.aside},
+		{http.MethodGet, "/asideheld", "any", "the embedder on a goroutine waited on alone holding the unit", s.asideHeld},
+		{http.MethodGet, "/asideclock", "any", "the embedder on a goroutine waited on beside the request's context alone", s.asideClock},
 	}
 }
 
@@ -1168,6 +1383,66 @@ func (s *server) inPlace(w http.ResponseWriter, r *http.Request) {
 	_ = givenBackAlready(r.Context(), func(ctx context.Context) error {
 		_, err := s.deps.Envoy.Sessions(ctx)
 		return err
+	})
+}
+
+func (s *server) ownWork(ctx context.Context) error { return ctx.Err() }
+
+func (s *server) aside(w http.ResponseWriter, r *http.Request) {
+	embedded := make(chan error, 1)
+	go func() {
+		_, err := s.deps.Embedder.Embed(r.Context(), []string{"text"}, embed.InputQuery)
+		embedded <- err
+	}()
+	worked := make(chan error, 1)
+	go func() { worked <- s.ownWork(r.Context()) }()
+	select {
+	case <-embedded:
+		<-worked
+		return
+	case <-worked:
+	}
+	select {
+	case <-embedded:
+		return
+	default:
+	}
+	_ = awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		<-embedded
+		return nil
+	})
+}
+
+func (s *server) asideHeld(w http.ResponseWriter, r *http.Request) {
+	embedded := make(chan error, 1)
+	go func() {
+		_, err := s.deps.Embedder.Embed(r.Context(), []string{"text"}, embed.InputQuery)
+		embedded <- err
+	}()
+	if r.URL.Query().Has("held") {
+		<-embedded
+		return
+	}
+	_ = awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		<-embedded
+		return nil
+	})
+}
+
+func (s *server) asideClock(w http.ResponseWriter, r *http.Request) {
+	embedded := make(chan error, 1)
+	go func() {
+		_, err := s.deps.Embedder.Embed(r.Context(), []string{"text"}, embed.InputQuery)
+		embedded <- err
+	}()
+	select {
+	case <-embedded:
+		return
+	case <-r.Context().Done():
+	}
+	_ = awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		<-embedded
+		return nil
 	})
 }
 `
