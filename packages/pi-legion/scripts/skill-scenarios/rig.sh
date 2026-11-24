@@ -1042,7 +1042,7 @@ listener_answers() {
 # harness's fake Envoy, which run-server.sh names and this rig does not run, is port 1, where
 # nothing listens, and so is its fake GitHub, with no NATS, unless own_github gave the run a GitHub
 # stand-in and a NATS of its own: then the server reads that GitHub and its delivery intake reads
-# that NATS (DISPATCH_E2E_NATS_URL). Its broker switch is empty, so the server has no secrets
+# that NATS (DISPATCH_E2E_NATS_URLS). Its broker switch is empty, so the server has no secrets
 # broker. With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held
 # until the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
@@ -1052,7 +1052,7 @@ listener_answers() {
 start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
-  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URL=${run_nats_url:-} \
+  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URLS=${run_nats_url:-} \
     DISPATCH_TEST_HIDE_STATE_FILE=$hide_state_file \
     DISPATCH_E2E_AGENT_SECRETS_URL='' start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to report its port" \
@@ -1352,7 +1352,7 @@ MDEOF
 # failure is the rig's, never the run's.
 seed_ts() {
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port FAKE_GITHUB_PORT=${github_port:-} \
-    DISPATCH_E2E_NATS_URL=${run_nats_url:-} bun "$here/seed.ts" "$@") \
+    DISPATCH_E2E_NATS_URLS=${run_nats_url:-} bun "$here/seed.ts" "$@") \
     >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
 }
 

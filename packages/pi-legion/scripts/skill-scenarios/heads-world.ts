@@ -221,7 +221,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  * case ci-only a `success` of k1's job at #702's head, and in ci-pass-and-fail that job's run
  * there `in_progress`. It serves no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
- * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
+ * DISPATCH_E2E_NATS_URLS names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
  * the handoff records, in this order:
  *   - sibling-fails: a pass of the implementer and one of the tester at #702's head, a fail of the
@@ -316,9 +316,13 @@ export async function headsEvents(
         : {}),
   });
 
-  const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
-  if (natsUrl === "") throw new Error("DISPATCH_E2E_NATS_URL names no NATS (rig.sh own_github)");
-  const nats = await connect({ name: "skill-scenarios-seed", servers: natsUrl });
+  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter((server) => server !== "");
+  if (natsServers.length === 0)
+    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
+  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
   const codec = StringCodec();
   const [owner, name] = HEADS_REPO.split("/");
   for (const pr of prs) {
