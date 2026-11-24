@@ -142,9 +142,10 @@ func worker(issue string, role claim.Role) api.SpawnRequest {
 }
 
 // recordTree records key as an issue of cfg's project before its daemon boots, so the operator's
-// spawn of key's architect draws the tree's experiments onto it (api's drawExperiments): a tree the
-// daemon holds no record of is drawn into no arm. No workflow runs in such a daemon, so nothing
-// else reads the record.
+// spawn of a claim of key draws the project's tree experiments onto key itself (api's
+// drawExperiments), and each launch of a claim of key reads that draw (launchVariants): an issue
+// the daemon holds no record of is drawn into no arm. No workflow runs in such a daemon, so
+// nothing else reads the record.
 func recordTree(t *testing.T, cfg config.Config, key string) {
 	t.Helper()
 	ctx := context.Background()
@@ -209,7 +210,11 @@ func TestAnEditedInstructionsFileReachesTheNextLaunchWithNoRestart(t *testing.T)
 				{Name: "short", Weight: 1, InstructionsPath: mount.path("short.md")},
 			}}},
 	}}
+	// Each launch reads the arms its own issue holds (launchVariants, R17 of
+	// dispatch://INFRA-3320), so LEGION-2, whose worker launches after the edit, is recorded too:
+	// its worker's spawn draws it into memory and the long arm, as the architect's draws LEGION-1.
 	recordTree(t, cfg, "LEGION-1")
+	recordTree(t, cfg, "LEGION-2")
 	rt := newComposingRuntime(t)
 	d, logs := startLogging(t, cfg, rt)
 

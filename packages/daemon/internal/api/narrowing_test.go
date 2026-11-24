@@ -318,10 +318,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// what it lost: a caller one contract below assignmentPlanContract, which states that contract
 	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
 	// contract at or below it (recordedContractAtOrBelow), OwnerPlanContract, so it stands below
-	// that row and gateBasisContract's above it alone, and the log holds those two rows' lines and
-	// nothing else. This subtest does not catch a strip applied beside the loop, because it reads
-	// both its expectation and its answer from stateNarrowings; the subtests below, which name
-	// their lines as literals, are what catch that.
+	// that row and gateBasisContract's and chainContract's above it alone, and the log holds those
+	// three rows' lines and nothing else. This subtest does not catch a strip applied beside the
+	// loop, because it reads both its expectation and its answer from stateNarrowings; the
+	// subtests below, which name their lines as literals, are what catch that.
 	t.Run("the narrowings above a caller just below the plan contract write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), assignmentPlanContract-1)
@@ -333,8 +333,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, assignmentPlanContract-1)
-		if len(want) != 2 {
-			t.Fatalf("a caller at %d expects the lines %v, want the plan row's and gateBasisContract's alone", assignmentPlanContract-1, want)
+		if len(want) != 3 {
+			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, gateBasisContract's and chainContract's alone", assignmentPlanContract-1, want)
 		}
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
@@ -351,13 +351,13 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The repositories narrowing is a row of the table like every other, so the caller below it is
 	// told what it lost: a caller one contract below that row, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
-	// at or below it (recordedContractAtOrBelow). That contract stands below three rows of
-	// stateNarrowings, that row and assignmentPlanContract's and gateBasisContract's above it, so
-	// the log holds what narrowingsExpected names for it: those three rows' lines, then the line of
-	// each value strip that took a value off this state, the caches source's among them. This
-	// subtest does not catch a strip applied beside the loop, because it reads both its
-	// expectation and its answer from stateNarrowings and valueStrips; the subtests below, which
-	// name their lines as literals, are what catch that.
+	// at or below it (recordedContractAtOrBelow). That contract stands below four rows of
+	// stateNarrowings, that row and assignmentPlanContract's, gateBasisContract's and
+	// chainContract's above it, so the log holds what narrowingsExpected names for it: those four
+	// rows' lines, then the line of each value strip that took a value off this state, the caches
+	// source's among them. This subtest does not catch a strip applied beside the loop, because it
+	// reads both its expectation and its answer from stateNarrowings and valueStrips; the subtests
+	// below, which name their lines as literals, are what catch that.
 	t.Run("the narrowings above a caller just below the repositories contract write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",

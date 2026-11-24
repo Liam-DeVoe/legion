@@ -192,11 +192,10 @@ func TestAHoldWhosePlanRowsTheWayBackDroppedIsAPlainHold(t *testing.T) {
 			if dropped {
 				dropPlanRows(t, pool, root.Key)
 			}
-			done := intake.DispatchIssue{Key: heldParentChild, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "done",
-				Title: heldParentChild, Parent: "LEGION-208", Rank: "V"}
-			if _, err := intake.ApplyFact(t.Context(), pool, "dispatch", "child-done", done, engine, admissionStub{}); err != nil {
-				t.Fatalf("the last child's done fails its fact: %v", err)
-			}
+			// The done goes through the mirror of Dispatch first, as the daemon applies it
+			// (childLeavesDone): the hold over the parent's open Dispatch children reads the child's
+			// copy row.
+			childLeavesDone(t, pool, engine)
 			parent := issueOf(t, pool, engine, root.Key)
 			if !dropped {
 				if parent.Phase != phase.Retro {

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -105,11 +106,16 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 				t.Fatalf("seed the held root, the child beneath it, their copy rows and the root's plan: %v", err)
 			}
 			board := &boardDispatch{status: "needs_review"}
+			// Every fact goes through the daemon's own handlers in their order (workflow.go): the
+			// mirror of Dispatch first, so the engine reads the copy row the fact writes. The hold
+			// over the root's open Dispatch children (workflow's acceptanceHeld) reads the child's
+			// copy row, and only the child's done written there ends it.
+			handlers := []intake.Handler{blockers.NewMirror(records, "LEGION"), engine, admission}
 			runner := &outbox{pool: pool, records: records, dispatch: board, dispatchProject: "LEGION",
-				handlers: []intake.Handler{engine, admission}, log: quietLogger()}
+				handlers: handlers, log: quietLogger()}
 			apply := func(id string, fact intake.DispatchIssue) {
 				t.Helper()
-				if result, err := intake.ApplyFact(ctx, pool, "dispatch", id, fact, engine, admission); err != nil || result.Refusal != nil {
+				if result, err := intake.ApplyFact(ctx, pool, "dispatch", id, fact, handlers...); err != nil || result.Refusal != nil {
 					t.Fatalf("apply %s = %+v, %v; want it taken", id, result.Refusal, err)
 				}
 			}
@@ -145,7 +151,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			if tc.moved != "" {
 				board.status = tc.moved
 				apply("root-moved", intake.DispatchIssue{Key: rootKey, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-					Status: tc.moved, Title: "root", Rank: "A", HandedOver: true, ActorSession: tc.session})
+					Status: tc.moved, Title: "root", Rank: "A", Labels: []string{"legion"}, HandedOver: true, ActorSession: tc.session})
 				if got := stored(rootKey); !record.HeldForChildren(got) {
 					t.Fatalf("%s after the board moved to %s stands in %s with hold %+v, want it still held for its children", rootKey, tc.moved, got.Phase, got.Hold)
 				}

@@ -3663,8 +3663,9 @@ package api
 // and `CHILD_REQUIRED` are answered no more, and `ISSUE_NOT_OWNED`, `ROOT_REQUIRED` and
 // `GATE_ROOT_ONLY` read the chain and name the architect claim that may act. register_plan and
 // stop_task (219's routes) refuse a caller that does not act on the issue over the chain
-// `403 ISSUE_NOT_OWNED`, as every other architect call does, and the workflow's second judgement
-// of an architect request under the fact lock answers `403 ISSUE_NOT_OWNED` where it answered
+// `403 ISSUE_NOT_OWNED`, as every other architect call does, and answer `500 RECORD_UNAVAILABLE`
+// where the daemon cannot read the issue's record and chain; the workflow's second judgement of an
+// architect request under the fact lock answers `403 ISSUE_NOT_OWNED` where it answered
 // `403 ISSUE_OUTSIDE_TREE`. Each refusal keeps the shape every refusal has. The three calls answer
 // once their transaction commits, naming each status write they queued under a new key `queued`
 // (`issue`, `status`, `row`): set_status and
