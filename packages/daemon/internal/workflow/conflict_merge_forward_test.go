@@ -895,11 +895,12 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 			asked := len(mergeForwardMessages(t, pool))
 			landsMergeForward(t, pool)
 
-			want := []record.MergeForwardMessage{}
+			// The review comes before the landed (record.MergeForwardOrder): the one order of a
+			// merge forward's messages to one agent.
+			want := []record.MergeForwardMessage{landing(claim.RoleReviewer, record.MergeForwardReview, tc.at)}
 			if tc.worker != "" {
 				want = append(want, landing(tc.worker, record.MergeForwardLanded, tc.at))
 			}
-			want = append(want, landing(claim.RoleReviewer, record.MergeForwardReview, tc.at))
 			if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
 				t.Fatalf("the landing queued %+v, want %+v", got, want)
 			}

@@ -69,10 +69,12 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
 
+				// The review comes before the landed (record.MergeForwardOrder): the one order of a
+				// merge forward's messages to one agent.
 				got := mergeForwardMessages(t, pool)[asked:]
 				want := []string{"merger landed"}
 				if tc.review {
-					want = append(want, "reviewer review")
+					want = []string{"reviewer review", "merger landed"}
 				}
 				if !reflect.DeepEqual(toldWho(got), want) {
 					t.Fatalf("the landing queued %v, want %v", toldWho(got), want)
@@ -80,7 +82,7 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				// The text is composed as the outbox composes it at delivery: from the pull request
 				// as the record holds it (the daemon's mergeForwardMessage).
 				recorded := recordedPR(t, pool, "LEGION-208")
-				if told := got[0].Message("LEGION-208", recorded); strings.Contains(told, approvalWait) != tc.review {
+				if told := got[len(got)-1].Message("LEGION-208", recorded); strings.Contains(told, approvalWait) != tc.review {
 					t.Fatalf("the merger was told %q; want a wait for the reviewer's approval: %t", told, tc.review)
 				}
 				if mf := recorded.MergeForward; mf == nil || mf.Landed != forwardHead || mf.ReviewAsked != tc.review {
