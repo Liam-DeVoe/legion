@@ -83,6 +83,7 @@ func relayedJetStream(t *testing.T, relay *testnats.UnansweredRelay) (*nats.Conn
 // reaches the server, so the bucket the start is given is the one the second lookup answered, and
 // the handle on it reads and writes keys.
 func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_lookup"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -150,6 +151,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 // context deadline exceeded", which is what it does today. The first create never reaches the
 // server, so the bucket is the second create's, and the handle on it is usable.
 func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_create"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -184,6 +186,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // never reaches the server, so the stream, read again, still has one copy, and the raise is sent
 // again from that read and lands.
 func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_raise"
 	cluster := testnats.StartCluster(t, 3)
 	relay := testnats.StartUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
@@ -247,6 +250,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 // rather than failing the session registry's start at the update's own ten second wait with "set
 // KV_envoy_unanswered_age max age: context deadline exceeded", which is what it did.
 func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_age"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -281,6 +285,7 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 // (sentAgain). The first account info never reaches the server, so the bucket is the second
 // send's, and the handle on it is usable.
 func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_info"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
 	conn, js := relayedJetStream(t, relay)
@@ -333,6 +338,7 @@ func unansweredKeyValue(t *testing.T, relay *testnats.UnansweredRelay) (*nats.Co
 // is the second one's, and it reads the bucket's stream. This is the start that created the
 // bucket.
 func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -358,6 +364,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // the resend missed while the create and not the caller chose it: EnsureKeyValue leaves created
 // false on that path, so one lost answer still ended the program.
 func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -378,6 +385,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 // An answer the server gives ends the sending: a start sends the open once and is done, so
 // nothing a server answers is ever asked twice.
 func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
+	t.Parallel()
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -396,6 +404,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 // seconds for it, so an open that kept sending would leave that read and every one after it
 // unanswered instead of saving a start.
 func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
+	t.Parallel()
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -425,6 +434,7 @@ func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 // follows it, so the drop is placed behind what a clean start sends, and a step added to the
 // found-bucket path moves it along rather than landing it on another request.
 func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *testing.T) {
+	t.Parallel()
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, js, _ := unansweredKeyValue(t, relay)
 	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
