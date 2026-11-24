@@ -236,8 +236,8 @@ func TestProjectReleaseHandsNoTaskWhenATurnEnds(t *testing.T) {
 
 // The daemon's periodic work does nothing that makes a pod or starts a role while the release
 // holds, and does it with the mark clear: the sweep's orphan reconciliation (with its cache sweep),
-// the relaunch of the launches the last process left unfinished, the idle and unowned ticks, the
-// wakes and the controller keeper.
+// the relaunch of the launches the last process left unfinished, the idle and unowned ticks, and
+// the controller keeper. The wakes' hold is the delivery test's below (wakePass).
 func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 	t.Parallel()
 	t.Run("the sweep", func(t *testing.T) {
@@ -263,8 +263,8 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		sup := newSupervisor(ctx, outboxTreeStore(t, pool), "legion", t.TempDir(), quietLogger())
-		// The relaunch reads the machines' clock as it reserves the turns of the launches it
-		// relaunches (reserveUnfinishedTurns), and a supervisor built bare holds none.
+		// The relaunch reads the machines' clock on every pass past the hold, even one with no
+		// launch to reserve a turn for (reserveUnfinishedTurns), and a bare supervisor holds none.
 		sup.deps.Clock = stillClock{}
 		rt := fake.NewRuntime()
 		release := releasedMark(t)
