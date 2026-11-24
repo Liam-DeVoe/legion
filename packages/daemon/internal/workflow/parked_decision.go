@@ -263,21 +263,21 @@ func ArchitectHearsSlotted(root record.Issue) bool {
 // admission reads to decide a re-admitted root's kept approval (Admission.keepStaleApproval).
 func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 
-// stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
-// issue's spec for the spec step, which is the reference every design decision carried before a
-// deployment could gate more than one step, and the slug Dispatch files the document under for
-// the other two. A person's decision is kept and relayed under it (record.ParkedDecision.Ref,
-// the outbox's parkDecision), and the newest decision per reference is the one kept, so two
-// steps of one root must answer to two references or each person's decision would replace the
-// other's.
+// stepRef is the Dispatch reference of the document a design-gate step reviews on issue key
+// (dispatch.DocumentRef): the issue's spec for the spec step, which is the reference every design
+// decision carried before a deployment could gate more than one step, and the slug Dispatch files
+// the document under for the other two. A person's decision is kept and relayed under it
+// (record.ParkedDecision.Ref, the outbox's parkDecision), and the newest decision per reference is
+// the one kept, so two steps of one root must answer to two references or each person's decision
+// would replace the other's.
 func stepRef(key string, step record.DesignStep) string {
 	switch step {
 	case record.DesignStepDecisions:
-		return "dispatch://" + key + "/artifact/" + dispatch.DecisionsSlug
+		return dispatch.DocumentRef(key, dispatch.DecisionsSlug, false)
 	case record.DesignStepCriteria:
-		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
+		return dispatch.DocumentRef(key, dispatch.VerificationSlug, false)
 	}
-	return "dispatch://" + key + "/spec"
+	return dispatch.DocumentRef(key, "", true)
 }
 
 // itemRef is the Dispatch reference of an ask or comment of an issue.

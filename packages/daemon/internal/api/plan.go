@@ -336,14 +336,10 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 }
 
 // documentReference is the document approval reads, a document of issue, as a reference to one of
-// its blocks names it before its `#b-`, as Dispatch writes one (FormatBlockRef in
-// packages/envoy/internal/dispatch/text): `dispatch://<issue>/spec` for the issue's primary
-// document, and `dispatch://<issue>/artifact/<slug>` for any other.
+// its blocks names it before its `#b-` (dispatch.DocumentRef, by the document's slug and whether it
+// is the issue's primary document).
 func documentReference(issue string, approval dispatch.Approval) string {
-	if approval.Primary {
-		return "dispatch://" + issue + "/spec"
-	}
-	return "dispatch://" + issue + "/artifact/" + approval.Slug
+	return dispatch.DocumentRef(issue, approval.Slug, approval.Primary)
 }
 
 // registeredPlan is given as register_plan answers it.
