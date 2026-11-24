@@ -426,7 +426,7 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 	}{
 		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
 		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
-		{field: reviewround.AnotherAgentLabel + ": <sha>", part: reviewround.AnotherAgentsSentence("<sha>")},
+		{field: reviewround.AnotherAgentLabel + ": <sha>", part: " " + reviewround.AnotherAgentLabel + ": <sha>."},
 	} {
 		if !strings.Contains(sentences, tc.part) {
 			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)

@@ -62,10 +62,7 @@ func (p completionPosition) run(role claim.Role, entry int64, works bool) comple
 	run := completingRun{entry: row.Entry, entryMovedBack: row.EntryMovedBack, otherStepsEntry: record.OtherStepsEntry(p.rows, row), holder: row.Claim,
 		served: record.ServedClaim(p.rows, role, entry), stepTask: row.StepTask}
 	if record.StandsTwice(role, p.steps) {
-		run.place = row.StepPlace
-		if row.StepTask == "" {
-			run.place = record.RolePlace(role, p.at, p.steps)
-		}
+		run.place = record.RunPlace(row, p.at, p.steps)
 	}
 	return run
 }

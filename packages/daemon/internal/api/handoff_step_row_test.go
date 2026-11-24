@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 		t.Fatalf("the tester's completion of step 4 = %d %s, want it applied as a fact of its own", answer.Code, answer.Body)
 	}
 	prefix := "handoff:" + key + ":1:1:1:tester:testing:a:0:" + written + ":pass"
-	if got, want := completionKeys(t, h, key), []string{prefix + ":p2", prefix + ":p4"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	if got, want := completionKeys(t, h, key), []string{prefix + ":p2", prefix + ":p4"}; !slices.Equal(got, want) {
 		t.Fatalf("the completion keys of %s = %q, want %q", key, got, want)
 	}
 }
@@ -94,7 +95,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 // and the agent's turn of step 2, still open on step 2's entry, completes at the pull request's head
 // with a record of its own: its entry is at or below step 2's row, another step of the role, so the
 // route refuses it HANDOFF_STALE_ENTRY, saying so, and applies no fact. The control is a role at one
-// step, `implementer tester reviewer`, whose step a forward move handed again at the same head: the
+// step, `implementer tester:a reviewer`, whose step a forward move handed again at the same head: the
 // same completion is taken, as it was before a role stood at two steps. Without the route's read of
 // the other step (record.OtherStepsEntry) the first completion was applied, and only the
 // workflow's own fence, behind this route, refused it.
@@ -127,7 +128,7 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 				}
 				return
 			}
-			message := refused(t, answer, http.StatusConflict, "HANDOFF_STALE_ENTRY")
+			message := refused(t, answer, http.StatusConflict, intake.StaleEntryCode)
 			for _, want := range []string{
 				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
 				"the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them",

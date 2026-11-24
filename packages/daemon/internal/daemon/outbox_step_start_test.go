@@ -134,6 +134,7 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and on
 // the row of no step the role's own token, key a's.
 func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
+	t.Parallel()
 	const key = stepStartKey
 	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
 	earlier, later := time.Now().Add(-time.Minute), time.Now()
