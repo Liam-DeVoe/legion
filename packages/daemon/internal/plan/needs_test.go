@@ -174,15 +174,14 @@ func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
 			for _, task := range tc.tasks {
 				needs += len(task.Needs)
 			}
-			found, steps := cycles(tc.tasks)
+			found, followed := cycles(tc.tasks)
 			if !reflect.DeepEqual(found, tc.want) {
 				t.Fatalf("cycles(%s) found %d cycles, want %d: %s", tc.name, len(found), len(tc.want), firstOther(found, tc.want))
 			}
-			bound := 2 * (len(tc.tasks) + needs)
-			if steps > bound {
-				t.Fatalf("cycles(%s) took %d steps, want at most %d: 2 × (%d tasks + %d needs)", tc.name, steps, bound, len(tc.tasks), needs)
+			if followed > needs {
+				t.Fatalf("cycles(%s) followed %d needs, want at most the plan's %d", tc.name, followed, needs)
 			}
-			t.Logf("cycles(%s) took %d steps of at most %d", tc.name, steps, bound)
+			t.Logf("cycles(%s) followed %d needs of the plan's %d", tc.name, followed, needs)
 		})
 	}
 }

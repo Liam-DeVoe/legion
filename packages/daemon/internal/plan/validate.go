@@ -69,9 +69,9 @@ func Validate(p Plan, d Deployment) []Refusal {
 // every need, which named the shortest cycle through each one, was quadratic on a ring of tasks,
 // and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
 // and the cycles are in the order of those tasks' ids. A need is a task id (FromBlocks); one that
-// names no task of tasks closes no cycle. steps is the work of the two passes: each task and each
-// need components visits, and each need cycleFrom follows.
-func cycles(tasks []Task) (found [][]string, steps int) {
+// names no task of tasks closes no cycle. followed is how many needs cycleFrom follows over all
+// the sets, at most the needs of tasks, since a task joins at most one search.
+func cycles(tasks []Task) (found [][]string, followed int) {
 	at := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		at[task.ID] = i
@@ -84,7 +84,7 @@ func cycles(tasks []Task) (found [][]string, steps int) {
 			}
 		}
 	}
-	component, count, steps := components(needs)
+	component, count := components(needs)
 	// Each component's first task in id order, and whether it holds a cycle.
 	first := make([]int, count)
 	members := make([]int, count)
@@ -105,8 +105,8 @@ func cycles(tasks []Task) (found [][]string, steps int) {
 		if members[c] == 1 && !itself[c] {
 			continue
 		}
-		path, followed := cycleFrom(needs, component, parent, first[c])
-		steps += followed
+		path, more := cycleFrom(needs, component, parent, first[c])
+		followed += more
 		cycle := make([]string, len(path))
 		for i, task := range path {
 			cycle[i] = tasks[task].ID
@@ -114,14 +114,13 @@ func cycles(tasks []Task) (found [][]string, steps int) {
 		found = append(found, cycle)
 	}
 	slices.SortFunc(found, slices.Compare)
-	return found, steps
+	return found, followed
 }
 
 // components numbers the strongly connected components of the graph in which task i needs each
 // task of needs[i], by Tarjan's algorithm kept on explicit stacks, so a chain of 10,000 needs
-// costs no call stack: component[i] is task i's component, of count in all. steps is how many
-// times its loop runs: once for each need and once for the finish of each task.
-func components(needs [][]int) (component []int, count, steps int) {
+// costs no call stack: component[i] is task i's component, of count in all.
+func components(needs [][]int) (component []int, count int) {
 	const unvisited = -1
 	// order is the order each task was first reached in, and low the earliest order reached from
 	// it through the tasks still on the stack.
@@ -150,7 +149,6 @@ func components(needs [][]int) (component []int, count, steps int) {
 		}
 		enter(root)
 		for len(visiting) > 0 {
-			steps++
 			top := &visiting[len(visiting)-1]
 			if top.next < len(needs[top.task]) {
 				needed := needs[top.task][top.next]
@@ -184,7 +182,7 @@ func components(needs [][]int) (component []int, count, steps int) {
 			count++
 		}
 	}
-	return component, count, steps
+	return component, count
 }
 
 // cycleFrom is the shortest cycle from task back to task inside its component: the tasks from
