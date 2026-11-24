@@ -2456,7 +2456,7 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // waits, the held words, the grant and the repair all answer under the one rule the engine runs,
 // and none of them reads the daemon's own in its place. Where the admission was given tables of a
 // rule the daemon does not run (UseRuleTables), what that rule records there is read in beside
-// them: the merger's ready marks, the covers that stand and the first slots
+// them: the merger's ready marks, the covers that stand, the first slots and the arrivals
 // (RuleTables.ReadRuleFacts).
 func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
 	rule := a.engine.SlotRule()
