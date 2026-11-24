@@ -17,7 +17,6 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
   `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as the end of the process group a probe attempt started, rather than at a time a loaded machine can reach before that run has started. Every such clock uses it, because it ends as the real one does, by `Err`, `context.Cause` and its parent's end, and only its `Deadline` differs, on purpose; its doc comment (`internal/testwait/deadline.go`) says how, and why a clock built on `context.WithCancelCause`, whose `Err` is `context.Canceled`, passes a test it should fail.
-  With a child left in a probe's process group, a budget far away is no kill and a budget that passes while the probe runs stops the whole group, each held by a row of `bootgate_test.go`; a budget that passes between the leader's reap and `Wait`'s read of its context reports a kill, as `procgroup.Configure`'s doc says, and no test asserts either answer there.
   In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
@@ -610,11 +609,12 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 ## A test reads a lock wait from pg_locks
 
-A Go test that waits for a backend to queue on a lock reads it through `lockwaittest.Waiting` or
-`WaitingOn` (`packages/envoy/lockwaittest`) or `pg_blocking_pids`, never from `wait_event_type` or
-`wait_event`, which read nothing each time the waiter is woken; a test reads one sample of any wait
-event again, within a bound, until it holds. Envoy's `internal/textcheck` holds the three modules
-to this; `lockwaittest`'s package documentation gives why, what was measured, and every form.
+A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
+through `lockwaittest.Waiting` or `WaitingOn` or `pg_blocking_pids`, never from `wait_event_type`
+or `wait_event`, which read nothing each time the waiter is woken. A test reads one sample of any
+wait event again, within a bound, until it holds. Envoy's `internal/textcheck` holds Envoy, Envoy's
+infra and the daemon to this; `lockwaittest`'s package documentation gives why and what was
+measured, and the check's doc comment the forms it names and misses.
 
 ## A file a test runs
 
@@ -627,8 +627,8 @@ that starts a command from another goroutine wherever it writes one; in a packag
 one at a time only the running test can fork, so `os.WriteFile` is safe there. Each module's
 `internal/textcheck` holds the two kinds of package to this with `testexec.Unguarded`, which
 fails on a directory with no `go.mod` or no test file. Its doc comment lists the forms it names and
-misses, and `testexec`'s package documentation the failure that was measured: a write in a missed
-form needs `testexec.WriteFile` by hand; a file a command such as `cp` writes needs nothing.
+misses, and `testexec`'s package documentation gives the failure that was measured. A write in a
+missed form needs `testexec.WriteFile` by hand. A file a command such as `cp` writes needs nothing.
 
 ## A Go test that opens a NATS client
 
