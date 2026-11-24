@@ -562,7 +562,9 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 		}
 	}
 	writeManifest("pi-envoy", envoyManifest)
-	port := idleRigFreePort(t)
+	// The port is held from here to the test's end (heldSocket), and each boot is handed the socket
+	// as LEGION_LISTEN_FD, so no other program takes the port between two boots.
+	socket, port := heldSocket(t)
 	configPath := filepath.Join(work, "legion.yaml")
 	if err := os.WriteFile(configPath, fmt.Appendf(nil, keptDecisionsConfig, project, port, dsn, state, token, keptDecisionsFixtureKey), 0o600); err != nil {
 		t.Fatalf("step 5: %v", err)
@@ -593,7 +595,9 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 			t.Fatalf("step 5: %v", err)
 		}
 		daemon := exec.Command(binary, "start", "--config", configPath)
-		daemon.Env, daemon.Stdout, daemon.Stderr = env, logFile, logFile
+		daemon.Env, daemon.Stdout, daemon.Stderr = append(slices.Clip(env), "LEGION_LISTEN_FD=3"), logFile, logFile
+		// ExtraFiles' first entry is the daemon's descriptor 3.
+		daemon.ExtraFiles = []*os.File{socket}
 		if err := daemon.Start(); err != nil {
 			_ = logFile.Close()
 			t.Fatalf("step 5: start %s: %v", binary, err)

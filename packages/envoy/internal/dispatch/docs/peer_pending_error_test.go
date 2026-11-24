@@ -20,6 +20,7 @@ func (p *pendingBytesRecorder) AppendPendingBytes(_ context.Context, _ string, u
 }
 
 func TestAPeerApplyErrorStillStoresWhatTheRoomLeftPending(t *testing.T) {
+	t.Parallel()
 	for _, cut := range []bool{false, true} {
 		name := "valid"
 		if cut {

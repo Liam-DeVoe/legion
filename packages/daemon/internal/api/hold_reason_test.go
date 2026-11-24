@@ -237,9 +237,9 @@ const (
 // the variable is unset.
 const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
 
-// baseContract is the contract main declares at this branch's last forward merge (#5271's entry,
-// 232): the contract a plugin of the release before this one states.
-const baseContract = 232
+// baseContract is the contract main declares at this branch's last forward merge (#4960's entry,
+// 246): the contract a plugin of the release before this one states.
+const baseContract = 246
 
 // A caller whose plugin speaks a contract below treeInBacklogOrIceboxContract reads
 // `admission.held`'s `reason` as a strict list that does not hold tree_in_backlog_or_icebox, and
@@ -251,7 +251,7 @@ const baseContract = 232
 // contract for a caller that states none). The base's plugin (baseContract) states its contract in
 // `Legion-Plugin-Contract`. A caller at this daemon's contract is served the word, held by the
 // root. With LEGION_STATE_ANSWER_OUT naming a directory, each answer is written there:
-// `pod-152.json`, `pod-178.json`, `pod-188.json`, `232.json`, and `<this daemon's contract>.json`.
+// `pod-152.json`, `pod-178.json`, `pod-188.json`, `246.json`, and `<this daemon's contract>.json`.
 func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := populatedState(t)
