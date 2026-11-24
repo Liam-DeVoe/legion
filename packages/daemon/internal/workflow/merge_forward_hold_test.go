@@ -8,7 +8,6 @@ package workflow
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
