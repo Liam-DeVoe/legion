@@ -1560,6 +1560,17 @@ type supervision struct {
 	// of its own, for the reason podUpdateWorkspaceMu has one.
 	podUpdateEndedMu sync.Mutex
 	podUpdateEnded   map[string]string
+	// podUpdateDriftReadMu guards podUpdateDriftRead, the rounds whose pod's drift this daemon has
+	// read since its boot (firstDriftRead): every round it opens, which it opened on a reading of
+	// a kind that breaks, and every round it found open at its boot once a sweep has read that
+	// round's pod, by claim or by issue. A round found open at the boot, an older daemon's, ends
+	// with no replacement at that first reading where the pod's drift only drains
+	// (endRoundOverDrainingDrift, dispatch://INFRA-4754 R1); every later reading leaves the round
+	// to the rule that its terms are fixed at its open. An entry goes at the first sweep where no
+	// claim records its round (forgetDriftReads). Nothing of it is in the store: a restart is the
+	// boot this memory is for. A mutex of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateDriftReadMu sync.Mutex
+	podUpdateDriftRead   map[string]bool
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
 	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
 	// round, whether a launch replaced its pod as the round's own replacement and what that launch

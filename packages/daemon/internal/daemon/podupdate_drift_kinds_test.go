@@ -1,0 +1,338 @@
+package daemon
+
+// The round decision reads the kind of each reason a pod's drift gives (runtime.DriftKind), never
+// its phrase: a pod whose drift is only of kinds that drain keeps working on its old image and
+// settings however long, and only a kind that breaks opens an update round (dispatch://INFRA-4754
+// R1, R3, R4). A round still open at a boot over drift that only drains ends with no replacement.
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// kindsThat is every declared kind that drains, or every one that breaks, in declared order.
+func kindsThat(drain bool) []runtime.DriftKind {
+	var kinds []runtime.DriftKind
+	for _, d := range runtime.DriftDeclarations() {
+		if d.Drains == drain {
+			kinds = append(kinds, d.Kind)
+		}
+	}
+	return kinds
+}
+
+// driftOf is one reason of kind, with a phrase that names it.
+func driftOf(kind runtime.DriftKind) runtime.DriftReason {
+	return runtime.DriftReason{Kind: kind, Text: string(kind) + " held, now handed"}
+}
+
+// sweepsSettled is n sweeps a minute apart, each followed by every machine deciding what the sweep
+// posted to it, so a round a sweep opened is recorded on the claims before they are read.
+func (r *podUpdateRig) sweepsSettled(n int) {
+	r.t.Helper()
+	for i := range n {
+		if i > 0 {
+			r.clock.advance(time.Minute)
+		}
+		r.tick()
+		for role := range r.tokens {
+			r.awaitPosted(role)
+		}
+	}
+}
+
+// wantNoRound holds every claim of the rig to no round, no ask queued and no pod replaced.
+func (r *podUpdateRig) wantNoRound(what string) {
+	r.t.Helper()
+	for role := range r.tokens {
+		if c := r.claimOf(role); c.UpdateRound != "" {
+			r.t.Errorf("%s: the %s records round %q for %q, want no round", what, role, c.UpdateRound, c.UpdateReasons)
+		}
+	}
+	if asks := r.asks(); len(asks) > 0 {
+		r.t.Errorf("%s: the sweep queued %d update asks, want none: %+v", what, len(asks), asks)
+	}
+	if replaced := r.replacements(); len(replaced) > 0 {
+		r.t.Errorf("%s: the pod was replaced %d times, want never", what, len(replaced))
+	}
+}
+
+// A pod whose drift is of one kind that drains opens no round, whichever kind it is: the kinds
+// that drain are iterated as data, so a decision that opens a round for any one of them fails here
+// for that kind.
+func TestADrainingDriftOpensNoRound(t *testing.T) {
+	t.Parallel()
+	for _, kind := range kindsThat(true) {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.driftsBy(driftOf(kind))
+			rig.sweepsSettled(3)
+			rig.wantNoRound("three sweeps over a pod drifted on " + string(kind))
+		})
+	}
+}
+
+// A pod whose drift is of one kind that breaks opens a round at the first sweep, whichever kind it
+// is, the floor included, and the round records that kind's phrase as its reasons, starting with
+// the marker runtime.BreakingDrift: the kinds that break are iterated as data, so a decision that
+// skips any one of them, or records its reason with no marker, fails here for that kind.
+func TestABreakingDriftOpensARoundAtOnce(t *testing.T) {
+	t.Parallel()
+	for _, kind := range kindsThat(false) {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			reason := driftOf(kind)
+			rig.driftsBy(reason)
+			rig.tick()
+			want := runtime.BreakingDrift + reason.Text
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				if c := rig.awaitRound(role, podUpdateRound); c.UpdateReasons != want {
+					t.Errorf("the %s's round records reasons %q, want %q", role, c.UpdateReasons, want)
+				}
+			}
+		})
+	}
+}
+
+// A pod drifted on its image, which drains, and on its account, which breaks, opens a round whose
+// reasons hold both phrases, the account's starting with the marker and the image's carrying none,
+// and the line that opens it names both kinds.
+func TestAMixedDriftOpensARoundWithEveryReason(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	image, account := driftOf(runtime.DriftImage), driftOf(runtime.DriftAccount)
+	rig.driftsBy(image, account)
+	rig.tick()
+	want := image.Text + ", " + runtime.BreakingDrift + account.Text
+	c := rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	if c.UpdateReasons != want {
+		t.Errorf("the round records reasons %q, want both, the breaking one marked, %q", c.UpdateReasons, want)
+	}
+	if !strings.Contains(c.UpdateReasons, runtime.BreakingDrift+account.Text) {
+		t.Errorf("the round's reasons %q do not start the account's reason with the marker %q", c.UpdateReasons, runtime.BreakingDrift)
+	}
+	if strings.Contains(c.UpdateReasons, runtime.BreakingDrift+image.Text) || strings.Count(c.UpdateReasons, runtime.BreakingDrift) != 1 {
+		t.Errorf("the round's reasons %q carry the marker other than once, on the account's reason: the image drains", c.UpdateReasons)
+	}
+	opened := loggedMessages(t, rig.logs.String(), roundOpensLine)
+	if len(opened) != 1 {
+		t.Fatalf("the sweep wrote %d lines that open a round, want one:\n%s", len(opened), rig.logs.String())
+	}
+	kinds := fmt.Sprint(opened[0]["kinds"])
+	for _, kind := range []runtime.DriftKind{runtime.DriftImage, runtime.DriftAccount} {
+		if !strings.Contains(kinds, string(kind)) {
+			t.Errorf("the line that opens the round names kinds %s, want %s among them", kinds, kind)
+		}
+	}
+}
+
+// A round an older daemon opened with its reasons as text, still open at this daemon's boot, ends
+// with no replacement at the first sweep that reads its pod's drift when that drift only drains:
+// each claim it asked gets the task the round held back, and the pod keeps working. A round whose
+// claims record no pod ends the same way, its drift read by the issue. A round over a pod whose
+// drift holds a kind that breaks goes on.
+func TestARoundOpenAtBootOverDrainingDriftEnds(t *testing.T) {
+	t.Parallel()
+	const olderReasons = "image ghcr.io/cybermonklabs/legion-worker@sha256:old, now ghcr.io/cybermonklabs/legion-worker@sha256:new"
+	inRound := func(role podUpdateRole) podUpdateRole {
+		role.round, role.reasons = podUpdateRound, olderReasons
+		return role
+	}
+	held := func(rig *podUpdateRig, role claim.Role) string {
+		task := "work the phase, " + string(role)
+		rig.handle(role, supervise.RequestDeliver{Claim: rig.tokens[role], Task: task, ID: "outbox:held-" + string(role)})
+		if prompts := rig.workers[role].Prompts(); len(prompts) > 0 {
+			t.Fatalf("the %s was prompted %+v while its round was open, want its task held", role, prompts)
+		}
+		return task
+	}
+	wantTaskSent := func(rig *podUpdateRig, role claim.Role, task string) {
+		t.Helper()
+		rig.awaitClaim(role, "the round to end with its held task sent", func(c supervise.Claim) bool {
+			return c.UpdateRound == "" && slices.ContainsFunc(rig.workers[role].Prompts(), func(p fake.Prompt) bool { return p.Message == task })
+		})
+	}
+
+	t.Run("by claim", func(t *testing.T) {
+		t.Parallel()
+		rig := newPodUpdateRig(t, inRound(readyWorker(claim.RoleImplementer)), inRound(readyWorker(claim.RoleTester)))
+		tasks := map[claim.Role]string{}
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			tasks[role] = held(rig, role)
+		}
+		rig.driftsBy(driftOf(runtime.DriftImage))
+		rig.tick()
+		for role, task := range tasks {
+			wantTaskSent(rig, role, task)
+		}
+		rig.sweepsSettled(2)
+		rig.wantNoRound("the sweeps after the round open at the boot ended")
+		if ended := loggedMessages(t, rig.logs.String(), roundEndsOverDrainingDriftLine); len(ended) != 1 {
+			t.Errorf("the sweep wrote %d lines that end the round over drift that drains, want one", len(ended))
+		}
+	})
+
+	t.Run("by issue", func(t *testing.T) {
+		t.Parallel()
+		rig := newPodUpdateRig(t, inRound(suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon)))
+		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+		rig.rt.ScriptIssuePodDrift(podUpdateIssue, driftOf(runtime.DriftImage))
+		rig.tick()
+		rig.awaitClaim(claim.RoleImplementer, "the podless round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+		rig.sweepsSettled(2)
+		if replaced := rig.issueReplacements(); len(replaced) > 0 {
+			t.Errorf("the pod was replaced by issue %d times, want never: its drift only drains", len(replaced))
+		}
+		rig.wantNoRound("the sweeps after the podless round open at the boot ended")
+	})
+
+	t.Run("a kind that breaks", func(t *testing.T) {
+		t.Parallel()
+		rig := newPodUpdateRig(t, inRound(readyWorker(claim.RoleImplementer)))
+		image, account := driftOf(runtime.DriftImage), driftOf(runtime.DriftAccount)
+		rig.driftsBy(image, account)
+		rig.sweepsSettled(2)
+		// The round goes on, and its reasons are written again from the first reading since the
+		// boot, the marker on the reason of the kind that breaks.
+		want := image.Text + ", " + runtime.BreakingDrift + account.Text
+		if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.UpdateReasons != want {
+			t.Errorf("the implementer records round %q for %q, want the open round %q kept, its reasons written again as %q",
+				c.UpdateRound, c.UpdateReasons, podUpdateRound, want)
+		}
+		if ended := loggedMessages(t, rig.logs.String(), roundEndsOverDrainingDriftLine); len(ended) > 0 {
+			t.Errorf("the sweep ended the round over a kind that breaks: %v", ended)
+		}
+	})
+}
+
+// An Oh My Pi claim on another plugin contract, in a pod whose only drift is its image and with no
+// round over it, is relaunched onto the daemon's plugins by the stale-plugin lane at the end of its
+// turn (it is ready), and no round opens over the pod through the sweeps of the case.
+func TestTheStalePluginLaneRelaunchesAClaimInAPodOnAnOlderImage(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion - 1},
+		readyWorker(claim.RoleTester),
+	)
+	rig.driftsBy(driftOf(runtime.DriftImage))
+	rig.sweepsSettled(2)
+	rig.wantNoRound("the sweeps before the lane")
+	claims, err := rig.sup.Claims(rig.ctx)
+	if err != nil {
+		t.Fatalf("read the claims for the lane: %v", err)
+	}
+	rig.s.refreshStalePlugins(claims, "sweep")
+	rig.awaitClaim(claim.RoleImplementer, "the stale claim to be relaunched onto the daemon's plugins", func(c supervise.Claim) bool {
+		return c.State == supervise.StateLaunching || c.PluginContract == api.DaemonAPIVersion
+	})
+	if resumes := rig.launchesOf(claim.RoleImplementer); len(resumes) == 0 {
+		t.Errorf("the lane started no process for the stale implementer")
+	}
+	if launches := rig.launchesOf(claim.RoleTester); len(launches) > 0 {
+		t.Errorf("the lane relaunched the tester, which speaks this daemon's contract: %+v", launches)
+	}
+	rig.sweepsSettled(2)
+	for role := range rig.tokens {
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("the %s records round %q after the lane, want no round over a pod whose drift only drains", role, c.UpdateRound)
+		}
+	}
+	if replaced := rig.replacements(); len(replaced) > 0 {
+		t.Errorf("the pod was replaced %d times, want never", len(replaced))
+	}
+}
+
+// A Claude Code claim on another contract than the daemon keeps its pod and its plugin: no install
+// can move it, the lane posts it nothing, and no round opens over its pod through the sweeps of the
+// case, though the pod is also on an older image. The idle release takes such a pod in the end.
+func TestAClaudeCodeClaimOnAnotherContractKeepsItsPod(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion - 1},
+	)
+	rig.s.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleReviewer: runtime.BackendClaude}
+	rig.driftsBy(driftOf(runtime.DriftImage))
+	rig.sweepsSettled(3)
+	claims, err := rig.sup.Claims(rig.ctx)
+	if err != nil {
+		t.Fatalf("read the claims for the lane: %v", err)
+	}
+	rig.s.refreshStalePlugins(claims, "sweep")
+	rig.sweepsSettled(2)
+	rig.wantNoRound("the sweeps over a pod with a Claude Code claim on another contract")
+	if c := rig.claimOf(claim.RoleReviewer); c.State != supervise.StateReady {
+		t.Errorf("the Claude Code reviewer is %s, want it left running in its pod", c.State)
+	}
+	if launches := rig.launchesOf(claim.RoleReviewer); len(launches) > 0 {
+		t.Errorf("the lane relaunched the Claude Code reviewer, which no install can move: %+v", launches)
+	}
+}
+
+// Pods drifted on their image alone open no round however old they grow: at a sweep an hour, 25
+// hours and 30 days after the pods were launched.
+func TestAnOldPodWithDrainingDriftOpensNoRoundAtAnyAge(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.driftsBy(driftOf(runtime.DriftImage))
+	for _, age := range []time.Duration{time.Hour, 25 * time.Hour, 30 * 24 * time.Hour} {
+		rig.clockAt(podUpdateStart.Add(age))
+		rig.sweepsSettled(1)
+		rig.wantNoRound(fmt.Sprintf("a sweep %s after the pods were launched", age))
+	}
+}
+
+// A daemon that restarts at 30 days opens no round for those pods either, at its first sweep or
+// at the sweeps after it.
+func TestAnOldPodWithDrainingDriftOpensNoRoundAfterARestart(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.driftsBy(driftOf(runtime.DriftImage))
+	rig.sweepsSettled(1)
+	rig.clockAt(podUpdateStart.Add(30 * 24 * time.Hour))
+	next := rig.restart()
+	next.driftsBy(driftOf(runtime.DriftImage))
+	next.sweepsSettled(5)
+	next.wantNoRound("the sweeps of a daemon that restarted 30 days after the pods were launched")
+}
+
+// The floor kind breaks: three pods below the floor open rounds at once, paced by the round keys,
+// so under pod_update_rounds_per_minute 1 a sweep within 50 seconds of the first opens no second
+// round, and each round's reasons name the floor.
+func TestAFloorKindOpensAPacedRoundAtOnce(t *testing.T) {
+	t.Parallel()
+	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3"}
+	rig := newLimitRig(t, keys...)
+	floor := runtime.DriftReason{Kind: runtime.DriftFloor, Text: "contract 200, below the floor 219"}
+	for _, key := range keys {
+		rig.driftsBy(key, floor)
+	}
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+
+	rig.tick()
+	rig.awaitRounds("the first sweep over three pods below the floor", keys[0])
+	rig.clock.advance(50 * time.Second)
+	rig.tick()
+	for _, key := range keys {
+		rig.machineOf(key, claim.RoleArchitect).Wait()
+	}
+	if open := rig.openRounds(); !slices.Equal(open, keys[:1]) {
+		t.Errorf("the rounds open after a sweep 50 seconds after the first are %v, want only %v", open, keys[:1])
+	}
+	if reasons := rig.claimOf(keys[0], claim.RoleArchitect).UpdateReasons; !strings.Contains(reasons, "floor") {
+		t.Errorf("the round's reasons are %q, want them to name the floor", reasons)
+	}
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	rig.awaitRounds("a sweep a minute after the first", keys[:2]...)
+}

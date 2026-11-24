@@ -146,7 +146,7 @@ func (r *pauseRuntime) holdPod(issue string) {
 	r.sandboxes[issue] = true
 }
 
-func (r *pauseRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
+func (r *pauseRuntime) IssuePodImage(string) runtime.PodImage { return runtime.PodImageConfigured }
 
 func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	r.mu.Lock()

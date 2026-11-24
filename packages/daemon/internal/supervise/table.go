@@ -267,10 +267,17 @@ type StallBackstop struct {
 // machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
 // (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
 // (Machine.PublishUpdateAsk).
+//
+// Restate is the one exception to the fixed terms: the daemon's first reading since its boot of a
+// round an older daemon opened, which goes on over drift that breaks the pod, writes the reasons
+// of the round the claim records again (internal/daemon's restateRoundReasons, dispatch://INFRA-4754
+// R1), so they carry the marker of a drift that breaks (runtime.BreakingDrift). It moves nothing
+// else, and opens nothing on a claim that records another round or none.
 type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
 	Reasons string
+	Restate bool
 }
 
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
@@ -379,7 +386,10 @@ func createsNoCommit(role claim.Role) bool {
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
 // round held back is released, and nothing is relaunched for it. A pod's round: the pod it was
 // opened over is gone — replaced by the round itself, replaced under it, or gone for a failure of
-// its own — and each role comes back on its own session through the displaced path. A plugin
+// its own — and each role comes back on its own session through the displaced path; or the round
+// was found open at the daemon's boot over drift the pod's roles keep working under, and each role
+// goes on in the pod it is in with the task the round held (internal/daemon's
+// endRoundOverDrainingDrift). A plugin
 // round an earlier daemon left on the claim: no daemon on this release opens one, since the
 // stale-plugin lane relaunches a stale process rather than asking its worker anything
 // (refreshPlugin), and a claim found in one is taken out of it and left to that lane. A claim in
@@ -3054,6 +3064,8 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // changes nothing, its reasons included: the round's terms are fixed when it opens
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
+// The one exception is a restate (PodUpdateOpen.Restate): it writes the reasons of the round the
+// claim records again, and nothing else, and does nothing on a claim in another round or none.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
@@ -3086,6 +3098,15 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // would send it before the claim's next observation.
 func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	open := ev.(PodUpdateOpen)
+	if open.Restate {
+		if m.claim.UpdateRound != open.Round || m.claim.UpdateReasons == open.Reasons {
+			return nil
+		}
+		m.log.Info("supervise: this claim's open update round goes on at the daemon's boot over drift that breaks its pod; its reasons are written again",
+			"round", open.Round, "was", m.claim.UpdateReasons, "reasons", open.Reasons)
+		m.claim.UpdateReasons = open.Reasons
+		return m.persist(ctx)
+	}
 	if m.claim.UpdateRound == open.Round {
 		return nil
 	}
