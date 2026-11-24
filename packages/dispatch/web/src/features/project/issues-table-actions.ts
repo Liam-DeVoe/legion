@@ -285,7 +285,14 @@ export function useIssueTableActions({
     const open = openSelected(keys);
     const skipped = skippedClosed(keys.length - open.length);
     if (!open.length) {
+      // Refused with no write, the action is answered at once, as an action that writes is at the
+      // end of `perform`: a hold on what answers the reader's press, begun and ended with the
+      // refusal (`holdHandOff`). So Move, which its own press leaves held with no epic staged,
+      // keeps that press live no longer, since a hold that only says there is nothing to do keeps
+      // no press live, and a live update that then empties the bar is no doing of the reader's.
+      const answered = holdHandOff();
       setNotice({ kind: "error", text: `Only open issues can change epic.${skipped}` });
+      answered();
       return;
     }
     const said =
