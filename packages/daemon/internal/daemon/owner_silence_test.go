@@ -27,11 +27,7 @@ func TestTheSweepMintsAnOwnersSilenceOverAnOpenRunPastTheBound(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	bound := 30 * time.Minute
 	idle := func(issue string, role claim.Role) supervise.Claim {
-		token, err := claim.NewToken("legion", issue, role)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return supervise.Claim{Token: token, Issue: issue, Role: role, Generation: 4, State: supervise.StateIdle,
+		return supervise.Claim{Token: mustClaimToken(t, issue, role), Issue: issue, Role: role, Generation: 4, State: supervise.StateIdle,
 			Step: supervise.StepRecord{At: now.Add(-2 * time.Hour)}}
 	}
 	background := idle("LEGION-4", claim.RoleArchitect)

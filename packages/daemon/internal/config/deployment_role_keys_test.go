@@ -127,21 +127,19 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 	if got := cfg.Hooks[0].Roles; len(got) != 1 || got[0] != "checker" {
 		t.Errorf("Hooks[0].Roles = %v, want [checker]", got)
 	}
-	cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+checkerRole, "checker.md"), noEnv)
-	if err != nil {
-		t.Fatalf("Load of default_steps naming the role: %v", err)
-	}
-	if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
-		t.Errorf("DefaultSteps = %v, want [implementer checker]", got)
-	}
-	// A role of the deployment of the type implementation after the implementer does its task's
-	// retro, so such default steps load too.
-	cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+strings.Replace(checkerRole, "type: testing", "type: implementation", 1), "checker.md"), noEnv)
-	if err != nil {
-		t.Fatalf("Load of default_steps whose role of the deployment does implementation work after the implementer: %v", err)
-	}
-	if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
-		t.Errorf("DefaultSteps = %v, want [implementer checker]", got)
+	for _, tc := range []struct{ name, role string }{
+		{"naming the role", checkerRole},
+		// A role of the deployment of the type implementation after the implementer does its task's
+		// retro, so such default steps load too.
+		{"whose role of the deployment does implementation work after the implementer", strings.Replace(checkerRole, "type: testing", "type: implementation", 1)},
+	} {
+		cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+tc.role, "checker.md"), noEnv)
+		if err != nil {
+			t.Fatalf("Load of default_steps %s: %v", tc.name, err)
+		}
+		if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
+			t.Errorf("DefaultSteps %s = %v, want [implementer checker]", tc.name, got)
+		}
 	}
 	// A role stands at two steps, a role of the deployment as Legion's own, and a task needs no
 	// step implementer, so such default steps load too.

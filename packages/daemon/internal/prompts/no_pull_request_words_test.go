@@ -18,17 +18,27 @@ func repoFile(t *testing.T, path string) string {
 	return string(body)
 }
 
-// saysAndRetires holds each text, read by read, to the words it must say and the words it must no
-// longer say, over a body whose whitespace is folded.
-func saysAndRetires(t *testing.T, read func(*testing.T, string) string, says, retired [][2]string) {
+// saysAndRetires holds each text of the checkout (repoFile) to the words it must say and the words
+// it must no longer say, over a body whose whitespace is folded, reading and folding each text once.
+func saysAndRetires(t *testing.T, says, retired [][2]string) {
 	t.Helper()
+	bodies := map[string]string{}
+	body := func(path string) string {
+		t.Helper()
+		folded, ok := bodies[path]
+		if !ok {
+			folded = foldWhitespace(repoFile(t, path))
+			bodies[path] = folded
+		}
+		return folded
+	}
 	for _, pin := range says {
-		if !strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+		if !strings.Contains(body(pin[0]), pin[1]) {
 			t.Errorf("%s does not say %q", pin[0], pin[1])
 		}
 	}
 	for _, pin := range retired {
-		if strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+		if strings.Contains(body(pin[0]), pin[1]) {
 			t.Errorf("%s still says %q", pin[0], pin[1])
 		}
 	}
@@ -39,7 +49,7 @@ func saysAndRetires(t *testing.T, read func(*testing.T, string) string, says, re
 // (handoff leaves it unspent), an approval ends a round once GitHub reports the head mergeable
 // (review.go reviewRound), and an issue's agents share one pod.
 func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t *testing.T) {
-	saysAndRetires(t, repoFile, [][2]string{
+	saysAndRetires(t, [][2]string{
 		{"docs/site/src/content/docs/legion/concepts.md", "Another agent's refused pass is taken when it sends it again once they have left."},
 		{"docs/site/src/content/docs/legion/concepts.md", "as one comment on the issue where a point qualifies"},
 		{"docs/site/src/content/docs/legion/concepts.md", "ends the round whatever the CI verdict at that commit, once GitHub reports that head one the issue may advance on"},
@@ -63,7 +73,7 @@ func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t 
 // the review record's (workflow's recordOwnersReview, recordStepReview); owner-does-step.sh proves no
 // step acceptance, and its driver posts the route with the commit itself.
 func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve(t *testing.T) {
-	saysAndRetires(t, repoFile, [][2]string{
+	saysAndRetires(t, [][2]string{
 		{"docs/kubernetes.md", "Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own"},
 		{"docs/kubernetes.md", "The owner's `complete_step` at `reviewer:owner` holds the head of the `review` record it reported instead"},
 		{"docs/kubernetes.md", "At a review step of a role the deployment or the plan defines, it holds the commit the owner's workspace stands on."},
@@ -80,7 +90,7 @@ func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve
 // (record.OwnerActsAs, record.RetroActsAs), and that the owner's own retro of a task with no such
 // step stays on the owner's App.
 func TestTheGuidesSayTheOwnersRetroOfItsImplementationStepActsAsTheImplementApp(t *testing.T) {
-	saysAndRetires(t, repoFile, [][2]string{
+	saysAndRetires(t, [][2]string{
 		{"docs/site/src/content/docs/legion/running-legion.md", "The retro of a task whose last implementation step is the architect's own acts as the implement App, as that step did."},
 		{"docs/site/src/content/docs/legion/concepts.md", "The architect acts as that role where the step was its own, and keeps its own App where the task has none"},
 	}, [][2]string{

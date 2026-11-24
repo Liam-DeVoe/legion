@@ -112,7 +112,7 @@ func TestTheRunningRoleNamesTheClaimThatWorksThePlace(t *testing.T) {
 		want, open  claim.Role
 	}{
 		{name: "the owner's implementer step", steps: "implementer:owner reviewer", to: phase.Implementing, place: stepPlace(1), want: claim.RoleArchitect, open: ""},
-		{name: "a fresh agent of acceptance", steps: "implementer reviewer acceptance", to: phase.Accepting, place: stepPlace(3), want: "acceptance", open: "acceptance"},
+		{name: "a fresh agent of acceptance", steps: "implementer reviewer acceptance", to: phase.Accepting, place: stepPlace(3), want: claim.RoleAcceptance, open: claim.RoleAcceptance},
 		{name: "the owner's retro of the plan tester", steps: "tester", to: phase.Retro, place: retro, want: claim.RoleArchitect, open: ""},
 		{name: "the implementer's retro", steps: "implementer tester", to: phase.Retro, place: retro, want: claim.RoleImplementer, open: claim.RoleImplementer},
 		{name: "a coder's retro", steps: "coder checker", types: map[string]string{"coder": "implementation", "checker": "testing"}, to: phase.Retro, place: retro, want: "coder", open: "coder"},

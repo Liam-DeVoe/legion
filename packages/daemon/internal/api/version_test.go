@@ -59,7 +59,7 @@ func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
 			"that refuses the whole state for it; serve it down below the contract it arrives at", claim.Roles, olderReaders)
 	}
 	state := State{Paused: &PausedView{}}
-	for _, role := range append(slices.Clone(claim.Roles), "checker", "acceptance") {
+	for _, role := range append(slices.Clone(claim.Roles), "checker", claim.RoleAcceptance) {
 		state.StrandedClaims = append(state.StrandedClaims, StrandedClaim{Issue: "LEGION-208", Role: role, State: "failed"})
 		state.WakesWaiting = append(state.WakesWaiting, WakeWaiting{Issue: "LEGION-208", Role: role, Kind: "launch"})
 		state.Paused.WaitsOn = append(state.Paused.WaitsOn, PauseStopView{Issue: "LEGION-208", Role: role})

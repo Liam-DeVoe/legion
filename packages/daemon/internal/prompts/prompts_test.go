@@ -1052,10 +1052,9 @@ func TestTheAcceptancePromptIsTheWorkerCoreItsPartsAndWorkerCommon(t *testing.T)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	acceptance := claim.Role("acceptance")
-	parts, err := composer.Compose(acceptance, false)
+	parts, err := composer.Compose(claim.RoleAcceptance, false)
 	if err != nil {
-		t.Fatalf("Compose %s: %v", acceptance, err)
+		t.Fatalf("Compose %s: %v", claim.RoleAcceptance, err)
 	}
 	shared, daemonParts := filepath.Join(stateDir, "prompts", "shared"), filepath.Join(stateDir, "prompts", "go")
 	want := []string{

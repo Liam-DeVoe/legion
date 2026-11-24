@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -76,7 +75,6 @@ func applyOwned(t *testing.T, pool *pgxpool.Pool, engine *Engine, id string, fac
 // The control: before the owner's silence was read, the pass read an architect's silence as a
 // phase worker's, which no worker of the place answers, and told nothing.
 func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
-	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	started := func(t *testing.T) (*pgxpool.Pool, record.Notice) {
 		t.Helper()
 		pool := migratedPool(t)
@@ -113,9 +111,7 @@ func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
 
 	t.Run("a step the owner's report ended is not told", func(t *testing.T) {
 		pool, _ := started(t)
-		if result := applyFacts(t, pool, returnEngine())("step-1", ownersReport("LEGION-208", owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-			t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-		}
+		ownerReportsStep1(t, pool, returnEngine(), "LEGION-208")
 		dropNotices(t, pool, "LEGION-208")
 		applyOwned(t, pool, engineAt(stepClock.Add(time.Hour)), "owner-silent:1", ownerSilence("LEGION-208", 1))
 		if told := ownerSteps(t, pool, "LEGION-208"); len(told) != 0 {
@@ -166,18 +162,7 @@ func TestAnOwnersCatchUpAndAChildsSilenceTellTheOwnersStepAgain(t *testing.T) {
 	t.Run("a child's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		stepRoot(t, pool, phase.Implementing)
-		child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
-		seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
-		// The start runs as the promotion's does, with no boot pass before it: a boot pass would
-		// open the step's uncounted run first, and the start would then find it running.
-		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, child.Key)
-			if err != nil {
-				return err
-			}
-			return engine.StartStepRecord(ctx, tx, *issue)
-		})
+		child := childAtOwnersStep(t, pool, engine)
 		if told := ownerSteps(t, pool, child.Key); len(told) != 1 {
 			t.Fatalf("the child's step start told %+v, want one owner-step on the child", told)
 		}

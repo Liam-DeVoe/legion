@@ -1,16 +1,26 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// assertOwnersSlotCredentials fails unless each of rows is a supervise slot_credential of issue's
+// owner, its own architect, in issue's tree at issue's generation.
+func assertOwnersSlotCredentials(t *testing.T, rows []record.SuperviseRequest, issue record.Issue) {
+	t.Helper()
+	owner := claim.Token(treeRoleToken(t, issue.Key, claim.RoleArchitect))
+	for _, row := range rows {
+		if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != issue.Key || row.Generation != issue.Generation {
+			t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, issue.Key, issue.Generation)
+		}
+	}
+}
 
 // The end of a step its owner ran gives the owner's slot its own App back at once where the step
 // acted as another App: on `implementer:owner tester:owner`, the gate's opening, which ends no step,
@@ -20,7 +30,6 @@ import (
 // step 2 ends its tester step, which acts as the review App, the owner's own (appauth.AppRoleFor),
 // and queues none: its slot held its own App through that step.
 func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
-	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -32,24 +41,18 @@ func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 		if len(rows) != want {
 			t.Fatalf("%s's outbox holds the slot_credential rows %+v, want %d", root.Key, rows, want)
 		}
-		for _, row := range rows {
-			if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != root.Key || row.Generation != root.Generation {
-				t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, root.Key, root.Generation)
-			}
-		}
+		assertOwnersSlotCredentials(t, rows, root)
 	}
 	written(t, 0)
 
-	apply := applyFacts(t, pool, engine)
-	if result := apply("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-		t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-	}
+	ownerReportsStep1(t, pool, engine, root.Key)
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
 	written(t, 1)
 
-	tested := ownersReport(root.Key, owner, claim.RoleTester, 2, "test-LEGION-208")
+	owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
+	tested := ownersReport(root.Key, owner, claim.RoleTester, 2, "test-"+root.Key)
 	tested.Verdict, tested.Entry = "pass", roleRowOf(t, pool, engine, root.Key, claim.RoleTester).Entry
-	if result := apply("step-2", tested); result.Refusal != nil {
+	if result := applyFacts(t, pool, engine)("step-2", tested); result.Refusal != nil {
 		t.Fatalf("the owner's report of step 2 was refused: %+v", result.Refusal)
 	}
 	if issue := issueOf(t, pool, engine, root.Key); issue.Phase == phase.Testing {
@@ -80,16 +83,7 @@ func TestEveryEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	t.Run("a child's step run by the architect above", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		stepRoot(t, pool, phase.Implementing)
-		child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
-		seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
-		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, child.Key)
-			if err != nil {
-				return err
-			}
-			return engine.StartStepRecord(ctx, tx, *issue)
-		})
+		child := childAtOwnersStep(t, pool, engine)
 		above := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
 		if starts := stepStartsAt(t, pool, child.Key, "step", 1); len(starts) != 1 || starts[0].Agent != above {
 			t.Fatalf("the start records of the child's step 1 = %+v, want one naming the architect above, %s", starts, above)
@@ -144,21 +138,17 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
-			owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			switch tc.steps[0] {
-			case "acceptance:owner":
+			if tc.steps[0] == "acceptance:owner" {
 				assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(1))
 				move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
-			case "implementer:owner":
-				if result := applyFacts(t, pool, engine)("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-					t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
+			} else {
+				if tc.steps[0] == "implementer:owner" {
+					ownerReportsStep1(t, pool, engine, root.Key)
+				} else {
+					move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 				}
-			default:
-				move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-			}
-			if tc.steps[0] != "acceptance:owner" {
 				assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 				move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 			}
@@ -176,11 +166,7 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			if len(rows) != len(before)+tc.queued {
 				t.Fatalf("%s's outbox holds the slot_credential rows %+v after its retro ended, %+v before it, want %d more", root.Key, rows, before, tc.queued)
 			}
-			for _, row := range rows[len(before):] {
-				if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != root.Key || row.Generation != root.Generation {
-					t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, root.Key, root.Generation)
-				}
-			}
+			assertOwnersSlotCredentials(t, rows[len(before):], root)
 		})
 	}
 }

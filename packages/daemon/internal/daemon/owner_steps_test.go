@@ -103,8 +103,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 			r.key, last.Claim, last.Role, r.slotCalls())
 	}
 	written = r.slotWrites(owner.token)
-	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead,
-		PlanRating: new(deploymentRating), PlanReason: new(deploymentReason)}); status != http.StatusOK {
+	if status, body := r.rateRetro(); status != http.StatusOK {
 		t.Fatalf("the owner's complete_step of %s's retro = %d %s, want 200", r.key, status, body)
 	}
 	r.waitPhase(phase.Merging)
@@ -151,8 +150,7 @@ func TestAPlanWithOnlyTheTester(t *testing.T) {
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 0 {
 		t.Fatalf("%s's retro launched an implementer %v, want none: the retro of a task with no step of the type implementation is the owner's", r.key, launches)
 	}
-	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead,
-		PlanRating: new(deploymentRating), PlanReason: new(deploymentReason)}); status != http.StatusOK {
+	if status, body := r.rateRetro(); status != http.StatusOK {
 		t.Fatalf("the owner's complete_step of %s's retro = %d %s, want 200", r.key, status, body)
 	}
 	r.waitPhase(phase.Done)
@@ -643,6 +641,15 @@ func (r *ownerStepsRig) ownerReports(req api.CompleteStepRequest) (int, string) 
 	req.GrantID, req.Issue = owner.grant(), r.key
 	status, body := r.d.request(http.MethodPost, "/legion/v1/steps/complete", req, false)
 	return status, string(body)
+}
+
+// rateRetro is the owner's report of the retro of the walk's issue (step 0, ownerReports): the
+// commit it stands on and the rating of the plan with its reason, deploymentRating and
+// deploymentReason.
+func (r *ownerStepsRig) rateRetro() (int, string) {
+	r.t.Helper()
+	return r.ownerReports(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead,
+		PlanRating: new(deploymentRating), PlanReason: new(deploymentReason)})
 }
 
 // ownerNotices is every notice of kind the outbox has published to the topic of the walk's issue's

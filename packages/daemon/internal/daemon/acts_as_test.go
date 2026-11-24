@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -38,32 +37,15 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 		return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION",
 			Title: key, Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
 	}
-	// planned puts key at at, its one task a running at place, whose steps are words (`role` or
-	// `role:key`), each of its built-in role's type.
-	planned := func(tx pgx.Tx, key string, at phase.Phase, place record.TaskPlace, words ...string) error {
-		version := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: now}
-		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
-			State: record.TaskRunning, Place: place}
-		roles := stepplan.BuiltinRoles()
-		steps := make([]record.PlanStep, 0, len(words))
-		for i, word := range words {
-			role, agent, _ := strings.Cut(word, ":")
-			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: agent})
-		}
-		if err := records.PutIssue(ctx, tx, issue(key, at)); err != nil {
-			return err
-		}
-		return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
-	}
 	retro := record.TaskPlace{Kind: record.PlaceRetro}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, put := range []error{
-			planned(tx, "LEGION-1", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer:owner", "reviewer"),
+			putPlannedIssue(t, ctx, tx, records, issue("LEGION-1", phase.Implementing), record.TaskPlace{Kind: record.PlaceStep, Position: 1}, now,
+				"implementer:owner", "reviewer"),
 			records.PutIssue(ctx, tx, issue("LEGION-2", phase.Planning)),
-			planned(tx, "LEGION-4", phase.Retro, retro, "implementer:owner", "reviewer"),
-			planned(tx, "LEGION-5", phase.Retro, retro, "acceptance:owner"),
-			planned(tx, "LEGION-6", phase.Retro, retro, "implementer", "reviewer"),
+			putPlannedIssue(t, ctx, tx, records, issue("LEGION-4", phase.Retro), retro, now, "implementer:owner", "reviewer"),
+			putPlannedIssue(t, ctx, tx, records, issue("LEGION-5", phase.Retro), retro, now, "acceptance:owner"),
+			putPlannedIssue(t, ctx, tx, records, issue("LEGION-6", phase.Retro), retro, now, "implementer", "reviewer"),
 		} {
 			if put != nil {
 				return put
@@ -123,23 +105,11 @@ func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *test
 	seed := func(tx pgx.Tx, key string, words ...string) error {
 		issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION",
 			Title: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review", Rank: "A", LastDispatchSeq: 1}
-		version := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: now}
-		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskRunning, Place: reviewer}
-		roles := stepplan.BuiltinRoles()
-		steps := make([]record.PlanStep, 0, len(words))
-		for i, word := range words {
-			role, agent, _ := strings.Cut(word, ":")
-			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: agent})
-		}
 		implementer := mustClaimToken(t, key, claim.RoleImplementer)
 		if strings.HasSuffix(words[0], ":owner") {
 			implementer = mustClaimToken(t, key, claim.RoleArchitect)
 		}
-		if err := records.PutIssue(ctx, tx, issue); err != nil {
-			return err
-		}
-		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
+		if err := putPlannedIssue(t, ctx, tx, records, issue, reviewer, now, words...); err != nil {
 			return err
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: implementer, Entry: 1,

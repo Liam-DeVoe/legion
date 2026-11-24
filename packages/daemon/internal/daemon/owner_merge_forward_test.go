@@ -67,20 +67,6 @@ func (r *ownerHoldRig) lands(t *testing.T, reviewAsked bool) {
 	}
 }
 
-// sent runs one merge-forward message of LEGION-1 through the executor as the runner does, and
-// deletes the row where the executor finished it. It answers the executor's error.
-func (r *ownerHoldRig) sent(t *testing.T, message record.MergeForwardMessage) error {
-	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", message, r.now))
-	err := r.runner.execute(context.Background(), row)
-	if err == nil {
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish row %d: %v", row.ID, err)
-		}
-	}
-	return err
-}
-
 // mergeForwardAsk is the ask of a merge forward in at to the implementer's claim token.
 func mergeForwardAsk(token claim.Token, at phase.Phase) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: token, Step: record.MergeForwardAsk, Head: mergeForwardHead, Base: "main",
@@ -134,12 +120,7 @@ func TestAMergeForwardAskedOfTheOwnerWaitsForTheImplementApp(t *testing.T) {
 
 		r.rt.ScriptSlotHolds(nil)
 		ask.LeaseToken = leaseOutboxRow(t, r.pool, ask.ID)
-		if err := r.runner.execute(context.Background(), ask); err != nil {
-			t.Fatalf("the ask once the owner's slot holds the implement App = %v", err)
-		}
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", ask.ID); err != nil {
-			t.Fatalf("finish the ask: %v", err)
-		}
+		r.ran(t, ask, "the ask once the owner's slot holds the implement App")
 		if got := r.published(); len(got) != 1 || got[0] != notify.RoleTopicPrefix+string(r.owner) {
 			t.Fatalf("the ask published %v once the owner's slot holds the implement App, want one to the owner's topic", got)
 		}
@@ -170,7 +151,7 @@ func TestAMergeForwardAskedOfTheOwnerWaitsForTheImplementApp(t *testing.T) {
 		}
 		r.askedOf(t, implementer, phase.Reviewing)
 		r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
-		if err := r.sent(t, mergeForwardAsk(implementer, phase.Reviewing)); err != nil {
+		if err := r.told(t, mergeForwardAsk(implementer, phase.Reviewing)); err != nil {
 			t.Fatalf("the ask to the implementer = %v, want it delivered", err)
 		}
 		if got := r.published(); len(got) != 1 || got[0] != notify.RoleTopicPrefix+string(implementer) {
@@ -234,12 +215,7 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 		if got := slotCalls(r.rt, r.owner); len(got) != 0 {
 			t.Fatalf("the review during the owner's retro asked the runtime %q of the owner's slot, want nothing", got)
 		}
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", record.StepPlace{Task: "a", Kind: "retro", Place: 0})
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		held(t, r, review)
 	})
@@ -252,7 +228,7 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 		r.started(t, "retro", 0, true)
 		r.askedOf(t, r.owner, phase.Merging)
 		r.rt.ScriptSlotHolds(nil)
-		if err := r.sent(t, mergeForwardAsk(r.owner, phase.Merging)); err != nil {
+		if err := r.told(t, mergeForwardAsk(r.owner, phase.Merging)); err != nil {
 			t.Fatalf("the ask in merging = %v", err)
 		}
 		if got := slotCalls(r.rt, r.owner); strings.Join(got, ",") != "WriteSlotCredential,SlotHoldsCredential implementer" {
@@ -369,7 +345,7 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			if got := r.published(); len(got) != 0 {
 				t.Fatalf("the owner-step of step 2 published %v while the merge forward is open, want nothing", got)
 			}
-			if lines := staleLines(t, r.logged.String()); len(lines) != 0 {
+			if lines := loggedMessages(t, r.logged.String(), ownerStepStale); len(lines) != 0 {
 				t.Fatalf("the owner-step of step 2 logged %d stale lines while the merge forward is open, want none: its run goes on", len(lines))
 			}
 
@@ -427,12 +403,16 @@ func TestTheLandedReachesTheOwnerAtItsOwnStepOnceItsSlotHoldsTheStepsApp(t *test
 		string(record.OutboxKindSupervise)).Scan(&writeBacks); err != nil || writeBacks != 0 {
 		t.Fatalf("the landing queued %d write-backs (%v), want none: the ask was the fresh implementer's", writeBacks, err)
 	}
+	var message record.MergeForwardMessage
 	landed := r.queuedRow(t, "the landed to the owner's review step", func(payload record.OutboxPayload) bool {
-		message, ok := payload.(record.MergeForwardMessage)
-		return ok && message.Step == record.MergeForwardLanded
+		queued, ok := payload.(record.MergeForwardMessage)
+		if ok && queued.Step == record.MergeForwardLanded {
+			message = queued
+			return true
+		}
+		return false
 	})
-	if message, _ := record.DecodeOutboxPayload(landed); message.(record.MergeForwardMessage).Claim != r.owner ||
-		message.(record.MergeForwardMessage).Role != claim.RoleReviewer {
+	if message.Claim != r.owner || message.Role != claim.RoleReviewer {
 		t.Fatalf("the landing queued the landed %+v, want it to the owner's claim %s as the reviewer", message, r.owner)
 	}
 	r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)

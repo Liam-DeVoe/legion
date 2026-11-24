@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -436,12 +435,7 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got claim.Token
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		got, err = engine.startAgent(ctx, tx, issue, phase.Step)
-		return err
-	})
-	if got != want {
+	if got := startAgentOf(t, pool, engine, issue, phase.Step); got != want {
 		t.Fatalf("the agent of the checker's step = %q, want %q", got, want)
 	}
 }

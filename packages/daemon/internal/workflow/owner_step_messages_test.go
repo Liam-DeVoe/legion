@@ -95,10 +95,7 @@ func TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved(t *testing.T) {
 			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: "LEGION-208", Project: "LEGION", Title: "a child at its reviewer's step", Parent: new("LEGION-208"), Phase: phase.Reviewing,
 				Generation: 4, Status: "in_progress", Rank: "V"})
-			seedStepsPlan(t, pool, "LEGION-209", 4, tc.steps...)
-			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-209", 4, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
-			})
+			seedStepsAt(t, pool, "LEGION-209", 4, 2, nil, tc.steps...)
 			worker := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleReviewer))
 			if tc.owner {
 				worker = claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
@@ -139,10 +136,7 @@ func askedOfChild(t *testing.T, agent claim.Token) *pgxpool.Pool {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "LEGION-209", Parent: new("LEGION-208"), Phase: phase.Reviewing, Generation: 4,
 		Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
-	seedStepsPlan(t, pool, "LEGION-209", 4, "implementer:owner", "reviewer")
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-209", 4, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
-	})
+	seedStepsAt(t, pool, "LEGION-209", 4, 2, nil, "implementer:owner", "reviewer")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: agent, StepTask: "a", StepPlace: 1, Entry: 1})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
 		Branch: "legion/LEGION-209", Base: "main", HeadSHA: "head-43", Failing: []string{},

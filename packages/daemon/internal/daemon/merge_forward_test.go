@@ -209,9 +209,9 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 		drainAt(t, runner, 0, "the row's attempt")
-		// The ask's row is finished; the one row left is the checks-red notice that tells the
-		// architect the ask did not reach the implementer (mergeForwardLost).
-		notices := architectNoticesQueued(t, pool)
+		// The ask's row is finished; the one row left is the merge-forward-lost notice that tells
+		// the architect the ask did not reach the implementer (mergeForwardLost).
+		notices := queuedNoticesOf(t, pool, "LEGION-208")
 		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != record.MergeForwardLostNotice {
 			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one %s notice",
 				attempts, outboxRows(t, pool), notices, record.MergeForwardLostNotice)

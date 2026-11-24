@@ -154,6 +154,14 @@ export const unknownFieldsRefusal = (
     `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
   ].join("; ");
 
+/** The refusal of a plan's rating sent without its reason (`lone` `"rating"`), or of its reason
+ * sent without the rating (`"reason"`), as `legionPlanRatingLoneField` names the one that came
+ * alone: the one wording `handoff_complete` and pi-legion's `complete_step` refuse it in. */
+export const planRatingLoneRefusal = (op: string, lone: "rating" | "reason"): string =>
+  lone === "rating"
+    ? `${op} names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together`
+    : `${op} names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`;
+
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
   z.strictObject(
@@ -207,16 +215,11 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // refused with the call's other problems, naming the one missing.
       .refine(
         (args) => legionPlanRatingLoneField(args.plan_rating, args.plan_reason) !== "rating",
-        {
-          error:
-            "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
-        }
+        { error: planRatingLoneRefusal("handoff_complete", "rating") }
       )
       .refine(
         (args) => legionPlanRatingLoneField(args.plan_rating, args.plan_reason) !== "reason",
-        {
-          error: `handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`,
-        }
+        { error: planRatingLoneRefusal("handoff_complete", "reason") }
       ),
     operation("request_backward_move", {
       // The issue the move names: an architect's move names the issue it returns from accepting
@@ -499,7 +502,7 @@ export async function mintClaimGrant(
  * about two kilobytes where the whole-project body answers megabytes. The words for an issue
  * the daemon records nothing of are the ones `read_record` answered while it read the project.
  * Every other refusal of the route throws as it came. */
-async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<LegionIssue> {
+export async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<LegionIssue> {
   const record = await daemon.record(issue);
   if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
   return record;

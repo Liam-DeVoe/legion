@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -73,38 +72,11 @@ func (r *ownerHoldRig) ready(t *testing.T, id string, launch uint64, paced bool)
 	}
 }
 
-// queuedNotices is every notice of LEGION-1 the outbox holds, in row order.
-func (r *ownerHoldRig) queuedNotices(t *testing.T) []record.Notice {
-	t.Helper()
-	rows, err := r.pool.Query(context.Background(), `select payload from outbox where kind = $1 and issue = 'LEGION-1' order by id`,
-		string(record.OutboxKindNotice))
-	if err != nil {
-		t.Fatalf("read LEGION-1's queued notices: %v", err)
-	}
-	defer rows.Close()
-	var queued []record.Notice
-	for rows.Next() {
-		var payload []byte
-		var notice record.Notice
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("read a queued notice: %v", err)
-		}
-		if err := json.Unmarshal(payload, &notice); err != nil {
-			t.Fatalf("decode the queued notice %s: %v", payload, err)
-		}
-		queued = append(queued, notice)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read LEGION-1's queued notices: %v", err)
-	}
-	return queued
-}
-
 // queuedOwnerSteps is every owner-step of LEGION-1 the outbox holds, in row order.
 func (r *ownerHoldRig) queuedOwnerSteps(t *testing.T) []record.Notice {
 	t.Helper()
 	var steps []record.Notice
-	for _, notice := range r.queuedNotices(t) {
+	for _, notice := range queuedNoticesOf(t, r.pool, "LEGION-1") {
 		if notice.Kind == record.OwnerStepNotice {
 			steps = append(steps, notice)
 		}
@@ -141,7 +113,7 @@ func (r *ownerHoldRig) tell(t *testing.T, notice record.Notice, want int) {
 // gone. The owner-steps published then number want.
 func (r *ownerHoldRig) tellQueued(t *testing.T, want int) {
 	t.Helper()
-	queued := r.queuedNotices(t)
+	queued := queuedNoticesOf(t, r.pool, "LEGION-1")
 	if _, err := r.pool.Exec(context.Background(), `delete from outbox where kind = $1 and issue = 'LEGION-1'`,
 		string(record.OutboxKindNotice)); err != nil {
 		t.Fatalf("take LEGION-1's queued notices: %v", err)
