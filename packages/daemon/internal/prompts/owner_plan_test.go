@@ -17,18 +17,16 @@ import (
 // notice tells of (a failed step's, and another architect's stop_task, whose notice names that
 // architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
-// workflow (workflow.planGiven): of the running task the text alone may change, which Legion takes
-// while the task goes on, any other change of it is refused and the unchanged block taken, each
-// refusal names its cause and changes nothing so the same version can be given again, and an
-// issue that started its work before Legion took plans takes none. A new version of the plan's
-// document names the token of that same document's text, since Dispatch refuses a replacing
-// upload that names none (envoy's PRECONDITION_REQUIRED) or another's, and a child out of the
-// workflow takes a new plan only after its rerun, since a version for its done or left task is
-// refused TASK_DONE (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is
-// held by its terms: a term alone where the term is the rule (a code, an operation, a role), and
-// otherwise the terms of the clause that states the rule, in their order. Both architect
-// compositions share that part, so both are read. This shows the text is loaded, never that an
-// owner follows it.
+// workflow (workflow.planGiven): a change of the running task beyond its text is refused and the
+// unchanged block taken, each refusal names its cause and changes nothing so the same version can
+// be given again, and an issue that started its work before Legion took plans takes none. A new
+// version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
+// upload that names none (envoy's PRECONDITION_REQUIRED), and a child out of the workflow takes a
+// new plan only after its rerun, since a version for its done or left task is refused TASK_DONE
+// (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is held by its terms:
+// a term alone where the term is the rule (a code, an operation, a role), and otherwise the terms
+// of the clause that states the rule, in their order. Both architect compositions share that
+// part, so both are read. This shows the text is loaded, never that an owner follows it.
 func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -88,19 +86,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"register_plan", "release_children"},
 				// An issue already at work runs the task default: stop it, then give the plan.
 				{"stop_task", "default", "register_plan"},
-				// A later version changes a task that waits or is stopped, and of the running task
-				// its text alone, which Legion takes while the task goes on and every later start
-				// reads; it refuses a change of the running task's steps or its removal with a
-				// reason that names the task, and takes its block unchanged. Its answer names the
-				// running step (`running`).
-				{"later version", "waits", "stopped", "running task", "text alone"},
-				{"only the running task's text", "goes on at its step"},
-				{"Every later start of the task holds the new text"},
-				{"sends the agent at work nothing"},
-				{"changes the steps of the running task or removes it", "`PLAN_REFUSED`"},
-				{"its reason names the task", "task <id> is running, so a later version can change only its text."},
+				// A later version changes a task that waits or is stopped, refuses a change of
+				// the running task beyond its text, and takes its block unchanged.
+				{"later version", "waits", "stopped"},
+				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
 				{"running task's block", "goes on"},
-				{"answer", "running task", "role whose agent works it", "`running`"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
@@ -113,11 +103,8 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// that architect sends the end of that work to the architect above it rather than
 				// writing a status the daemon sets back for it to write again.
 				{"own issue's task stopped", "architect above it", "`envoy_publish`", "sets back"},
-				// A new version of the plan's document names the token of the text it replaces,
-				// that same document's: an owner-plan.md upload naming plan.md's token is refused.
-				{"plan's document exists", "--precondition-json"},
-				{"token that `dispatch doc-read --issue <issue> --artifact <document>` prints for that same document", "`plan.md` or `owner-plan.md`"},
-				{"names no token", "`400 PRECONDITION_REQUIRED`"},
+				// A new version of plan.md names the token of the text it replaces.
+				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
 				// A child out of the workflow takes a new plan after its rerun: stop, then give it.
 				{"child out of the workflow", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
@@ -127,128 +114,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A decision of the owner for an agent of a task goes into the task's text, in a later version of
-// the plan, which every later start of the task holds. The agent at work reads no new start, so the
-// owner also messages the agent of the step register_plan's answer names. On an issue that started
-// on the project's default steps, where Legion's default plan was in force with no document, the
-// planner's `plan.md` stays as it is: the owner gives its own `owner-plan.md`, for a decision,
-// after a stop of `default` and after a rerun alike, and each later version of that same document.
-// Every sentence that sends the owner to `owner-plan.md` names that one condition, since a plan
-// given first under one condition makes Legion refuse the other's document (PLAN_DOCUMENT_CHANGED),
-// and the earlier conditions are gone. An issue that started before Legion took plans has no task
-// text: there the decision goes in a comment on the issue and a message. The rule holds over any
-// other place a general skill offers, and the issue and its plan are the one record of the work to
-// be done. Each rule is held by the terms of the clause that states it, in their order, in both
-// architect compositions. This shows the text is loaded, never that an owner follows it.
-func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, tc := range []struct {
-		name   string
-		isRoot bool
-	}{{"root architect", true}, {"sub-architect", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
-			for _, terms := range [][]string{
-				{"decision for an agent", "into the task's text", "later version of the plan"},
-				{"Every later start", "holds that text", "new session"},
-				{"agent at work now reads no new start"},
-				{"answer of `register_plan` names the step", "send that step's agent", "by message"},
-				// The one condition for owner-plan.md, stated once and named in each place.
-				{"issue that started on the project's default steps is one whose plan in force", "when its work started", "Legion's default, with no document"},
-				{"such an issue `plan.md` is the planner's", "your plan is `owner-plan.md`"},
-				{"work started before you gave it a plan started on the project's default steps"},
-				{"issue that started on the project's default steps, the task is `default`"},
-				{"one task block is `:::plan_task{#default}`", "no `steps`", "text holds the decision"},
-				{"Legion takes that version while the task runs", "stops nothing"},
-				{"`plan.md` is the planner's", "leave it as it is"},
-				{"document of your own on the issue", "`owner-plan.md`", "id and version to `register_plan`"},
-				{"each later version of yours", "same `owner-plan.md`", "`PLAN_DOCUMENT_CHANGED`"},
-				// After a stop of default, from stop_task and from a task-stopped notice, and after
-				// a rerun, the version is one of the owner's own document.
-				{"For the task `default`, give that later version", "your own `owner-plan.md`", "planner's `plan.md` as it is"},
-				{"For the task `default`, that version is one of your own `owner-plan.md`"},
-				{"Where that task is `default`", "new version", "your own `owner-plan.md`", "`plan.md` stays as it is"},
-				{"started its work before Legion took plans has no task text"},
-				{"such an issue", "comment on the issue", "by message"},
-				{"hold also where a general skill offers another place", "write no decision for an agent there", "keep no record of the work there"},
-				{"issue and its plan are the record of the work to be done"},
-			} {
-				if !clauseHolds(composed, terms...) {
-					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
-				}
-			}
-			// The earlier conditions for owner-plan.md, the token of plan.md for every upload, and
-			// the root's part that put the owner's block in plan.md on every issue.
-			for _, words := range []string{
-				"On an issue that runs the project's default steps",
-				"On the project's default steps, the task is",
-				"runs the task default, the project's default steps, and its `plan.md`",
-				"naming the token that `dispatch doc-read --issue <issue> --artifact plan.md` prints",
-				"each issue's `plan.md` (your task block, and a planner step's plan below it)",
-			} {
-				if strings.Contains(foldWhitespace(composed), words) {
-					t.Errorf("the composed %s prompt still holds the retired words %q", tc.name, words)
-				}
-			}
-			if tc.isRoot && !clauseHolds(composed, "each issue's plan", "your task block in `plan.md`", "your own `owner-plan.md` on an issue that started on the project's default steps") {
-				t.Errorf("the composed root architect prompt does not put the owner's block in owner-plan.md on an issue that started on the project's default steps")
-			}
-		})
-	}
-}
-
-// Under an owner's plan whose steps name the planner, the planner's plan stands below the owner's
-// task block in `plan.md`, and the owner can give a version that changes only that block's text
-// while the task runs. That version is the owner's decision: no revision of the planner's plan,
-// and no message to the planner. Legion gives the new text to each start of the task after it took
-// the version, and the owner's message reaches the step at work, so the worker's start task need not
-// hold it. The rule covers only the block whose id the worker's `Task:` line names. On the default
-// steps the planner writes its plan as `plan_task` blocks, and a change of one of them is the
-// planner's revision: the old rule holds, build from the approved version and tell the planner. The
-// worker tells the cases apart by reading the approved version and the newest with `dispatch
-// doc-read --version`. Each rule is held by the terms of the clause that states it, in their order,
-// in each composition that builds from a planner's plan. The rule's earlier words, which took a
-// change of any `plan_task` block's text for the owner's and said the start task held it, are gone.
-// This shows the text is loaded, never that a worker follows it.
-func TestAWorkerTakesAnOwnersTextOnlyVersionAsNoPlanRevision(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	rules := [][]string{
-		{"`Approval:` line does not name the newest version", "`dispatch doc-read --issue <issue> --artifact plan-md --version <approved>`", "`--version <newest>`"},
-		{"task's own block", "`plan_task` block of `plan.md` whose id your `Task:` line names"},
-		{"differ only in the text of your task's own block", "newer version is the owner's decision"},
-		{"no revision of the planner's plan"},
-		{"Legion gives that text to each start of your task after it took the version"},
-		{"owner sends it by message", "step at work"},
-		{"approved version", "that block's newer text", "send the planner nothing"},
-		{"Any other difference", "revision that the plan review has not approved"},
-		{"text of a `plan_task` block that the planner wrote", "project's default steps"},
-		{"Tell the planner what the newer version means", "`envoy_publish`"},
-	}
-	retired := []string{
-		"differ only in the text of `plan_task` blocks",
-		"start task already holds it",
-	}
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
-		composed := composedText(t, composer, role, false)
-		for _, terms := range rules {
-			if !clauseHolds(composed, terms...) {
-				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
-			}
-		}
-		for _, words := range retired {
-			if strings.Contains(foldWhitespace(composed), words) {
-				t.Errorf("the composed %s prompt still holds the retired words %q", role, words)
-			}
-		}
 	}
 }
 
@@ -496,7 +361,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		part string
 		want []string
 	}{
-		{"architect-root.md", append(slices.Clone(shared), "each issue's plan (your task block in `plan.md`", "before `register_gate`")},
+		{"architect-root.md", append(slices.Clone(shared), "each issue's `plan.md`", "before `register_gate`")},
 		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`")},
 	} {
 		t.Run(tc.part, func(t *testing.T) {

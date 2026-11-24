@@ -51,9 +51,8 @@ place as the root specification (never post a second "spec" artifact — that re
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
 this problem is normally solved, as `skill://legion-architect`, section 1, says, and write what
 you found in the spec. Your decomposition, the order its work lands in and how each outcome is proven go in the
-child issues and each issue's plan (your task block in `plan.md`, with a planner step's plan below
-it, or in your own `owner-plan.md` on an issue that started on the project's default steps), not
-the root spec. Mark each requirement of the
+child issues and each issue's `plan.md` (your task block, and a planner step's plan below it),
+not the root spec. Mark each requirement of the
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)
 with it: one `check` block per thing that must be proved, each with `serves` naming the requirements, its
 `surface`, its `run`, its `when` and its `negative_control`. A check carrying `ci_check` is CI's

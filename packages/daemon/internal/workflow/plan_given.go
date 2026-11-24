@@ -331,13 +331,15 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 }
 
 // heldPlan is the plan in force of stored as its owner's blocks gave it, which a later version is
-// compared with (plan.ChangedTasks): each task's block, with the steps its block names. Those are
-// its stored steps, but for a block that named none (record.PlanTask.StepsByDefault), whose stored
-// steps are the default steps it runs, which a block naming them would differ from.
+// compared with (plan.ChangedTasks): each task's block, with the parent it names
+// (record.PlanTask.ParentRef) and the steps it names. Those are its stored steps, but for a block
+// that named none (record.PlanTask.StepsByDefault), whose stored steps are the default steps it
+// runs, which a block naming them would differ from.
 func heldPlan(stored *record.StoredPlan) plan.Plan {
 	held := plan.Plan{ArtifactID: stored.Version.ArtifactID, Version: stored.Version.Version}
 	for _, task := range stored.Tasks {
-		block := plan.Task{ID: task.Task, Needs: task.Needs, PartOf: task.PartOf, Owner: task.OwnerRole, Merges: task.Merges, Text: task.BlockText}
+		block := plan.Task{ID: task.Task, Needs: task.Needs, PartOf: task.PartOf, ParentRef: task.ParentRef, Owner: task.OwnerRole,
+			Merges: task.Merges, Text: task.BlockText}
 		if !task.StepsByDefault {
 			block.Steps = namedSteps(stored.Steps[task.Task])
 		}
@@ -359,7 +361,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 	var steps []record.PlanStep
 	for _, given := range fact.Plan.Tasks {
 		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
-			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, OwnerRole: given.Owner, Merges: given.Merges,
+			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, ParentRef: given.ParentRef, OwnerRole: given.Owner, Merges: given.Merges,
 			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
 		if stored != nil && !slices.Contains(changed, given.ID) {
 			steps = append(steps, stored.Steps[given.ID]...)

@@ -1,12 +1,12 @@
 kind: Changed
 body: |-
-  The `legion` tool's `register_plan` hands the architect each running task's step and the role
-  whose agent works it, and says that a later version can change the text of a running task
+  The `legion` tool's `register_plan` hands the architect each task's running steps, each with the
+  role whose agent works it. It says that a later version can change the text of a running task
   alone. The plugin speaks daemon API contract 235. The architect skill puts a decision for an
-  agent into its task's text. On an issue that started on the project's default steps it goes
-  into the owner's own `owner-plan.md`, whose one block is the task `default`, and the planner's
-  `plan.md` stays as it is. A phase worker's first step reads the issue, its task and the earlier
-  handoffs, takes decisions from no other document, and reads no list for its work.
+  agent into the text of its task's block, in a later version of `plan.md`. A phase worker's first
+  step reads the issue, its task and the earlier handoffs. It takes decisions from no other
+  document, and reads no list for its work. A task block names its parent, and Legion carries out
+  no task block under a task with no sub-owner.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: pr5204
