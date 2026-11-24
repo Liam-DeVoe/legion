@@ -1,5 +1,7 @@
 package legionfacts
 
+//ci:reads packages/envoy/internal/dispatch/legion/metrics/testdata/golden_issue_parts.json TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead os.ReadFile (goldenPartsFile, ../legion/metrics/testdata)
+
 import (
 	"encoding/json"
 	"fmt"
