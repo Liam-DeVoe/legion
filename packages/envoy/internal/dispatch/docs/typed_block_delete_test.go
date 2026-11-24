@@ -23,6 +23,7 @@ import (
 // stored, so what is checked is the bytes a person's next read gives back, and that they read
 // back as the tree the room holds.
 func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T) {
+	t.Parallel()
 	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}"
 	const table = "  | h | i |\n  | --- | --- |\n  | c | d |\n"
 	for _, test := range []struct {

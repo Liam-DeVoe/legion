@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // misreadBefore is a paragraph of an emphasised `(` and then a `y` both emphasised and strong,
@@ -46,7 +47,7 @@ func judgeAsWrittenBefore(t *testing.T) {
 		return strings.ReplaceAll(markdown, misreadSpelled, misreadWritten)
 	}
 	judgedTexts.Store(&rewrite)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		judgedTexts.Store(nil)
 		if rewritten.Load() == 0 {
 			t.Errorf("no text the stored-text check judged held %q, so it judged no text that reads back otherwise", misreadSpelled)
@@ -220,14 +221,14 @@ func recordList(records []slog.Record) string {
 
 // countBlockReadBacks counts every read-back of a document-level block the package makes from here
 // to the end of the test (blockReadBacksCounted), as countRenders records its renders. One test
-// counts at a time, and the count is taken away in t.Cleanup.
+// counts at a time, and the count is taken away in a cleanup (testcleanup.Add).
 func countBlockReadBacks(t *testing.T) *atomic.Int64 {
 	t.Helper()
 	count := &atomic.Int64{}
 	if !blockReadBacksCounted.CompareAndSwap(nil, count) {
 		t.Fatal("another test is counting the block read-backs already")
 	}
-	t.Cleanup(func() { blockReadBacksCounted.Store(nil) })
+	testcleanup.Add(t, func() { blockReadBacksCounted.Store(nil) })
 	return count
 }
 
