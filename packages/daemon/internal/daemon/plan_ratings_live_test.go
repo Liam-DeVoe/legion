@@ -22,7 +22,6 @@ package daemon
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -196,9 +195,12 @@ func (l *planRatingsLive) plans() (string, int) {
 // plansKept runs `dispatch plans --project <PROJECT>` as the person, as plans does, with the CLI's
 // Dispatch a proxy of the test's own: it passes each request to the run's Dispatch as it came and
 // each answer back as it went, and keeps the answer Dispatch gave the CLI's
-// GET /api/v1/projects/<PROJECT>/plans. It returns both streams, the exit code and the body of that
-// answer, decoded from the gzip Dispatch writes for a caller that takes it. It fails the test
-// unless the CLI made that read once and Dispatch answered it 200 with a body.
+// GET /api/v1/projects/<PROJECT>/plans. That one request goes to Dispatch with Accept-Encoding
+// identity, so Dispatch answers it with the plain body, and the CLI is sent the bytes that are kept:
+// Go's transport neither asks for a compression nor decodes one for a request that sets the header
+// itself. It returns both streams, the exit code and that body. It fails the test unless the CLI
+// made that read once, and Dispatch answered it 200 with a body and no Content-Encoding but
+// identity.
 func (l *planRatingsLive) plansKept() (string, int, []byte) {
 	t := l.t
 	t.Helper()
@@ -210,22 +212,25 @@ func (l *planRatingsLive) plansKept() (string, int, []byte) {
 	var mu sync.Mutex
 	var reads []keptPlansRead
 	proxy := &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(target) },
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			if r.In.Method == http.MethodGet && r.In.URL.Path == route {
+				r.Out.Header.Set("Accept-Encoding", "identity")
+			}
+		},
 		ModifyResponse: func(response *http.Response) error {
 			if response.Request.Method != http.MethodGet || response.Request.URL.Path != route {
 				return nil
 			}
-			read := keptPlansRead{status: response.StatusCode}
-			raw, err := io.ReadAll(response.Body)
+			body, err := io.ReadAll(response.Body)
 			if closed := response.Body.Close(); err == nil {
 				err = closed
 			}
-			if err == nil {
-				response.Body = io.NopCloser(bytes.NewReader(raw))
-				read.body, read.err = decodedPlansAnswer(response.Header.Get("Content-Encoding"), raw)
-			} else {
+			read := keptPlansRead{status: response.StatusCode, body: body, err: plainCoding(response.Header)}
+			if err != nil {
 				read.err = fmt.Errorf("read the answer: %w", err)
 			}
+			response.Body = io.NopCloser(bytes.NewReader(body))
 			mu.Lock()
 			defer mu.Unlock()
 			reads = append(reads, read)
@@ -256,34 +261,24 @@ func (l *planRatingsLive) plansKept() (string, int, []byte) {
 }
 
 // keptPlansRead is one answer of GET /api/v1/projects/<PROJECT>/plans as plansKept's proxy passed
-// it to the CLI: its status, and its body decoded from its content coding, or the error that the
-// reading or the decoding met.
+// it to the CLI: its status, its body as Dispatch sent it, and the error that the reading met, or
+// that plainCoding found in its headers.
 type keptPlansRead struct {
 	status int
 	body   []byte
 	err    error
 }
 
-// decodedPlansAnswer is raw, an answer's body as it came over the wire, decoded from coding, its
-// Content-Encoding: none, or the gzip Dispatch writes for a caller that takes it.
-func decodedPlansAnswer(coding string, raw []byte) ([]byte, error) {
-	switch coding {
-	case "":
-		return raw, nil
-	case "gzip":
-		reader, err := gzip.NewReader(bytes.NewReader(raw))
-		if err != nil {
-			return nil, fmt.Errorf("read the gzip header of %d bytes: %w", len(raw), err)
+// plainCoding is nil for an answer whose headers name no Content-Encoding but identity, and
+// otherwise an error naming the Content-Encoding the answer carries.
+func plainCoding(header http.Header) error {
+	codings := header.Values("Content-Encoding")
+	for _, coding := range codings {
+		if !strings.EqualFold(strings.TrimSpace(coding), "identity") {
+			return fmt.Errorf("the answer carries Content-Encoding %q to a request that sent Accept-Encoding identity", strings.Join(codings, ", "))
 		}
-		defer reader.Close()
-		body, err := io.ReadAll(reader)
-		if err != nil {
-			return nil, fmt.Errorf("decode %d gzip bytes: %w", len(raw), err)
-		}
-		return body, nil
-	default:
-		return nil, fmt.Errorf("the answer's coding is %q, which only none or gzip is read as", coding)
 	}
+	return nil
 }
 
 // keepPlansAnswer writes answer, the body of the person's plans read, to file, which plansAnswerEnv
