@@ -244,6 +244,11 @@ func RoundReasons(reasons []string) string {
 // replacement of the same pod writes over it (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). Act is
 // what the act takes and the uid of its target (RecordedAct; GPT-6.1 Sol's point 4): the pod
 // (PodAct), or the Sandbox and the kept volume it owns (VolumeAct).
+//
+// WithPod is an act that takes the volume (VolumeAct) of a Sandbox that runs PodUID, a live pod of
+// its own, and so takes that pod with it: what the act took is the pod and the volume, and a
+// record of the pod's own act (PodAct) is over with it (the Legion reviewer's Important 1 on #5285
+// at acda4d1e).
 type TakenPod struct {
 	Operation string
 	Claim     claim.Token
@@ -251,6 +256,7 @@ type TakenPod struct {
 	PodUID    string
 	Why       string
 	Act       RecordedAct
+	WithPod   bool
 	Work      WorkspaceWork
 	Err       error
 }

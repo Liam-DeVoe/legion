@@ -132,7 +132,10 @@ func TestALaunchThatReplacesASandboxOfTheSupersededDiskShapeSaysWhatItTook(t *te
 	if loc.Sandbox.PodUID == "uid-pod-old" {
 		t.Fatalf("the launch kept the pod uid-pod-old of the superseded disk shape, want a pod of the Sandbox it created")
 	}
-	took.want(t, readTaken(workerToken, "uid-pod-old", runtime.VolumeAct("uid-sandbox-superseded")), "disk shape", "")
+	// The launch takes the Sandbox's live pod with its volume (WithPod).
+	want := readTaken(workerToken, "uid-pod-old", runtime.VolumeAct("uid-sandbox-superseded"))
+	want.WithPod = true
+	took.want(t, want, "disk shape", "")
 }
 
 // The launch replaces a drifted pod whose stored template says nothing this daemon can read of what

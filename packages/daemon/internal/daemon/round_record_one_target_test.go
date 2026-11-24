@@ -24,10 +24,12 @@ package daemon
 //     nobody again.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -139,5 +141,48 @@ func TestTwoLaunchesThatDeleteOneKeptVolumeTellTheArchitectOnce(t *testing.T) {
 	rig.wantToldOnceNaming("once the second launch deleted the Sandbox", keptSandboxUID)
 	if records := rig.replacementRecords(); records != 0 {
 		t.Fatalf("the store holds %d records of the Sandbox once its notice is queued, want none", records)
+	}
+}
+
+// The Legion reviewer's Important 1 on #5285 at acda4d1e: a launch whose act deletes the issue's
+// Sandbox and the kept volume it owns (runtime.VolumeAct), over a live pod of that Sandbox, takes
+// the pod with the volume. A replacement by issue has recorded its own act on that pod and waits
+// for the pod's launch turn, which the launch holds; the launch records its act, takes the pod and
+// the Sandbox, and tells the architect. The replacement by issue then finds the pod taken. The
+// architect is told once, by the launch, which says what was taken; the round's record of the pod
+// tells nothing more.
+func TestALaunchsVolumeActOverTheLivePodOfARoundsRecordTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
+	rig := podlessBreakingRound(t)
+	taken := runtime.TakenPod{Operation: "launch-volume-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+		Why: "the issue's Sandbox has a disk shape that this launch does not render", Act: runtime.VolumeAct(keptSandboxUID), WithPod: true,
+		Work: runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{launchReadCommit}, Count: 1}}
+	launched := false
+	rig.rt.HoldReplaceIssuePod(func() {
+		if launched {
+			return
+		}
+		launched = true
+		if err := rig.s.recordLaunchTakes(rig.ctx, taken); err != nil {
+			t.Errorf("record the launch's act: %v", err)
+		}
+		rig.rt.ScriptSuspendedOver(podUpdatePod)
+		rig.rt.ScriptSandboxGone(keptSandboxUID)
+		rig.s.tellLaunchTook(rig.ctx, taken)
+	})
+	rig.awaitSwept(claim.RoleImplementer, "its round to end once the launch took its pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if !launched {
+		t.Fatal("the sweep asked for no replacement by issue, so this case proves nothing")
+	}
+	for range roundSweeps {
+		rig.tick()
+	}
+	told := rig.architectNotices(record.WorkspaceTakenNotice)
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "deleted the Sandbox") || !strings.Contains(told[0].Reason, launchReadCommit) {
+		t.Fatalf("the architect was told %+v, want one workspace-taken notice, the launch's, naming the Sandbox it deleted and the commit %s its read found",
+			told, launchReadCommit)
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
 	}
 }
