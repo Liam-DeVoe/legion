@@ -27,6 +27,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import {
+  answerAsk,
   createAgentMessage,
   createAsk,
   createComment,
@@ -8916,6 +8917,76 @@ test("offline, Take out of epic hands the focus to the marked row's checkbox in 
         await route.abort("internetdisconnected").catch(() => undefined);
       }
       await page.unrouteAll({ behavior: "ignoreErrors" });
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
+// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
+// Change answer on a decided ask takes itself away and puts the answer form in its place, as
+// Add a priority's + does. At aa057a19 a click on it scrolled the page 65 px at 1440 in Firefox
+// and WebKit. Restored by the tester in round 25, by the architect's ruling of 2026-11-24
+// 08:07Z: by a press of Enter and by a click, at 1440 and 390, the form opens and its first
+// choice, Ship, stands whole in the window. In builds Job infra-3135-r-cah-ml77m at 683f1fdf it
+// did in Chromium, Firefox and WebKit, Ship at 650 px in the 900 px window at 1440 and at 388 px
+// in the 664 px one at 390, and the press scrolled nothing. Where the focus goes once the button
+// has gone is not read: the round-14 row's check that it lands in the form read a landing the
+// page's focus rescue made, and it left with the rescue (dispatch://INFRA-5564). A focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("Change answer opens the answer form with its first choice whole in the window, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    SURFACE_SESSION
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}/conversation`);
+      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+      await expect(turn).toContainText("Answered by alice");
+      const change = turn.getByRole("button", { name: "Change answer" });
+      await change.scrollIntoViewIfNeeded();
+      if (press === "Enter") {
+        await change.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await change.click();
+      }
+      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
+      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
+      const ship = form.getByRole("radio", { name: "Ship" });
+      const whole = await expect
+        .poll(() =>
+          ship.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight &&
+              box.left >= 0 &&
+              box.right <= window.innerWidth
+            );
+          })
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
