@@ -22,19 +22,22 @@ import (
 // here is called unless TestDismissedScaleHoldsTheInboxsReads runs.
 
 // seedDismissedScale builds one shape: a server on a database of its own with JIT off
-// (jitOffStore), the pile it was asked for, the 600 undismissed threads with 300 unread among
-// them, and the 1,000 unread threads the mark-all works over. It asserts every count before the
-// caller times anything, because a measurement over a seed that did not land is worse than none.
+// (jitOffStore), whose every connection records what a marked request sends (dismissedScaleTrace),
+// the pile it was asked for, the 600 undismissed threads with 300 unread among them, and the 1,000
+// unread threads the mark-all works over. It asserts every count before the caller times anything,
+// because a measurement over a seed that did not land is worse than none.
 func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismissedScaleShape {
 	t.Helper()
 	started := time.Now()
-	handler, database, _ := newTestServer(t, testServerOptions{store: jitOffStore(t, "the "+name+" shape's database", storetest.Open(t))})
+	trace := &dismissedScaleTrace{}
+	handler, database, _ := newTestServer(t, testServerOptions{
+		store: jitOffStore(t, "the "+name+" shape's database", storetest.Open(t)), tracer: trace,
+	})
 	issue := createInteractionIssue(t, handler, "SCALE", "A pile of dismissed threads", "A spec")
 	shape := &dismissedScaleShape{
-		name: name, handler: handler, database: database, issue: issue.Key,
+		name: name, handler: handler, database: database, trace: trace, issue: issue.Key,
 		dismissedReplies: replies, dismissedAgents: agents,
 	}
-	ctx := context.Background()
 
 	// The pile first, so the statement that writes the dismissal marks can take every row of the
 	// caller's: at this point they are the pile and nothing else.
@@ -57,7 +60,7 @@ func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismiss
 
 	// Statistics, as a production table has them: without them the planner reads this seed as the
 	// 24-row fixture every other test in this package leaves behind.
-	if _, err := database.Pool.Exec(ctx, "vacuum analyze"); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), "vacuum analyze"); err != nil {
 		t.Fatalf("analyze %s: %v", name, err)
 	}
 

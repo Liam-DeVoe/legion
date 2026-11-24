@@ -404,6 +404,18 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes.
 //
+// A change of words that keeps every statement's rows keeps the rule, and records its digest in
+// place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main and from
+// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on this change, whose
+// statements also read the project columns above: the backfill's
+// block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
+// materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
+// and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot
+// walks a seed with the word and without it, under both plan-cache modes, and holds the two to the
+// same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
+// the other reads rule 1's cursors, horizons and marks as its own rightly.
+//
 // Rule 2 is the rule of the release that states a block's mentions of the people, agents'
 // sessions and roles it names: its block identity pass marks owed each document a build of rule 1
 // stated the blocks of without them that holds a block whose text names one
@@ -412,10 +424,13 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // digest kept: a build of rule 1 lists such a mark only where the store last stated the document
 // below its version and clears none of it, so it neither drains it at the version the document
 // stands at nor reads it as its own, and the pass that drains it is the one that states the
-// mentions.
+// mentions. Rule 2's digest moved once as rule 1's did, from
+// 23bd13f3603018371d0ca156980c0d030e18a196907626c7df578d65e9db8322, when its statements took the
+// same `materialized` lookups of graphcensus.BlockRowsStatement, which keep its rows: the
+// documents a pass of rule 2 marks are the same.
 var markingStatementDigests = map[int]string{
-	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
-	2: "23bd13f3603018371d0ca156980c0d030e18a196907626c7df578d65e9db8322",
+	1: "c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3",
+	2: "9e7f55f401e8060e5becbcd9383b266cbe2b808a1596157184d6e8b79e6e8a5e",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
