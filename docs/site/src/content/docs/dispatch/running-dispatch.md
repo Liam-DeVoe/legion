@@ -332,11 +332,13 @@ alone, or a generation written by hand at either. Outside a reset, run the reset
 every credential the row would end and settled every restored debt, so settle a later
 `superseded` row with
 `envoy-dispatch clear-broker-revocation '<address>' '<subject>:<generation>'`, naming it as the
-command's list prints it. The address a line's `login_hash` stands for is the one this statement
-reads from Dispatch's database:
+command's list prints it. The address a line's `login_hash` stands for is the one this block reads
+from Dispatch's database:
 
-```sql
-select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = '<login_hash>';
+```sh
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v hash='<login_hash>' <<'SQL'
+select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = :'hash';
+SQL
 ```
 
 ### A person Google refuses
