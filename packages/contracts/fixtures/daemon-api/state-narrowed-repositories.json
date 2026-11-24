@@ -7,18 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 243,
+    "daemon": 228,
     "caller": 199
   },
   "admission": {
-    "cap": 6,
+    "cap": 5,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219",
-      "LEGION-240"
+      "LEGION-219"
     ],
     "waiting": [
       "LEGION-212",
@@ -637,37 +636,6 @@
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
       "quietHours": 40.583888888888886
-    },
-    "LEGION-240": {
-      "key": "LEGION-240",
-      "generation": 1,
-      "phase": "implementing",
-      "status": "in_progress",
-      "tree": "LEGION-240",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "workers": {}
-    },
-    "LEGION-241": {
-      "key": "LEGION-241",
-      "generation": 1,
-      "phase": "held",
-      "status": "in_progress",
-      "tree": "LEGION-241",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "heldFrom": "implementing",
-      "workers": {
-        "checker": {
-          "claim": {
-            "session": "ses_checker_241",
-            "state": "failed",
-            "pluginContract": 0
-          },
-          "pass": 0,
-          "rounds": 0
-        }
-      }
     }
   },
   "pendingStatusWrites": [],
@@ -697,30 +665,6 @@
       "state": "retired"
     }
   ],
-  "wakesWaiting": [
-    {
-      "claim": "legion-legion-legion-207-implementer",
-      "issue": "LEGION-207",
-      "role": "implementer",
-      "kind": "plugin-refresh",
-      "dueAt": "2026-09-22T09:17:56Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-architect",
-      "issue": "LEGION-208",
-      "role": "architect",
-      "kind": "catch-up",
-      "dueAt": "2026-09-22T09:18:03Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-planner",
-      "issue": "LEGION-208",
-      "role": "planner",
-      "kind": "launch",
-      "dueAt": "2026-09-22T09:18:11Z"
-    }
-  ],
-  "claimsToRefresh": 4,
   "paused": {
     "id": 7,
     "since": "2026-09-22T09:09:00Z",
@@ -1224,5 +1168,29 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 201
+  "lowestPluginContract": 201,
+  "wakesWaiting": [
+    {
+      "claim": "legion-legion-legion-207-implementer",
+      "issue": "LEGION-207",
+      "role": "implementer",
+      "kind": "plugin-refresh",
+      "dueAt": "2026-09-22T09:17:56Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-architect",
+      "issue": "LEGION-208",
+      "role": "architect",
+      "kind": "catch-up",
+      "dueAt": "2026-09-22T09:18:03Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-planner",
+      "issue": "LEGION-208",
+      "role": "planner",
+      "kind": "launch",
+      "dueAt": "2026-09-22T09:18:11Z"
+    }
+  ],
+  "claimsToRefresh": 4
 }

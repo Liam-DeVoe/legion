@@ -7,18 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 243,
-    "caller": 243
+    "daemon": 228,
+    "caller": 228
   },
   "admission": {
-    "cap": 6,
+    "cap": 5,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219",
-      "LEGION-240"
+      "LEGION-219"
     ],
     "waiting": [
       "LEGION-212",
@@ -638,42 +637,6 @@
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
       "quietHours": 40.583888888888886
-    },
-    "LEGION-240": {
-      "key": "LEGION-240",
-      "generation": 1,
-      "phase": "step",
-      "stepRole": "checker",
-      "startWaitsForPod": [
-        "checker"
-      ],
-      "status": "in_progress",
-      "tree": "LEGION-240",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "workers": {}
-    },
-    "LEGION-241": {
-      "key": "LEGION-241",
-      "generation": 1,
-      "phase": "held",
-      "stepRole": "checker",
-      "status": "in_progress",
-      "tree": "LEGION-241",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "heldFrom": "step",
-      "workers": {
-        "checker": {
-          "claim": {
-            "session": "ses_checker_241",
-            "state": "failed",
-            "pluginContract": 0
-          },
-          "pass": 0,
-          "rounds": 0
-        }
-      }
     }
   },
   "pendingStatusWrites": [],
@@ -701,11 +664,6 @@
       "issue": "LEGION-212",
       "role": "tester",
       "state": "retired"
-    },
-    {
-      "issue": "LEGION-241",
-      "role": "checker",
-      "state": "failed"
     }
   ],
   "wakesWaiting": [
@@ -1226,5 +1184,57 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 46
+  "lowestPluginContract": 46,
+  "intakeGiveUps": {
+    "consumers": [
+      {
+        "name": "legion-go-LEGION-dispatch",
+        "open": 2,
+        "newestSeq": 6044896
+      },
+      {
+        "name": "legion-go-LEGION-github",
+        "open": 1,
+        "newestSeq": 812004
+      }
+    ],
+    "newest": [
+      {
+        "id": 43,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-214.issue.updated",
+        "streamSeq": 6044896,
+        "storedAt": "2026-09-22T08:40:12Z",
+        "eventId": null,
+        "deliveries": 1,
+        "gaveUpAt": "2026-09-22T08:40:13Z",
+        "reason": "undecodable",
+        "lastError": "decode Envoy envelope: unexpected end of JSON input"
+      },
+      {
+        "id": 42,
+        "consumer": "legion-go-LEGION-github",
+        "subject": "notifications.github.acme.widgets.pr.17.review",
+        "streamSeq": 812004,
+        "storedAt": "2026-09-22T06:02:00Z",
+        "eventId": "github-9b2c71e0",
+        "deliveries": 3,
+        "gaveUpAt": "2026-09-22T07:55:00Z",
+        "reason": "consumer moved past",
+        "lastError": "the consumer moved past it without delivering it again"
+      },
+      {
+        "id": 41,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-213.issue.updated",
+        "streamSeq": 6044801,
+        "storedAt": "2026-09-22T06:30:00Z",
+        "eventId": "dispatch-6044801",
+        "deliveries": 21,
+        "gaveUpAt": "2026-09-22T07:31:04Z",
+        "reason": "bound",
+        "lastError": "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
+      }
+    ]
+  }
 }
