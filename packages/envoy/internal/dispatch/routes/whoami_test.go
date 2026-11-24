@@ -56,7 +56,7 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	ctx, err := BuildAppContext(AppContextOptions{
 		SigningKey:        testSigningKey,
 		People:            people,
-		Identity:          identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:          identity.HeaderIdentity{People: people},
 		Store:             database,
 		Docs:              documents,
 		Events:            broker,
@@ -267,7 +267,7 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 			people := newMemoryPeople()
 			options.SigningKey = testSigningKey
 			options.People = people
-			options.Identity = identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
+			options.Identity = identity.HeaderIdentity{People: people}
 			options.Lifetime = t.Context()
 			ctx, err := BuildAppContext(withDocuments(t, options))
 			if err != nil {
@@ -300,7 +300,7 @@ func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   identity.HeaderIdentity{People: people},
 		Lifetime:   t.Context(),
 	}))
 	if err != nil {
@@ -362,7 +362,7 @@ func TestWhoamiAnswersEventHeadUnavailableOnlyWhileNoHeadIsProven(t *testing.T) 
 			ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 				SigningKey: testSigningKey,
 				People:     people,
-				Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+				Identity:   identity.HeaderIdentity{People: people},
 				Lifetime:   t.Context(),
 			}))
 			if err != nil {

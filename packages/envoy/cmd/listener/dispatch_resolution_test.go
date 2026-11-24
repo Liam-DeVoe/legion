@@ -237,7 +237,7 @@ func queueingDispatchMux(
 	}
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
-	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
+	caller := identity.HeaderIdentity{People: people}
 	// The test shuts the document service NewDeps requires down: an issue's spec schedules a
 	// settlement, and a service nobody ended would still be warming that document after the
 	// database pool had closed.
