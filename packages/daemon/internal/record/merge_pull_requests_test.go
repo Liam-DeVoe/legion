@@ -127,29 +127,29 @@ func TestTheMergePullRequestsOfAnIssueAreThoseOfItsMergingTasks(t *testing.T) {
 	})
 }
 
-// A parked issue's merge is still its task's pull request: a person parked LEGION-208, a plan of one
-// task a, at a's review, so its leave wrote a left at its second step with its pull request #41 open.
+// A parked issue's merge is still its task's pull request: a person parked LEGION-208, a child of one
+// task c, at c's review, so its leave wrote c left at its third step with its pull request #7 open.
 // The merge of the issue (MergePullRequest), its merges (MergePullRequests) and the merge of each of
-// several issues (PullRequestsOf) answer #41, as each did before tasks had merges of their own, and
-// once a person merges #41 they answer it merged.
+// several issues (PullRequestsOf) answer #7, as each did before tasks had merges of their own, and
+// once a person merges #7 they answer it merged.
 //
 // The fault it catches is a parked issue that loses its pull request in the served state and in the
 // reads of several issues, and whose merge a later leave at done never checks (its control: the
-// tasks that have a merge holding a left task only where it stands at its merge, under which each
-// read answers none).
-func TestAParkedIssuesMergeIsItsLeftTasksPullRequest(t *testing.T) {
+// tasks that have a merge as the tasks that will merge and those whose work merged, under which
+// MergePullRequest answers none and PullRequestsOf holds no entry for the child).
+func TestAParkedIssuesMergePullRequestIsItsLeftTasks(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture(planIssue)
-	a := taskPullRequest(planIssue, "a", "legion/LEGION-208", 41)
+	a := taskPullRequest(planIssue, "c", "legion/LEGION-208", 7)
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		putPlan(t, tx, PlanVersion{Issue: planIssue, Generation: issue.Generation, Version: 1, ArtifactID: planAuthor, Source: PlanSourceOwner,
-			GivenBy: planOwner, GivenAt: planGivenAt}, []PlanTask{{Issue: planIssue, Generation: issue.Generation, Task: "a", PlanVersion: 1,
-			BlockText: "Build the widget.", State: TaskLeft, Place: TaskPlace{Kind: PlaceStep, Position: 2}}}, nil)
-		if _, err := records.AssignTaskBranch(ctx, tx, planIssue, issue.Generation, "a"); err != nil {
-			t.Fatalf("give task a its branch: %v", err)
+			GivenBy: planOwner, GivenAt: planGivenAt}, []PlanTask{{Issue: planIssue, Generation: issue.Generation, Task: "c", PlanVersion: 1,
+			BlockText: "Build the widget.", State: TaskLeft, Place: TaskPlace{Kind: PlaceStep, Position: 3}}}, nil)
+		if _, err := records.AssignTaskBranch(ctx, tx, planIssue, issue.Generation, "c"); err != nil {
+			t.Fatalf("give task c its branch: %v", err)
 		}
 		must(t, records.PutPullRequest(ctx, tx, a))
 	})
@@ -173,11 +173,11 @@ func TestAParkedIssuesMergeIsItsLeftTasksPullRequest(t *testing.T) {
 			}
 		})
 	}
-	reads("a left at its review", PullRequestOpen)
+	reads("c left at its review", PullRequestOpen)
 	inTx(t, st, func(tx pgx.Tx) {
 		merged := a
-		merged.State, merged.MergeSHA = PullRequestMerged, "merge-41"
+		merged.State, merged.MergeSHA = PullRequestMerged, "merge-7"
 		must(t, records.PutPullRequest(ctx, tx, merged))
 	})
-	reads("#41 merged by a person", PullRequestMerged)
+	reads("#7 merged by a person", PullRequestMerged)
 }
