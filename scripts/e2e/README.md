@@ -4055,34 +4055,38 @@ The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node'
 
 ```sh
 bash scripts/e2e/shared-clone-kind.sh     # → "shared clone kind e2e: PASS in <n>s", exit 0
-gh workflow run e2e.yaml -f script=shared-clone-kind     # the same, on a GitHub-hosted runner
+gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind     # the same, on a GitHub-hosted runner, at the branch's head
 ```
 
-Runs on an amd64 (x86_64) Linux host only, with the tools `burstable-kind.sh` needs and `jq`;
-its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-shared-clone-<pid>`, deleted on any exit.
-A GKE Autopilot cluster cannot run it in a Job, since its policy refuses a privileged container (`autogke-disallow-privilege`), so `.github/e2e-scripts.json` lists it as a hosted proof.
-The pod runs the worker image of the checkout's own commit, since the image's `legion` runs the pod's `workspace-fetch` and `workspace-init`:
+Runs on an amd64 (x86_64) Linux host only, with `docker`, `go`, `kubectl`, `curl`, `jq`, `zstd` and a tar that supports `--zstd`;
+it installs kind v0.33.0 by sha256 and makes the cluster on that release's node image as `.github/ci-images.yaml` copies it by digest ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_install_kind`), unless `LEGION_E2E_KIND` names a kind, whose own default node image it then takes.
+Its cluster is the lib's, `legion-shared-clone-<pid>`, deleted on any exit.
+A GKE Autopilot cluster cannot run it in a Job, since its policy refuses a privileged container (`autogke-disallow-privilege`), so `.github/e2e-scripts.json` lists it as a hosted proof, `dispatch_only`:
+e2e.yaml runs it on a `workflow_dispatch` at a branch, whose checkout is the branch's head, and never on the `e2e` label's merge commit or the nightly's main.
+The pods run the worker image of the checkout's own commit, since the image's `legion` runs each pod's `workspace-fetch` and `workspace-init`:
 `LEGION_E2E_IMAGE`, by digest, or, where it is unset, the digest the registry gives `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of HEAD>`, which `worker-image.yaml` publishes for a pull request's head;
 the run fails naming the tag when the registry has none.
+The driver's `legion.yaml` reserves little for the pods (`sharedCloneLiveResources`, `internal/daemon/shared_clone_kind_test.go`), so two issue pods and the repository cache fit on one node of a hosted runner.
 
 |check|what it holds|
 |:---|:---|
 |`binaries`|a static test binary of `TestASharedCloneReadsTheFeedInAnIssuePodLive` (`internal/daemon/shared_clone_live_test.go`, `-tags e2e`)|
 |`cluster`, `agent-sandbox`, `gvisor`|as `burstable-kind.sh`'s, through the lib|
 |`images`|the worker image, pulled into the node's containerd|
-|`launch`|the driver, in a container on the kind network, writes the `legion.yaml` and launches its issue's root on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`; the pod's `workspace-fetch` fills the feed from GitHub|
-|`provision`|`workspace-fetch` and `workspace-init` each ended 0|
+|`launch`|the driver, in a busybox container on the kind network, writes the `legion.yaml` and launches two issues' roots on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`, as `share-volumes-kind.sh`'s driver launches its pod: the first, whose `workspace-fetch` fills the feed from GitHub and whose launch makes the repository's cache, then, once that cache is Ready, the second|
+|`provision`|the first pod's `workspace-fetch` and `workspace-init` each ended 0|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
 |`alternates`|the clone's `.git/objects/info/alternates` is the feed's objects and nothing else, and its own `objects/pack` holds no pack|
 |`disk`|`du -sk` of the clone's `.git/objects` is under a tenth of the feed's `objects`; the control, a plain `git clone --no-checkout` of the same feed made in the container, takes about the feed's size|
 |`feed-read-only`|a write to the feed from `roles` is refused `Read-only file system`|
 |`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes through its alternates|
 |`logs`|`git log -1 refs/remotes/origin/master` and `jj log -r master@origin`, run as the launched architect's agent, succeed and name the same commit|
+|`cache-second-pod`|the second pod, launched while the cache is Ready: both init containers ended 0, its `workspace-fetch` streamed the feed from the repository cache and fetched under 1 MiB from GitHub for the delta, its clone's alternates name the feed's objects, and `git fsck --connectivity-only` of its clone passes (the e2e check of `internal/runtime/sandbox`'s `checkCacheSecondPod`, on kind)|
 
 What the proof stands in for lies outside the clone, as `burstable-kind.sh`'s does:
 the agent is a sleep stub, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
-The loader, the runtime, Agent Sandbox's pod, the init containers, git, jj and gVisor are the real ones.
-`SHARED_CLONE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the `legion.yaml` and the issue pod's manifest.
+The loader, the runtime, Agent Sandbox's pod, the repository cache, the init containers, git, jj and gVisor are the real ones.
+`SHARED_CLONE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the `legion.yaml` and both issue pods' manifests.
 
 ## dispatch-claimant-delivery.sh
 
@@ -7821,6 +7825,11 @@ The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teard
 `LEGION_E2E_KIND` names the kind binary when it is not on `PATH`.
 
 Each item below names a function, then what it does.
+
+- `kind_sandbox_install_kind WORK`
+
+  downloads kind v0.33.0 into `WORK`, checks it against its sha256 and makes it the kind the lib runs (`kind_bin`), with that release's default node image, `kindest/node:v1.37.0`, as `.github/ci-images.yaml` copies it by digest (`kind_node_image`), which `kind_sandbox_create` then names;
+  `shared-clone-kind.sh`, which e2e.yaml runs on a GitHub-hosted runner, calls it, and the other kind proofs use the kind on `PATH` and its default node image
 
 - `kind_sandbox_create NAME WORK`
 

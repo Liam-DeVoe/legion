@@ -1,16 +1,17 @@
 //go:build e2e
 
 // The shared clone live proof's driver (scripts/e2e/shared-clone-kind.sh, which builds it with
-// `-tags e2e`, owns the throwaway kind cluster, and reads the issue pod's clone and feed with
+// `-tags e2e`, owns the throwaway kind cluster, and reads the issue pods' clones and feeds with
 // kubectl). Its legion.yaml is read by the daemon's own loader, and the Agent Sandbox runtime the
-// daemon's own sandboxOptions builds launches one issue's root on a public repository of some
+// daemon's own sandboxOptions builds launches two issues' roots on a public repository of some
 // tens of megabytes, sharedCloneLiveRepository, through Agent Sandbox's controller and the gvisor
-// runtime class, as the Burstable and share volumes proofs launch theirs
-// (burstable_kind_test.go builds the runtime). The pod's workspace-fetch fills the feed from
-// GitHub and its workspace-init provisions the issue's clone from the feed: the code under proof.
-// What the proof stands in for lies outside the clone, as the Burstable proof's does: the agent is
-// a sleep stub, the store answers as the daemon's does for an issue's first launch, and the roles'
-// gh files hold a placeholder token.
+// runtime class, as the Burstable and share volumes proofs launch theirs (startLiveRoots;
+// burstable_kind_test.go builds the runtime, shared_clone_kind_test.go holds the file's parts).
+// The first pod's workspace-fetch fills its feed from GitHub, the second's from the repository
+// cache the first launch made, and each pod's workspace-init provisions the issue's clone from its
+// feed: the code under proof. What the proof stands in for lies outside the clone, as the
+// Burstable proof's does: the agent is a sleep stub, the store answers as the daemon's does for an
+// issue's first launch, and the roles' gh files hold a placeholder token.
 package daemon
 
 import (
@@ -25,19 +26,15 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// sharedCloneLiveRepository is a public repository, so the pod's workspace-fetch clones it without
-// GitHub asking for the placeholder provisioning token, and one large enough that a copy of its
-// objects stands far above what the clone writes itself: about 27 MB on GitHub, on 2026-11-24. Its
-// default branch is master. It is no repository of the runtime's cache set (burstableLiveRuntime),
-// so the pod's feed comes from GitHub, as a pod's does where no cache serves its repository.
-var sharedCloneLiveRepository = ghrepo.MustParse("tmux/tmux")
-
-// TestASharedCloneReadsTheFeedInAnIssuePodLive writes the proof's legion.yaml, launches its
-// issue's root on sharedCloneLiveRepository, and writes `<namespace>/<pod> <repository>` to
-// LEGION_E2E_RESULT for the script, which reads the clone and the feed in the pod.
+// TestASharedCloneReadsTheFeedInAnIssuePodLive writes the proof's legion.yaml and launches two
+// issues' roots on sharedCloneLiveRepository: the first as the cache set's first launch, whose
+// launch makes the repository cache and whose feed comes from GitHub, and, once that cache is
+// Ready, the second, whose feed comes from the cache's tar (the e2e check cache-second-pod's pod).
+// It writes `<namespace>/<pod> <repository>` for the first and `<namespace>/<pod> <repository>
+// <cache Sandbox>` for the second to LEGION_E2E_RESULT, one line each, for the script, which reads
+// the clones and the feeds in the pods.
 func TestASharedCloneReadsTheFeedInAnIssuePodLive(t *testing.T) {
 	fixtureenv.Live(t)
 	env := map[string]string{}
@@ -50,23 +47,33 @@ func TestASharedCloneReadsTheFeedInAnIssuePodLive(t *testing.T) {
 		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	defer cancel()
 
 	path := writeBurstableLiveConfig(t, filepath.Join(env["LEGION_E2E_WORK"], "shared-clone"), "CLONE", env["LEGION_E2E_STREAM_HOST"],
-		env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], "")
+		env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], sharedCloneLiveResources)
 	cfg, err := config.LoadForValidation(path, nil)
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)
 	}
-	started := time.Now()
-	pod := launchLiveRoot(ctx, t, cfg, log, sharedCloneLiveRepository, "master")
-	fmt.Printf("ok launched %s/%s on %s in %s: runtimeClassName %s, node %s\n", pod.Namespace, pod.Name, sharedCloneLiveRepository,
-		time.Since(started).Round(time.Second), liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName)
-	if liveString(pod.Spec.RuntimeClassName) != "gvisor" {
-		t.Errorf("pod %s runs under %q, want gvisor", pod.Name, liveString(pod.Spec.RuntimeClassName))
+	roots := startLiveRoots(ctx, t, cfg, log, sharedCloneLiveRepository, "master")
+	launched := func(issue string) string {
+		started := time.Now()
+		pod := roots.launch(issue)
+		fmt.Printf("ok launched %s/%s for %s on %s in %s: runtimeClassName %s, node %s\n", pod.Namespace, pod.Name, issue, sharedCloneLiveRepository,
+			time.Since(started).Round(time.Second), liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName)
+		if liveString(pod.Spec.RuntimeClassName) != "gvisor" {
+			t.Errorf("pod %s runs under %q, want gvisor", pod.Name, liveString(pod.Spec.RuntimeClassName))
+		}
+		return pod.Namespace + "/" + pod.Name
 	}
-	result := fmt.Sprintf("%s/%s %s\n", pod.Namespace, pod.Name, sharedCloneLiveRepository)
+	first := launched("CLONE-1")
+	waited := time.Now()
+	cache := roots.awaitCache(20 * time.Minute)
+	fmt.Printf("ok the repository cache %s of %s is Ready at %s after %s\n", cache.Sandbox, sharedCloneLiveRepository, cache.Address,
+		time.Since(waited).Round(time.Second))
+	second := launched("CLONE-2")
+	result := fmt.Sprintf("%s %s\n%s %s %s\n", first, sharedCloneLiveRepository, second, sharedCloneLiveRepository, cache.Sandbox)
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(result), 0o600); err != nil {
 		t.Fatal(err)
 	}
