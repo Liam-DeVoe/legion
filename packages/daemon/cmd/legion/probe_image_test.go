@@ -39,10 +39,7 @@ import (
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
 // $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_WAITING set, a read under a `slow` or
 // `refuses-late` overlay appends `config get <overlay>` there once it waits, after its trap is
-// set and its sleep started where it has them: a stop sent before the `refuses-late` sleep started
-// would miss it, and the sleep would hold the group and its output past the stop until it ended on
-// its own, since the grace and WaitDelay are the test binary's deadline in these tests (programbound).
-// With $LEGION_TEST_SEEN set, each run appends the environment it saw
+// set where it has one. With $LEGION_TEST_SEEN set, each run appends the environment it saw
 // there: PI_CONFIG_FILES, whether the first overlay it names exists, and OMP_SESSION_STORAGE;
 // with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
@@ -77,7 +74,7 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 30 & waiting; wait ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting; sleep 30 & wait ;;
     *slow*) waiting; exec sleep 30 ;;
     esac
   done
