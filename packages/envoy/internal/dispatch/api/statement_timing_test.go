@@ -463,12 +463,16 @@ var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 //
 // Each of the first two is a pair whose two sides are one text. The before side drops
 // events_parked_moves in its measuring transaction, which every reading rolls back, so it reads as
-// on the schema of main, and the after side reads through the index. Each pair is timed
-// (benchtime.Runner.Pair) and gated on its top plan node's shared buffers under the plan made for
-// its values and under the generic plan (benchtime.Runner.PairBuffers): the gain is the events the
-// lateral no longer reads. The walk has no before side. It is timed alone (benchtime.Runner.After),
-// and its top node's shared buffers under each plan are logged (benchtime.Runner.TopBuffers),
-// which are its buffer reads for each call. Each text is logged with its sha256.
+// on the schema of main, and the after side reads through the index. Each pair is gated on its top
+// plan node's shared buffers under the plan made for its values and under the generic plan
+// (benchtime.Runner.PairBuffers): the gain is the events the lateral no longer reads. The parked
+// fault is timed as a pair whose after side must be faster (benchtime.Runner.Pair). The listing is
+// timed within the bound of benchtime.Runner.PairWithin instead: the lateral is a small part of the
+// listing's work, a page of every row of a project, so its gain can sit inside the run-to-run
+// spread of the rest of the statement, and a slower listing is still a regression. The walk has
+// no before side. It is timed alone (benchtime.Runner.After), and its top node's shared buffers
+// under each plan are logged (benchtime.Runner.TopBuffers), which are its buffer reads for each
+// call. Each text is logged with its sha256.
 func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner) {
 	t.Helper()
 	t.Run(parkedMoveTiming, func(t *testing.T) {
@@ -489,15 +493,20 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner) {
 		for _, pair := range []struct {
 			name          string
 			before, after benchtime.Statement
+			within        bool
 		}{
 			{parkedFaultTiming,
 				benchtime.Statement{SQL: parkedQuery, Args: fault, Setup: withoutIndex},
-				benchtime.Statement{SQL: parkedQuery, Args: fault}},
+				benchtime.Statement{SQL: parkedQuery, Args: fault}, false},
 			{parkedListingTiming,
 				benchtime.Statement{SQL: listIssuesQuery, Args: listing, Setup: withoutIndex},
-				benchtime.Statement{SQL: listIssuesQuery, Args: listing}},
+				benchtime.Statement{SQL: listIssuesQuery, Args: listing}, true},
 		} {
-			runner.Pair(t, pair.name, pair.before, pair.after)
+			if pair.within {
+				runner.PairWithin(t, pair.name, []benchtime.Statement{pair.before}, []benchtime.Statement{pair.after})
+			} else {
+				runner.Pair(t, pair.name, pair.before, pair.after)
+			}
 			t.Run(pair.name+", its top node's buffers", func(t *testing.T) {
 				runner.PairBuffers(t, pair.name, pair.before, pair.after)
 			})
