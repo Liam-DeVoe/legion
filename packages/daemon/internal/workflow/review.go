@@ -177,9 +177,9 @@ const conflictConfirmWait = time.Minute
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
 // (intake.PullRequestMergeability.Rules). A reason to act asks the agent of the task's last step
-// of the type implementation before the issue's place (the implementer on the default steps, the
-// owner where that step is its own) to merge the base forward, and the issue keeps its phase
-// (mergeForward, R1); no reason leaves the conflict
+// of the type implementation at or before the issue's place, else the task's last such step (the
+// implementer on the default steps, the owner where that step is its own), to merge the base
+// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
 // recorded and logged with the checks the base requires and those green on the head, and the
 // tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
 // holds conflicting decides again in the same way, since the phase the issue has reached since can

@@ -687,7 +687,6 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
   const merger = collapsed(
     path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
   );
-  expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
 });
 

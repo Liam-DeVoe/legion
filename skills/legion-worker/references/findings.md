@@ -1,6 +1,6 @@
 # A finding outside your issue
 
-Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. A child's own architect opens no ask itself: it sends the finding to the architect above it, and the root's architect opens the ask.
+Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. The architect that holds a child asks a person about that child's work on the child's own issue.
 
 ## Fix it where you are, else hand it over, and ask only for a decision
 

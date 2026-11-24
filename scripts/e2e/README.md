@@ -4481,7 +4481,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 
 The live proof that a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374).
 The daemon reads such a head twice, a minute apart, and acts only when the issue's next step needs a head that merges:
-it then asks the agent of the task's last step of the type implementation before the issue's place to merge the base forward (the implementer here, and the owner where that step is its own), and moves nothing.
+it then asks the agent of the task's last step of the type implementation at or before the issue's place, else the task's last such step, to merge the base forward (the implementer here, and the owner where that step is its own), and moves nothing.
 Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.

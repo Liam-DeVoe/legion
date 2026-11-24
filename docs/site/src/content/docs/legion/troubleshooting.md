@@ -1681,9 +1681,9 @@ required contexts and the green ones, and `workflow: merge forward asked` with t
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
-forward keeps the phase: the agent of the task's last step of the type implementation before the
-issue's place (the implementer, on the default steps, or the architect where that step is its own)
-merges in the issue workspace and pushes with no handoff
+forward keeps the phase: the agent of the task's last step of the type implementation at or before
+the issue's place, else the task's last such step (the implementer, on the default steps, or the
+architect where that step is its own), merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
