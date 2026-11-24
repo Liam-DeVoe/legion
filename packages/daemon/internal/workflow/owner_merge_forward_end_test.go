@@ -53,12 +53,9 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 	return pool, engine, issueOf(t, pool, engine, root.Key)
 }
 
-// Every end of a merge forward asked of the owner that the workflow writes queues the write of the
-// owner's slot back to its own App, so no path leaves the slot on the implement App the ask gave it
-// once no other act of that App holds it there (record.OwnersMergeForward names the ends, and the
-// daemon's ActsAs reads them). A new generation of the issue is an end too, which this test does
-// not drive. A tree's linger and the rename pass's delete of a pull request record write no slot:
-// the owner's next launch writes its App. On `implementer:owner reviewer` at the reviewer's step,
+// Every end of a merge forward asked of the owner writes the owner's slot back to its own App, so
+// no path leaves the slot on the implement App the ask gave it (record.OwnersMergeForward names the
+// ends, and the daemon's ActsAs reads them). On `implementer:owner reviewer` at the reviewer's step,
 // with the ask open, each end queues one supervise slot_credential of the owner's claim: the merge
 // forward's landing, the move back into implementing that clears the ask, the close and the merge of
 // the pull request, the owner's stop of the task, the hold a failed reviewer's claim leaves, and the

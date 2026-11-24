@@ -2870,13 +2870,16 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 
 #### Rolling back below the release whose owner does a step
 
-The release that lets the owner of an issue's task do a step of its own adds one architect notice kind, `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
+The release that lets the owner of an issue's task do a step of its own adds two architect notice kinds.
+One is `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
+The other is `merge-forward-lost`: an ask or a review of a merge forward that did not reach its agent, another agent than the owner, because that agent's claim failed or retired.
+A merge-forward message gains a field, `covers`: the step of the message it stands in for where one claim holds both recipients, the ask covering the hold and the review the landed.
 It adds one supervise op too, `slot_credential`, queued at the end of each act the owner's slot held another role's App for: a step an architect ran for the owner, the owner's retro of its own implementation step, and a merge forward asked of the owner.
 Its writers are `endStep` in `workflow/steps.go`, `endOffWalk` in `workflow/run_end.go`, which queues one at the end of every retro of the owner that ends off its walk, and `mergeForwardWriteBack` in `workflow/owner_merge_forward.go`.
 It brings the owner's slot back to its own App, unless the owner already does another act of another App, whose App the slot then holds.
 Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry of the route `POST /legion/v1/steps/complete`.
-A daemon of any release before it knows neither, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`), so an `owner-step` or `slot_credential` row still queued when that image is pinned can never be decoded.
-An `owner-step` row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`), and a `slot_credential` row fails every read of its role's runs (`RoleRuns` in `record/store.go`), each admission pass of its issue among them.
+A daemon of any release before it knows none of these, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`, and each field of a merge-forward payload), so an `owner-step`, `merge-forward-lost` or `slot_credential` row, or a merge-forward row that carries `covers`, still queued when that image is pinned can never be decoded.
+An `owner-step` or `merge-forward-lost` row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`), and a `slot_credential` row fails every read of its role's runs (`RoleRuns` in `record/store.go`), each admission pass of its issue among them.
 
 **Finish or stop each task whose plan the earlier release refuses before its image is pinned.**
 This release takes five shapes of a task that the earlier release refuses when an owner gives its plan (`Supported` and `stepReasons` in that release's `plan/validate.go`).
@@ -2950,15 +2953,19 @@ A plan given or a step started since the first run shows there, and to finish or
 In a rollback past several releases, run this section's steps first, before the ways back of the older releases: the release that keys a phases row by its step, the release whose deployment defines roles, and the release whose owner's plan picks the steps, with the migrations its section runs before it (`20261117213545_plan_step_agent.up.sql`, `20261117201743_plan_roles.up.sql`).
 The stops need this release's `stop_task`, and the statement reads the plan rows that the last of those ways back drops.
 
-No migration of that earlier release deletes the `owner-step` and `slot_credential` rows, so the delete is the operator's.
+No migration of that earlier release deletes the `owner-step`, `merge-forward-lost` and `slot_credential` rows, nor a merge-forward row that carries `covers`, so the delete is the operator's.
 Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
 
 ```sql
 delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-forward-lost' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 Each deleted `owner-step` row is a step or a retro of the owner that its owner is never told of.
+Each deleted `merge-forward-lost` row is an ask or a review that did not reach its agent, which the architect is never told of.
+Each deleted merge-forward row that carries `covers` is an ask or a review its agent is never told of: the earlier release asks again on its next confirmed conflict at that head only where its record holds no ask, and the record holds this one, so the message is lost.
 Each deleted `slot_credential` row is a write the earlier release makes anyway: its refresh writes every slot for its claim's own role's App within a minute.
 
 ### Pinning a release that drops what a running pod still uses
@@ -5226,12 +5233,14 @@ The one directory minted on another owner's installation is the one a configured
 Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — such as one added to the App after the account installed it, until the account approves it — is left out of the request and said once in a warn record of the daemon's log, naming the App, the owner, the permission and the access asked and granted, rather than costing the role the whole bundle.
 
 The architect acts as another role at a step of its own plan, as the step's role, and at its retro where the task's last implementation step is its own, as that step's role.
-It acts as the implementer while a merge forward the daemon asked of it has not ended, since that merge is the implementer's act: where the task's implementer step is `implementer:owner`, the ask goes to the architect, in any phase.
-The ask ends when its merge lands, when a move into `implementing` or the issue's leave of the workflow clears it, when the pull request closes or merges, and when the issue is held or its task stopped.
+It acts as the implementer while a merge forward the daemon asked of it has not ended, since that merge is the implementer's act: where the agent of the task's implementation step is the architect (a step of the type implementation whose key is `owner`, such as `implementer:owner`), the ask goes to the architect, in any phase.
+The ask ends when its merge lands, when a move into the implementation step, a new generation of the issue (a child set back to `todo`, or an adoption into a tree) or the issue's leave of the workflow clears it, when the pull request closes or merges, and when the issue is held or its task stopped.
 Everywhere else, and always while the issue is held, the architect's slot holds its own App, the review App.
 While its slot holds the implement App for a merge forward, the daemon tells the architect no step or retro of another App: its review step and its acceptance wait until the ask ends and the slot holds their App again, and so does the landed message to its review step.
 The review a landed merge forward asks of a `reviewer:owner` reaches the architect only once its slot holds the review App, after its retro of its own implementation step ended or after the landing of a merge forward asked of it, since GitHub refuses an approval from the pull request's author.
 The end of each of these acts queues the write of the architect's own App back into its slot (`slot_credential`), which writes nothing where another act of the architect's of another App already runs.
+The linger of the issue's tree, and the delete of its pull request record by a rename collision, queue none: no slot of the architect's runs then, and its next launch writes its own App.
+One claim gets one message for each event of a merge forward: an agent asked to merge that also works the step the issue stands at gets the ask alone, which tells it that its step waits for the merge and goes on at the head the merge leaves; a reviewer that also works that step gets the review alone, which tells it to go on with its step at the new head; and the agent that pushed the merge gets no landed message.
 
 The `roles` container mounts each slot `<s>`'s own volumes under its directory of `/var/run/legion/roles`, a slot being a role or the name of an agent of the plan that no role has, such as `implementer-2`:
 `/var/run/legion/roles/<s>/launcher` (volume `launcher-<s>`, read-only:
