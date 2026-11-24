@@ -34,26 +34,33 @@ interface OfferPress {
  * a suggestion's replacement where it has one, and a warning where its send may have been
  * delivered (`note`), then the reader's presses for it - one that takes it into the field, which
  * a host that could not send it leaves out (`take`), and one that drops it. The margin draws the
- * drafts its compose kept for words of a document the same way (`MarginKeptDrafts`).
+ * drafts its compose kept for words of a document the same way (`MarginKeptDrafts`). An offer
+ * that holds its field read only gives its words the id the field names as its description
+ * (`id`), and after a key typed in that field says, after those words, what the field waits for
+ * (`typed`).
  */
 export function DraftOffer({
   body,
   drop,
+  id,
   lead,
   note,
   replacement = "",
   take,
+  typed,
 }: {
   readonly body: string;
   readonly drop: OfferPress;
+  readonly id?: string;
   readonly lead: ReactNode;
   readonly note?: string;
   readonly replacement?: string;
   readonly take?: OfferPress;
+  readonly typed?: string;
 }): ReactNode {
   return (
     <div className="space-y-2">
-      <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
+      <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} id={id} role="status">
         <p>{lead}</p>
         <blockquote
           className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
@@ -71,6 +78,7 @@ export function DraftOffer({
           </>
         )}
         {note === undefined ? null : <p className={dangerText}>{note}</p>}
+        {typed === undefined ? null : <p>{typed}</p>}
       </div>
       <div className="flex flex-wrap gap-3">
         {take === undefined ? null : (
@@ -122,13 +130,16 @@ export function handFocusOn(press: () => void, next: () => HTMLElement | null): 
  * message its host no longer lists (`gone`). Each waits with the words that say why, and with the
  * reader's presses for it: one takes it into the field, where the composer can send it, and the
  * other drops it. Either press hands the focus to the field (`field`). Nothing is saved or sent
- * meanwhile.
+ * meanwhile. The edit and the offered draft each hold the field read only while they wait, so
+ * the one that does gives its words the id the field names as its description (`heldId`), and
+ * once a key was typed in the field (`typedOver`) says after them what the field waits for.
  */
 export function KeptDraftOffers({
   changed,
   field,
   gone,
   goneTakes,
+  heldId,
   kind,
   offered,
   onDiscardChanged,
@@ -137,6 +148,7 @@ export function KeptDraftOffers({
   onTakeChanged,
   onTakeGone,
   onTakeOffered,
+  typedOver,
 }: {
   readonly changed: SentDraft | undefined;
   /** The composer's text box, which each press of an offer here hands the focus to. */
@@ -144,6 +156,9 @@ export function KeptDraftOffers({
   readonly gone: readonly GoneReplyDraft[];
   /** Where Use it here can put a draft of `gone` (`KeptDrafts.awayTakes`). */
   readonly goneTakes: KeptDrafts["awayTakes"];
+  /** The id the offer that holds the field read only gives its words, which the field names as
+   *  its description (`DraftOffer.id`): the edit, else the offered draft. */
+  readonly heldId: string;
   /** The kind the composer writes now, which an offered draft names its own beside. */
   readonly kind: ComposerKind;
   readonly offered: OfferedDraft | undefined;
@@ -158,6 +173,9 @@ export function KeptDraftOffers({
   /** Use my draft, which a compose that could not send the draft - a kind its closed issue
    *  refuses - leaves out, so the offer waits until the reader drops it. */
   readonly onTakeOffered: (() => void) | undefined;
+  /** Whether the reader typed a key in the field while an offer here held it read only, which
+   *  wrote nothing there. */
+  readonly typedOver: boolean;
 }): ReactNode {
   /** Each press below takes its offer away, and the field takes the focus it leaves
    *  (`handFocusOn`). A host that moved the focus itself, or took the composer away with Discard
@@ -167,13 +185,16 @@ export function KeptDraftOffers({
     <>
       {/* An edit written over a body the comment no longer holds: the field shows the comment as
           it reads now, and the edit waits beside it with the words that say why, until the reader
-          takes it back into the field or drops it. Nothing is saved meanwhile. */}
+          takes it back into the field or drops it. Nothing is saved meanwhile, and the field is
+          read only, which a key typed there has the edit say. */}
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
           drop={{ label: "Discard my edit", press: intoField(onDiscardChanged) }}
+          id={heldId}
           lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
           take={{ label: "Use my edit", press: intoField(onTakeChanged) }}
+          typed={typedOver ? "Use or discard your kept edit first." : undefined}
         />
       )}
       {/* A draft the margin's compose kept for other words of the document: a newer compose there
@@ -182,11 +203,17 @@ export function KeptDraftOffers({
           an ask's options, a suggestion's replacement - shows only under that kind. Only the
           reader's own press puts it in this field, and nothing is sent meanwhile. A draft whose
           send the reader stopped may have been delivered there, and taken here it goes as a new
-          message, so the offer says so before that press, as the stopped send's note did. */}
+          message, so the offer says so before that press, as the stopped send's note did. The
+          field is read only meanwhile, so a key typed there has the offer say what the field
+          waits for, by the presses it draws: a compose its closed issue refuses draws Use my draft
+          only once the issue reopens. Only a margin compose offers a draft, and it edits no
+          comment, so this offer and the edit never wait together; were they to, the edit holds
+          the field's description. */}
       {offered === undefined ? null : (
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: intoField(onDropOffered) }}
+          id={changed === undefined ? heldId : undefined}
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}
@@ -194,6 +221,13 @@ export function KeptDraftOffers({
             onTakeOffered === undefined
               ? undefined
               : { label: "Use my draft", press: intoField(onTakeOffered) }
+          }
+          typed={
+            !typedOver || changed !== undefined
+              ? undefined
+              : onTakeOffered === undefined
+                ? "Reopen the issue to use your kept draft, or discard it."
+                : "Use or discard your kept draft first."
           }
         />
       )}

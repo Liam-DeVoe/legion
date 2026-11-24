@@ -1751,6 +1751,44 @@ test("Escape over a kept draft asks before it closes", async () => {
   }
 });
 
+// The box beside a kept draft stays read only until the reader uses the draft or discards it, and
+// the caret is in it, so a key typed there writes nothing. The box's description names the offer,
+// so a screen reader says why the box takes no text, and a key typed there shows the line that
+// says so after the offer's own words.
+test("a key typed in the box a kept draft holds read only says why beside the offer, and the box's description names the offer", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+  const why = "Use or discard your kept draft first.";
+  const offerText = `${offerLine("words 1")} Half a thought`;
+
+  try {
+    const sheet = await commentOverAKeptDraft(user);
+    const box = within(sheet).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    const offer = within(sheet).getByText(offerLine("words 1")).parentElement;
+    if (offer === null) throw new Error("the offer's line stands in nothing");
+    expect({
+      described: box.getAttribute("aria-describedby") === offer.id,
+      readOnly: box.getAttribute("aria-readonly"),
+      why: within(sheet).queryByText(why) !== null,
+    }).toEqual({ described: true, readOnly: "true", why: false });
+    expect(box).toHaveAccessibleDescription(offerText);
+
+    await user.keyboard("x");
+    expect({
+      box: box.value,
+      focused: document.activeElement === box,
+      readOnly: box.readOnly,
+      why: within(offer).queryByText(why) !== null,
+    }).toEqual({ box: "", focused: true, readOnly: true, why: true });
+    expect(box).toHaveAccessibleDescription(`${offerText} ${why}`);
+  } finally {
+    view.unmount();
+    restoreViewport();
+  }
+});
+
 // Discard my draft leaves the box empty with nothing offered, and Escape in it then ends the
 // comment: the sheet closes with the caret back in the editor at the commented words.
 test("after Discard my draft, Escape gives the caret back to the document", async () => {

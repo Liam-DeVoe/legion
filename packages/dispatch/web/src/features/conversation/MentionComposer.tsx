@@ -482,16 +482,25 @@ const MOVING_KEYS: Readonly<Record<string, true>> = {
   Tab: true,
 };
 
+/** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
+ *  Backspace or Delete. A field an offer holds read only takes none of them, and says why
+ *  (`KeptDraftOffers`' `typedOver`). */
+function writesText(event: KeyboardEvent): boolean {
+  const { key } = event;
+  if (event.ctrlKey || event.metaKey) return false;
+  return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";
+}
+
 /** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the
  *  browser too, as one the composer acts on or one that would type: Enter, with a modifier or
- *  none; Escape; Ctrl/Cmd+K; and, held with no Ctrl or Cmd, a character, Backspace or Delete.
- *  Every other Ctrl/Cmd chord and every function key stay the browser's, so find, copy, select
- *  all, reload, print and zoom still work while the send is out. */
+ *  none; Escape; Ctrl/Cmd+K; and every key that writes text (`writesText`). Every other Ctrl/Cmd
+ *  chord and every function key stay the browser's, so find, copy, select all, reload, print and
+ *  zoom still work while the send is out. */
 function heldFromBrowser(event: KeyboardEvent): boolean {
   const { key } = event;
   if (key === "Enter" || key === "Escape") return true;
   if (event.ctrlKey || event.metaKey) return key.toLowerCase() === "k";
-  return key.length === 1 || key === "Backspace" || key === "Delete";
+  return writesText(event);
 }
 
 export function MentionComposer({
@@ -871,6 +880,15 @@ export function MentionComposer({
     stoppedAside,
     unsent,
   });
+  // An edit or a draft waiting beside the field holds it read only (`KeptDraftOffers`) until the
+  // reader takes it in or drops it, and the field names that offer as its description
+  // (`heldId`), so a screen reader says why it takes no text. A key typed there writes nothing, so
+  // from that key on the offer says, after its own words, what the field waits for, until nothing
+  // waits there.
+  const heldByOffer = changed !== undefined || offered !== undefined;
+  const heldId = useId();
+  const [typedOver, setTypedOver] = useState(false);
+  if (typedOver && !heldByOffer) setTypedOver(false);
   // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
   // beside the field: nothing of this composer is on screen. A margin compose its closed issue
   // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
@@ -1381,14 +1399,22 @@ export function MentionComposer({
           Replace with
           <textarea
             {...heldField(sending)}
+            aria-describedby={offered === undefined ? undefined : heldId}
             aria-label="Replacement"
+            aria-readonly={offered !== undefined || undefined}
             className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
             onChange={(event) => {
               setReplacement(event.target.value);
               setConfirmingDiscard(false);
             }}
-            onKeyDown={submitOnModifiedEnter}
-            // Read-only while a send holds it, and while a draft is offered beside the field.
+            onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+              // A key typed while the offer holds the field read only writes nothing: the offer
+              // says why (`typedOver`).
+              if (offered !== undefined && writesText(event)) setTypedOver(true);
+              submitOnModifiedEnter(event);
+            }}
+            // Read-only while a send holds it, and while a draft is offered beside the field,
+            // which it names as its description then (`heldId`).
             readOnly={sending || offered !== undefined}
             ref={replacementTextarea}
             value={replacement}
@@ -1400,7 +1426,9 @@ export function MentionComposer({
         {/* `data-reply-box`: the box a page's reply key hands the caret (the Inbox's `r`). */}
         <textarea
           {...heldField(sending)}
+          aria-describedby={heldByOffer ? heldId : undefined}
           aria-label={bodyLabel}
+          aria-readonly={heldByOffer || undefined}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface}`}
           data-reply-box=""
           onChange={(event) => onBodyChange(event.target.value, event.target.selectionStart)}
@@ -1414,6 +1442,9 @@ export function MentionComposer({
               : undefined
           }
           onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+            // A key typed while an offer holds the field read only writes nothing: the offer says
+            // why (`typedOver`).
+            if (heldByOffer && writesText(event)) setTypedOver(true);
             // `$mod+K` opens the reference picker: Ctrl+K, or Cmd+K on a Mac, where a text
             // field keeps Control+K, which deletes to the end of the line (`modHeld`).
             if (
@@ -1429,8 +1460,9 @@ export function MentionComposer({
             submitOnModifiedEnter(event, { disabled: upload.pending > 0 });
           }}
           onPaste={homes.paste}
-          // Read-only while a send holds it, and while an edit or a draft waits beside the field.
-          readOnly={sending || changed !== undefined || offered !== undefined}
+          // Read-only while a send holds it, and while an edit or a draft waits beside the field,
+          // which it names as its description then (`heldId`).
+          readOnly={sending || heldByOffer}
           ref={bodyFieldRef}
           rows={1}
           value={body}
@@ -1444,6 +1476,7 @@ export function MentionComposer({
         field={textarea}
         gone={goneAway}
         goneTakes={awayTakes}
+        heldId={heldId}
         kind={kind}
         offered={offered}
         onDiscardChanged={discard}
@@ -1452,6 +1485,7 @@ export function MentionComposer({
         onTakeChanged={takeChanged}
         onTakeGone={takeAway}
         onTakeOffered={refusedKind ? undefined : takeOffered}
+        typedOver={typedOver}
       />
       {activeMentions.length === 0 ? null : (
         <ul

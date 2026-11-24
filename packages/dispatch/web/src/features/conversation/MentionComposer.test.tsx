@@ -512,9 +512,13 @@ const KEPT_FOR_OTHER_WORDS = "Half a thought";
 const MY_EDIT = "Original comment, as I edited it";
 const KEPT_REPLY = "Reply to the status";
 
-/** A margin compose at the words "brown", whose name keeps a draft written at the words "quick" of
- *  the same document: it offers that draft beside its empty field. */
-async function offerKeptForOtherWords(): Promise<OfferRow> {
+/** A margin compose of `kind` at the words "brown", whose name keeps a draft written at the words
+ *  "quick" of the same document: it offers that draft beside its empty field. On an issue that is
+ *  `closed`, a suggestion's compose offers it with Discard my draft alone. */
+async function offerKeptForOtherWords(
+  kind: "comment" | "suggestion",
+  closed = false
+): Promise<OfferRow> {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -527,6 +531,8 @@ async function offerKeptForOtherWords(): Promise<OfferRow> {
   });
   const { view } = drawOverStore(queryClient, {
     anchor: { artifact: "artifact-1", mark_id: "mark-2", quote: "brown" },
+    closed,
+    kind,
     mutationKey: sendKey,
     onClose: () => {},
     onSent: () => {},
@@ -535,7 +541,7 @@ async function offerKeptForOtherWords(): Promise<OfferRow> {
   await screen.findByText(/for other words: “quick”/);
   return {
     end: () => view.unmount(),
-    field: screen.getByLabelText<HTMLTextAreaElement>("Comment"),
+    field: screen.getByLabelText<HTMLTextAreaElement>(kind === "comment" ? "Comment" : "Reason"),
   };
 }
 
@@ -604,13 +610,13 @@ async function offerGoneReply(): Promise<OfferRow> {
 // editor drawn, as this one does, has its field take the focus the same way.
 for (const row of [
   {
-    draw: offerKeptForOtherWords,
+    draw: () => offerKeptForOtherWords("comment"),
     offer: "a draft kept for other words",
     press: "Discard my draft",
     text: "",
   },
   {
-    draw: offerKeptForOtherWords,
+    draw: () => offerKeptForOtherWords("comment"),
     offer: "a draft kept for other words",
     press: "Use my draft",
     text: KEPT_FOR_OTHER_WORDS,
@@ -662,6 +668,60 @@ for (const row of [
       });
     } finally {
       focuses.mockRestore();
+      end();
+    }
+  });
+}
+
+// An edit its comment changed under holds the field beside it read only until the reader uses it
+// or drops it, as a draft kept for other words holds a suggestion's Replace with as well as its
+// Reason. A key typed there writes nothing: the field names the offer as its description, so a
+// screen reader says why it takes no text, and the key has the offer say what the field waits
+// for, after the offer's own words, by the presses it draws: on a closed issue a suggestion's
+// compose draws Discard my draft alone, and Use my draft only once the issue reopens.
+for (const row of [
+  {
+    draw: offerChangedEdit,
+    field: "Edit comment",
+    offer: `This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here: ${MY_EDIT}`,
+    text: "Changed by another writer",
+    why: "Use or discard your kept edit first.",
+  },
+  {
+    draw: () => offerKeptForOtherWords("suggestion"),
+    field: "Replacement",
+    offer: `You wrote this draft for other words: “quick”. It is kept here: ${KEPT_FOR_OTHER_WORDS}`,
+    text: "",
+    why: "Use or discard your kept draft first.",
+  },
+  {
+    draw: () => offerKeptForOtherWords("suggestion", true),
+    field: "Reason",
+    offer: `You wrote this draft for other words: “quick”. It is kept here: ${KEPT_FOR_OTHER_WORDS}`,
+    text: "",
+    why: "Reopen the issue to use your kept draft, or discard it.",
+  },
+]) {
+  test(`a key typed in ${row.field} beside the offer that holds it read only says why, and the field's description names the offer`, async () => {
+    const user = userEvent.setup();
+    const { end } = await row.draw(user);
+
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>(row.field);
+      expect({
+        readOnly: field.getAttribute("aria-readonly"),
+        why: screen.queryByText(row.why) !== null,
+      }).toEqual({ readOnly: "true", why: false });
+      expect(field).toHaveAccessibleDescription(row.offer);
+
+      await user.click(field);
+      await user.keyboard("x");
+      expect({ text: field.value, why: screen.queryByText(row.why) !== null }).toEqual({
+        text: row.text,
+        why: true,
+      });
+      expect(field).toHaveAccessibleDescription(`${row.offer} ${row.why}`);
+    } finally {
       end();
     }
   });
