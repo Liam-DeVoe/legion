@@ -714,10 +714,14 @@ func cell(kind, base, input string, right placeRight) string {
 // was handed (the order of its calls, how many calls handed it one key, which calls it refused) or that
 // reads its caller: the domain test hands each base's key in an order and a number of its own, so such
 // a judgment can tell its calls from a sweep's. Each sweep holds the answer of its own call to the
-// definition (sweepDefined), so such a judgment fails there, by the input's name. What stays is what
-// the definition and the judgment share: one reading of the approved words, held to the rows that
-// quote them (TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec), and the sweep's code, which could
-// skip that hold and shows it only there.
+// definition (sweepDefined), so such a judgment fails there, by the input's name, wherever it answers a
+// sweep otherwise than the definition does. What stays is what the definition and the judgment share:
+// one reading of the approved words, held to the rows that quote them
+// (TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec); the sweep's code, which could skip that hold and
+// shows it only there; and a judgment whose state makes it answer a sweep otherwise only where no other
+// test called it first, such as one that is blind until any call of it is refused: in a run of the
+// whole package the domain test's refusals can come first, and where they do it answers each call of
+// that run as the definition does, so the run passes it; a run of the sweeps alone fails it.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()
