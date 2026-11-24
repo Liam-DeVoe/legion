@@ -169,6 +169,12 @@ func unguardedInPackage(root string, writer bool, paths []string) ([]string, err
 		}
 		name := file.Name.Name
 		support = support || strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test")
+		if writer {
+			file.Decls = slices.DeleteFunc(file.Decls, func(declaration ast.Decl) bool {
+				function, ok := declaration.(*ast.FuncDecl)
+				return ok && function.Recv == nil && function.Name.Name == "Write"
+			})
+		}
 	}
 	var offences []string
 	for _, path := range paths {
@@ -180,7 +186,7 @@ func unguardedInPackage(root string, writer bool, paths []string) ([]string, err
 		if err != nil {
 			return nil, err
 		}
-		for _, line := range executableWrites(files, parsed[path], writer && !test) {
+		for _, line := range executableWrites(files, parsed[path]) {
 			offences = append(offences, filepath.ToSlash(relative)+":"+strconv.Itoa(line))
 		}
 	}
@@ -209,9 +215,8 @@ var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": t
 
 // executableWrites are the lines of file that open a file for writing by package os, by whatever
 // name the file imports it, and give it an execute bit or a mode that is no constant (Unguarded
-// says how), with each line that uses one of osWriters as a value and that dot-imports os. writer
-// leaves out the file's function Write, programfile.Write itself.
-func executableWrites(files *token.FileSet, file *ast.File, writer bool) []int {
+// says how), with each line that uses one of osWriters as a value and that dot-imports os.
+func executableWrites(files *token.FileSet, file *ast.File) []int {
 	osName, lines := "", map[int]bool{}
 	for _, spec := range file.Imports {
 		if path, err := strconv.Unquote(spec.Path.Value); err != nil || path != "os" {
@@ -236,26 +241,17 @@ func executableWrites(files *token.FileSet, file *ast.File, writer bool) []int {
 			return ""
 		}
 		called := map[*ast.SelectorExpr]bool{}
-		var read []ast.Decl
 		for _, declaration := range file.Decls {
-			if function, ok := declaration.(*ast.FuncDecl); ok && writer && function.Recv == nil && function.Name.Name == "Write" {
-				continue
-			}
-			read = append(read, declaration)
-		}
-		for _, declaration := range read {
 			for _, open := range executableOpens(declaration, osFunc, called) {
 				lines[files.Position(open.Pos()).Line] = true
 			}
 		}
-		for _, declaration := range read {
-			ast.Inspect(declaration, func(node ast.Node) bool {
-				if selector, ok := node.(*ast.SelectorExpr); ok && !called[selector] && osWriters[osFunc(selector)] {
-					lines[files.Position(selector.Pos()).Line] = true
-				}
-				return true
-			})
-		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if selector, ok := node.(*ast.SelectorExpr); ok && !called[selector] && osWriters[osFunc(selector)] {
+				lines[files.Position(selector.Pos()).Line] = true
+			}
+			return true
+		})
 	}
 	return slices.Sorted(maps.Keys(lines))
 }

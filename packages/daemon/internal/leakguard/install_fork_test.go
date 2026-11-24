@@ -23,7 +23,7 @@ func TestAServedCheckInstalledWhileTheProcessForksRuns(t *testing.T) {
 	body := served(t, wholeCheck(t, answersItsHelp))
 	parent := t.TempDir()
 	ctx := bound(t)
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	const installs = 300
 	busy := 0
 	var first error
@@ -58,7 +58,7 @@ func TestAPrivateCopyMadeWhileTheProcessForksRuns(t *testing.T) {
 	}
 	held.files[checkName] = []byte("#!/bin/sh\nexit 0\n")
 	base := t.TempDir()
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	const copies = 400
 	busy := 0
 	var first error

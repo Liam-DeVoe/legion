@@ -32,7 +32,7 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	return programfile.Write(name, os.O_TRUNC, perm, bytes.NewReader(data))
 }
 
-// ForkBeside starts n goroutines that each start true and start it again as soon as it exits,
+// ForkBeside starts eight goroutines that each start true and start it again as soon as it exits,
 // until the test ends: the forks that the code a test calls meets in a process whose other
 // goroutines start commands, as a daemon's do and as tests running beside each other do. A test
 // that writes a file and then runs it beside them meets ETXTBSY whenever a child forked inside the
@@ -43,7 +43,7 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 // under GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not
 // is a broken runner, never a green job with the proof gone from it; any other answer, such as a
 // TMPDIR mounted noexec, fails the test, naming the answer.
-func ForkBeside(t testing.TB, n int) {
+func ForkBeside(t testing.TB) {
 	t.Helper()
 	forker, err := exec.LookPath("true")
 	if err != nil {
@@ -57,7 +57,7 @@ func ForkBeside(t testing.TB, n int) {
 	}
 	var stop atomic.Bool
 	var forks sync.WaitGroup
-	for range n {
+	for range 8 {
 		forks.Go(func() {
 			for !stop.Load() {
 				_ = exec.Command(forker).Run()
@@ -74,15 +74,17 @@ func ForkBeside(t testing.TB, n int) {
 // held open for writing, where ci says GITHUB_ACTIONS is set: run the test (both empty), skip it,
 // or fail it, each saying what the run answered.
 func busyRunVerdict(answer error, ci bool) (skip, fail string) {
-	const blind = "so no run of this test can meet the fault it looks for"
+	const (
+		ran   = "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, "
+		blind = "so no run of this test can meet the fault it looks for"
+	)
 	switch {
 	case errors.Is(answer, syscall.ETXTBSY):
 		return "", ""
 	case answer == nil && ci:
-		return "", "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, " + blind +
-			"; under GITHUB_ACTIONS that is a broken runner, not a test to skip"
+		return "", ran + blind + "; under GITHUB_ACTIONS that is a broken runner, not a test to skip"
 	case answer == nil:
-		return "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does, " + blind, ""
+		return ran + "as gVisor does, " + blind, ""
 	default:
 		return "", "a run of a program this process held open for writing answered " + answer.Error() +
 			", neither ETXTBSY nor a run, " + blind
