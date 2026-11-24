@@ -4870,9 +4870,10 @@ describe("behaviour: a replay's reads of skill files", () => {
   // Catches: a written case run with no copy of its checkout, so its agent is judged on its first
   // look at the work; a git command answered from no history; a session case answered from a
   // checkout it does not have; a checkout made again for each case or stage of one commit (a large
-  // repository's checkout takes minutes and gigabytes); or a checkout fetched with no blobs, whose
-  // git command of an older commit then fetches one from the remote as it answers.
-  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it with the blobs of its commits, and record the round; a session case's runs are judged on that reply", async () => {
+  // repository's checkout takes minutes and gigabytes); a checkout fetched with no blobs, whose
+  // git command of an older commit then fetches one from the remote as it answers; or a checkout
+  // whose `git remote -v` shows the runner's `--repos` directory (the second security review).
+  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it with the blobs of its commits, its origin the repository's GitHub URL, and record the round; a session case's runs are judged on that reply", async () => {
     const base = scenario("checkout-rounds", LOSS_SKILL(), [{ id: "c04" }]);
     // The made-up repository acme/proj, two commits, as `--repos` gives it to the fetch.
     const guide = "# Guide\n\nRun the app.\n";
@@ -4984,6 +4985,16 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect({ code: shown.exitCode, text: shown.stdout.toString() }).toEqual({
       code: 0,
       text: first,
+    });
+    // Its origin is the repository's GitHub URL, as a session's checkout names it, not the
+    // `--repos` directory on the runner that its fetch read.
+    const remote = Bun.spawnSync(["git", "remote", "-v"], {
+      cwd: path.join(checkouts, commit),
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: base.dir },
+    });
+    expect({ code: remote.exitCode, text: remote.stdout.toString() }).toEqual({
+      code: 0,
+      text: "origin\thttps://github.com/acme/proj.git (fetch)\norigin\thttps://github.com/acme/proj.git (push)\n",
     });
   }, 120_000);
 

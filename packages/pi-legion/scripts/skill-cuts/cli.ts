@@ -3110,6 +3110,12 @@ const CHECKOUT_DEPTH = 50;
 /** How long a run waits before it looks again at a shared checkout another live run makes. */
 const CHECKOUT_WAIT_MS = 2_000;
 
+/** The git URL of the GitHub repository `repo` (`<owner>/<name>`): a written case's fetch's
+ *  remote, unless `--repos` names another, and the `origin` of every shared checkout. */
+function githubRemote(repo: string): string {
+  return `https://github.com/${repo}.git`;
+}
+
 /** Runs `git args` with no prompt for a password: its exit code and its error text. */
 async function runGit(args: readonly string[]): Promise<{ code: number; stderr: string }> {
   const child = Bun.spawn(["git", ...args], {
@@ -3158,12 +3164,15 @@ function bytesUnder(dir: string): number {
  * run that shares the cache: `git init`, `git remote add origin <r.gitRemote(repo)>`, `git fetch
  * --depth=CHECKOUT_DEPTH origin <commit>`, which brings the blobs of each of those commits (an
  * answer runs with no network, checkout.ts's sandbox, so it could fetch no blob the checkout
- * lacked), and `git checkout --detach <commit>`; where one of them fails, the repository at the
- * commit read into the cache (context.ts's `repositoryTree`: GitHub's tarball through `gh`, or
- * `--repos`' directory) copied there, whose git commands are not answered. Then every symbolic
- * link that resolves outside it, or nowhere, is removed (checkout.ts's `removeOutsideLinks`);
- * where `jj` (the case's session ran jj), the git checkout is made a colocated jj repository
- * (checkout.ts's `colocateJj`), or the marker records why not; and its marker
+ * lacked), `git checkout --detach <commit>`, and `git remote set-url origin <githubRemote(repo)>`,
+ * so `git remote -v` and git's errors name the remote a session's checkout names, not `--repos`'
+ * directory on the runner (no fetch follows: the answers' git has no transport); where one of
+ * them fails, the repository at the commit read into the cache (context.ts's `repositoryTree`:
+ * GitHub's tarball through `gh`, or `--repos`' directory) copied there, whose git commands are
+ * not answered. Then every symbolic link that resolves outside it, or nowhere, is removed
+ * (checkout.ts's `removeOutsideLinks`); where `jj` (the case's session ran jj), the git checkout
+ * is made a colocated jj repository (checkout.ts's `colocateJj`), or the marker records why not;
+ * and its marker
  * (`<commit>.ready.json`, CheckoutMarker) is written last, so a half-made checkout is never used.
  * A git checkout fetched before with no blobs (its marker records none) is made again. A git
  * checkout made before a case whose session ran jj asked for it is made a colocated jj repository
@@ -3271,6 +3280,7 @@ async function makeSharedCheckout(
         ["remote", "add", "origin", r.gitRemote(repo)],
         ["fetch", "--quiet", `--depth=${CHECKOUT_DEPTH}`, "origin", commit],
         ["checkout", "--quiet", "--detach", commit],
+        ["remote", "set-url", "origin", githubRemote(repo)],
       ]) {
         const ran = await runGit(["-C", dir, ...step]);
         if (ran.code !== 0) {
@@ -4986,9 +4996,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     judge: loggedGateway(gateway, log, "judge"),
     source,
     gitRemote: (repo) =>
-      values.repos === undefined
-        ? `https://github.com/${repo}.git`
-        : path.join(values.repos, `${repo}.git`),
+      values.repos === undefined ? githubRemote(repo) : path.join(values.repos, `${repo}.git`),
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
       const saved = savedCapture(capturePaths(outDir, c.id, arm.name), arm);

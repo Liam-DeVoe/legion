@@ -356,9 +356,11 @@ answers from one shared checkout, `<cache-dir>/checkouts/<owner>/<name>/<commit>
 made and never removed by a stage (cli.ts's `sharedCheckout`). It is made once: `git init`, `git
 remote add origin https://github.com/<repo>.git` (through the pod's git; `<repos>/<owner>/<name>.git`
 with `--repos`), `git fetch --depth=50 origin <commit>`, which brings the blobs of each of those 50
-commits (an answer runs with no network, below, so it could fetch no blob the checkout lacked), and
+commits (an answer runs with no network, below, so it could fetch no blob the checkout lacked),
 `git checkout --detach <commit>` (a whole clone of a large repository's history does not finish in
-a stage's time: on a repository of 115,950 files the checkout took 547 s and 2.7 GB); then every
+a stage's time: on a repository of 115,950 files the checkout took 547 s and 2.7 GB), and `git
+remote set-url origin https://github.com/<repo>.git`, so `git remote -v` and git's errors name the
+remote a session's checkout names, not `--repos`' directory on the runner; then every
 symbolic link in it that resolves outside it or not at all is removed (`checkout.ts`'s
 `removeOutsideLinks`; a link that resolves inside stays); where the case's context session ran jj,
 the git checkout is then made a colocated jj repository (`checkout.ts`'s `colocateJj`: `jj git init
@@ -411,7 +413,10 @@ checkout does not keep, so every entry is taken as changed at one time, by name,
 alone, as Oh My Pi shows an entry with no age; a listing that would show `.git` or `.jj`, or a
 ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
 forms (`glob`'s paths in path order, since a checkout keeps no times of change; `.git` and `.jj`
-left out of both). A `grep` path may be a list joined by `;` (outside braces): its parts that
+left out of both); a `grep` is worked out in a worker thread, never the runner's own, since its
+JavaScript regular expression may backtrack where Oh My Pi's Rust one does not (`(a+)+b` over a
+long line), and past 30 s the worker is ended and the call is not answered. A `grep` path may be
+a list joined by `;` (outside braces): its parts that
 start with `!` and name no path of the checkout are exclusions (one with no `/`, or that starts
 with `**`, matches at any depth; another is anchored where it resolves), and the rest are
 searched, each on its own in their order, or as the one directory that holds the others, a part
@@ -453,14 +458,30 @@ checkout: with no link out of it left, `cat` of a link, `grep -R`, `rg --follow`
 `grep` or `glob` whose target resolves outside the copy is not answered, nor is a `bash` command a
 word of which may lead outside it: a word whose expansion the runner cannot place inside the
 checkout (it follows a variable the command assigned, `$PWD`, `$(pwd)`, `$(git rev-parse
---show-toplevel)` and, in a colocated copy, `$(jj root)`; not one assigned only in a branch of
-`||` or `&&`, or from another substitution), a brace expansion or a `~` in a word's unquoted text,
-a word naming `.git`, an absolute path off the checkout's root, a relative one that leaves the
-root from any directory the shell may be in there, an option's attached path that does, or a path
-that leaves the copy as the kernel walks it there, through a link that stays inside followed by
-`..` (`l/../x` through a link `l` to the root: each part's links are followed, one part at a
-time, before the `..` after it); nor a `cd` that names no directory, which goes to `$HOME`; nor
-one that expands `$HOME` or `$PATH`, whose value would be the runner's. A quoted word is a literal
+--show-toplevel)` where no directory between the working directory and the root holds a `HEAD`
+(git dies at a directory the checkout lays out as a bare repository, and prints nothing) and, in a
+colocated copy, `$(jj root)`; not one assigned only in a branch of `||` or `&&`, or from another
+substitution), a word naming `.git`, an absolute path off the checkout's root (one under `/proc`
+among them), a relative one that leaves the root from any directory the shell may be in there, an
+option's value that does (after a long option's `=`, or any rest of a short one's word after one of
+its letters, so `grep -f..` and `git ls-files -X..` too: an option that reads one file, as grep's
+`-f` and `--exclude-from`, rg's `-f` and `--ignore-file`, git's `grep -f`, `ls-files -X` and `blame
+--contents`, has its value read as a path), or a path that leaves the copy as the kernel walks it
+there, through a link that stays inside followed by `..` (`l/../x` through a link `l` to the root:
+each part's links are followed, one part at a time, before the `..` after it); nor, of a word whose
+unquoted text holds a glob character (`*`, `?`, `[`), a `cd` to it, one that bash would make into a
+word starting with `-` (the copy is fixed, so the runner matches its first part against the names
+of the directory the shell is in there, `dotglob` and `nullglob` off: `wc *` or `cat *` beside a
+file named `--files0-from=.list` or `-n`; `wc opts/*` stays answered), or a path whose glob may match
+`.` or `..` (`.*`, `.?`; `.*` matches `..` before bash 5.2) or comes before a `..` (`a/l*/../x`:
+the kernel walks the `..` from what the glob matches, a link among them); nor a `cd` that names no
+directory, which goes to `$HOME`; nor one that expands `$HOME` or `$PATH`, whose value would be the
+runner's, or holds, in a word of any command (`echo`'s among them), an unquoted `~` at its start
+or after its `=` or a `:`, where bash puts a home directory of the runner's (`~legion`, `~root`);
+nor a `jj` command whose repository may be a `.jj` the checkout tracks below its root (one between
+the directory jj starts from, its `-R`'s or the working directory, and the root: in the sandbox jj
+stops there at its configuration, which it cannot move to the read-only home, and such a store may
+name a git repository outside the copy). A quoted word is a literal
 (a single-quoted one, or a double-quoted one whose every `$` is escaped and that holds no
 backtick), whatever `$`, `?`, `*`, braces or `~` it holds. A `cd` to a literal directory the
 checkout holds, inside its root, succeeds, so where it surely runs (no `&&` or `||` before it in
@@ -473,7 +494,9 @@ answered `bash` command, and each jj command of a checkout's colocation, runs in
 (`checkout.ts`'s `runSandboxed`): new user, mount, network, process and host-name namespaces
 (`unshare -rmnpfu --mount-proc`); only the checkout copy of the machine's disk, read-only, at
 `/mnt/checkout`; an empty, read-only file system over `/run`, `/var/run`, `/home`, `/root`,
-`/legion`, `/tmp`, `/var/tmp`, `/dev/shm`, the operator's configuration, the runner's home, and
+`/legion`, `/tmp`, `/var/tmp`, `/dev/shm`, the operator's configuration, `/opt` (the pod's
+installed tools, which no read-only program needs, with lock files any user may write; the
+runner's jj is bound at `/mnt/jj` first), the runner's home, and
 each directory that a variable of the runner's environment ending in `_FILE`, `_DIR` or `_HOME`
 names (the model gateway's key, the Dispatch token, Envoy's and gh's configuration, the secrets
 broker's keys and the store's address among them; a directory the sandbox's user cannot enter, as
@@ -484,20 +507,33 @@ nothing it runs can unmount what hides a directory; an environment of only what 
 `GIT_OPTIONAL_LOCKS=0`, git's `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
 `safe.bareRepository=explicit`, `protocol.allow=never` and `core.pager=cat` through
 `GIT_CONFIG_COUNT`, and for jj a configuration that names no external tool: no pager, its default
-diff formatter, no signature verified, no file-system monitor); a time limit, past which every
-process it started is ended, and an output cap, past which it is ended and its output not read. A
-command whose sandbox cannot be made is not answered. A test runs, through the path every answered
-command runs through, `cat` of a key file, `ls` of the runner's home, `env`, and `git status` in a
-tracked directory laid out as a bare repository whose `config` sets `core.fsmonitor`, as though the
-rule had let each through: the key is in no answer, the home lists empty, `env` shows no
-credential, no fsmonitor runs, the copy is read-only and there is no network; and `curl` is
-refused and never run.
+diff formatter, no signature shown by its templates, no file-system monitor, `signing.backend =
+"none"` and each signing backend's program (`signing.backends.gpg.program`, `.gpgsm.program`,
+`.ssh.program`) a path the sandbox does not hold, so a `-T` template that verifies a signature runs
+no gpg or ssh-keygen); a time limit, past which every process it started is ended, and an output
+cap, past which it is ended and its output not read. A command whose sandbox cannot be made is not
+answered, nor one that runs a program (each but bash's builtins) on no directory of the sandbox's
+PATH (a pod with no `rg`): bash's `command not found` is no answer the session saw. The sandbox's
+fresh `/proc` still lists in `/proc/self/mountinfo` the mount points of the pod it is made from
+(the credential mounts under `/run` among them, each hidden); no answered call reads it, since a
+path under `/proc` is off the checkout's root. The programs the sandbox runs are the machine's own
+(on this pod GNU coreutils 9.7, GNU grep 3.11, GNU findutils 4.10 and GNU sed 4.9), where Oh My
+Pi's bash tool may run built-in utilities of its own (the Oh My Pi shell on this pod has `cat`,
+`head`, `ls`, `wc`, `grep`, `sed` and `find` as shell builtins, uutils-like: `cat 0.8.0`, `grep
+(pi-uu-grep) 0.2.0`, `sed 0.1.1`), so an answer of `ls` and the like (its layout, an error's
+wording) may differ from what the session saw. A test runs, through the path every answered
+command runs through, `cat` of a key file, `ls` of the runner's home and of `/opt`, `env`, and `git
+status` in a tracked directory laid out as a bare repository whose `config` sets `core.fsmonitor`,
+as though the rule had let each through: the key is in no answer, the home and `/opt` list empty,
+`env` shows no credential, no fsmonitor runs, the copy is read-only and there is no network; and
+`curl` is refused and never run.
 
 A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
 path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj
-command where its colocation failed, a command whose sandbox cannot be made, an output whose
-notice would name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may
-rewrite), a `find` or `ls` tool, a run past its time) gets no
+command where its colocation failed, a command whose sandbox cannot be made or one of whose
+programs the sandbox lacks, an output whose notice would name an artifact (past 50 KB, a line past
+768 bytes, or one the minimizer may rewrite), a `find` or `ls` tool, a run past its time, a `grep`
+past 30 s) gets no
 verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
 why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
 an arm that cannot finish for such runs and those that read past round 5 drops its case as
@@ -521,7 +557,8 @@ Oh My Pi's file finder is `glob`; `find` and `ls` are declared by no capture), o
 whose commands, joined by pipes, `&&`, `||`, `;` or line ends, in a subshell `( … )`, a group
 `{ …; }` or a command substitution (`$(…)`, or a backtick with no `\` in it; each counted by its
 inner commands), are each `cd` naming a directory, `cat`, `head`, `tail`, `ls`, `find` (without
-`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf` or `-fls`),
+`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls` or
+`-files0-from`, which reads its starting points from a file),
 `grep`, `rg`, `wc`, `sed -n`, `nl`, `stat`, `file`, `tree`, `pwd`, `true`, `echo`, `printf`, `env`
 with no command (`-0`, `-i`, `-u NAME`, then assignments), `unset` (but of `PATH`, `HOME`, `PWD`,
 `GIT_OPTIONAL_LOCKS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`,
@@ -540,9 +577,16 @@ spellings, no option may run a program, write a file or read one no word names: 
 grep -O<cmd>` runs it), `--open-files-in-pager`, `--ext-diff`, `--no-index` and `--show-signature`,
 and a format's `%G` (both run gpg); jj's `--tool`, `--config`, `--config-toml` and
 `--config-file`; rg's `--pre`, `--pre-glob`, `-z` (`--search-zip`) and `--hostname-bin`; tree's
-`-o` and `-R`; and file's `-C` (`--compile`), `-m` (`--magic-file`), `-f` (`--files-from`), `-p`
-(`--preserve-date`), `-z`, `-Z` and `--uncompress`. A sed script (its `-e` scripts, else its first
-operand) is read command by command, as GNU sed reads it: an `e`, `r`, `R`, `w` or `W` command, or
+`-o`, `-R`, `--fromfile` and `--fromtabfile` (listings read from a file); wc's `--files0-from`
+(`--files0`, `--f`: a list of files to count, whose paths no word names); and file's `-C`
+(`--compile`), `-m` (`--magic-file`), `-f` (`--files-from`), `-p`
+(`--preserve-date`), `-z`, `-Z` and `--uncompress`. The options are those of the tools the sandbox
+runs, each checked against its own `--help` (GNU coreutils 9.7, GNU grep 3.11, GNU findutils 4.10,
+GNU sed 4.9, git 2.47): no other option of `cat`, `head`, `tail`, `ls`, `wc`, `nl` or `stat` reads
+a path no word names (`echo`, `printf`, `true` and `pwd` are bash's builtins), and none of the
+read-only git subcommands takes `--pathspec-from-file`. A sed script (its `-e` scripts, else its
+first operand) is read command by command, as GNU sed reads it: an `e`, `r`, `R`, `w` or `W`
+command, or
 an `s` with an `e` or `w` flag, makes the call not read-only, and a regex, a replacement or an
 `a`, `i` or `c` text is no command. An assignment, `export` or `printf -v` (or `-vNAME`) affects
 only the call's own shell, and sets no variable that picks a program, a library, a configuration or
@@ -550,8 +594,20 @@ a directory (`PATH`, `HOME`, `IFS`, `CDPATH`, `PAGER`, any `GIT_*`, `JJ_*`, `LD_
 `BASH*`, …). A `$VAR` (or `${VAR}`) expansion is allowed of a variable the command assigns before
 it, or of `HOME`, `PATH` or `PWD`; a word of `find`, `rg`, `tree`, `file`, `sed`, `git`, `jj` or
 `printf` takes one known value, so no expansion slips in an option that writes, runs a program or
-sets a variable. So `cd /work/acme/proj && unset GIT_CONFIG_GLOBAL && pwd && (jj st || git
-status) && git worktree list` and `cd "$(git rev-parse --show-toplevel)"` are read-only, and `git
+sets a variable (and one of `wc`, but for a glob word whose every text starts with no `-`, a file
+operand); a word whose unquoted text holds a glob character (`*`, `?`, `[`) has none, since
+bash puts in its place the names of the files it matches, one of which may be an option made of a
+file's name (`git grep -e x *` with a file `--open-files-in-pager=sh`, `printf *` with a file
+`-vPATH`), and a glob in a word of `printf`, `env` or `export`, or in an assignment's value, makes
+the call not read-only (so `git diff src/*.py`, `sed -n 1p *.md` and an unquoted `find . -name
+*.py` are not answered; `cat src/*.py`, `grep -n x src/*.py` and `wc -l src/*.py` are, and a glob
+of theirs that the copy's names make an option is not, above). So does a
+brace expansion (`{a,b}`, `{1..3}`) in the unquoted text of any word of any command, or of a
+redirection's target, which bash makes into several words, a quoted or escaped `}` or `,` neither
+ending nor splitting one, as bash reads it (`sed -n -e p {x\},-e1e\ id} f` is two scripts, the
+second running `id`; `git show HEAD@{1}:f` and a quoted `'a{b,c}'` hold none). So `cd
+/work/acme/proj && unset GIT_CONFIG_GLOBAL && pwd && (jj st || git status) && git worktree list`
+and `cd "$(git rev-parse --show-toplevel)"` are read-only, and `git
 branch new-name`, `git remote add x y`, `jj new`, `jj describe`, `export X=$(rm -rf /)`, `env -u X
 git status`, `(cat a > b)`, `printf -vPATH .`, `sed -n 'r /etc/hostname' f`, `sed -n --in p f`,
 `git grep -nOid main`, `tree -ao out` and `rg --pr=sh x` are not. A process substitution, an

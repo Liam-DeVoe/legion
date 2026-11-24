@@ -148,11 +148,12 @@ test("removeOutsideLinks removes each link that resolves outside the copy or now
     });
   }
 
-  // A bash word that may lead outside the copy, however it gets there, is not answered.
+  // A bash word that may lead outside the copy, however it gets there, is not answered (a brace
+  // expansion the read-only rule refuses itself).
   const deeper = { ...copy, cwd: `${ROOT}/docs` };
   for (const [command, why] of [
     ["cat $HOME/x", "$HOME/x expands"],
-    ["cat {/etc/hostname,x}", "{/etc/hostname,x} expands"],
+    ["cat {/etc/hostname,x}", "its command is not read-only"],
     ["cat ~/x", "~/x is under ~"],
     ["cat .git", ".git names .git"],
     ["cat /etc/hostname", "/etc/hostname is outside the session's checkout"],
@@ -165,7 +166,7 @@ test("removeOutsideLinks removes each link that resolves outside the copy or now
       answer: { why: expect.stringContaining(why) },
     });
   }
-});
+}, 60_000);
 
 // Catches: a read of a code file the pin may summarize, or a ranged read, left unanswered (a run
 // then judged on that read; thermonuclear's runs on a range past a file's end were dropped as
@@ -714,8 +715,9 @@ test("readOnlyCall refuses printf -vNAME, $[…], sed's w, W, e, r and R command
 // Catches: a path through a symbolic link of the checkout that resolves inside it, so that
 // removeOutsideLinks keeps it, and then `..`: the kernel walks the `..` from the link's target, so
 // the path read as written stays in the checkout while the walk leaves the copy (the review's
-// `l/../x` and `l/../../..`).
-test("a bash path through a link that stays inside the copy, then .., is not answered where the kernel's walk of it leaves the copy; a path through the same links that stays inside is answered", async () => {
+// `l/../x` and `l/../../..`); or the same through a glob the link matches, which the runner reads
+// as written (the second review's `a/l*/../../x`).
+test("a bash path through a link that stays inside the copy, then .., is not answered where the kernel's walk of it leaves the copy, nor one whose glob comes before .. or may match . or .., nor a cd to a glob; a path through the same links that stays inside is answered", async () => {
   const dir = path.join(scratch, "walk");
   writeFiles(dir, { "docs/guide.md": GUIDE });
   writeFiles(path.join(scratch, "walk-outside"), { "secret.txt": `${SECRET}\n` });
@@ -738,8 +740,21 @@ test("a bash path through a link that stays inside the copy, then .., is not ans
       answer: { why: expect.stringContaining("through a symbolic link of the checkout") },
     });
   }
-  expect(await bashText(copy, "cat self/docs/guide.md docs/a/b/up/docs/guide.md")).toBe(
-    GUIDE + GUIDE
+  for (const command of [
+    "cat sel*/../walk-outside/secret.txt",
+    "cat [s]elf/../walk-outside/secret.txt",
+    "cat docs/a/b/u?/../walk-outside/secret.txt",
+    "cd sel* && cat ../walk-outside/secret.txt",
+    "ls -d .*",
+  ]) {
+    const answer = await bashText(copy, command);
+    expect({ command, answer }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("holds a glob") },
+    });
+  }
+  expect(await bashText(copy, "cat self/docs/guide.md docs/a/b/up/docs/guide.md docs/*.md")).toBe(
+    GUIDE + GUIDE + GUIDE
   );
 }, 60_000);
 
@@ -812,7 +827,7 @@ test("a git command in a copy that lacks an older commit's blob fetches nothing:
 // run through the path every answered bash call runs through (`sandboxedBash`), as though the
 // rule's confinement had let each through, reach none of the pod's credentials and run nothing the
 // copy's tracked configuration names; and a call the rule refuses runs nothing.
-test("the negative control: cat of a key file, ls of the runner's home, env, and git in a copy whose tracked bare repository's config sets core.fsmonitor, each read-only by the rule, show no key, an empty home, no credential and run no fsmonitor; the copy is read-only and has no network; curl is refused and never run", async () => {
+test("the negative control: cat of a key file, ls of the runner's home and of /opt, env, and git in a copy whose tracked bare repository's config sets core.fsmonitor, each read-only by the rule, show no key, an empty home and /opt, no credential and run no fsmonitor; the copy is read-only and has no network; curl is refused and never run", async () => {
   const keyDir = path.join(scratch, "gateway-key");
   writeFiles(keyDir, { key: `${fixtureSecret("gwkey")}\n` });
   const credentials = path.join(scratch, "control-credentials");
@@ -838,7 +853,13 @@ test("the negative control: cat of a key file, ls of the runner's home, env, and
     const copy = { dir, root: ROOT, cwd: ROOT, git: true };
     const keyFile = path.join(keyDir, "key");
     const home = process.env.HOME ?? "/root";
-    const calls = [`cat ${keyFile}`, `ls -A ${home}`, "env", "git -C vendor/tool.git status"];
+    const calls = [
+      `cat ${keyFile}`,
+      `ls -A ${home}`,
+      "ls -A /opt",
+      "env",
+      "git -C vendor/tool.git status",
+    ];
     for (const command of calls) {
       expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
         command,
@@ -854,6 +875,8 @@ test("the negative control: cat of a key file, ls of the runner's home, env, and
       exitCode: 1,
     });
     expect(await ran(`ls -A ${home}`)).toEqual({ output: "", exitCode: 0 });
+    // The pod's installed tools, and the files of them any user may write, are hidden too.
+    expect(await ran("ls -A /opt")).toEqual({ output: "", exitCode: 0 });
     // The pod's own model gateway key, where this machine has one: the answer is cat's error alone,
     // so it holds no byte of the key, which this test never reads.
     const gatewayKey = "/var/run/model-gateway-key/key";
@@ -1042,7 +1065,7 @@ test("a grep path joined by ; is searched path by path in its order, a missing o
       answer: { why: expect.stringContaining(why) },
     });
   }
-});
+}, 60_000);
 
 // Catches: a grep whose shown line passes the 512 bytes grep shows left unanswered (16 of the
 // dropped runs' calls), or answered with the line whole, cut elsewhere than the pin's window
@@ -1079,7 +1102,7 @@ test("a grep line past 512 bytes is cut as grep's native search cuts it: a conte
   expect(await grepText(copy, { pattern: "^\\}", path: "packages/fixtures/long.json" })).toBe(
     [` 4|  "kind": "${"w".repeat(498)}...`, "*5|}"].join("\n")
   );
-});
+}, 60_000);
 
 // Catches: a grep with more matches in a file than grep keeps (20 of several files, 200 of one),
 // or matches in more files than one page shows (20), left unanswered (11 of the dropped runs'
@@ -1131,7 +1154,7 @@ test("a grep keeps 20 matches a file of several and 200 of one, with grep's noti
       /\n\nShowing files 1-20 of 96\+\. Use skip=20 for the next page, or narrow paths\/pattern\.\n\nMore than 20 matches in cap\/f001\.ts, cap\/f002\.ts, cap\/f003\.ts, cap\/f004\.ts, cap\/f005\.ts and 15 more files; grep keeps the first 20 per file when searching several\. Search one file alone for up to 200\.$/
     )
   );
-});
+}, 60_000);
 
 // Catches: a read of a directory left unanswered, or answered with entries the pin leaves out
 // (`.DS_Store`), past its depth, or past its cap of a directory under it; or a listing answered
@@ -1245,7 +1268,7 @@ test("a quoted word is a literal: a single-quoted one, or a double-quoted one wh
     expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
   }
   for (const [command, why] of [
-    ["cat docs/{guide,notes}.md", "expands, and the runner does not check"],
+    ["cat docs/{guide,notes}.md", "its command is not read-only"],
     ["cat ~/notes.md", "is under ~"],
     ['grep -n "$HOME" docs/notes.md', "expands $HOME"],
   ] as const) {
@@ -1285,5 +1308,268 @@ test("a cd to a literal directory the copy holds, that surely runs, moves every 
       command,
       answer: { why: "../package.json is outside the session's checkout /work/acme/proj" },
     });
+  }
+}, 60_000);
+
+// The second security review of the read-only answers (at b7a917a9) found calls that run a
+// program, read outside the copy or show the runner's values through an expansion the rule and
+// the confinement read as written; each row below is made from the review's own call or checkout.
+
+// Catches: a brace expansion whose `}` or `,` is quoted or escaped, or one in printf's words, that
+// the rule did not see, so the call ran a command it names (sed's `e`), read a file outside the
+// copy or set PATH; or a glob word that expands to an option a file of the checkout names
+// (`--open-files-in-pager=sh`, `-vPATH`), taken for a read-only call.
+test("readOnlyCall refuses a brace expansion in any word, its } or , quoted or escaped or not, and a glob word where the rule needs a word's one value or in printf, env, export and an assignment; it still takes braces with no comma or quoted, and a glob of a program that only opens files", () => {
+  for (const command of [
+    "sed -n -e p {x\\},-e1e\\ id} README",
+    "cat {x\\},/etc/hostname}",
+    "cat {x'}',/etc/hostname}",
+    'cat {x"}",/etc/hostname}',
+    "git grep {-ePWNED\\},--open-files-in-pager=sh}",
+    "rg PWNED-42 {.\\},--pre=sh} .",
+    "printf {-v,PATH} bin; cat README",
+    "printf {-vPATH,bin}; cat README",
+    "export z={a,b}",
+    "cat < {x,y}",
+    "echo $(cat {x\\},/etc/hostname})",
+    "git grep -e PWNED *",
+    "printf *; cat x",
+    "sed -n p *",
+    "rg x *",
+    "tree *",
+    "file *",
+    "git log -- src/*.py",
+    "find . -name *.py",
+    "env X=*",
+    "export X=a*",
+    "X=*.py",
+    "cat < src/*.py",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: false,
+    });
+  }
+  for (const command of [
+    "git show HEAD@{1}:src/app.py",
+    "git log --format='%h {%s}' -1",
+    "grep -nE 'x{1,2}' src/app.py",
+    "cat 'a{b,c}' \\{d,e\\}",
+    "cat src/*.py",
+    "grep -n main src/*.py",
+    "ls -d */",
+    "wc -l src/*.py",
+    "head -n 3 docs/*.md",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: true,
+    });
+  }
+});
+
+// Catches: `$(git rev-parse --show-toplevel)` taken for the root where git dies at a directory the
+// checkout lays out as a bare repository, so the word is an absolute path outside the copy; an
+// unquoted `~` of a word of echo (or any command) showing a home directory of the runner's; a jj
+// command answered from a `.jj` the checkout tracks below its root, with jj's error or that
+// repository's store; or the sandbox's jj verifying a signature with gpg or ssh-keygen.
+test("$(git rev-parse --show-toplevel) is the root only where git meets no repository the checkout tracks below it; a word of any command with an unquoted ~ is not answered, nor a jj command whose repository may be a .jj the checkout tracks below its root; the sandbox's jj names no signing program", async () => {
+  const dir = gitCopy("nested-repositories", {
+    "vendor/tool/HEAD": "ref: refs/heads/main\n",
+    "vendor/tool/objects/keep": "",
+    "vendor/tool/refs/keep": "",
+    "sub/.jj/junk": "x\n",
+    "sub/f.txt": "y\n",
+  });
+  expect(await colocateJj(dir)).toBe(true);
+  const copy = { dir, root: ROOT, cwd: ROOT, git: true, jj: true as const };
+  for (const [command, text] of [
+    ["cat $(git rev-parse --show-toplevel)/docs/guide.md", GUIDE],
+    ['cd docs && cat "$(git rev-parse --show-toplevel)/docs/guide.md"', GUIDE],
+    ["jj root", `${ROOT}\n`],
+    ["cd src && jj root", `${ROOT}\n`],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  // The copy's own repository answers (its snapshot leaves out the directory that holds a `.jj`).
+  expect(await bashText(copy, "jj -R . st")).toEqual(
+    expect.stringContaining("Parent commit (@-): ")
+  );
+  const nested = "a jj repository the checkout holds below its root";
+  for (const [command, why] of [
+    [
+      "cd vendor/tool && cat $(git rev-parse --show-toplevel)/etc/hostname",
+      "expands to a value the runner cannot place",
+    ],
+    ["echo ~legion ~root", "~legion is under ~"],
+    ["echo a=~", "a=~ is under ~"],
+    ["X=~/bin; echo $X", "~/bin is under ~"],
+    ["cd sub && jj st", nested],
+    ["jj -R sub log", nested],
+    ["jj -Rsub log", nested],
+    ["jj --repository=sub log", nested],
+    ["cd sub && cat $(jj root)/f.txt", nested],
+    ["cat /proc/self/mountinfo", "is outside the session's checkout"],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+  // No signature a template asks about is verified by a program: no backend's program is there.
+  expect(
+    await sandboxedBash(
+      copy,
+      "jj config get signing.backend; jj config get signing.backends.gpg.program; jj config get signing.backends.gpgsm.program; jj config get signing.backends.ssh.program"
+    )
+  ).toMatchObject({
+    output: "none\n/mnt/no-signing-program\n/mnt/no-signing-program\n/mnt/no-signing-program\n",
+    exitCode: 0,
+  });
+}, 60_000);
+
+// Catches: a call of a program the read-only rule takes that the sandbox's PATH does not hold (this
+// pod's has no rg) answered with bash's "command not found", which the session never saw.
+test("a command one of whose programs is on no directory of the sandbox's PATH is not run, and not answered; one whose programs are there is answered", async () => {
+  const copy = filesCopy("lacking", { "docs/guide.md": GUIDE });
+  expect(await sandboxedBash(copy, "acme-tool docs", ROOT, ["acme-tool"])).toEqual({
+    why: expect.stringContaining("the sandbox has no acme-tool on its PATH"),
+  });
+  // A program of the read-only list this machine lacks, where it lacks one.
+  const lacking = ["rg", "file", "tree"].find(
+    (each) => !["/usr/local/bin", "/usr/bin", "/bin"].some((at) => existsSync(path.join(at, each)))
+  );
+  if (lacking !== undefined) {
+    expect(await bashText(copy, `${lacking} docs`)).toEqual({
+      why: expect.stringContaining(`the sandbox has no ${lacking} on its PATH`),
+    });
+  }
+  expect(await bashText(copy, "cat docs/guide.md | wc -l")).toBe("3\n");
+}, 60_000);
+
+// Catches: a grep whose regular expression backtracks (`(a+)+b` over a long run of one character)
+// run in the runner's own thread with no time limit, which stops every run of the process.
+test("a grep whose regular expression backtracks past the 30 s limit is not answered, and its answer comes within the limit while the runner's own thread runs on", async () => {
+  // 200 lines, over each of which JavaScript's engine backtracks before it gives up on it (0.6 to
+  // 1.5 s a line on this pod), so far past the limit.
+  const copy = filesCopy("grep-backtracks", { "line.txt": `${"a".repeat(40)}\n`.repeat(200) });
+  // Real time, deliberately: the limit under test is the platform clock's 30 s, and a tick every
+  // 100 ms that keeps firing shows that the runner's own thread is free while the worker matches.
+  let ticks = 0;
+  const tick = setInterval(() => {
+    ticks++;
+  }, 100);
+  const started = performance.now();
+  const answer = await answerCall(
+    copy,
+    "grep",
+    { pattern: "(a+)+b", path: "line.txt" },
+    "hashline"
+  );
+  const tookMs = performance.now() - started;
+  clearInterval(tick);
+  expect(answer).toEqual({ why: "it ran past the 30 s limit" });
+  expect(tookMs).toBeLessThan(32_000);
+  expect(ticks).toBeGreaterThan(200);
+}, 60_000);
+
+// Catches: an option that reads a list of paths from a file (wc's `--files0-from`, find's
+// `-files0-from`, tree's `--fromfile`), whose paths no word names, taken for a read-only call; or
+// the value of an option that reads one file, attached to its letter (`grep -f..`, `git ls-files
+// -X..`), not read as a path by the confinement, so it may name a file outside the copy.
+test("readOnlyCall refuses wc --files0-from in every spelling, find -files0-from and tree --fromfile; an option's file value, attached to its letter, separate or after =, is read as a path, and one outside the checkout is not answered", async () => {
+  for (const command of [
+    "wc --files0-from=names",
+    "wc --files0-from names",
+    "wc -l --files0=names",
+    "wc --f=names",
+    "wc --files0-from=-",
+    "wc -*",
+    "find . -files0-from names",
+    "find -files0-from names -type f",
+    "tree --fromfile names",
+    "tree --fromtabfile names",
+    "tree --from names",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: false,
+    });
+  }
+  for (const command of [
+    "wc -l src/app.py",
+    "wc --total=never -l src/app.py",
+    "wc --lines src/*.py",
+    "wc *",
+    "find . -newer src/app.py",
+    "tree -L 2 --noreport src",
+  ]) {
+    expect({ command, readOnly: readOnlyCall("bash", { command }) }).toEqual({
+      command,
+      readOnly: true,
+    });
+  }
+  const copy = {
+    dir: gitCopy("file-options", { "docs/patterns.txt": "Run\n" }),
+    root: ROOT,
+    cwd: ROOT,
+    git: true,
+  };
+  for (const command of [
+    "grep -f.. docs/guide.md",
+    "grep -nf.. docs/guide.md",
+    "grep --file=/etc/hostname docs/guide.md",
+    "grep -r --exclude-from=../x Run .",
+    "rg -f.. Run docs",
+    "rg --ignore-file=/etc/hostname Run docs",
+    "git grep -f.. main",
+    "git ls-files -X..",
+    "git ls-files --exclude-from=/etc/hostname",
+    "git blame --contents=/etc/hostname src/app.py",
+    "git blame --contents ../x src/app.py",
+  ]) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("is outside the session's checkout") },
+    });
+  }
+  expect(await bashText(copy, "grep -nf docs/patterns.txt docs/guide.md")).toBe("3:Run the app.\n");
+  expect(await bashText(copy, "grep -n --file=docs/patterns.txt docs/guide.md")).toBe(
+    "3:Run the app.\n"
+  );
+}, 60_000);
+
+// Catches: a glob word of a program the rule answers with globs (cat, wc, grep, ls, …) that bash
+// expands, from the directory the shell is in, into an option a file of the checkout names (`wc *`
+// with a file `--files0-from=.list`, which then counts the files `.list` names; `cat *` with a
+// file `-n`).
+test("a glob word that bash expands, from the shell's directory in the copy, to a word starting with - is not answered; a glob whose matches start with no - is", async () => {
+  const copy = filesCopy("glob-options", {
+    "opts/--files0-from=.list": "",
+    "opts/.list": "a.txt\0",
+    "opts/-n": "",
+    "opts/a.txt": "a\n",
+    "plain/a.txt": "a\n",
+    "plain/b.txt": "b\n",
+  });
+  for (const [command, cwd] of [
+    ["cd opts && wc *", undefined],
+    ["cd opts && cat *", undefined],
+    ["wc -l *", `${ROOT}/opts`],
+    ["grep -n a [-a]*", `${ROOT}/opts`],
+    ["cat -*", undefined],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command, cwd) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("which the program reads as an option") },
+    });
+  }
+  for (const [command, text] of [
+    ["cd plain && wc -l *", "1 a.txt\n1 b.txt\n2 total\n"],
+    ["cat plain/*", "a\nb\n"],
+    ["wc -c opts/*", "0 opts/--files0-from=.list\n0 opts/-n\n2 opts/a.txt\n2 total\n"],
+    ["cd opts && cat ./*", "a\n"],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
   }
 }, 60_000);
