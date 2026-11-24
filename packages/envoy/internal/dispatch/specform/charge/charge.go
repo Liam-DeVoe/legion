@@ -22,14 +22,15 @@
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.
 // The judge keeps no such copy, and the tests of package specform refuse a field of the judge that
 // can hold text but those above, wherever the walk that would read it sits: they walk the type of
-// each field of the judge (TestTheJudgeKeepsNoTextOfASentenceInAField). No type can tell a copy of
-// what a reading gave as counts or flags, such as whether each sentence runs on into the next, from
-// what the judge keeps of the split of its text, nor show what a function value holds. For a copy
-// read in the look for the sentences where a finding's words stand (holding) or in the walk of the
-// sentences between two that a way out changes (changedRuns), the work table of package specform
-// catches its walk for each finding: its row of many findings of one claim whose words one sentence
-// after them holds in code font, and its row of many findings whose two places a run of open quoted
-// sentences joins.
+// each field of the judge, into the values of an Index, and name each string, slice or array of
+// bytes or runes and interface outside the fields that hold the text above
+// (TestTheJudgeKeepsNoTextOfASentenceInAField). No type can tell a copy of what a reading gave as
+// counts or flags, such as whether each sentence runs on into the next, from what the judge keeps
+// of the split of its text, nor show what a function value holds. For a copy read in the look for
+// the sentences where a finding's words stand (holding) or in the walk of the sentences between two
+// that a way out changes (changedRuns), the work table of package specform catches its walk for
+// each finding: its row of many findings of one claim whose words one sentence after them holds in
+// code font, and its row of many findings whose two places a run of open quoted sentences joins.
 package charge
 
 import "fmt"
@@ -174,7 +175,9 @@ func (t *Texts[K]) Read(u Unit, own bool) (text string, kept []K, ok Answer) {
 
 // Index is values under a text key, such as each word of the judged text under its bare form: one
 // reads only the values of a key that it holds (Get), and no walk can read the keys. So a lookup
-// reads its own key, not the texts that the keys came from.
+// reads its own key, not the texts that the keys came from. Get gives the values with no charge, so
+// a value holds no text of a sentence, which the tests of package specform hold for each Index of
+// the judge by its type.
 type Index[V any] struct {
 	values map[string][]V
 }
