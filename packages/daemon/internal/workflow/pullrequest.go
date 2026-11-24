@@ -549,20 +549,24 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope,
 // instead, empty when it closed. The merge of a task makes that task done. It ends the issue only
 // where each other task of the plan is done or left (lastToFinish), and only that merge waits for
 // the issues beneath: the merge of any other task moves its task to done at once, and the issue
-// goes on in the phase its tasks put it in. In a running tree the close is the table's row to done
-// (transition), which leaves where the issue is then done: a child's close retires five of its
-// claims and opens its production check in the live session of the role the project's
-// `production_check` names, and retires all six and opens no check where that setting is off; a
-// root's close lingers its tree and opens its check behind the linger's rows (leave). A merge is
-// the one fact GitHub never sends again, so one that lands while the tree lingers, where no
-// transition runs, still moves its task to done and ends the merge step. Where that merge ends the
-// issue it writes the phase done and the status done, and the issue leaves through the one place
-// of a leave its tasks make (leaveByTasks), which in a lingering tree tells the architect above a
-// child child-closed and opens the check of each merged pull request of the run that has none,
-// each first look a wake, since the linger suspended that role. The merge of any other task
-// writes the task's move and the issue in the phase its tasks put it in, and nothing of a close. It
-// retires nobody and suspends nothing: the linger's own rows already did, and the tree's close
-// retires every member's claims. The boot's sweep closes a migrated issue the same way (booted).
+// goes on in the phase its tasks put it in. Each merge has its own production check. The merge of
+// a task that is not the last opens the check of its own merge here (openCheck), in a running tree
+// and in a lingering one alike; the merge that ends the issue opens its check through the issue's
+// leave, which checks each merge of the run that has none (leaveByTasks). In a running tree the
+// close is the table's row to done (transition), which leaves where the issue is then done: a
+// child's close retires five of its claims and opens its production check in the live session of
+// the role the project's `production_check` names, and retires all six and opens no check where
+// that setting is off; a root's close lingers its tree and opens its check behind the linger's rows
+// (leave). A merge is the one fact GitHub never sends again, so one that lands while the tree
+// lingers, where no transition runs, still moves its task to done and ends the merge step. Where
+// that merge ends the issue it writes the phase done and the status done, and the issue leaves
+// through the one place of a leave its tasks make (leaveByTasks), which in a lingering tree tells
+// the architect above a child child-closed and opens the check of each merged pull request of the
+// run that has none. The merge of any other task writes the task's move and the issue in the phase
+// its tasks put it in, and opens the check of its merge, and nothing of a close. In a lingering
+// tree each first look is a wake, since the linger suspended that role. A lingering merge retires
+// nobody and suspends nothing: the linger's own rows already did, and the tree's close retires
+// every member's claims. The boot's sweep closes a migrated issue the same way (booted).
 //
 // The last merge's close waits for the issues beneath the issue, on the one set both acceptance
 // rules read (OpenBeneath): for a tree root that is every other member of the tree still in the
@@ -607,7 +611,10 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 				return waiting, nil
 			}
 		}
-		return nil, e.transition(ctx, tx, s, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
+		if err := e.transition(ctx, tx, s, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, ""); err != nil || last {
+			return nil, err
+		}
+		return nil, e.openCheck(ctx, tx, issue, *pr, false)
 	}
 	w := s.walk
 	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
@@ -640,7 +647,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 	if !last {
 		e.logOnCommit(ctx, "workflow: a lingering tree's member's task is done at its merge, and the member goes on", "issue", issue.Key,
 			"task", w.Task, "tree", issue.Tree, "pullRequest", pr.Number, "phase", written.Phase)
-		return nil, nil
+		return nil, e.openCheck(ctx, tx, written, *pr, true)
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", written.Status)
 	return nil, e.leaveByTasks(ctx, tx, written)
