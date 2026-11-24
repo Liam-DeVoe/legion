@@ -97,9 +97,12 @@ type artifactUploadInput struct {
 	// in-process caller carries it on the request's context (goingCondition.ExpectSHA256, ExpectNew,
 	// ExpectVersion): the content the document must hold, "" for none; whether the upload is a
 	// create alone; and the artifact the name must find at its latest version, nil for none.
-	expectSHA256  string
-	expectNew     bool
-	expectVersion *goingArtifactVersion
+	// expectArtifact (goingCondition.ExpectArtifact) is the id of the document whose content
+	// expectSHA256 is, which the name must find, "" for none.
+	expectSHA256   string
+	expectNew      bool
+	expectVersion  *goingArtifactVersion
+	expectArtifact string
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -259,12 +262,13 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	// The upload's condition, which the command bar's in-process caller carries on the request's
-	// context (going_conditions.go): a write back of a document's content expects that content, a
-	// row of a plan whose read before found the document or file of its name expects that artifact
-	// at the version the read found (AgentListener.rowUpload), and every other upload of the bar is
-	// a create alone.
+	// context (going_conditions.go): a write back of a document's content expects that content of
+	// that very document, a row of a plan whose read before found the document or file of its name
+	// expects that artifact at the version the read found (AgentListener.rowUpload), and every
+	// other upload of the bar is a create alone.
 	condition := goingConditionOf(r)
 	input.expectSHA256, input.expectNew, input.expectVersion = strings.TrimSpace(condition.ExpectSHA256), condition.ExpectNew, condition.ExpectVersion
+	input.expectArtifact = strings.TrimSpace(condition.ExpectArtifact)
 	named := 0
 	for _, set := range []bool{input.expectNew, input.expectSHA256 != "", input.expectVersion != nil} {
 		if set {
@@ -274,6 +278,11 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if named > 1 {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
 			"a create alone, an expected content and an expected version each say what the name must find: the condition names one of them")
+		return
+	}
+	if input.expectArtifact != "" && input.expectSHA256 == "" {
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
+			"an expected document says whose content the upload expects: the condition names it beside an expected content")
 		return
 	}
 	if refusal := condition.writeBackRefusal(input.expectNew || input.expectSHA256 != "" || input.expectVersion != nil, "content it expects the document to hold"); refusal != nil {
@@ -817,6 +826,13 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
 			"%s already holds %s (slug %s), and this upload makes a new document alone, so nothing was written",
 			artifactOwnerText(target), artifact.Name, artifact.Slug))
+		return
+	} else if input.expectArtifact != "" && artifact.ID != input.expectArtifact {
+		// Decided under the lock above, as the expected content is: a document removed and another
+		// made under its slug since the write back's read is never written over, even where it
+		// holds the very content expected.
+		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
+			"%q finds another document than the one this upload was to write over, so nothing was written", input.name))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))

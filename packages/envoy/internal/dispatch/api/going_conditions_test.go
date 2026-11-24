@@ -271,6 +271,55 @@ func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *test
 	}
 }
 
+// TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItRead: an undo's write
+// back names the document it read by its id beside the content it expects (ExpectArtifact and
+// ExpectSHA256 of goingCondition), and the upload route decides both under the owner's lock. Where
+// that document was removed and another made under its slug since the read - holding the very
+// content expected, as two documents made by typing the same title do - the write back is refused,
+// 409 DOCUMENT_CHANGED, and the other document keeps its one empty version. Before, the expected
+// content alone was checked, and the write back landed on the other document. Naming the document
+// the name finds, the same write back lands. An expected document with no expected content is
+// refused, 400 ARTIFACT_INPUT, with nothing written.
+func TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItRead(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createArtifactIssue(t, handler)
+	read := emptyDocument(t, handler, issue.Key, "notes.md")
+	held := readDocumentPrecondition(t, handler, read.ID).Markdown
+	removedDocument(t, handler, read.ID)
+	made := emptyDocument(t, handler, issue.Key, "notes.md")
+	if made.Slug != read.Slug || made.ID == read.ID || readDocumentPrecondition(t, handler, made.ID).Markdown != held {
+		t.Fatalf("the document made after the removal is %s at slug %s, want another document at the removed one's slug %s holding its content", made.ID, made.Slug, read.Slug)
+	}
+	target := "/api/v1/issues/" + issue.Key + "/artifacts"
+	writeBack := func(condition goingCondition) (int, string) {
+		return goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target,
+			map[string]any{"name": read.Slug, "content": "# Notes\n\nWritten back.\n"}), condition)
+	}
+	// untouched fails t unless the made document still holds its one empty version.
+	untouched := func(t *testing.T, after string) {
+		t.Helper()
+		if versions, text := len(readDocument(t, handler, made.ID).Versions), readDocumentPrecondition(t, handler, made.ID).Markdown; versions != 1 || text != held {
+			t.Fatalf("after %s the document made under the slug holds %d versions reading %q, want its one version reading %q", after, versions, text, held)
+		}
+	}
+	expected := docs.MarkdownSHA256(held)
+	status, answer := writeBack(goingCondition{WriteBack: true, ExpectSHA256: expected, ExpectArtifact: read.ID})
+	if status != http.StatusConflict || goingAnswerCode(t, answer) != "DOCUMENT_CHANGED" {
+		t.Fatalf("the write back naming the removed document answered %d %s, want 409 DOCUMENT_CHANGED", status, answer)
+	}
+	untouched(t, "the write back naming the removed document")
+	status, answer = writeBack(goingCondition{WriteBack: true, ExpectArtifact: made.ID})
+	if status != http.StatusBadRequest || goingAnswerCode(t, answer) != "ARTIFACT_INPUT" {
+		t.Fatalf("the write back naming a document and no content answered %d %s, want 400 ARTIFACT_INPUT", status, answer)
+	}
+	untouched(t, "the write back naming a document and no content")
+	status, answer = writeBack(goingCondition{WriteBack: true, ExpectSHA256: expected, ExpectArtifact: made.ID})
+	if versions := len(readDocument(t, handler, made.ID).Versions); status != http.StatusCreated || versions != 2 {
+		t.Fatalf("the write back naming the document the name finds answered %d %s and left %d versions, want 201 and its version 2", status, answer, versions)
+	}
+}
+
 // TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersLock: a project
 // document is its own owner, whose lock the document service's version writers hold (an edit's
 // snapshot here, as named versions, settlements and rebuilds do) and which the upload takes only

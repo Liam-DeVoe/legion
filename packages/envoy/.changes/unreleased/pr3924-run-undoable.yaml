@@ -13,3 +13,16 @@ body: |-
   History makes no extra read for each run it lists; of an issue's update, create or claim, whose
   answer carries the whole issue, it reads only the members that decision reads. History offered
   Undo on a run already undone, and an undone run could not say when after a reload.
+  A call whose recorded `last_seq` is not a whole number is a record Undo cannot read: Undo answers
+  409 `GOING_UNDO_AFTER_UNREAD` and puts nothing back, and History, which now reads `last_seq` among
+  those members, does not offer Undo for it. Before, Undo dropped the bad value and went on, and a
+  field it kept named "another writer". Undo of a document edit now writes the earlier content back
+  under the document's slug, which no other document of its owner holds, not under its name. A
+  name can be another document's slug, and the upload route takes that document first, so such an
+  undo was refused as another writer's change, or, where the other document held the same content,
+  wrote over it. The write back also names the document by its id, which the upload route checks
+  under the owner's lock beside the content it expects, so a document removed and another made
+  under its slug since Undo read it is refused, 409 `DOCUMENT_CHANGED`, and never written over.
+  Where an edit's approval holds no read of the document, or a read that does not hold its
+  content, Undo's 409 `GOING_UNDO_BEFORE_UNREAD` now says so, where it said another writer changed
+  the document.

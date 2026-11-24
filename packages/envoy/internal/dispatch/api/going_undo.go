@@ -73,7 +73,8 @@ const (
 	// there is nothing to hold the value now to, so nothing is put back.
 	codeGoingUndoAfterUnread = "GOING_UNDO_AFTER_UNREAD"
 	// codeGoingUndoBeforeUnread is a call whose route answered that it found a value the read its
-	// row was approved over did not see: what the call replaced is unknown, so nothing is put back.
+	// row was approved over did not see, or a document's edit whose approval holds no read of the
+	// document it can put back: what the call replaced is unknown, so nothing is put back.
 	codeGoingUndoBeforeUnread = "GOING_UNDO_BEFORE_UNREAD"
 )
 
@@ -356,7 +357,9 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 			return goingLineOf(line, nil)
 		})
 	}
-	if last := write.requests[len(write.requests)-1]; !goingOwnLanded(u.catalogue, write.tool, last) {
+	last := write.requests[len(write.requests)-1]
+	prepared, own := goingRecordedCall(u.catalogue, write.tool, goingWriteRequest{Method: last.method, Path: last.path})
+	if !own {
 		return goingSettled(func() goingUndoLine {
 			line.Undo = goingUndoNotUndone
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
@@ -373,9 +376,9 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 	case "dispatch_suggest":
 		return u.suggestion(write, line)
 	case "dispatch_doc_edit":
-		return u.document(write, line)
+		return u.document(write, prepared, line)
 	}
-	undone, err := u.recorded(ctx, write)
+	undone, err := u.recorded(ctx, write, prepared)
 	line.Item = cmp.Or(undone.target, line.Item)
 	switch {
 	case err != nil:
@@ -588,9 +591,10 @@ func (s *server) goingUndoLanded(ctx context.Context, key goingCallKey) (*goingU
 // the one it left (after), and whether its route answered that it changed nothing (unchanged) or
 // that it found a value the read its row was approved over did not see (beforeUnread). seq is the
 // issue's last_seq the route of an issue's update or create answered it left - the sequence of the
-// newest event the call wrote on the issue, 0 where the answer names none - and landedAt when the
-// call landed (goingLandedWrite.landedAt): what came after the call is read from them, never from
-// the item's newest event, which may be anything of anyone's.
+// newest event the call wrote on the issue, 0 where the answer names none; an answer whose last_seq
+// does not decode as a sequence is an error (recorded) - and landedAt when the call landed
+// (goingLandedWrite.landedAt): what came after the call is read from them, never from the item's
+// newest event, which may be anything of anyone's.
 type goingUndone struct {
 	tool         string
 	target       string
@@ -605,18 +609,15 @@ type goingUndone struct {
 
 // recorded is what write found and left, from what the route of its last request recorded beside
 // that request's landing, in the transaction of the change (goingRecordAnswer): the call's row is
-// the one of its tool the request names (goingRecordedCall), and nothing of the call is
-// translated or read before again. The value it found is what its route answered it found
-// (goingObservation.stood), else the value of the read its row was approved over; whether the call
-// changed anything is its landing, which it has. A last request that recorded nothing, or whose
-// row the tool no longer holds, is an error: what the call left is unknown.
-func (u goingUndoer) recorded(ctx context.Context, write goingLandedWrite) (goingUndone, error) {
+// prepared, the one of its tool that request names (goingRecordedCall), which plan found before it
+// came here, and nothing of the call is translated or read before again. The value it found is
+// what its route answered it found (goingObservation.stood), else the value of the read its row
+// was approved over; whether the call changed anything is its landing, which it has. A last
+// request that recorded nothing, or whose record observe cannot read or whose last_seq does not
+// decode as a sequence, is an error: what the call left, or the event it left it at, is unknown.
+func (u goingUndoer) recorded(ctx context.Context, write goingLandedWrite, prepared goingPrepared) (goingUndone, error) {
 	last := write.requests[len(write.requests)-1]
 	undone := goingUndone{tool: write.tool, fields: goingChangedFields(write), landedAt: write.landedAt}
-	prepared, held := goingRecordedCall(u.catalogue, write.tool, goingWriteRequest{Method: last.method, Path: last.path})
-	if !held {
-		return undone, fmt.Errorf("no row of %s sends %s %s", write.tool, last.method, last.path)
-	}
 	prepared.arguments = write.arguments
 	before := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: undone.fields, issue: goingText(write.arguments, "issue")}
 	var seen json.RawMessage
@@ -649,9 +650,10 @@ func (u goingUndoer) recorded(ctx context.Context, write goingLandedWrite) (goin
 	var issue struct {
 		LastSeq int `json:"last_seq"`
 	}
-	if json.Unmarshal(last.body, &issue) == nil {
-		undone.seq = issue.LastSeq
+	if err := json.Unmarshal(last.body, &issue); err != nil {
+		return undone, fmt.Errorf("read the last_seq the route of %s %s recorded beside its landing: %w", last.method, last.path, err)
 	}
+	undone.seq = issue.LastSeq
 	return undone, nil
 }
 
@@ -1052,16 +1054,19 @@ func (u goingUndoer) writeBack(
 }
 
 // document writes the content the document held before the edit back over it, as a further
-// version uploaded under its own name to its owner's route, only while the document is what the
-// edit left: its token now is the one the edit's route answered it left (editArtifactResponse),
-// and the upload expects the content read with that token (goingCondition.ExpectSHA256), decided
-// under the document's own lock, so an edit another writer makes after the read is never written
-// over. A document another writer changed since the edit is kept, naming its version and who
-// wrote that version after the edit (documentVersionWriter). What the edit replaced is the
-// content of the read its row was approved over, where that read's token is the one the edit's
-// route answered it found; any other is a document another writer changed before the edit, and
-// nothing is written back: that, and a record that does not name the tokens, the record settles.
-func (u goingUndoer) document(write goingLandedWrite, line goingUndoLine) goingUndoPlan {
+// version uploaded to its owner's route under its slug, only while the document is what the edit
+// left: its token now is the one the edit's route answered it left (editArtifactResponse), and the
+// upload expects the content read with that token, of that very document (ExpectSHA256 and
+// ExpectArtifact of goingCondition), decided under the owner's lock, so an edit another writer makes
+// after the read is never written over, nor a document made under the slug since. A document
+// another writer changed since the edit is kept, naming its version and who wrote that version
+// after the edit (documentVersionWriter). What the edit replaced is the content of the read its
+// row was approved over, where the approval holds that read, the read's token is the one the
+// edit's route answered it found, and the read holds the document's content; otherwise what it
+// replaced is unknown, the words saying which of the three it is, and nothing is written back:
+// that, and a record that does not name the tokens, the record settles. prepared is the edit's
+// row that its last request names (goingRecordedCall), which plan found before it came here.
+func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, line goingUndoLine) goingUndoPlan {
 	fields := goingChangedFields(write)
 	last := write.requests[len(write.requests)-1]
 	var edited struct {
@@ -1076,24 +1081,34 @@ func (u goingUndoer) document(write goingLandedWrite, line goingUndoLine) goingU
 		})
 	}
 	var before goingDocumentValue
-	if write.seen == nil || write.seen.Token != edited.PreviousToken || json.Unmarshal(write.seen.Now, &before) != nil {
+	var unread string
+	var unreadable error
+	switch {
+	case write.seen == nil:
+		unread = "the edit's approval holds no read of the document"
+	case write.seen.Token != edited.PreviousToken:
+		unread = "another writer changed the document between the read the edit was approved over and the edit"
+	default:
+		if err := json.Unmarshal(write.seen.Now, &before); err != nil {
+			unread, unreadable = "the read the edit was approved over does not hold the document's content", err
+		}
+	}
+	if unread != "" {
 		return goingSettled(func() goingUndoLine {
+			if unreadable != nil {
+				slog.Warn("dispatch: read the document an edit was approved over off its record", "run", write.key.run, "error", unreadable)
+			}
 			if write.seen != nil && write.seen.Item != "" {
 				line.Item = write.seen.Item
 			}
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
-				Message: "another writer changed the document between the read the edit was approved over and the edit, so what it replaced is unknown and nothing was written back: read the document to see what it holds"}
+				Message: unread + ", so what it replaced is unknown and nothing was written back: read the document to see what it holds"}
 			return goingLineOf(line, fields)
 		})
 	}
 	return goingUndoPlan{next: func(ctx context.Context) (goingUndoLine, *goingUndoSend) {
 		document := write.seen.Item
 		if document == "" {
-			prepared, held := goingRecordedCall(u.catalogue, write.tool, goingWriteRequest{Method: last.method, Path: last.path})
-			if !held {
-				line.Outcome = goingFailed(fmt.Errorf("no row of %s sends %s %s", write.tool, last.method, last.path))
-				return goingLineOf(line, fields), nil
-			}
 			prepared.arguments = write.arguments
 			resolved, err := u.observer.editedDocument(ctx, prepared)
 			if err != nil {
@@ -1102,7 +1117,11 @@ func (u goingUndoer) document(write goingLandedWrite, line goingUndoLine) goingU
 			}
 			document = resolved
 		}
-		var artifact goingDocumentRead
+		// The slug is read beside the rest, since it is the name the write back below sends.
+		var artifact struct {
+			goingDocumentRead
+			Slug string `json:"slug"`
+		}
 		if err := u.observer.read.get(ctx, goingArtifactPath(document), &artifact); err != nil {
 			line.Outcome = goingFailed(err)
 			return goingLineOf(line, fields), nil
@@ -1114,7 +1133,7 @@ func (u goingUndoer) document(write goingLandedWrite, line goingUndoLine) goingU
 			return goingLineOf(line, fields), nil
 		}
 		if token != edited.Token {
-			who := goingWriterText(u.documentVersionWriter(ctx, artifact, now.Version, write.landedAt))
+			who := goingWriterText(u.documentVersionWriter(ctx, artifact.goingDocumentRead, now.Version, write.landedAt))
 			line.Outcome = goingChanged([]string{fmt.Sprintf("the document is at version %s now, which %s wrote after this run, so it is kept",
 				goingVersionText(now.Version), who)}, nil)
 			return goingLineOf(line, fields), nil
@@ -1124,9 +1143,16 @@ func (u goingUndoer) document(write goingLandedWrite, line goingUndoLine) goingU
 			route, values = goingIssueUploadRoute, map[string]string{"key": *artifact.IssueKey}
 		}
 		line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "written back"}
+		// The upload names the document by its slug, not its name. The route takes the artifact
+		// whose name or slug the name is, the one whose slug it is first (findArtifactByNameOrSlug),
+		// and an owner may hold another document whose slug is this one's name (artifacts.go,
+		// artifactByNameOrSlugSQL), so the name could reach that other document. A slug is one
+		// artifact's alone within its owner (artifacts_ref_key_key) and never changes, so the slug
+		// reaches the document read above while it stands; the condition names that document by
+		// its id too, so one made under its slug after it was removed is never written over.
 		return goingLineOf(line, fields), &goingUndoSend{route: route, values: values,
-			body:      map[string]any{"name": artifact.Name, "content": before.Content, "summary": goingUndoReason},
-			condition: &goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(now.Content)},
+			body:      map[string]any{"name": artifact.Slug, "content": before.Content, "summary": goingUndoReason},
+			condition: &goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(now.Content), ExpectArtifact: artifact.ID},
 			landed:    goingLineOf(line, fields), changed: []string{"DOCUMENT_CHANGED"}}
 	}}
 }

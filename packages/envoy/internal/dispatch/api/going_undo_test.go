@@ -429,9 +429,9 @@ func TestUndoOfOneRun(t *testing.T) {
 // run whose one write is a message, which Undo names sent, not undone, and a reasoned close of
 // which only the reason landed are not undoable, before Undo and after it, and never undone. So,
 // decided as Undo decides it from the call's record, are a claim its route answered changed
-// nothing, a create its route answered 200 for an issue Dispatch already held, and a write whose
-// record cannot be read: Undo sends nothing for any of them, and History offered it on every
-// reload.
+// nothing, a create its route answered 200 for an issue Dispatch already held, a write whose
+// record cannot be read, and an update whose recorded last_seq does not decode: Undo sends nothing
+// for any of them, and History offered it on every reload.
 func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -538,6 +538,18 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		issue := rig.issue(t, "Renamed with no record")
 		run := rig.ran(t, "rename Renamed with no record", goingChange("dispatch_issue_update", retitle(issue, "Renamed")))
 		rig.exec(t, `update going_landings set answer = answer - 'body' where run_id = $1::uuid and phase = 'do'`, run)
+		neverUndoable(t, run, "before Undo")
+		if line := rig.undone(t, run, "dispatch_issue_update")[0]; line.Outcome.Code != codeGoingUndoAfterUnread || rig.title(t, issue) != "Renamed" {
+			t.Fatalf("Undo answered %+v and the title is %q, want nothing put back, %s", line, rig.title(t, issue), codeGoingUndoAfterUnread)
+		}
+		neverUndoable(t, run, "after Undo")
+	})
+
+	t.Run("a write whose recorded last_seq does not decode is not undoable", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed with an unreadable sequence")
+		run := rig.ran(t, "rename Renamed with an unreadable sequence", goingChange("dispatch_issue_update", retitle(issue, "Renamed")))
+		// The route writes last_seq as a number, so only a record changed since holds another.
+		rig.exec(t, `update going_landings set answer = jsonb_set(answer, '{body,last_seq}', '"seven"') where run_id = $1::uuid and phase = 'do'`, run)
 		neverUndoable(t, run, "before Undo")
 		if line := rig.undone(t, run, "dispatch_issue_update")[0]; line.Outcome.Code != codeGoingUndoAfterUnread || rig.title(t, issue) != "Renamed" {
 			t.Fatalf("Undo answered %+v and the title is %q, want nothing put back, %s", line, rig.title(t, issue), codeGoingUndoAfterUnread)
@@ -672,6 +684,113 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 			t.Fatalf("Undo of the edit answered %+v, want it kept, naming bob, who wrote its version, and never carol", line)
 		}
 	})
+}
+
+// TestAnEditsUndoWritesBackTheDocumentItEditedNotOneWhoseSlugIsItsName: the undo of a document
+// edit uploads the earlier content to the owner's upload route, and that route finds the document
+// by the name the upload gives, taking first the one whose slug that name is. An owner can hold a
+// document whose name is another document's slug: uploads made before the route's lookup read
+// slugs left such pairs. Undo of an edit of such a document writes back that document and leaves
+// the other as it was. Before, it sent the edited document's name, which found the other one: the
+// undo was refused as another writer's change, or, where the other held the very content the edit
+// left, the earlier content was written over the other.
+func TestAnEditsUndoWritesBackTheDocumentItEditedNotOneWhoseSlugIsItsName(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	for _, other := range []struct{ holding, content string }{
+		{"other content", "# Other\n\nAnother document's words.\n"},
+		{"the content the edit leaves", "# Notes\n\nThe opening line.\n"},
+	} {
+		t.Run("beside a document holding "+other.holding, func(t *testing.T) {
+			issue := rig.issue(t, "Holds a draft beside notes holding "+other.holding)
+			owner := "/api/v1/issues/" + issue
+			named := uploadDocument(t, rig.mux, owner, "notes.md", other.content)
+			edited := uploadDocument(t, rig.mux, owner, "draft.md", "# Notes\n\nThe first line.\n")
+			// The edited document takes the other's slug as its name, as an older upload could have
+			// stored it; no route makes such a pair now.
+			rig.exec(t, `update artifacts set name = $2 where id = $1::uuid`, edited.Artifact.ID, named.Artifact.Slug)
+			versions := func() int {
+				return rig.count(t, `select count(*) from artifact_versions where artifact_id = $1::uuid`, named.Artifact.ID)
+			}
+			held, before := rig.documentText(t, named.Artifact.ID), versions()
+			run := rig.ran(t, "edit the draft beside notes holding "+other.holding, goingChange("dispatch_doc_edit", map[string]any{
+				"issue": issue, "artifact": edited.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+			}))
+			line := rig.undone(t, run, "dispatch_doc_edit")[0]
+			if text := rig.documentText(t, edited.Artifact.ID); !line.Outcome.OK || line.Item != edited.Artifact.ID || !strings.Contains(text, "The first line.") {
+				t.Fatalf("Undo of the edit answered %+v and the edited document reads %q, want %s written back to its first line", line, text, edited.Artifact.ID)
+			}
+			if text, after := rig.documentText(t, named.Artifact.ID), versions(); text != held || after != before {
+				t.Fatalf("after Undo the document whose slug is the edited one's name reads %q at %d versions, want it untouched: %q at %d", text, after, held, before)
+			}
+		})
+	}
+}
+
+// TestAnEditsUndoThatItsRecordSettlesWritesNothingBack: the undo of a document edit writes back
+// the content of the read its row was approved over. Where the approval holds no read, holds a
+// read whose token is not the one the edit's route answered it replaced, or holds a read that does
+// not decode, what the edit replaced is unknown: Undo answers 409 GOING_UNDO_BEFORE_UNREAD, in
+// words that say which of the three it is, and writes nothing back. Before, all three said another
+// writer changed the document, which is true of the second alone. An edit whose landed request no
+// row of its tool sends is settled before the document's undo is reached, by the check that names
+// a request sent before a call's own (goingUndoer.plan): it is named sent, not undone, and nothing
+// is written back. History offers Undo on none of them.
+func TestAnEditsUndoThatItsRecordSettlesWritesNothingBack(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	unread := func(why string) goingWriteOutcome {
+		return goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
+			Message: why + ", so what it replaced is unknown and nothing was written back: read the document to see what it holds"}
+	}
+	for _, each := range []struct {
+		name  string
+		shape string
+		undo  goingUndoKind
+		want  goingWriteOutcome
+	}{
+		{"an approval that holds no read", `update going_plan_rows set approval = null where run_id = $1::uuid`,
+			goingUndoWriteBack, unread("the edit's approval holds no read of the document")},
+		{"a read whose token is not the one the edit replaced",
+			`update going_plan_rows set approval = jsonb_set(approval, '{seen,token}', '"another token"') where run_id = $1::uuid`,
+			goingUndoWriteBack, unread("another writer changed the document between the read the edit was approved over and the edit")},
+		{"a read that does not decode",
+			`update going_plan_rows set approval = jsonb_set(approval, '{seen,now}', '"not a document"') where run_id = $1::uuid`,
+			goingUndoWriteBack, unread("the read the edit was approved over does not hold the document's content")},
+		{"a landing no row of the tool sends", `update going_landings set method = 'PATCH' where run_id = $1::uuid and phase = 'do'`,
+			goingUndoNotUndone, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}},
+	} {
+		t.Run(each.name, func(t *testing.T) {
+			issue := rig.issue(t, "Holds notes whose edit has "+each.name)
+			notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
+			run := rig.ran(t, "edit the notes whose edit has "+each.name, goingChange("dispatch_doc_edit", map[string]any{
+				"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+			}))
+			rig.exec(t, each.shape, run)
+			versions := func() int {
+				return rig.count(t, `select count(*) from artifact_versions where artifact_id = $1::uuid`, notes.Artifact.ID)
+			}
+			before := versions()
+			if response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"); response.Code != http.StatusOK || decodeBody[goingRun](t, response).Undoable {
+				t.Fatalf("before Undo the run answered %d %s, want it not undoable", response.Code, response.Body.String())
+			}
+			line := rig.undone(t, run, "dispatch_doc_edit")[0]
+			if line.Undo != each.undo || line.Outcome != each.want {
+				t.Fatalf("Undo of the edit answered %+v, want the undo %s answering %+v", line, each.undo, each.want)
+			}
+			for _, field := range line.Fields {
+				if field.OK != each.want.OK || field.Message != each.want.Message {
+					t.Fatalf("the field %q answered %+v, want the line's outcome %+v", field.Field, field, each.want)
+				}
+			}
+			if text, after := rig.documentText(t, notes.Artifact.ID), versions(); !strings.Contains(text, "The opening line.") || after != before {
+				t.Fatalf("after Undo the document reads %q at %d versions, want the edit kept at %d: nothing written back", text, after, before)
+			}
+			if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); landed != 0 {
+				t.Fatalf("Undo landed %d requests, want none", landed)
+			}
+		})
+	}
 }
 
 // TestARowThatAddsALabelKeepsTheOthersAndItsUndoPutsThemBack: a plan row of dispatch_issue_update

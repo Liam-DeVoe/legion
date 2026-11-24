@@ -55,6 +55,11 @@ type goingCondition struct {
 	// ExpectSHA256 is an upload's: the hex SHA-256 of the markdown the document of the name must
 	// hold, or the upload is refused, 409 DOCUMENT_CHANGED, as it is where no document holds it.
 	ExpectSHA256 string
+	// ExpectArtifact is an upload's beside ExpectSHA256: the id of the document whose markdown that
+	// is, which the name must find, or the upload is refused, 409 DOCUMENT_CHANGED, as it is where
+	// the name finds none. Without ExpectSHA256 it is 400 ARTIFACT_INPUT. While empty it is left out
+	// of the request's digest (goingSend.digest).
+	ExpectArtifact string `json:",omitempty"`
 	// ExpectNew is an upload's: the owner must hold no artifact the name finds, or the upload is
 	// refused, 409 DOCUMENT_EXISTS. With ExpectSHA256 it is 400 ARTIFACT_INPUT.
 	ExpectNew bool
