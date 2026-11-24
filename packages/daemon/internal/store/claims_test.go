@@ -463,8 +463,10 @@ func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
 // The head a reviewer's launch gave it (ReviewLaunchHead) and that launch's generation
 // (ReviewLaunchGeneration) are columns of their own: a daemon restarted while the reviewer's
 // process runs reads them back, and with them where the reviewer's own clone stands, so the
-// reviewer's next task goes to the process it found when the head has not moved. A claim no
-// reviewer's launch wrote reads back with neither, the columns' defaults.
+// reviewer's next task goes to the process it found when the head has not moved. Both columns are
+// nullable, with no default (B's one migration, 20261123213816_verdicts): a row that holds neither,
+// as one written before that migration or by a release before it does, reads back with no head at
+// generation 0, which names no launch.
 func TestAReviewersLaunchHeadRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -481,6 +483,15 @@ func TestAReviewersLaunchHeadRoundTrips(t *testing.T) {
 		t.Fatalf("put claim again: %v", err)
 	}
 	sameClaim(t, onlyClaim(t, store), want)
+
+	// The row as a release before B leaves it: neither column holds a value.
+	if _, err := store.Pool().Exec(ctx, `update claims set review_launch_head = null, review_launch_generation = null where token = $1`,
+		string(want.Token)); err != nil {
+		t.Fatalf("clear the launch head as a release before B leaves it: %v", err)
+	}
+	if got := onlyClaim(t, store); got.ReviewLaunchHead != "" || got.ReviewLaunchGeneration != 0 {
+		t.Fatalf("a claim whose row holds neither column reads back %q at %d, want no head at generation 0", got.ReviewLaunchHead, got.ReviewLaunchGeneration)
+	}
 }
 
 // The turn a claim last started and the one it last ended are nullable columns of their own: a

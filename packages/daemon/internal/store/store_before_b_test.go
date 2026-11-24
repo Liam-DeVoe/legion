@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -31,13 +32,15 @@ import (
 // rollout puts back on that database.
 //
 // So this file calls only code that every build before B has, and that 52b3cf5c, the build the
-// daemons ran on 2026-11-17, already had: Open, Store.Migrate, Store.Tx, Store.BeginTx and
-// Store.SchemaVersion, migrations.All, testdb.DatabaseURL, pgx's pgconn.ParseConfig, and in record
+// daemons ran on 2026-11-17, already had: Open, Store.Migrate, Store.Tx, Store.BeginTx,
+// Store.SchemaVersion, Store.Claims and Store.PutClaim, migrations.All, testdb.DatabaseURL, pgx's
+// pgconn.ParseConfig, supervise.StateIdle and the fields of supervise.Claim it sets, and in record
 // NewStore, Issues, Phases, PullRequest, PutIssue, PutPullRequest, PutPhase, Enqueue,
 // NewOutboxRow, DecodeOutboxPayload and LaneOf, and the fields of Issue, PullRequest, PhaseRow,
-// ReviewDecision and OutboxRow that it sets. It names none of this package's test helpers, since
-// a build before B may lack them or spell them otherwise, and every name it declares but the
-// test's own starts with beforeB, which no build declares.
+// ReviewDecision and OutboxRow that it sets. Its SQL names B's two claims columns, which the
+// database B migrated holds and no Go code of the build reads. It names none of this package's
+// test helpers, since a build before B may lack them or spell them otherwise, and every name it
+// declares but the test's own starts with beforeB, which no build declares.
 
 // beforeBDatabaseName is the shape of the pair's database name: one Postgres identifier that needs
 // no quotes, within Postgres's 63 bytes.
@@ -91,6 +94,11 @@ var beforeBTables = []string{"outside_pull_requests", "verdict_reviews", "side_r
 //   - The record's writes write an issue, its pull request, the reviewer's verdict (the round's
 //     decision, as this build records a review's) and an outbox row with no error, and each
 //     reads back.
+//   - The claim store reads every claims row, the reviewer's claim B wrote with the head its
+//     launch gave it among them, and writes claims: B's claim written back keeps the two columns
+//     B's migration adds as they were, since a build before B names neither in any statement,
+//     and a claim this build writes records no launch head: a build before B leaves both null,
+//     which the nullable columns with no default take, and B writes no head at generation 0.
 //
 // The rows this test writes are committed and left in the database, under a fresh ACME issue key
 // each run, as TestRowsForTheBuildBeforeB leaves its own.
@@ -329,6 +337,87 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			t.Fatalf("read back what this build wrote: %v", err)
 		}
 		t.Logf("wrote and read back issue %s, pull request #%d at %s, the reviewer's approval and an outbox row", key, number, head)
+	})
+
+	t.Run("the claim store reads every claims row and writes one", func(t *testing.T) {
+		var rows int
+		var launched string
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, "select count(*) from claims").Scan(&rows); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, "select coalesce(min(token), '') from claims where review_launch_head <> ''").Scan(&launched)
+		}); err != nil {
+			t.Fatalf("read the claims rows: %v", err)
+		}
+		if launched == "" {
+			t.Fatal("no claims row holds a launch head, so no row read here is one B's reviewer launch wrote: TestRowsForTheBuildBeforeB writes one")
+		}
+		claims, err := st.Claims(ctx)
+		if err != nil {
+			t.Fatalf("Claims on the database B migrated and wrote: %v", err)
+		}
+		if len(claims) != rows {
+			t.Fatalf("Claims read %d claims; the table holds %d rows", len(claims), rows)
+		}
+		var bs *supervise.Claim
+		for i := range claims {
+			if string(claims[i].Token) == launched {
+				bs = &claims[i]
+			}
+		}
+		if bs == nil {
+			t.Fatalf("Claims read no claim %s, whose row holds B's launch head", launched)
+		}
+
+		// B's claim, written back by this build: B's two columns keep what B wrote.
+		var headBefore, headAfter string
+		var generationBefore, generationAfter int64
+		readLaunch := func(head *string, generation *int64) error {
+			return st.Tx(ctx, func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx, "select review_launch_head, review_launch_generation from claims where token = $1", launched).
+					Scan(head, generation)
+			})
+		}
+		if err := readLaunch(&headBefore, &generationBefore); err != nil {
+			t.Fatalf("read B's launch head of %s: %v", launched, err)
+		}
+		if err := st.PutClaim(ctx, *bs); err != nil {
+			t.Fatalf("PutClaim of B's claim %s: %v", launched, err)
+		}
+		if err := readLaunch(&headAfter, &generationAfter); err != nil {
+			t.Fatalf("read B's launch head of %s again: %v", launched, err)
+		}
+		if headAfter != headBefore || generationAfter != generationBefore {
+			t.Errorf("this build's write of %s moved B's launch head from %s at %d to %s at %d; want it left as B wrote it",
+				launched, headBefore, generationBefore, headAfter, generationAfter)
+		}
+
+		// A claim this build writes: its row holds neither of B's columns.
+		key := fmt.Sprintf("ACME-%d", beforeBNumber(t))
+		mine := supervise.Claim{Token: claim.Token("legion-acme-" + strings.ToLower(key) + "-reviewer"), Project: "acme", Tree: key, Issue: key,
+			Role: claim.RoleReviewer, Generation: 1, State: supervise.StateIdle}
+		if err := st.PutClaim(ctx, mine); err != nil {
+			t.Fatalf("PutClaim of a claim this build makes, on the database B migrated: %v", err)
+		}
+		var none bool
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, "select coalesce(review_launch_head, '') = '' and coalesce(review_launch_generation, 0) = 0 from claims where token = $1",
+				string(mine.Token)).Scan(&none)
+		}); err != nil {
+			t.Fatalf("read B's columns of the claim this build wrote: %v", err)
+		}
+		if !none {
+			t.Errorf("the claim %s this build wrote records a launch head in B's columns; want none", mine.Token)
+		}
+		again, err := st.Claims(ctx)
+		if err != nil {
+			t.Fatalf("Claims after this build's write: %v", err)
+		}
+		if len(again) != rows+1 {
+			t.Errorf("Claims read %d claims after this build wrote one; want %d", len(again), rows+1)
+		}
+		t.Logf("read %d claims, %s among them with B's launch head %s at %d, wrote it back and left that head, and wrote %s", rows, launched, headAfter, generationAfter, mine.Token)
 	})
 }
 

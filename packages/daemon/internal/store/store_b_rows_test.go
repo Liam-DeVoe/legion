@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -50,6 +51,9 @@ import (
 //   - the writes of legion-verdict: the daemon's check run on the Legion head, its commit status
 //     over another writer's on the outside head, and the merge-group write, a check run on the
 //     commit of the merge queue's group (verdict_writes);
+//   - the reviewer's claim, as its machine writes it once its launch gave it the head it reviews:
+//     the two claims columns B's migration adds hold that head and the launch's generation
+//     (supervise.Claim.ReviewLaunchHead and ReviewLaunchGeneration);
 //   - one outbox row of each kind B runs, through record.NewOutboxRow, among them the ask for the
 //     reviewer's verdict past review that the workflow queues for a push (askVerdict): the
 //     merge-forward review with no reason; and the same ask of the architect that ran the owner's
@@ -244,6 +248,11 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write B's rows: %v", err)
 	}
+	reviewer := supervise.Claim{Token: reviewerClaim, Project: "acme", Tree: key, Issue: key, Role: claim.RoleReviewer,
+		Generation: 2, State: supervise.StateIdle, ReviewLaunchHead: head, ReviewLaunchGeneration: 2}
+	if err := st.PutClaim(ctx, reviewer); err != nil {
+		t.Fatalf("write the reviewer's claim with the head its launch gave it: %v", err)
+	}
 
 	// What was committed reads back through B's own reads: each review step's verdict at the head,
 	// and the reviewer's decision, a state and a head in the keys every build reads.
@@ -286,6 +295,14 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read back B's rows: %v", err)
 	}
-	t.Logf("wrote and left issue %s with pull request %s#%d at %s, the reviewer's and the owner's approvals there, outside pull request #%d at %s, its side reviewer and verdict, three writes of legion-verdict (the merge group's on %s), and %d outbox rows of %d kinds",
-		key, repo, number, head, outside, outsideHead, group, len(payloads), len(written))
+	claims, err := st.Claims(ctx)
+	if err != nil {
+		t.Fatalf("read back the claims: %v", err)
+	}
+	if i := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == reviewerClaim }); i < 0 ||
+		claims[i].ReviewLaunchHead != head || claims[i].ReviewLaunchGeneration != 2 {
+		t.Errorf("the reviewer's claim %s reads back from %+v; want its launch head %s at generation 2", reviewerClaim, claims, head)
+	}
+	t.Logf("wrote and left issue %s with pull request %s#%d at %s, the reviewer's and the owner's approvals there, outside pull request #%d at %s, its side reviewer and verdict, three writes of legion-verdict (the merge group's on %s), the reviewer's claim launched at %s, and %d outbox rows of %d kinds",
+		key, repo, number, head, outside, outsideHead, group, head, len(payloads), len(written))
 }
