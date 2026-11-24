@@ -45,6 +45,24 @@ function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
 
+/** What an open keeps shown whole (`MultiSelect`'s `opening`): a single pick's option it starts
+ *  on, under the search it starts with, from the open until the reader moves on in the list or it
+ *  closes; the rows it last looked for that option among (`among`), null before the commit that
+ *  draws that search; and what watches the list's box for a change of its size (`resized`), null
+ *  until the open's effects have run. */
+interface Opening {
+  among: readonly string[] | null;
+  readonly query: string;
+  resized: ResizeObserver | null;
+  readonly value: string;
+}
+
+/** Ends what an open keeps shown whole (`Opening`), and stops watching the list's box for it. */
+function letGo(opening: { current: Opening | null }): void {
+  opening.current?.resized?.disconnect();
+  opening.current = null;
+}
+
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -280,11 +298,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const opensOn = useRef<string | undefined>(undefined);
   // What the next open puts in the text box: the character typed on the closed trigger, if any.
   const opensWith = useRef("");
-  // What an open is to show whole once it has drawn the rows it opens on - the option it starts
-  // on, under the search it starts with - from the open until the commit that draws that search.
-  const opening = useRef<{ readonly query: string; readonly value: string | undefined } | null>(
-    null
-  );
+  // What an open keeps shown whole (`Opening`), null while it keeps nothing.
+  const opening = useRef<Opening | null>(null);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -354,13 +369,18 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // Opening starts a fresh search on the value a single pick holds, with the character typed on
   // the closed trigger in the text box, if one opened it, before the open paints: the search the
   // list last closed on would otherwise narrow the rows its first frame draws. The option it
-  // starts on is then shown whole (`opening`), and the panel hands the focus to the search unless
-  // the host hands it in itself (`focusOnOpen`).
+  // starts on is then kept shown whole (`opening`) until the close ends that, and the panel hands
+  // the focus to the search unless the host hands it in itself (`focusOnOpen`).
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      letGo(opening);
+      return;
+    }
+    const value = opensOn.current;
     setQuery(opensWith.current);
-    setActiveValue(opensOn.current);
-    opening.current = { query: opensWith.current, value: opensOn.current };
+    setActiveValue(value);
+    opening.current =
+      value === undefined ? null : { among: null, query: opensWith.current, resized: null, value };
     opensWith.current = "";
   }, [open]);
   // Closing returns the focus to the trigger when the close left it nowhere - the list that held
@@ -451,8 +471,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     const bottom = footRef.current?.getBoundingClientRect().top ?? shownSpan(box).bottom;
     scrollToShow(box, option.getBoundingClientRect(), { bottom, top });
   };
-  // ArrowDown and ArrowUp show the option they mark active whole.
+  // ArrowDown and ArrowUp show the option they mark active whole. The reader has moved on from the
+  // option the list opened on, which is no longer kept shown (`letGo`).
   const markActive = (value: string) => {
+    letGo(opening);
     setActiveValue(value);
     showOption(value);
   };
@@ -462,13 +484,67 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // took it unseen. A layout effect, in the commit that draws the rows of the open's own search:
   // the open's own commit where the list last closed on that search, else the one its setting of
   // the search makes right after it, before anything paints. So the first frame that paints those
-  // rows already shows the option whole.
+  // rows already shows the option whole. Every later commit that changes the rows shows it whole
+  // again, until the reader moves on in the list: the issue's Assignee list reads its people only
+  // once it is opened, so it opens on Unassigned and the assignee, and when the people came the
+  // assignee moved to its place among everyone, still the active option, below the rows its box
+  // shows. A change of the list box's own size shows it whole again too (below). An arrow
+  // (`markActive`), a word typed in the text box and a scroll of the reader's own (below) each end
+  // that, and so does the close.
   useLayoutEffect(() => {
     const opened = opening.current;
     if (opened === null || opened.query !== query) return;
-    opening.current = null;
-    if (opened.value !== undefined && rows.includes(opened.value)) showOption(opened.value);
+    const { among } = opened;
+    if (among?.length === rows.length && among.every((row, at) => row === rows[at])) return;
+    opened.among = rows;
+    if (rows.includes(opened.value)) showOption(opened.value);
   });
+  // While the open keeps the option shown (`opening`), a change of the list box's own size shows
+  // it whole again: where the window has too little room for the panel, the panel cuts its box to
+  // that room (`AnchoredPanel`) in a commit after the one that showed the option, and a box cut
+  // shorter can leave the option cut at its bottom. What watches the box stops as the open lets
+  // go of the option (`letGo`) and as the list closes.
+  //
+  // The reader's own scroll of the list ends what the open keeps shown, so a later change of the
+  // rows or of the box leaves the list where they put it: a turn of the wheel or a touch dragged
+  // over it; a press on it outside its text box - on its scrollbar, a middle button's autoscroll,
+  // a drag that selects its words past its edge; a key that can scroll it - PageUp or PageDown,
+  // even from its text box, or any key while the focus is in the list but not in its text box;
+  // and the focus reaching a row, as a screen reader's cursor puts it there, which the panel
+  // scrolls into the box's view (`AnchoredPanel`). Heard on the list's box in the capture phase,
+  // before anything inside it can stop them, and passively, so no scroll waits on them.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `showOption` reads refs and the list's own id alone, so the open's copy shows the option as any later render's would; with it the effect would watch and listen anew at every render.
+  useEffect(() => {
+    const head = headRef.current;
+    const box = head?.parentElement ?? null;
+    const kept = opening.current;
+    if (!open || kept === null || head === null || box === null) return;
+    const resized = new ResizeObserver(() => showOption(kept.value));
+    resized.observe(box);
+    kept.resized = resized;
+    const moved = () => letGo(opening);
+    const outsideHead = (event: Event) => {
+      if (!(event.target instanceof Node && head.contains(event.target))) moved();
+    };
+    const keyed = (event: globalThis.KeyboardEvent) => {
+      const paging = event.key === "PageUp" || event.key === "PageDown";
+      if (paging || event.target !== inputRef.current) moved();
+    };
+    const heard = { capture: true, passive: true };
+    box.addEventListener("wheel", moved, heard);
+    box.addEventListener("touchmove", moved, heard);
+    box.addEventListener("pointerdown", outsideHead, heard);
+    box.addEventListener("focusin", outsideHead, heard);
+    box.addEventListener("keydown", keyed, heard);
+    return () => {
+      resized.disconnect();
+      box.removeEventListener("wheel", moved, true);
+      box.removeEventListener("touchmove", moved, true);
+      box.removeEventListener("pointerdown", outsideHead, true);
+      box.removeEventListener("focusin", outsideHead, true);
+      box.removeEventListener("keydown", keyed, true);
+    };
+  }, [open]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
@@ -617,6 +693,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
+                // A word typed moves the reader on from the option the list opened on, which is
+                // no longer kept shown (`letGo`), even once the search is back where it began.
+                letGo(opening);
                 setQuery(event.target.value);
                 setActiveValue(undefined);
                 onQueryChange?.(event.target.value);

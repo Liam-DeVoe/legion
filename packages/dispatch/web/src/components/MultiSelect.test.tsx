@@ -1,12 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
-// fireEvent also gives one row's press below a click with no pointer press before it, which
-// user-event has no form for either.
+// fireEvent also gives one row's press below a click with no pointer press before it, and a turn
+// of the wheel over a list below, which user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { panelOf, pickNamed } from "../__tests__/list-picks";
+import { installResizeObserver } from "../__tests__/scroll-box";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -392,6 +393,117 @@ test("a single pick opens with its picked option shown whole below its text box,
     scrolls.mockRestore();
     lists.restore();
     view.unmount();
+  }
+});
+
+// The issue's Assignee list reads its people only once it is opened: it opened on Unassigned and
+// the assignee, and when the people came the assignee moved to its place among everyone, still
+// the active option, below the five rows its box shows, where Enter took it unseen. Each change of
+// the options shows the option the list opened on whole again, the list's own box alone
+// scrolled, and so does a change of the box's own size: where the window has too little room, the
+// panel cuts its box in a commit after the one that showed the option. That lasts until the reader
+// moves on in the list: after an arrow, a word typed in the text box or a scroll of their own, a
+// change of the options or of the box leaves the list where it is.
+test("a single pick keeps the option it opened on shown whole as its options and its box change, until the reader moves on in the list", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const before = ["Triage", "Needs review"];
+  const host = (options: string[]) => <SingleHost initial="Needs review" options={options} />;
+  const view = render(host(before));
+  const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    // The option the list marks active at each moment, and how far it has scrolled then: the box
+    // shows 61-286 px of its content, Needs review stands at 325-369 among the eight statuses,
+    // and at 369-413 with one more option before it.
+    const seen: [string, string, number | undefined][] = [];
+    const shown = (moment: string) =>
+      seen.push([
+        moment,
+        activeName(screen.getByRole("combobox", { name: "Search epics" })),
+        lists.box()?.scrollTop,
+      ]);
+    // Opens the list on `options`, the two options unless named, after closing it and taking its
+    // options to them: the layout gives a box to the rows the open draws alone.
+    const reopen = async (options = before) => {
+      await user.keyboard("{Escape}");
+      view.rerender(host(options));
+      await user.click(trigger);
+    };
+    await user.click(trigger);
+    shown("opened on two options");
+    view.rerender(host(STATUSES));
+    shown("the eight statuses come");
+    view.rerender(host(["Draft", ...STATUSES]));
+    shown("one more comes before it");
+
+    // An arrow marks Triage active, and the statuses come.
+    await reopen();
+    await user.keyboard("{ArrowUp}");
+    view.rerender(host(STATUSES));
+    shown("an arrow, then the statuses");
+
+    // A word typed and erased leaves the search as it began, and the statuses come. Both options
+    // hold the word, so the rows the list laid out stay drawn under it.
+    await reopen();
+    await user.keyboard("e{Backspace}");
+    view.rerender(host(STATUSES));
+    shown("a word typed, then the statuses");
+
+    // The statuses come; the reader turns the wheel over the list, back to its top, and one
+    // more option comes before Needs review.
+    await reopen();
+    view.rerender(host(STATUSES));
+    shown("opened again, the statuses come");
+    const box = lists.box();
+    if (box === null) throw new Error("the list was never laid out");
+    // A turn of the wheel, which user-event has no form for.
+    fireEvent.wheel(box, { deltaY: -100 });
+    box.scrollTop = 0;
+    view.rerender(host(["Draft", ...STATUSES]));
+    shown("the reader's scroll, then one more");
+
+    // The window leaves the panel too little room, so it cuts the list's box from 286 px of what
+    // it holds to 264 (`AnchoredPanel`), and what watches the box hears of it.
+    const cut = () => {
+      const panel = lists.box();
+      if (panel === null) throw new Error("the list was never laid out");
+      Object.defineProperty(panel, "clientHeight", { configurable: true, get: () => 264 });
+      panel.getBoundingClientRect = () => new DOMRect(0, 100, 256, 266);
+      sizes.resize(panel);
+    };
+    // The statuses come, and the panel is cut: at 83 the cut box shows 144-347 px of its content
+    // below its text box, and Needs review, at 325-369, ends below that.
+    await reopen();
+    view.rerender(host(STATUSES));
+    cut();
+    shown("the statuses, then the panel cut");
+
+    // The list opens on the statuses with Needs review shown whole at 83, an arrow marks Testing
+    // active, whole at 281-325, and the panel is cut.
+    await reopen(STATUSES);
+    await user.keyboard("{ArrowUp}");
+    cut();
+    shown("the statuses, an arrow, then the panel cut");
+
+    expect(seen).toEqual([
+      ["opened on two options", "Needs review", 0],
+      ["the eight statuses come", "Needs review", 83],
+      ["one more comes before it", "Needs review", 127],
+      ["an arrow, then the statuses", "Triage", 0],
+      ["a word typed, then the statuses", "Triage", 0],
+      ["opened again, the statuses come", "Needs review", 83],
+      ["the reader's scroll, then one more", "Needs review", 0],
+      ["the statuses, then the panel cut", "Needs review", 105],
+      ["the statuses, an arrow, then the panel cut", "Testing", 83],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+    sizes.restore();
   }
 });
 
