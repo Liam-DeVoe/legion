@@ -297,7 +297,8 @@ func fakeClaude() int {
 // (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz, whose
 // out-refusal.jsonl, out-e529.jsonl and out-e429.jsonl these are). A stream is one recording
 // trimmed to the lines a case needs, and commandBlockInTurn is the only one whose lines stand in
-// another order than the recorded one, which its own comment says.
+// another order than the recorded one, which its own comment says. subagent-turn.jsonl is the one
+// stream made by hand, not recorded, until a captured stream replaces it.
 func replay(record *os.File, file string) {
 	raw, err := os.ReadFile(filepath.Join("testdata", file))
 	if err != nil {
@@ -451,12 +452,12 @@ func (r *rig) nextRaw() map[string]any {
 	}
 }
 
-// nextWithSummaries is the next frame the bridge wrote that is not the name of the model that
-// answered (answerFrame), pane summaries (tool_execution_start) included.
+// nextWithSummaries is the next frame the bridge wrote that names no model (namesAModel), pane
+// summaries (tool_execution_start) included.
 func (r *rig) nextWithSummaries() map[string]any {
 	r.t.Helper()
 	for {
-		if frame := r.nextRaw(); !answerFrame(frame) {
+		if frame := r.nextRaw(); !namesAModel(frame) {
 			return frame
 		}
 	}
@@ -480,6 +481,12 @@ func answerFrame(frame map[string]any) bool {
 	return frame["type"] == "message_end" && named
 }
 
+// namesAModel is whether frame only names a model, which says nothing about a turn. It is the name
+// of a model that answered (answerFrame), or the launch's set model, which the bridge names once.
+func namesAModel(frame map[string]any) bool {
+	return answerFrame(frame) || frame["type"] == "legion_set_model"
+}
+
 // expect is the next frame, which must be a typ frame carrying every field of want.
 func (r *rig) expect(typ string, want map[string]any) map[string]any {
 	r.t.Helper()
@@ -495,15 +502,15 @@ func (r *rig) expect(typ string, want map[string]any) map[string]any {
 	return frame
 }
 
-// quiet holds that the bridge writes no frame within a short while, but the name of a model that
-// answered (answerFrame), which says nothing about a turn.
+// quiet holds that the bridge writes no frame within a short while, but a frame that only names a
+// model (namesAModel).
 func (r *rig) quiet() {
 	r.t.Helper()
 	deadline := time.After(300 * time.Millisecond)
 	for {
 		select {
 		case frame := <-r.frames:
-			if !answerFrame(frame) {
+			if !namesAModel(frame) {
 				r.t.Fatalf("got %v, want no frame", frame)
 			}
 		case <-deadline:
