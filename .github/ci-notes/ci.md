@@ -1063,7 +1063,11 @@ go-envoy-held job, through packages/envoy/scripts/database-skips.sh:
     pattern into UNIT_PACKAGES, so the legs between them run each test of the run once;
   * `--skip` leaves out the web display fixture's two tests (envoy-go-build runs them), the
     backend count's five (its step runs them in the same job and env), pmdoc's six corpus tests
-    (each leg runs them on its shard) and TestStatementTimings (the timing step runs it).
+    (each leg runs them on its shard) and TestStatementTimings (the timing step runs it);
+  * `DISPATCH_XID_REQUIRE_GAP_JUDGMENT=1`, as main's unit step set it: the refs package's xid
+    window test runs here, so the step judges its statement-free gaps, and a runner whose kernel
+    cannot show them fails that test naming why rather than passing it on the window's shape
+    alone (storetest.XidRequireGapsEnv).
 
 The `--timeout 15m` is the broker step's, which cmd/cipherd needed whole; a leg's share of it is
 about a third. The step's 30 minutes leave a package that starts in its first 15 its whole

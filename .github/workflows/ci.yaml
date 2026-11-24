@@ -730,9 +730,9 @@ jobs:
       # why: .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips
       - name: Unit test envoy Go package
         if: matrix.suite == 'envoy-go'
-        timeout-minutes: 30 # a package that starts in the first 15 keeps --timeout 15m; legs 1 and 3 reach here at 4 and 9 of 40 and 41
+        timeout-minutes: 30
         working-directory: packages/envoy
-        env: {LEG: '${{ matrix.part }}'}
+        env: {LEG: '${{ matrix.part }}', DISPATCH_XID_REQUIRE_GAP_JUDGMENT: '1'}
         run: scripts/database-skips.sh --timeout 15m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' --run "$(../../.github/scripts/go-test-split.sh "$LEG" 3 $UNIT_PACKAGES)" --jsonfile "go-envoy-held-envoy-go-$LEG-unit.json"
       - {if: always() && matrix.suite == 'envoy-go', uses: ./.github/actions/go-test-upload, with: {name: 'go-envoy-held-envoy-go-${{ matrix.part }}-unit'}}
       - name: Check the statements on the seeded measurement database
