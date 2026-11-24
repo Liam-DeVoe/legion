@@ -273,8 +273,7 @@ func TestAFailedFixClaimLeavesTheEndToTheOwnersMoveBack(t *testing.T) {
 		t.Fatalf("the latest fix = %+v, want fix 1 alone: no second fix for the check at this head", fix)
 	}
 
-	if result := r.apply("owner-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
-		Reason: "the check still fails"}); result.Refusal != nil {
+	if result := r.ownerMovesBack(); result.Refusal != nil {
 		t.Fatalf("the owner's move back was refused: %+v", result.Refusal)
 	}
 
@@ -282,4 +281,51 @@ func TestAFailedFixClaimLeavesTheEndToTheOwnersMoveBack(t *testing.T) {
 	if counts := r.counts(); counts.Pass != 1 {
 		t.Fatalf("the task counts %+v, want one return", counts)
 	}
+}
+
+// The control of the three stop tests whose fix is not running, kept: with the way's mark written
+// only for a running fix (the seam wayMarkRunningOnly), an ended fix whose way is pending and a
+// fix that reads its job keep no mark, and each test's own claim fails. The fix that ended with
+// commits takes its way after the restarted implementer's end instead of the row's move; the fix
+// that failed back to the planner returns the task there and counts it; the fix that read its job
+// after the stop starts the implementer on the stopped task.
+func TestTheStopControlsWithTheMarkOnlyOnARunningFix(t *testing.T) {
+	markRunningOnly := func(r *fixRig) { r.engine.wayMarkRunningOnly = true }
+
+	t.Run("an ended fix's pending way is taken after the restart", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		markRunningOnly(r)
+		r.pushed(headTwo)
+		r.apply("fix-done", fixCompletion(headTwo))
+		r.stop()
+		r.todo()
+		r.move(TriggerImplementationReady, "", record.PhaseRow{})
+		if fix := r.latestFix(); fix.Way == 4 {
+			t.Fatalf("the fix = %+v, want no mark of no way: the seam writes the mark only for a running fix", fix)
+		}
+	})
+
+	t.Run("a stored return to the planner is taken and counted", func(t *testing.T) {
+		r := planningFix(t)
+		markRunningOnly(r)
+		r.apply("fix-back", fixMoveBack(phase.Planning))
+		r.stop()
+		r.todo()
+		r.move(TriggerPlannerCompleted, "", record.PhaseRow{})
+		r.move(TriggerImplementationReady, "", record.PhaseRow{})
+		if counts := r.counts(); len(counts.BackwardMoves) == 0 {
+			t.Fatalf("the task counts %+v, want the fix's stored return counted", counts)
+		}
+	})
+
+	t.Run("a fix that reads its job starts the implementer after the stop", func(t *testing.T) {
+		r := reviewing(t)
+		markRunningOnly(r)
+		r.fails(fixHead, "k-ci")
+		r.stop()
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		if starts := r.fixStarts(); len(starts) != 1 {
+			t.Fatalf("the starts of a fix after the stopped fix's read = %+v, want the one the unmarked fix makes", starts)
+		}
+	})
 }
