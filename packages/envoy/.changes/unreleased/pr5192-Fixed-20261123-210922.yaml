@@ -14,9 +14,10 @@ body: |-
   message's event; both named must agree. A person's message to the session in its own
   conversation, which names no project, passes on its own agent subject (`dispatchDirectMessage`).
   Any other Dispatch frame the edge cannot place in one project - among them a comment's mention
-  on a project document re-sent with no project on its event - is withheld under
-  `reason="dispatch_project_unread"` and logged with its subject, never its content. A listener
-  that is no edge one hands every Dispatch frame on as before.
+  on a project document whose event names no project, as Dispatch's re-send built it before
+  #4683 - is withheld under `reason="dispatch_project_unread"`; every withheld frame is
+  acknowledged undelivered, counted, and logged with its subject and reason, never its content. A
+  listener that is no edge one hands every Dispatch frame on as before.
 time: 2026-11-23T21:09:22Z
 custom:
     Issue: pr5192

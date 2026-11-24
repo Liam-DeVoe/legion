@@ -196,11 +196,11 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 				item.Role = payloadPrivRole
 				return []byte(payloadJSON(t, item))
 			}(), c.want},
-			// A mention in a comment on a project document, as the API's first send builds it (the
-			// event QueueAppendWithLogins returns, whose project lockEventOwner read from the
-			// document) and as BuildE1Stamp makes its re-send (loadCommentCreatedEvent reading the
-			// document's project): the document's project decides it.
-			row{"document mention, the API's first send: " + p + "'s document", sent(t, func() model.Event {
+			// A mention in a comment on a project document, as the API sends it, first and again:
+			// the event names the document's project on every send (#4683: the first send's event
+			// is the one appended under the document's owner, and a re-send reads that event back
+			// with its project, loadCommentCreatedEvent), so the document's project decides it.
+			row{"document mention, as the API sends it: " + p + "'s document", sent(t, func() model.Event {
 				event := apiEvent("", "comment.created", comment("", "@ses_v please look"))
 				artifact := documentID
 				event.ArtifactID, event.Project = &artifact, p
@@ -275,11 +275,11 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 // copy of such a message, or of a reply in such a conversation (its batch reads an event with no
 // owner alone and finds it no destination). A message aimed at another session or in another
 // session's thread, one carrying a key no direct message carries, one on a role's lane, and a
-// comment's mention on a project document whose event names no project - as the API's re-send
-// builds it today (loadCommentCreatedEvent reads the events row's own project, which a document's
-// event leaves empty) - are withheld, as frames the edge cannot place in a project; the same
-// mention with the document's project stamped on its event (BuildE1Stamp) is judged by that
-// project. A listener that is no edge one hands every such frame on.
+// comment's mention on a project document whose event names no project - the frame the API's
+// re-send built before #4683, when loadCommentCreatedEvent read the events row's own project,
+// which a document's event leaves empty - are withheld, as frames the edge cannot place in a
+// project; the same mention with the document's project on its event, as the API sends it since
+// #4683, is judged by that project. A listener that is no edge one hands every such frame on.
 func TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation(t *testing.T) {
 	own := contracts.LegacyAgentSubject(payloadSession)
 	privLane := contracts.RoleTopicPrefix + payloadPrivRole
@@ -350,8 +350,8 @@ func TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation(t *te
 			map[string]any{"attempt": 1, "mode": "steer", "target": target}, "m-1:steer", ""), unread},
 		{"a message on no issue delivered as a comment's mention", own, sent(t, apiEvent("", "message.created", message("", "hi", target)),
 			mention, "m-1:steer", ""), unread},
-		{"a comment mention on the token's project's document, re-sent with no project (today's re-send)", own, documentMention(""), unread},
-		{"control: the same re-send with the document's project stamped (BuildE1Stamp)", own, documentMention("PRIV"), framePasses()},
+		{"a comment mention on the token's project's document whose event names no project (the re-send before #4683)", own, documentMention(""), unread},
+		{"control: the same mention with the document's project on its event (as sent since #4683)", own, documentMention("PRIV"), framePasses()},
 		{"control: the same mention on another project's document", own, documentMention("PUB"), frameDrops(withheldProjectNotHeld)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
