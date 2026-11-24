@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
-import { expandedState } from "./settled";
+import { expandedState, settledState } from "./settled";
 
 /**
  * One of the shared controls, found by the `data-control` value it writes
@@ -44,6 +44,8 @@ export async function barAction(page: Page, label: string): Promise<Locator> {
   const button = page.getByRole("button", { exact: true, name: label });
   const more = control(controlRow(page), CONTROL.moreMenu);
   await expect(button.or(more).first()).toBeVisible();
+  // The wait above saw the button or More, and the bar takes its layout from its own width
+  // before it first paints, so whether the button is drawn is settled by the time either shows.
   if ((await button.count()) > 0) return button;
   if ((await expandedState("the bar's More", more)) === "shut") await more.click();
   return page.getByRole("menuitem", { exact: true, name: label });
@@ -67,6 +69,8 @@ export async function displayTrigger(
   );
   const more = control(bar, CONTROL.moreMenu);
   await expect(button.or(more).first()).toBeVisible();
+  // The wait above saw the button or More, and the bar takes its layout from its own width
+  // before it first paints, so whether the button is drawn is settled by the time either shows.
   if ((await button.count()) > 0) return button;
   if ((await expandedState("the bar's More", more)) === "shut") await more.click();
   return page
@@ -75,11 +79,22 @@ export async function displayTrigger(
 }
 
 /** Shuts the bar's **More** inside `within` where it stands open, as a reader does by pressing
- *  it again: a display menu opened from it leaves it open under that menu. */
+ *  it again: a display menu opened from it leaves it open under that menu. Whether it stands open
+ *  is read, not whether it is drawn: a wide bar draws **More** only while it holds an action, as
+ *  the Inbox's holds **Mark all read** while a row is unread, so it can come or go as the list
+ *  loads, while only a press opens it. */
 export async function shutMore(within: Locator | Page): Promise<void> {
-  const more = control(controlRow(within), CONTROL.moreMenu);
-  if ((await more.count()) === 0) return;
-  if ((await expandedState("the bar's More", more)) === "open") await more.click();
+  const bar = controlRow(within);
+  const more = control(bar, CONTROL.moreMenu);
+  const page = bar.page();
+  const expanded = page.locator('[aria-expanded="true"]');
+  const shown = await settledState("the bar's More", [
+    ["open", more.and(expanded)],
+    // `hasNot` reads its locator inside each bar, so the open **More** is named from the page.
+    ["not open", bar.filter({ hasNot: control(page, CONTROL.moreMenu).and(expanded) })],
+  ]);
+  if (shown === "not open") return;
+  await more.click();
   await expect(more).toHaveAttribute("aria-expanded", "false");
 }
 
@@ -128,9 +143,14 @@ export async function chooseShow(
   if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await trigger.count()) > 0 && (await expandedState("the View menu", trigger)) === "open") {
-    await trigger.click();
-  }
+  // The pick leaves the menu open on its trigger, which is pressed again to shut it, unless the
+  // trigger has left the page and taken the menu with it: so the menu's state is read once the
+  // page settles on one of the two, rather than the trigger's count at one instant.
+  const after = await settledState("the View menu", [
+    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", page.locator("body").filter({ hasNot: menu })],
+  ]);
+  if (after === "open") await trigger.click();
   await expect(menu).toHaveCount(0);
   await shutMore(within);
 }

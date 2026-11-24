@@ -147,6 +147,8 @@ async function expectOneHeaderLine(
   where: string,
   expected: readonly string[]
 ): Promise<void> {
+  // Every caller waited for its surface's first row before this, so the header line is drawn,
+  // and the expect below fails unless it holds the parts `expected`, which the loop then walks.
   const line = await headerLineOf(root);
   const said = `${where}: the header line, ${Math.round(line.height)}px tall, holds ${line.parts
     .map(

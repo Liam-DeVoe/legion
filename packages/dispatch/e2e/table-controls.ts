@@ -1200,19 +1200,25 @@ async function chipsOfBar(
 ): Promise<{ line: string[]; listed: string[] }> {
   const line = bar.locator("[data-chip-strip]").getByRole("button", { name: REMOVE_CHIP });
   const more = bar.getByRole("button", { name: MORE_CHIPS });
-  const held = async () =>
-    (await more.count()) === 0
-      ? 0
-      : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+  // `N` as the poll's passing reading saw it, once the line and `N` add up to `count`.
+  let n = 0;
   await expect
-    .poll(async () => (await line.count()) + (await held()), {
-      message: `${where}: the chips line and its +N more stand for another number than the ${count} narrowings on`,
-    })
+    .poll(
+      async () => {
+        n =
+          (await more.count()) === 0
+            ? 0
+            : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+        return (await line.count()) + n;
+      },
+      {
+        message: `${where}: the chips line and its +N more stand for another number than the ${count} narrowings on`,
+      }
+    )
     .toBe(count);
   const names = (chips: Locator) =>
     chips.evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? ""));
   const drawn = await names(line);
-  const n = await held();
   if (n === 0) return { line: drawn, listed: [] };
   await more.click();
   const panel = page.getByRole("dialog", { name: MORE_CHIPS });
@@ -1230,6 +1236,9 @@ async function chipsOfBar(
  *  `+N more` - and **Filters**, the display menu and **More** showing no words but a badge's
  *  number, each with its name. */
 async function expectOneBar(page: Page, name: SurfaceName, bar: Locator, where: string) {
+  // Every caller waited before this for the bar it reads: its page's first row, or the narrowings
+  // it stands for and two frames more (`settledBar`), or a word typed and two frames more; and the
+  // bar takes its layout from its own width before it first paints, so this is its settled layout.
   const reading = await readBar(bar);
   const said = saidOf(reading);
   const tallest = Math.max(...reading.controls.map((one) => one.height));
@@ -1488,6 +1497,8 @@ async function expectInboxBar(
   await page.keyboard.press("Escape");
   await expect(more, `${where}: Escape left More open`).toHaveCount(0);
   if (phone) {
+    // More was waited shut above and nothing since has resized the page, so the bar's box is the
+    // one the controls of `rest` were read in.
     const box = await bar.evaluate((node) => node.getBoundingClientRect().toJSON() as DOMRect);
     const misplaced = rest.controls.flatMap((one, index) => {
       const out =
@@ -1529,6 +1540,8 @@ export async function expectBarDesign(
   // At rest: no narrowing, nothing hovered, nothing focused.
   await page.mouse.move(size.width - 1, size.height - 1);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // `openSurface` waited for the page's first row, and the bar takes its layout from its own width
+  // before it first paints, so this reads the layout it settled on, at rest.
   const rest = await readBar(bar);
   const narrow = rest.width < NARROW_BELOW;
   const said = `${where}: ${saidOf(rest)}`;
@@ -1590,6 +1603,8 @@ export async function expectBarDesign(
   // One narrowing: the trigger on a tint, its count in its name, and - on the List's bar in the
   // wide layout - Clear filters beside it in its group, a button of its own.
   await narrowBar(page, name, scene, surface, 1, phone);
+  // `narrowBar` waited until the trigger counted the one narrowing, and two frames more for the
+  // chips line (`settledBar`), so the bar read here stands for it.
   const one = await readBar(bar);
   const tinted = one.controls.find((each) => each.control === CONTROL.panelTrigger);
   expect(tinted?.background, `${where}, one narrowing on: its trigger has no fill`).not.toMatch(
@@ -1631,6 +1646,8 @@ export async function expectBarDesign(
   const wanted = phone ? 3 : 6;
   const count = name === "search bar" ? Math.min(wanted, SEARCH_BAR_PICKS.length) : wanted;
   await narrowBar(page, name, scene, surface, count, phone);
+  // `narrowBar` waited until the trigger counted these narrowings, and two frames more for the
+  // chips line (`settledBar`), so the bar read here stands for them.
   const many = await readBar(bar);
   const at = `${where}, ${count} narrowings on`;
   if (many.width < NARROW_BELOW) {
@@ -1670,6 +1687,8 @@ export async function expectNoGrowth(
   phone: boolean
 ): Promise<void> {
   const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
+  // `openSurface` waited for the page's first row, so the bar is laid out, and its width follows
+  // the viewport the row set before it opened the page.
   const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
   const where = `${name} at ${size.width}x${size.height}, its bar ${Math.round(width)}px wide (the ${width < NARROW_BELOW ? "narrow" : "wide"} layout)`;
   await resetScroll(page, surface.firstRow);

@@ -369,6 +369,8 @@ test("however many narrowings are on, the Inbox's bar stays one line at every wi
     await page.goto(NINE_NARROWINGS);
     await expect(firstRow).toBeVisible();
     await expect(trigger, `${at}: Filter does not count nine`).toHaveAccessibleName("Filter · 9");
+    // Filter's count was waited for above, so the bar is drawn, and its width follows the
+    // viewport this turn set at its top.
     const width = await row.evaluate((node) => node.getBoundingClientRect().width);
     let split: string;
     if (width >= NARROW_BELOW) {
@@ -467,6 +469,8 @@ test("however many narrowings are on, the Board's bar stays one line at every wi
       `${at}: the Board's Filter panel stayed open over the row`
     ).toHaveCount(0);
     await expect(trigger, `${at}: Filters does not count nine`).toHaveAccessibleName("Filters · 9");
+    // Filters' count was waited for above, so the bar is drawn, and its width follows the
+    // viewport this turn set at its top.
     const width = await row.evaluate((node) => node.getBoundingClientRect().width);
     let split: string;
     if (width >= 640) {
@@ -786,6 +790,8 @@ async function settledChipsLine(
  *  every chip below 640 px, is read by `k-bar`. */
 async function chipsLeaveLine(row: Locator, where: string): Promise<boolean> {
   await expect(control(row, CONTROL.panelTrigger)).toHaveAccessibleName(/^Filters? · \d+$/);
+  // The trigger's count was waited for above, so the bar is drawn, and it takes its layout from
+  // its own width before it first paints: the width read here is the one it chose by.
   const width = await row.evaluate((node) => node.getBoundingClientRect().width);
   if (width >= NARROW_BELOW) return false;
   await expect(
@@ -1007,6 +1013,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
           listed,
           `${where}: the Filters panel does not list every narrowing`
         ).toHaveCount(surface.chips);
+        // The panel's count of listed chips was waited for above, so the names read here are
+        // those of the panel the press opened.
         let order = await listed.evaluateAll((all) =>
           all.map((chip) => chip.getAttribute("aria-label") ?? "")
         );
@@ -1040,6 +1048,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
             .then(() => true)
             .catch(() => false);
           if (!settled) {
+            // The poll above gave up after two seconds, so this reads where the focus stood when
+            // it did, for the line the failure records.
             const focus = await landed();
             wrong.push(
               `${where}: after ${key} took "${taken}" off in the Filters panel the focus is on "${focus.label}"${/^Filters?$/.test(focus.panel) ? "" : ", outside the panel"}, not on ${next === undefined ? "the panel's first field" : `"${next}"`}`
@@ -3585,15 +3595,23 @@ test("k-keep: the search bar keeps its narrowings, its groups, its count, its re
  *  again and **More**, which stays open under the menu, is shut after it. */
 async function shutDisplay(root: Locator): Promise<void> {
   const trigger = control(controlRow(root), CONTROL.displayMenu);
+  // Every caller opened the display menu with `openDisplay` just before this, which waited for
+  // it, so the bar has drawn its trigger in its line or among More's items, as its width gives.
   if ((await trigger.count()) === 0) {
     const page = root.page();
+    const menu = page.getByRole("dialog", { name: "View" });
     const item = page
       .getByRole("menu", { name: "More" })
       .getByRole("menuitem", { exact: true, name: "View" });
-    if ((await item.count()) > 0 && (await expandedState("the View item", item)) === "open") {
-      await item.click();
-    }
-    await expect(page.getByRole("dialog", { name: "View" })).toHaveCount(0);
+    // The menu stands open on its item, which is pressed again to shut it, unless the item has
+    // left the page and taken the menu with it: so the menu's state is read once the page settles
+    // on one of the two, rather than the item's count at one instant.
+    const shown = await settledState("the View item", [
+      ["open", item.and(page.locator('[aria-expanded="true"]'))],
+      ["shut", page.locator("body").filter({ hasNot: menu })],
+    ]);
+    if (shown === "open") await item.click();
+    await expect(menu).toHaveCount(0);
     await shutMore(root);
     return;
   }
@@ -5088,6 +5106,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       .getByRole("menu", { name: "More" })
       .getByRole("menuitem", { exact: true, name: "Mark all read" });
     await expect(moreOfBar, `${where}: More is not drawn`).toBeVisible();
+    // More was waited for above, so the bar is drawn, and its width follows the viewport this
+    // turn set at its top.
     const narrowAt = (await row.evaluate((node) => node.getBoundingClientRect().width)) < 640;
     await moreOfBar.focus();
     await page.keyboard.press("Enter");
