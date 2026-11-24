@@ -391,7 +391,7 @@ func rankedByMinN(definition Definition, series string) bool {
 
 // relistDays writes series' listing into every day row the readings write keeps of it (writer
 // readings, the project's row and each repository's), definition being a logged eval: a window
-// read folds the listed rows alone (DayWindow), so a row stored before a version that listed its
+// read folds the listed rows alone (DayWindowIn), so a row stored before a version that listed its
 // series would otherwise stay out of every window, and one stored before a version that unlisted
 // it in. A row that holds the listing already is left as it is.
 //

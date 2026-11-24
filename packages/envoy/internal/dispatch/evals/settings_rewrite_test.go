@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The checks of the refresher's answer to a change of the delivery settings (settings_rewrite.go):
@@ -82,13 +81,31 @@ func isDeliveryEval(evalID string) bool {
 	return slices.Contains(deliveryDaySlugs, slug)
 }
 
-// deliveryValues is every stored row of a delivery or CI eval, by rowKey, without the moment and
-// the build of its last write: what two databases' rows compare by.
-func (r *refresherRig) deliveryValues(t *testing.T) map[string]DayRow {
+// walkCut is what two databases' rows and stored figures of one family compare by
+// (expectCutAsWalk): its rows (row), its stored figures by eval id (figure), and the rows' name in
+// a failure.
+type walkCut struct {
+	name   string
+	row    func(DayRow) bool
+	figure func(evalID string) bool
+}
+
+var (
+	deliveryCut = walkCut{name: "day rows", row: func(row DayRow) bool { return isDeliveryEval(row.EvalID) }, figure: isDeliveryEval}
+	legionCut   = walkCut{name: "Legion day rows", row: func(row DayRow) bool { return familyOf(row) == walkLegion },
+		figure: func(evalID string) bool {
+			_, slug, _ := strings.Cut(evalID, "/")
+			return slices.Contains(legionDaySlugs, slug)
+		}}
+)
+
+// valuesOf is every stored row of cut, by rowKey, without the moment and the build of its last
+// write: what two databases' rows compare by.
+func (r *refresherRig) valuesOf(t *testing.T, cut walkCut) map[string]DayRow {
 	t.Helper()
 	values := map[string]DayRow{}
 	for key, row := range r.dayRows(t) {
-		if isDeliveryEval(row.EvalID) {
+		if cut.row(row) {
 			row.UpdatedAt, row.BuiltBy = time.Time{}, ""
 			values[key] = row
 		}
@@ -116,13 +133,13 @@ func (r *refresherRig) memberLines(t *testing.T) map[string]string {
 	return members
 }
 
-// deliveryFigureValues is the fold key and figures of each stored figures row of a delivery or CI
-// eval, by its line: what two databases' figures compare by, since the oldest updated_at and the
-// stamp a row records are each database's own moments.
-func deliveryFigureValues(stored map[string]figureRow) map[string]string {
+// figureValuesOf is the fold key and figures of each stored figures row of cut, by its line: what
+// two databases' figures compare by, since the oldest updated_at and the stamp a row records are
+// each database's own moments.
+func figureValuesOf(stored map[string]figureRow, cut walkCut) map[string]string {
 	values := map[string]string{}
 	for line, row := range stored {
-		if isDeliveryEval(line[strings.LastIndex(line, " ")+1:]) {
+		if cut.figure(line[strings.LastIndex(line, " ")+1:]) {
 			values[line] = fmt.Sprintf("%d %x", row.foldKey, row.figures)
 		}
 	}
@@ -226,21 +243,58 @@ func sameValues[V any](a, b map[string]V, show func(V) string) []string {
 	return differ[:min(len(differ), 10)]
 }
 
-// expectSameAsWalk checks that r holds the delivery and CI day rows, the members and the stored
-// figures walk holds, and that r's stored figures are the fold of its rows.
+// expectSameAsWalk is expectCutAsWalk of the delivery and CI rows (deliveryCut).
 func (r *refresherRig) expectSameAsWalk(t *testing.T, what string, walk *refresherRig) {
 	t.Helper()
-	if differ := sameValues(r.deliveryValues(t), walk.deliveryValues(t), rowFacts); len(differ) > 0 {
-		t.Errorf("%s: the day rows differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
+	r.expectCutAsWalk(t, what, deliveryCut, walk)
+}
+
+// expectCutAsWalk checks that r holds the day rows of cut, the members and the stored figures of
+// cut walk holds, and that r's stored figures are the fold of its rows.
+func (r *refresherRig) expectCutAsWalk(t *testing.T, what string, cut walkCut, walk *refresherRig) {
+	t.Helper()
+	if differ := sameValues(r.valuesOf(t, cut), walk.valuesOf(t, cut), rowFacts); len(differ) > 0 {
+		t.Errorf("%s: the %s differ from the whole walk's, first ones:\n\t%s", what, cut.name, strings.Join(differ, "\n\t"))
 	}
 	if differ := sameValues(r.memberLines(t), walk.memberLines(t), func(at string) string { return at }); len(differ) > 0 {
 		t.Errorf("%s: the members differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
 	}
 	stored := r.storedFigures(t)
 	expectTruth(t, what, stored, r.truthFigures(t))
-	if differ := sameValues(deliveryFigureValues(stored), deliveryFigureValues(walk.storedFigures(t)), func(figures string) string { return figures }); len(differ) > 0 {
+	if differ := sameValues(figureValuesOf(stored, cut), figureValuesOf(walk.storedFigures(t), cut), func(figures string) string { return figures }); len(differ) > 0 {
 		t.Errorf("%s: the stored figures differ from the whole walk's, first ones:\n\t%s", what, strings.Join(differ, "\n\t"))
 	}
+}
+
+// rebuildChanges moves the change log's outbox into the log and answers how many eval_days
+// changes of each eval the log holds after seq, failing t where one does not carry the rebuild's
+// mark (delivery.EvalDaysWrittenByRebuild) or one eval logged more than one; who names the writer
+// in a failure.
+func (r *refresherRig) rebuildChanges(t *testing.T, seq int64, who string) map[string]int {
+	t.Helper()
+	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 100000)
+	if err != nil {
+		t.Fatalf("read the delivery changes after %d: %v", seq, err)
+	}
+	logged := map[string]int{}
+	for _, one := range changes {
+		if one.Kind != delivery.ChangeKindEvalDays || one.Ref == "" {
+			continue
+		}
+		logged[one.Ref]++
+		if one.RunKind != delivery.EvalDaysWrittenByRebuild {
+			t.Errorf("the eval_days change of %s carries run_kind %q, want %q", one.Ref, one.RunKind, delivery.EvalDaysWrittenByRebuild)
+		}
+	}
+	for evalID, count := range logged {
+		if count > 1 {
+			t.Errorf("%s logged %d eval_days changes of %s, want one", who, count, evalID)
+		}
+	}
+	return logged
 }
 
 // TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites: two databases load one history and
@@ -374,7 +428,7 @@ const (
 )
 
 // keyedRead is the day rows the eval list reads of project's evals keyed by the deploy repository
-// where the delivery settings name deployRepo (DayWindow over every day through today), each as
+// where the delivery settings name deployRepo (DayWindowIn over every day through today), each as
 // `<eval> <series> <day> n=<n>`, sorted.
 func (r *refresherRig) keyedRead(t *testing.T, project, deployRepo string) []string {
 	t.Helper()
@@ -388,7 +442,7 @@ func (r *refresherRig) keyedRead(t *testing.T, project, deployRepo string) []str
 			keyed = append(keyed, entry)
 		}
 	}
-	rows, err := r.registry.DayWindow(t.Context(), []string{project}, keyed, deployRepo, nil,
+	rows, err := DayWindowIn(t.Context(), r.database.Pool, []string{project}, keyed, deployRepo, nil,
 		Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: r.now.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read the keyed evals of %s under %s: %v", project, deployRepo, err)
@@ -674,7 +728,7 @@ func (h *historyJobReads) take() []historyJobRead {
 func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
 	r, deliveries := newSettingsRig(t, walkBatch)
 	reads := &historyJobReads{}
-	r.registry = New(storetest.TracedStore(t, r.database, reads), r.documents, r.registry.events, r.registry.attributor)
+	r.registry = r.tracedStore(t, reads)
 	original := deliveries.Settings
 	gate, deploy := *original.StagingE2EJobName, *original.StagingApplyJobName
 	const renamed = "staging-e2e / run-v2"
@@ -853,9 +907,9 @@ func (r *refresherRig) expectUnwritten(t *testing.T, what string, before written
 	}
 }
 
-// deliveryState is what a database's delivery and CI evals hold: their day rows (deliveryValues),
-// the members and their stored figures (deliveryFigureValues), none with the moment or the build of
-// its write.
+// deliveryState is what a database's delivery and CI evals hold: their day rows (valuesOf), the
+// members and their stored figures (figureValuesOf), each of deliveryCut, none with the moment or
+// the build of its write.
 type deliveryState struct {
 	rows    map[string]DayRow
 	members map[string]string
@@ -864,7 +918,7 @@ type deliveryState struct {
 
 func (r *refresherRig) deliveryState(t *testing.T) deliveryState {
 	t.Helper()
-	return deliveryState{rows: r.deliveryValues(t), members: r.memberLines(t), figures: deliveryFigureValues(r.storedFigures(t))}
+	return deliveryState{rows: r.valuesOf(t, deliveryCut), members: r.memberLines(t), figures: figureValuesOf(r.storedFigures(t), deliveryCut)}
 }
 
 // The jobs and the step of the history a series of production rule changes runs over
@@ -1101,7 +1155,7 @@ func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToThe
 	rewriting, walking := rigs[0], rigs[1]
 	leadTimes := func(r *refresherRig) map[string]DayRow {
 		rows := map[string]DayRow{}
-		for key, row := range r.deliveryValues(t) {
+		for key, row := range r.valuesOf(t, deliveryCut) {
 			if row.DeployRepo == deliveries.DeployRepo && slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
 				rows[key] = row
 			}
@@ -1567,7 +1621,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			wrote := recordWrites(t, live.rig)
 			prints := &commitPrints{t: t, rig: live.rig}
 			before := prints.read()
-			live.registry = New(storetest.TracedStore(t, live.database, prints), live.documents, live.registry.events, live.registry.attributor)
+			live.registry = live.tracedStore(t, prints)
 			report, _ := live.pass(t)
 			after := prints.read()
 
@@ -1593,28 +1647,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			if got := live.walkRecord(t); got != record {
 				t.Errorf("the delivery walk's record is %q after the pass, want it as it stood, %q", got, record)
 			}
-			if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
-				t.Fatalf("drain the change log's outbox: %v", err)
-			}
-			changes, err := delivery.ChangesSince(t.Context(), live.database.Pool, seq, 100000)
-			if err != nil {
-				t.Fatalf("read the delivery changes after %d: %v", seq, err)
-			}
-			logged := map[string]int{}
-			for _, one := range changes {
-				if one.Kind != delivery.ChangeKindEvalDays || one.Ref == "" {
-					continue
-				}
-				logged[one.Ref]++
-				if one.RunKind != delivery.EvalDaysWrittenByRebuild {
-					t.Errorf("the eval_days change of %s carries run_kind %q, want %q", one.Ref, one.RunKind, delivery.EvalDaysWrittenByRebuild)
-				}
-			}
-			for evalID, count := range logged {
-				if count > 1 {
-					t.Errorf("the pass logged %d eval_days changes of %s, want one", count, evalID)
-				}
-			}
+			logged := live.rebuildChanges(t, seq, "the pass")
 			// A repository that is no project's default brings the rows of its owner key alone
 			// (owners.go), which no project reads, and so no change; every other change moves a row
 			// a project reads, and logs its change.
@@ -1662,32 +1695,6 @@ func (m *memberWrites) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pg
 
 func (m *memberWrites) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// memberArgBytes is the bytes the arguments of a statement that writes members take as pgx encodes
-// them: 4 of length before each, a string's bytes, and for an array its header and each element
-// after 4 bytes of length, a string's bytes or a date's 8 at most.
-func memberArgBytes(t *testing.T, args []any) int {
-	t.Helper()
-	bytes := 4 * len(args)
-	for _, arg := range args {
-		switch value := arg.(type) {
-		case string:
-			bytes += len(value)
-		case time.Time:
-			bytes += 8
-		case []string:
-			bytes += arrayHeaderBytes
-			for _, one := range value {
-				bytes += 4 + len(one)
-			}
-		case []time.Time:
-			bytes += arrayHeaderBytes + (4+8)*len(value)
-		default:
-			t.Fatalf("a statement that writes members takes an argument of type %T, which the check does not size", arg)
-		}
-	}
-	return bytes
-}
-
 // TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements: over a settled history in which 3,000
 // pull requests of the deploy repository merged on the history's last day, a repository that is no
 // project's default gets its first deploy runs, the deploy repository's of the first three days, copied.
@@ -1708,14 +1715,14 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	cutoff := deliveries.From.AddDate(0, 0, 3)
 	live.copyRunsBefore(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy, &cutoff)
 	writes := &memberWrites{}
-	live.registry = New(storetest.TracedStore(t, live.database, writes), live.documents, live.registry.events, live.registry.attributor)
+	live.registry = live.tracedStore(t, writes)
 	report, _ := live.pass(t)
 	if report.walksLeft {
 		t.Errorf("the pass left a walk with days to build")
 	}
 	largest, total := 0, 0
 	for index, args := range writes.sent {
-		size := memberArgBytes(t, args)
+		size := paramEstimate(t, args)
 		largest, total = max(largest, size), total+size
 		if size > statementBytes {
 			t.Errorf("statement %d that writes members takes %d bytes of parameters, past %d", index, size, statementBytes)
@@ -1787,12 +1794,12 @@ func TestADaysMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	crowded := crowdLastDay(t, live, deliveries, copies)
 	live.leaveInputsUnread(t)
 	writes := &memberWrites{}
-	live.registry = New(storetest.TracedStore(t, live.database, writes), live.documents, live.registry.events, live.registry.attributor)
+	live.registry = live.tracedStore(t, writes)
 	check := func(what string) {
 		t.Helper()
 		largest, total := 0, 0
 		for index, args := range writes.sent {
-			size := memberArgBytes(t, args)
+			size := paramEstimate(t, args)
 			largest, total = max(largest, size), total+size
 			if size > statementBytes {
 				t.Errorf("%s: statement %d that takes members takes %d bytes of parameters, past %d", what, index, size, statementBytes)

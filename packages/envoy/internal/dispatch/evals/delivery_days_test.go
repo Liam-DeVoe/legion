@@ -304,10 +304,11 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil)
+	reads, err := r.registry.readDeliveryDays(ctx, settings, []keptRepo{{name: alphaRepo, deploys: true}}, []time.Time{measures.Midnight(attributionDay)}, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
+	read := reads[0]
 	wantOwners := []string{OwnerKey(alphaRepo, nil, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}, nil), OwnerKey(zetaRepo, nil, nil)}
 	if got := dayProjects(read); !slices.Equal(got, slices.Concat(wantOwners, []string{"ALPHA", "BETA"})) {
 		t.Fatalf("the day's rows count for %v, want ALPHA, BETA and the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories, GAMMA holds nothing)",
@@ -633,7 +634,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // ids grow with the batch), and its generic plan matches each reading to its keys by their day, as
 // a hash or merge join on it or an index condition, rather than testing each reading against every
 // key of its series. The day is past work_mem, as one of INFRA's is: 80,000 items across 40 deploy
-// repositories and 80,000 rows written through writeDeliveryDay, and 80,000 readings of a logged
+// repositories and 80,000 rows written through writeProjectDay, and 80,000 readings of a logged
 // eval on the same day, the three tables analyzed. Each statement is explained with the arrays a
 // second write of the day sends, one item, one row and one reading fewer than stored, in a
 // transaction prepared as its write prepares it, and then with literals for its generic plan,
@@ -664,7 +665,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 			DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 		}
 	}
-	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild, true); err != nil {
 		t.Fatalf("write a day of %d items and %d rows: %v", items, items, err)
 	}
 	// The readings: the write that registers the logged eval, and the day's other readings
@@ -788,7 +789,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 					t.Fatalf("%s: %v", setting, err)
 				}
 			}
-			_, _ = explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
+			explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
 				filter.parameters, filter.literals, filter.lists...)
 		})
 	}
@@ -808,7 +809,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 
 	// The second write itself, which leaves one item and one row fewer: the row the day no longer
 	// holds is deleted.
-	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
 		t.Fatalf("write the day again with one item and one row fewer: %v", err)
 	}
 	if held := r.count(t, `select count(*) from eval_day_members where project_key = 'EVAL'`); held != items-1 {

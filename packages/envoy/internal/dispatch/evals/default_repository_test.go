@@ -28,7 +28,7 @@ import (
 // of them came through a default repository.
 type defaultTally struct{ n, via int }
 
-// readTallies reads, through the read the eval routes fold (DayWindow, over the deploy
+// readTallies reads, through the read the eval routes fold (DayWindowIn, over the deploy
 // repository the rows stand recorded under), project's rows of each eval of series (by slug, the
 // series to tally) on day, and answers each eval's tally and how many rows the read answered.
 func (r *refresherRig) readTallies(t *testing.T, project string, series map[string]string, day time.Time) (map[string]defaultTally, int) {
@@ -51,7 +51,7 @@ func (r *refresherRig) readTallies(t *testing.T, project string, series map[stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := r.registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
+	rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, deployRepo, nil, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
 	}

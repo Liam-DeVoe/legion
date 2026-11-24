@@ -13,7 +13,7 @@ import (
 
 // An eval read states each listed series' statistics for a range of days: the figures a card
 // shows and a target judges, a judge naming one as `<series>.<stat>`. They are folded from the
-// stored day rows of the range (DayWindow), never from the population again (R12):
+// stored day rows of the range (DayWindowIn), never from the population again (R12):
 //
 //   - a computed eval through the one fold its source names (computedSources), which is the fold
 //     the delivery and Legion routes answer through too (R7), so one rule has one statement;
@@ -157,8 +157,8 @@ type DayPoint struct {
 }
 
 // SeriesValuesOf is each listed series of entry with its values over rows, the eval's day rows of
-// window and of compare, the compare range, nil for none (DayWindow), and firsts, each series'
-// first day (FirstDays). A range that starts before a series' first day, or a series with no first
+// window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
+// first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
 // the per-day array still answers each day that holds a row (R12).
 //
@@ -611,7 +611,7 @@ func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
 }
 
 // readsSamples reports whether the fold of series, one of definition's eval, reads its day rows'
-// sample lists, so a window read sends them only where it does (DayWindow). A computed eval's fold
+// sample lists, so a window read sends them only where it does (DayWindowIn). A computed eval's fold
 // reads what its builders store, and they store a sample list only for a series whose fold merges
 // one; a logged series' agg reads them for a quantile alone (aggStatistics), though the readings
 // write keeps every value whatever the agg, so a later change of agg still folds every day.

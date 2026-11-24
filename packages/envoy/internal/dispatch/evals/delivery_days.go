@@ -246,7 +246,7 @@ type DeliveryDay struct {
 	checkJobs, pushJobs map[int64][]delivery.DeliveryRunJob
 }
 
-// deliveryRead is one UTC day's delivery and CI rows (readDeliveryDay): the day's pull requests
+// deliveryRead is one UTC day's delivery and CI rows (readDeliveryDays): the day's pull requests
 // alone, with no deploy repository (days[0]), and the day as read with each of repos as the deploy
 // repository (days[1:], in repos' order). Its rows are theirs together: those of the evals no
 // deploy repository moves once, and those of the evals that read it once for each repository. The
@@ -267,17 +267,6 @@ type repoReads struct {
 	deploys  delivery.Deploys
 	applies  delivery.ApplyRows
 	ci       delivery.CIRows
-}
-
-// readDeliveryDay reads the delivery and CI rows of the UTC day day is on, as readDeliveryDays
-// reads one day.
-func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, repos []keptRepo, day time.Time,
-	applyRows map[string]*delivery.ApplyRows) (deliveryRead, error) {
-	reads, err := s.readDeliveryDays(ctx, settings, repos, []time.Time{measures.Midnight(day)}, applyRows)
-	if err != nil {
-		return deliveryRead{}, err
-	}
-	return reads[0], nil
 }
 
 // readDeliveryDays reads the delivery and CI rows of each of days (UTC midnights, in order and
@@ -416,7 +405,7 @@ func (a attribution) dayAs(day time.Time, cards []measures.DeployJobCard, prs []
 		applyRuns[run.RunID] = run
 	}
 	for _, pr := range prs {
-		// A partial row, whose opening is not known yet, as readDeliveryDay leaves it out.
+		// A partial row, whose opening is not known yet, as readDeliveryDays leaves it out.
 		if pr.CreatedAt != nil {
 			read.prs = append(read.prs, a.pullRequest(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies), applyRuns))
 		}
@@ -550,9 +539,9 @@ func attributionListOf(candidates []delivery.ResolvedCandidate) attributionList 
 // attribution is what a day's rows are attributed to their projects by, and the one place the rule
 // is decided (the Attribution paragraph above): the attribution list of each pull request a day's
 // rows count, by its row key (PullRequestMember), for each pull request a row holds
-// (readAttribution). readDeliveryDay attributes one day's rows by it, a span the rows of each day
-// it builds (deliverySpanInput), and the refresher's rewrite of a settings change the rows of each
-// day it builds (rewriteSettings).
+// (readAttribution). readDeliveryDays attributes the rows of each day it reads by it, a span the
+// rows of each day it builds (deliverySpanInput), and the refresher's rewrite of a settings change
+// the rows of each day it builds (rewriteSettings).
 type attribution struct {
 	lists map[string]attributionList
 }
@@ -824,7 +813,6 @@ func (d DeliveryDay) countedFor(member string) []string {
 			}
 		}
 	}
-	delete(projects, "")
 	return slices.Sorted(maps.Keys(projects))
 }
 
@@ -1045,24 +1033,6 @@ func viaOnly(runs []delivery.DeliveryRun, via []bool) []delivery.DeliveryRun {
 		}
 	}
 	return kept
-}
-
-// writeDeliveryDay writes day as its project's delivery and CI rows of its day, in one
-// transaction: each row with `insert … on conflict … do update … where (…) is distinct from (…)`,
-// so a row whose every value is what it holds is left as it is (and logs no change, migration
-// 20261117100014), recording builtBy, the running build, as the build that wrote it; then it
-// deletes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
-// that day does not hold, such as a repository whose last row moved to another day or project
-// (deleteStaleDays). It records day's members in eval_day_members on its day, and deletes the
-// members of the project's delivery and CI families recorded on that day that day does not hold,
-// so each item's row there says where it was last counted; and where figures is set, as the
-// refresher's write of a day outside a walk sets it, it folds again the stored figures of the
-// day where its rows moved, where builtBy writes them (figures.go). It moves no walk: a page
-// whose changes move what other days hold writes those days with it, in its one commit
-// (span.go). A row of another project, another day or another eval, and an item of another
-// family, is refused before anything is written.
-func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, deliveryFamily, day, builtBy, figures)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its

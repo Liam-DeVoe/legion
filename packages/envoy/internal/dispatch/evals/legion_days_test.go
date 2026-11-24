@@ -142,7 +142,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), DeployRepo: "acme/web", Listed: true,
 		DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 	}}, Members: []Member{{Family: KindDelivery, DeployRepo: "acme/web", RowKey: RunMember("acme/web", 7), Repo: "acme/web"}}}
-	if err := r.registry.writeDeliveryDay(ctx, delivery, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, delivery, testBuild, true); err != nil {
 		t.Fatalf("write the day's delivery row: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	// time (six roles), 9 of rework and 21 of splitting (four classes and the finished issues in
 	// three cuts, and three root figures in two), in every cut its input is in.
 	wantGroups := map[string]int{}
-	for _, repo := range []string{"all", "acme/web", "acme/api", legionfactsDefault} {
+	for _, repo := range []string{"all", "acme/web", "acme/api", legionfacts.DefaultRepo} {
 		for slug, count := range map[string]int{
 			SlugLegionWorkTime: 3, SlugLegionPhaseTime: 21, SlugLegionIdleTime: 18, SlugLegionRework: 9, SlugLegionSplitting: 21,
 		} {
@@ -212,7 +212,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	wantMembers := []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3 " + legionfacts.DefaultRepo + " 2026-11-03",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
 		t.Errorf("the items of the day: %v, want %v", got, wantMembers)
@@ -268,7 +268,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	wantMembers = []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3 " + legionfacts.DefaultRepo + " 2026-11-03",
 		"legion EVAL-4 acme/web 2026-11-04",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
@@ -319,7 +319,7 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	refused := ProjectDay{Project: "EVAL", Day: day, Rows: []DayRow{{
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), Listed: true, DayPart: measures.DayPart{Series: "deploys", Day: day},
 	}}}
-	if err := r.registry.writeLegionDay(t.Context(), refused, testBuild, true); err == nil {
+	if err := r.registry.writeProjectDay(t.Context(), legionFamily, refused, testBuild, true); err == nil {
 		t.Errorf("the Legion write took a deploy-frequency row, want it refused")
 	}
 	if got := r.count(t, `select count(*) from eval_days`); got != 0 {

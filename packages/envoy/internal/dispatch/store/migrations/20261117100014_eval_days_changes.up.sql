@@ -12,7 +12,8 @@
 -- of the transaction, and deletes the rows a day no longer builds (evals.deleteStaleDays), and
 -- Postgres fires an upsert's statement-level triggers once for its inserted rows and once for its
 -- updated rows, each with a transition table of its own half. So three statement-level triggers
--- read the two halves and the deleted rows, and each hands each eval's span to
+-- read the two halves and the deleted rows, the insert's and the delete's through one function
+-- (eval_days_inserted, each naming its rows `written`), and each hands each eval's span to
 -- eval_days_change_log, which records the eval's first change of the transaction in the change
 -- log's outbox through delivery_change_log_pending (20261117100001), which takes no lock, so no
 -- write of the day rows takes the change log's lock (6900, 0100); a drain moves the row into
@@ -91,7 +92,7 @@
 -- in eval_day_owners the first time a statement writes a row of it, with its repository, its
 -- sharers and its lists as the key carries them, where the reads find it.
 --
--- The census answers 0: four functions and three triggers, reading and rewriting no row.
+-- The census answers 0: three functions and three triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
 returns void language plpgsql as $$
 declare
@@ -175,21 +176,6 @@ create trigger eval_days_updated after update on eval_days
   referencing old table as replaced new table as written
   for each statement execute function eval_days_updated();
 
-create function eval_days_deleted() returns trigger language plpgsql as $$
-declare
-  span record;
-begin
-  for span in
-    select project_key, eval_id, min(day) as first_day, max(day) as last_day
-    from removed
-    group by project_key, eval_id
-    order by project_key, eval_id
-  loop
-    perform eval_days_change_log(span.project_key, span.eval_id, span.first_day, span.last_day);
-  end loop;
-  return null;
-end $$;
-
 create trigger eval_days_deleted after delete on eval_days
-  referencing old table as removed
-  for each statement execute function eval_days_deleted();
+  referencing old table as written
+  for each statement execute function eval_days_inserted();

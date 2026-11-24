@@ -19,7 +19,7 @@ import (
 // every day, makes one pass, and reads back which days the pass wrote and which rows' updated_at
 // moved (expectDays).
 
-// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay)
+// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDays)
 // with the deploy repository the settings name, the one repository of the history that holds runs,
 // as the deploy repository: that repository's read of each day.
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
@@ -30,11 +30,11 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
+		reads, err := r.registry.readDeliveryDays(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, []time.Time{measures.Midnight(day)}, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
-		days = append(days, read.days[1])
+		days = append(days, reads[0].days[1])
 	}
 	return days
 }
@@ -982,14 +982,14 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		t.Fatalf("%s has no deploy-frequency eval", main)
 	}
 	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
-	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, repo)
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, repo)
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, repo, nil, window, nil)
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{main}, []Entry{entry}, repo, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}

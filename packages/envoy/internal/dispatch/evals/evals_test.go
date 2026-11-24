@@ -93,13 +93,18 @@ func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.R
 	return written
 }
 
-// entries answers the current entry of each of evalIDs, as the list read holds it, failing the
-// test when no version holds one.
+// entries answers the current entry of each of evalIDs, as the list read holds it (EvalIn, in one
+// snapshot), failing the test when no version holds one.
 func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {
 	t.Helper()
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the evals %v: %v", evalIDs, err)
+	}
+	defer tx.Rollback(t.Context())
 	entries := make([]Entry, len(evalIDs))
 	for index, evalID := range evalIDs {
-		entry, found, err := r.registry.Eval(t.Context(), evalID)
+		entry, found, err := EvalIn(t.Context(), tx, evalID)
 		if err != nil || !found {
 			t.Fatalf("read the eval %s: found %t, %v", evalID, found, err)
 		}

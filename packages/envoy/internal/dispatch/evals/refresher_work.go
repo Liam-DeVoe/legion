@@ -280,13 +280,12 @@ type pageWork struct {
 	// lost change cursor, or delivery settings the rows stand built under that are not recorded;
 	// the empty string for none. Where it is set, a walk of a served family is the rebuild's and
 	// does not begin again (commitPage).
-	restart  map[string]bool
-	rebuild  string
+	restart map[string]bool
+	rebuild string
+	// settings is set where one of the page's changes is of the delivery settings row: the page
+	// reads the settings again (syncSettings), and its commit then says that the day rows stand at
+	// the settings (markSettingsApplied), which is what an evals view is recomputed for.
 	settings bool
-	// settingsRow is set where one of the page's changes is of the delivery settings row: the
-	// page's commit then says that the day rows stand at the settings (markSettingsApplied), which
-	// is what an evals view is recomputed for.
-	settingsRow bool
 	// built is the delivery settings commitPage records in eval_days_settings with the cursors and
 	// the rebuild the page begins (syncSettings), nil for none.
 	built *delivery.DeliverySettings
@@ -353,7 +352,7 @@ func (w *pageWork) addChange(change delivery.Change) {
 		}
 	case delivery.ChangeKindSettings:
 		// The page reads the settings again and rewrites what they moved (syncSettings).
-		w.settings, w.settingsRow = true, true
+		w.settings = true
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
 		// Each names its Legion days itself, in its project: a facts change the issue's close day
 		// before and after it, a filing change the filing's day before and after it, nil where
@@ -524,29 +523,20 @@ func walkOf(family, project string) walkKey {
 
 // apply writes every day w names, each family's whole days by writeNamed's rule: where the days of
 // a family move no day they do not name, in one transaction of their own, and otherwise in the
-// page's commit, as the rebuilds it answers, which the caller commits with the page's cursors
+// page's commit, as the span writes it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
 // unowned-p0 rows and the logged evals' zero rows are written before it answers, so every write
 // the page's cursors pass is made, or is in the commit that moves them.
-func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
+func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
 		return nil, err
 	}
-	var rebuilds []*rebuild
-	whole, err := r.applyDelivery(ctx, w, owed)
+	spans, err := r.applyFamilies(ctx, w, owed)
 	if err != nil {
 		return nil, err
 	}
-	if whole != nil {
-		rebuilds = append(rebuilds, whole)
-	}
-	legion, err := r.applyLegion(ctx, w, owed)
-	if err != nil {
-		return nil, err
-	}
-	rebuilds = append(rebuilds, legion...)
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {
 		if r.known[project] {
 			if err := r.writeUnowned(ctx, project); err != nil {
@@ -561,7 +551,26 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
 			}
 		}
 	}
-	return rebuilds, nil
+	return spans, nil
+}
+
+// applyFamilies writes the delivery and CI days w and owed name (applyDelivery), then their Legion
+// days (applyLegion), and answers the span writes of the families whose days move what days they
+// do not name hold, the delivery family's first, for the caller to commit.
+func (r *refresh) applyFamilies(ctx context.Context, w *pageWork, owed []owedDay) ([]*spanWrite, error) {
+	var spans []*spanWrite
+	whole, err := r.applyDelivery(ctx, w, owed)
+	if err != nil {
+		return nil, err
+	}
+	if whole != nil {
+		spans = append(spans, whole)
+	}
+	legion, err := r.applyLegion(ctx, w, owed)
+	if err != nil {
+		return nil, err
+	}
+	return append(spans, legion...), nil
 }
 
 // owedRounds bounds how many times one page writes the owed days again: a write of an owed day may
@@ -576,26 +585,18 @@ const owedRounds = 3
 // writes (nameLeft), so there is none unless the store moved since. Each is written whole, as a
 // change naming it is, though the page wrote it already: the mark may be younger than that write.
 // Where such a day moves what other days hold, they are written with it in a commit of their own
-// (commitRebuilds).
+// (commitSpans).
 func (r *refresh) writeOwed(ctx context.Context) error {
 	for range owedRounds {
 		owed, err := r.store.owedDays(ctx, r.owners)
 		if err != nil || len(owed) == 0 {
 			return err
 		}
-		var rebuilds []*rebuild
-		whole, err := r.applyDelivery(ctx, newPageWork(), owed)
+		spans, err := r.applyFamilies(ctx, newPageWork(), owed)
 		if err != nil {
 			return err
 		}
-		if whole != nil {
-			rebuilds = append(rebuilds, whole)
-		}
-		legion, err := r.applyLegion(ctx, newPageWork(), owed)
-		if err != nil {
-			return err
-		}
-		if err := r.commitRebuilds(ctx, append(rebuilds, legion...)); err != nil {
+		if err := r.commitSpans(ctx, spans); err != nil {
 			return err
 		}
 	}
@@ -621,9 +622,9 @@ type deliveryItem struct {
 // not move. With them it writes each delivery day of owed, and, where the page read another set of
 // repositories that hold a delivery run (w.kept), the days of each that differs. It names the days
 // first, each read once and every day of each round of naming in one read (readDeliveries), and
-// then writes them as writeNamed says, which answers the rebuild the page's commit holds, nil
+// then writes them as writeNamed says, which answers the span write the page's commit holds, nil
 // where the days were written in a transaction of their own.
-func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay) (*rebuild, error) {
+func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay) (*spanWrite, error) {
 	if r.settings == nil {
 		return nil, nil
 	}
@@ -633,7 +634,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 		if err != nil {
 			return err
 		}
-		r.nameDelivery(days, read, project, true)
+		r.nameDelivery(days, read, project)
 		return nil
 	}
 	days.read = func(ctx context.Context, keys []projectDay) error {
@@ -971,7 +972,7 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 		}
 		for _, project := range slices.Sorted(maps.Keys(projects)) {
 			if r.writesDelivery(project) {
-				r.nameDelivery(days, read, project, true)
+				r.nameDelivery(days, read, project)
 			}
 		}
 	}
@@ -991,7 +992,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	return r.deployRepos, nil
 }
 
-// readDelivery is the delivery rows of day (readDeliveryDay) with each kept repository as the
+// readDelivery is the delivery rows of day (readDeliveryDays) with each kept repository as the
 // deploy repository (keptRepos), read once a page (refresh.reads), each repository's deploy runs
 // taken from applies where it holds them.
 func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows) (deliveryRead, error) {
@@ -1117,9 +1118,9 @@ func (r *refresh) walkWrite(ctx context.Context, family dayFamily, day ProjectDa
 // applyLegion writes the Legion days w names: the days the facts and filing changes named, and the
 // filing days and the close and held days of every issue below an issue whose repository or
 // parent moved, whose repository rows resolve through it, and with them each Legion day of owed.
-// Each project's days are written as writeNamed says, and it answers the rebuilds the page's
+// Each project's days are written as writeNamed says, and it answers the span writes the page's
 // commit holds, one for each project whose days move what days they do not name hold.
-func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) ([]*rebuild, error) {
+func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) ([]*spanWrite, error) {
 	days := map[string]map[time.Time]bool{}
 	add := func(project string, day time.Time) {
 		if days[project] == nil {
@@ -1151,14 +1152,14 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) 
 			add(day.project, day.day)
 		}
 	}
-	var rebuilds []*rebuild
+	var spans []*spanWrite
 	for _, project := range slices.Sorted(maps.Keys(days)) {
 		if !r.known[project] {
 			continue
 		}
 		named := newPageDays(legionFamily)
 		named.name = func(ctx context.Context, project string, day time.Time) error {
-			return r.nameLegion(ctx, named, project, day, true)
+			return r.nameLegion(ctx, named, project, day)
 		}
 		for _, day := range slices.SortedFunc(maps.Keys(days[project]), time.Time.Compare) {
 			if err := named.name(ctx, project, day); err != nil {
@@ -1170,10 +1171,10 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) 
 			return nil, err
 		}
 		if one != nil {
-			rebuilds = append(rebuilds, one)
+			spans = append(spans, one)
 		}
 	}
-	return rebuilds, nil
+	return spans, nil
 }
 
 // writeLegion is project's Legion walk's write of its Legion rows of day, as writeDelivery is the
@@ -1448,8 +1449,7 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 	defer func() { r.walking = false }()
 	live := false
 	if key := (walkKey{family: walkDelivery}); r.settings != nil {
-		state, found := walks[key]
-		more, err := r.walkDays(ctx, key, state, found, r.deliveryStart, r.deliveryWalkDay, r.recordWalk)
+		more, err := r.walkDays(ctx, key, walks[key].next, r.deliveryStart, r.deliveryWalkDay, r.recordWalk)
 		if err != nil {
 			return false, false, err
 		}
@@ -1457,8 +1457,7 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 	}
 	for _, project := range r.projects {
 		key := walkKey{family: walkLegion, project: project}
-		state, found := walks[key]
-		more, err := r.walkDays(ctx, key, state, found,
+		more, err := r.walkDays(ctx, key, walks[key].next,
 			func(ctx context.Context) (*time.Time, error) { return r.legionStart(ctx, project) },
 			func(ctx context.Context, day time.Time) error { return r.writeLegion(ctx, project, day) },
 			r.recordWalk)
@@ -1498,25 +1497,24 @@ func (r *refresh) yields(ctx context.Context) bool {
 	return true
 }
 
-// walkDays builds what the pass's batch has left of the walk key, standing at state (found false
-// for a walk with no record): from the first day it has not built, or, where it is to begin (no
-// record, or one begun again), from the first input day begin answers, it builds up to the batch's
-// days left of the walk through today with build, stopping between two days for an owed wake
-// (yields), and records where it stands with record. A walk with nothing to walk (begin answers
-// nil) stands at tomorrow. It answers whether days before today are left. The days a pass builds
-// of the walk build by the first input days of the days before their first (beginBatch), and write
-// each project's day of them that holds rows of the walk's family whether or not they build a row
-// of it (heldDays), so a day whose input left holds no row a whole walk would not hold. A rebuild's
-// walk is one too (rebuildWalk): its days are staged where a walk's are written (walkWrite), and
-// its record is the staging of its batch (stageWalk).
-func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, found bool,
+// walkDays builds what the pass's batch has left of the walk key, standing at next (nil for a walk
+// with no record, or one begun again): from next, or, where it is to begin, from the first input
+// day begin answers, it builds up to the batch's days left of the walk through today with build,
+// stopping between two days for an owed wake (yields), and records where it stands with record. A
+// walk with nothing to walk (begin answers nil) stands at tomorrow. It answers whether days before
+// today are left. The days a pass builds of the walk build by the first input days of the days
+// before their first (beginBatch), and write each project's day of them that holds rows of the
+// walk's family whether or not they build a row of it (heldDays), so a day whose input left holds
+// no row a whole walk would not hold. A rebuild's walk is one too (rebuildWalk): its days are
+// staged where a walk's are written (walkWrite), and its record is the staging of its batch
+// (stageWalk).
+func (r *refresh) walkDays(ctx context.Context, key walkKey, next *time.Time,
 	begin func(context.Context) (*time.Time, error), build func(context.Context, time.Time) error,
 	record func(context.Context, walkKey, time.Time) error) (bool, error) {
 	if r.yields(ctx) {
 		return true, nil
 	}
-	begun := !found || state.next == nil
-	next := state.next
+	begun := next == nil
 	if begun {
 		start, err := begin(ctx)
 		if err != nil {
@@ -1534,13 +1532,9 @@ func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, fo
 		return false, nil
 	}
 	spent := r.batchKey(key)
-	left := r.batched.left(spent, r.batch)
-	if left <= 0 {
+	last, ok := r.batched.through(spent, r.batch, *next, r.today)
+	if !ok {
 		return true, nil
-	}
-	last := next.AddDate(0, 0, left-1)
-	if last.After(r.today) {
-		last = r.today
 	}
 	if err := r.beginBatch(ctx, key, *next, last); err != nil {
 		return false, err
@@ -1568,12 +1562,19 @@ func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, fo
 }
 
 // batchKey is the key the walks' batch of the gap (gapBatch) counts key's days under: its own, or,
-// for a rebuild's walk of it (r.staging), one apart, so a walk in the open and a rebuild's walk of
-// one family each build up to a whole batch per gap.
+// for a rebuild's walk of it (r.staging), rebuildBatchKey's.
 func (r *refresh) batchKey(key walkKey) walkKey {
 	if r.staging != nil {
-		key.family = "rebuild " + key.family
+		return rebuildBatchKey(key)
 	}
+	return key
+}
+
+// rebuildBatchKey is the key the walks' batch of the gap (gapBatch) counts the days of a rebuild's
+// walk key under, one apart from the walk's own, so a walk in the open and a rebuild's walk of one
+// family, and a project's figures walk and the rebuild's, each build up to a whole batch per gap.
+func rebuildBatchKey(key walkKey) walkKey {
+	key.family = "rebuild " + key.family
 	return key
 }
 

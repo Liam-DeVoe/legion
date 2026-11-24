@@ -25,7 +25,7 @@ import (
 // figures are first folded whole by its figures walk (eval_days_walks, family `figures`), one walk
 // whichever build's process runs it, and are built once that first walk is done
 // (eval_figures_built), from which a read of an offered range folds the stored figures
-// (FiguresThrough); the walk then folds each end day a new UTC day adds. A release, a lost cursor
+// (figuresThrough); the walk then folds each end day a new UTC day adds. A release, a lost cursor
 // of the figures or of the refresher refold every built figure aside, in a rebuild (rebuild.go),
 // and stage only the figures that move: so a release whose folds agree with the build before it
 // writes nothing, and one whose folds differ lands what they move in its flip, which logs an
@@ -313,8 +313,8 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 }
 
 // foldFiguresOfDays folds again, in a transaction of its own, project's figures of the days of
-// spans whose rows moved (foldFiguresInTx's fold). Its evals are computed ones, whose rows the
-// refresher alone writes, so it takes no eval's lock.
+// spans whose rows moved (refoldProject, foldFiguresInTx's fold). Its evals are computed ones,
+// whose rows the refresher alone writes, so it takes no eval's lock.
 //
 // The transaction writes no day row, so eval_days' triggers log nothing of it, and no trigger
 // sits on the figure tables: it logs an eval_days change itself of each eval whose figures it
@@ -334,16 +334,8 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 		return fmt.Errorf("begin the stored figures of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	scope, ok, err := readFigureScope(ctx, tx, build, project)
+	folded, ok, err := refoldProject(ctx, tx, build, project, spans)
 	if err != nil || !ok {
-		return err
-	}
-	entries, err := readEntries(ctx, tx, project, slices.Sorted(maps.Keys(spans)))
-	if err != nil {
-		return err
-	}
-	folded, err := refoldMoved(ctx, tx, scope, entriesByID(entries), spans)
-	if err != nil {
 		return err
 	}
 	for _, evalID := range slices.Sorted(maps.Keys(folded)) {
@@ -407,14 +399,10 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 			}
 			continue
 		}
-		left := r.batched.left(key, r.batch)
-		if left <= 0 {
+		end, ok := r.batched.through(key, r.batch, *next, last)
+		if !ok {
 			pending = true
 			continue
-		}
-		end := next.AddDate(0, 0, left-1)
-		if end.After(last) {
-			end = last
 		}
 		if err := r.buildFigures(ctx, key, *next, end, end.Equal(last)); err != nil {
 			return false, err
@@ -512,11 +500,6 @@ func (s *Store) figuresStart(ctx context.Context, project string) (*time.Time, e
 	}
 	start := measures.Midnight(*first).AddDate(0, 0, 1)
 	return &start, nil
-}
-
-// FiguresThrough is figuresThrough on the pool.
-func (s *Store) FiguresThrough(ctx context.Context, projects []string) (map[string]time.Time, error) {
-	return figuresThrough(ctx, s.database.Pool, projects)
 }
 
 // figuresThrough reads in q, for each of projects whose stored figures are built, the last end day

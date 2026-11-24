@@ -11,7 +11,7 @@ import (
 )
 
 // The read of the stored figures (figures.go): the eval list's read of an offered range answers
-// each eval from its stored rows, by lookup, where the day rows' read (DayWindow) would fold every
+// each eval from its stored rows, by lookup, where the day rows' read (DayWindowIn) would fold every
 // row of the window and the compare range again. k8 measured the first paint of 84 days with a
 // compare range on the farm's slowest node: 95.6 ms of database time over the day rows, 12.2 ms
 // over the stored rows, with the answers equal byte for byte.
@@ -63,13 +63,6 @@ type StoredFigures struct {
 	built           map[string]time.Time
 	window, compare map[string]storedRange
 	days            map[string][]storedDay
-}
-
-// ReadStoredFigures is ReadStoredFiguresIn on the pool, each of its statements reading the rows
-// that stand when it runs. Only the tests read it: the eval list reads ReadStoredFiguresIn in its
-// one snapshot.
-func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo string, window Range, compare *Range) (StoredFigures, error) {
-	return ReadStoredFiguresIn(ctx, s.database.Pool, projects, entries, deployRepo, window, compare)
 }
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
@@ -164,7 +157,7 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 // eval has no stored row holds none of its rows, and reads the fold of no parts, as the day rows'
 // read folds none. ok is false where the stored figures cannot answer the eval, which the caller
 // answers from its day rows: its project's figures are not built through the end of both ranges
-// (FiguresThrough), a stored row it would read was folded under another fold key than the eval's
+// (figuresThrough), a stored row it would read was folded under another fold key than the eval's
 // definition now has (a register write the refresher has not folded yet), or one does not decode.
 func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, window Range, compare *Range) ([]SeriesValues, *time.Time, bool) {
 	definition := entry.Definition

@@ -35,7 +35,7 @@ import (
 
 // The checks of the stored figures (figures.go): after each change, the stored rows are the
 // fold of the day rows that stand, as a read of those rows folds them (truthFigures, which reads
-// them through DayWindow and folds each range with FoldStatistics over its rows in day order,
+// them through DayWindowIn and folds each range with FoldStatistics over its rows in day order,
 // merging and sorting every quantile's samples), and the rows the change wrote (by the
 // transaction that last wrote each, xmin) are only those its moved days reach (figureReach).
 
@@ -104,14 +104,14 @@ func (r *refresherRig) storedFigures(t *testing.T) map[string]figureRow {
 }
 
 // figuresBuilt is the last end day every project whose figures are built is built through
-// (FiguresThrough), the marker a read of the stored figures reads.
+// (figuresThrough), the marker a read of the stored figures reads.
 func (r *refresherRig) figuresBuilt(t *testing.T) map[string]time.Time {
 	t.Helper()
 	projects, err := r.registry.Projects(t.Context())
 	if err != nil {
 		t.Fatalf("read the projects: %v", err)
 	}
-	built, err := r.registry.FiguresThrough(t.Context(), projects)
+	built, err := figuresThrough(t.Context(), r.database.Pool, projects)
 	if err != nil {
 		t.Fatalf("read how far the figures are built: %v", err)
 	}
@@ -142,7 +142,7 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // truthFigures is every figure the walks have folded, folded from the day rows that stand as a
 // read of the rows folds them: for each project folded through an end day, its own listed rows
 // (repo ""), its own and those of the owner keys it reads (eval_project_owners, owners.go), of each
-// eval of each deploy repository read through DayWindow with no repository named (the evals keyed
+// eval of each deploy repository read through DayWindowIn with no repository named (the evals keyed
 // by the deploy repository read with that repository, every other eval with none), in day order,
 // and every range of FigureLengths ending on or before that day that holds one of them folded by
 // FoldStatistics, and every day before it that holds one folded alone over its headline series. No
@@ -174,7 +174,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 					entries = append(entries, entry)
 				}
 			}
-			read, err := r.registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
+			read, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, deployRepo, nil, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
 			if err != nil {
 				t.Fatalf("read the day rows of %s of %q: %v", project, deployRepo, err)
 			}
@@ -466,7 +466,7 @@ func (r *refresherRig) seedLoggedQuantile(t *testing.T) {
 }
 
 // expectBuilt checks that every project's figures are built through the last end day of today
-// (FiguresThrough), so a read of an offered range folds the stored figures.
+// (figuresThrough), so a read of an offered range folds the stored figures.
 func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 	t.Helper()
 	projects, err := r.registry.Projects(t.Context())
@@ -791,7 +791,7 @@ search:
 // listValues is how the eval list's read states each of project's evals over window and compare
 // (nil for none) of repos (api's readEvalValues): from the stored figures where FiguresOffered
 // offers the read and they answer the eval (StoredFigures.SeriesValues), else from the day rows of
-// repos (DayWindow, SeriesValuesOf); and beside it the fold of those day rows alone, which the
+// repos (DayWindowIn, SeriesValuesOf); and beside it the fold of those day rows alone, which the
 // read must answer. FiguresOffered offers no read that names a repository, so for such a read the
 // two are one fold and only cutValues checks it. Each eval's values are encoded as the list route
 // sends them, by eval id. It answers how many evals the stored figures answered too.
@@ -806,11 +806,11 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	firsts, err := r.registry.FirstDays(ctx, page.Items, deployRepo)
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, page.Items, deployRepo)
 	if err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
-	rows, err := r.registry.DayWindow(ctx, []string{project}, page.Items, deployRepo, repos, window, compare)
+	rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, repos, window, compare)
 	if err != nil {
 		t.Fatalf("read %s's day rows of %v: %v", project, repos, err)
 	}
@@ -821,7 +821,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 	var stored StoredFigures
 	offered := FiguresOffered(repos, window, compare)
 	if offered {
-		if stored, err = r.registry.ReadStoredFigures(ctx, []string{project}, page.Items, deployRepo, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, window, compare); err != nil {
 			t.Fatalf("read %s's stored figures: %v", project, err)
 		}
 	}
@@ -850,7 +850,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 
 // cutRead is what cutValues selects the rows of a read's cut from, read once for the reads of one
 // state: project's evals, the deploy repository their rows stand recorded under, the default
-// repository the project publishes ("" for none), the first day of each series (FirstDays, which
+// repository the project publishes ("" for none), the first day of each series (FirstDaysIn, which
 // the fold reads as the list read's does), each key whose rows the project reads with whether it
 // reads them through the repository (eval_project_owners: its own key, false, and its owner keys),
 // and every stored day row.
@@ -878,7 +878,7 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 	if read.published, err = PublishedDefaultIn(ctx, pool, project); err != nil {
 		t.Fatal(err)
 	}
-	if read.firsts, err = r.registry.FirstDays(ctx, read.entries, read.deployRepo); err != nil {
+	if read.firsts, err = FirstDaysIn(ctx, r.database.Pool, read.entries, read.deployRepo); err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
 	owners, err := pool.Query(ctx, `select owner, via from eval_project_owners where project_key = $1`, project)
@@ -902,7 +902,7 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 // read (DayWindowIn). The cut is the listed rows of the days of the ranges, of the project's own key
 // and of each owner key it reads, whose repository is one repos names, or the empty string (the
 // project's whole)
-// where repos names none; and the project's own rows stored under legionfactsDefault, where repos
+// where repos names none; and the project's own rows stored under legionfacts.DefaultRepo, where repos
 // names the repository the project publishes as its default (owners.go). An owner key's row is read
 // under the project's eval id of its slug (asReader), its via_repository counted only where the
 // project reads the key through the repository (viaAsRead). Of each eval it keeps the rows of the
@@ -934,7 +934,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 		if !reads || !row.Listed {
 			continue
 		}
-		if !slices.Contains(cut, row.Repo) && (row.Repo != legionfactsDefault || owner != c.project || !defaultCut) {
+		if !slices.Contains(cut, row.Repo) && (row.Repo != legionfacts.DefaultRepo || owner != c.project || !defaultCut) {
 			continue
 		}
 		evalID := asReader(owner, c.project, row.EvalID)
@@ -984,7 +984,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 // reads it, with its compare range) filtered to the default repository, and after the move to the
 // default before it, answers the fold of the rows of its cut as this test selects them from every
 // stored day row (cutValues); and the read of the project's own rows, which the stored figures
-// answer, answers both that and what its own rows fold (DayWindow, SeriesValuesOf). Red where the
+// answer, answers both that and what its own rows fold (DayWindowIn, SeriesValuesOf). Red where the
 // read's cut of the published default leaves out the ':default' rows, or reads them under a
 // repository the project no longer publishes; and red where the stored figures keep a fold of each
 // repository's rows and answer a read that names one: a move of the default folds again the
@@ -1016,8 +1016,8 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 			held[row.Repo]++
 		}
 	}
-	if held[defaultRepo] == 0 || held[legionfactsDefault] == 0 {
-		t.Fatalf("%s holds listed day rows by repository %v, and the check needs rows of %s and of %s", project, held, defaultRepo, legionfactsDefault)
+	if held[defaultRepo] == 0 || held[legionfacts.DefaultRepo] == 0 {
+		t.Fatalf("%s holds listed day rows by repository %v, and the check needs rows of %s and of %s", project, held, defaultRepo, legionfacts.DefaultRepo)
 	}
 
 	type shape struct {
@@ -1065,18 +1065,18 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 		update issue_facts set work_hours = work_hours + 1.5, review_rounds = review_rounds + 1
 		where project_key = $1 and issue_key = (
 			select issue_key from issue_facts where project_key = $1 and repo = $2 and closed_at is not null order by closed_at desc, issue_key limit 1)`,
-		project, legionfactsDefault)
+		project, legionfacts.DefaultRepo)
 	r.pass(t)
 	movedDefault := 0
 	for key, row := range r.dayRows(t) {
-		if old, found := before[key]; row.ProjectKey == project && row.Repo == legionfactsDefault && row.Listed && (!found || !old.UpdatedAt.Equal(row.UpdatedAt)) {
+		if old, found := before[key]; row.ProjectKey == project && row.Repo == legionfacts.DefaultRepo && row.Listed && (!found || !old.UpdatedAt.Equal(row.UpdatedAt)) {
 			movedDefault++
 		}
 	}
 	if movedDefault == 0 {
-		t.Fatalf("the change of an issue's facts moved no listed day row of %s under %s", project, legionfactsDefault)
+		t.Fatalf("the change of an issue's facts moved no listed day row of %s under %s", project, legionfacts.DefaultRepo)
 	}
-	check(fmt.Sprintf("after %d day rows of %s moved", movedDefault, legionfactsDefault), defaultRepo)
+	check(fmt.Sprintf("after %d day rows of %s moved", movedDefault, legionfacts.DefaultRepo), defaultRepo)
 
 	r.exec(t, "move the project's default repository", `update projects set default_repo = $2 where key = $1`, project, nextDefault)
 	r.settle(t)
@@ -1097,7 +1097,7 @@ func firstDiffering(a, b string) int {
 }
 
 // TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild: a read of the stored figures reads them only
-// of a project whose figures are built (FiguresThrough). While the first pass's walks of the day
+// of a project whose figures are built (figuresThrough). While the first pass's walks of the day
 // rows have days left the figures walk waits, and no project is built; the figures walk then folds
 // a batch of end days a pass, what it has folded is at every pass the fold of the rows that stand,
 // and a project stands built only once its walk has folded every end day through today+2, which no
@@ -1331,6 +1331,8 @@ func paramEstimate(t *testing.T, args []any) int {
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []*float64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
+		case time.Time:
+			bytes += 8
 		case []time.Time:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []*time.Time:

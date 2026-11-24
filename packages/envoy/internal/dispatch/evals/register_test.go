@@ -499,7 +499,7 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	r.write(t, slug, alice, reading("c", 6))
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	for _, repos := range [][]string{nil, {"acme/web"}} {
-		days, err := r.registry.DayWindow(ctx, []string{r.project}, r.entries(t, evalID), "", repos, window, nil)
+		days, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, r.entries(t, evalID), "", repos, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of %v: %v", repos, err)
 		}
@@ -570,11 +570,16 @@ func versionNumbers(versions []Definition) []int {
 	return numbers
 }
 
-// versionsOf is every version of evalID, newest first: one page of EvalVersions that holds them
-// all, failing the test where the eval holds more than the page or none.
+// versionsOf is every version of evalID, newest first: one page of EvalVersionsIn, in a snapshot of
+// its own, that holds them all, failing the test where the eval holds more than the page or none.
 func (r rig) versionsOf(t *testing.T, evalID string) []Definition {
 	t.Helper()
-	_, versions, found, err := r.registry.EvalVersions(t.Context(), evalID, 200, 0)
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the versions of %s: %v", evalID, err)
+	}
+	defer tx.Rollback(t.Context())
+	_, versions, found, err := EvalVersionsIn(t.Context(), tx, evalID, 200, 0)
 	if err != nil || !found || versions.Total != len(versions.Items) {
 		t.Fatalf("read the versions of %s: found %t, %d of %d, %v", evalID, found, len(versions.Items), versions.Total, err)
 	}

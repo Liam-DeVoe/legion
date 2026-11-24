@@ -278,9 +278,18 @@ type gapBatch struct {
 	built map[walkKey]int
 }
 
-// left is how many of size days the batch has left key's walk to build.
-func (b *gapBatch) left(key walkKey, size int) int {
-	return max(size, 1) - b.built[key]
+// through is the last day of the days the batch has left key's walk of size days to build from
+// next, at most last, and false where it has none left.
+func (b *gapBatch) through(key walkKey, size int, next, last time.Time) (time.Time, bool) {
+	left := max(size, 1) - b.built[key]
+	if left <= 0 {
+		return time.Time{}, false
+	}
+	end := next.AddDate(0, 0, left-1)
+	if end.After(last) {
+		end = last
+	}
+	return end, true
 }
 
 // spend records that key's walk built n more days of the batch.
@@ -515,9 +524,9 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // changes call for, begins the rebuild they call for (work.rebuild: of every served family,
 // replaceRebuild), records work.built, where it is set, as the delivery settings the delivery and
 // CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
-// repositories they stand built for (syncKept), in one transaction, which first writes rebuilds:
+// repositories they stand built for (syncKept), in one transaction, which first writes spans:
 // the days of each family whose days the page writes in its commit, with every other day they
-// move (writeRebuilds: the rows, then the members, then the stored figures, ahead of the cursors,
+// move (writeSpans: the rows, then the members, then the stored figures, ahead of the cursors,
 // the walks and the settings). The days the page named that move no other day are written before
 // it, so a crash between the two reads the same changes again, and a walk or a rebuild the changes
 // begin is recorded with the cursor that passed them, and with the settings it builds under where
@@ -529,10 +538,10 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // figures it moves (publishDefaults). The event cursor
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
 // page last read the change log to its end (page), which the lost-cursor rule reads and which a
-// full page leaves where it stood. Once the transaction commits, the pass records what the
-// rebuilds wrote (committed), and moves a batch of the change log's outbox into the log where the
-// commit logged a change.
-func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, rebuilds []*rebuild) error {
+// full page leaves where it stood. Once the transaction commits, the pass records what the spans
+// wrote (committed), and moves a batch of the change log's outbox into the log where the commit
+// logged a change.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, spans []*spanWrite) error {
 	var rebuildWalks []walkKey
 	if work.rebuild != "" {
 		var err error
@@ -551,10 +560,10 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := writeRebuilds(ctx, tx, rebuilds); err != nil {
+	if err := writeSpans(ctx, tx, spans); err != nil {
 		return err
 	}
-	applied := work.settingsRow && !r.settingsApplied
+	applied := work.settings && !r.settingsApplied
 	if applied {
 		if err := markSettingsApplied(ctx, tx); err != nil {
 			return err
@@ -572,10 +581,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		return fmt.Errorf("move the eval day-row refresher's cursors: %w", err)
 	}
 	if len(restarts) > 0 {
-		families, projects := make([]string, len(restarts)), make([]string, len(restarts))
-		for i, key := range restarts {
-			families[i], projects[i] = key.family, key.project
-		}
+		families, projects := walkColumns(restarts)
 		// The walk begins again whichever build's process runs it next: a change this page passed
 		// is read by no other pass.
 		if _, err := tx.Exec(ctx, `
@@ -609,12 +615,12 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
 	}
-	r.committed(rebuilds)
-	logRebuilds(rebuilds, time.Since(began))
+	r.committed(spans)
+	logSpans(spans, time.Since(began))
 	if applied {
 		r.settingsApplied = true
 	}
-	if applied || len(rebuilds) > 0 || work.defaults != nil {
+	if applied || len(spans) > 0 || work.defaults != nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil
@@ -626,16 +632,26 @@ type walkKey struct {
 	project string
 }
 
+// walkColumns is keys as the two arrays a statement takes them in: their families and their
+// projects, pairwise.
+func walkColumns(keys []walkKey) (families, projects []string) {
+	families, projects = make([]string, len(keys)), make([]string, len(keys))
+	for i, key := range keys {
+		families[i], projects[i] = key.family, key.project
+	}
+	return families, projects
+}
+
 // walkState is one walk's record: the first day it has not built, nil while it is to begin at its
 // first input day.
 type walkState struct {
 	next *time.Time
 }
 
-// staleWalk is how long a rebuild stands unmoved before another build's refresher abandons it
+// staleRebuild is how long a rebuild stands unmoved before another build's refresher abandons it
 // (rebuildDays): a rebuild its build's process runs moves with each batch it stages, so one two
 // days still is one no running process holds.
-const staleWalk = 48 * time.Hour
+const staleRebuild = 48 * time.Hour
 
 // readWalks is every record of a walk, whichever build's process last moved it.
 func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
@@ -696,11 +712,6 @@ func (r *refresh) recordWalkIn(ctx context.Context, q executor, key walkKey, nex
 		return fmt.Errorf("move the serving record of the %s rows of %q to %s: %w", key.family, key.project, next.Format(time.DateOnly), err)
 	}
 	return nil
-}
-
-// RefresherAge is RefresherAgeIn on the pool.
-func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration, bool, error) {
-	return RefresherAgeIn(ctx, s.database.Pool, now)
 }
 
 // RefresherAgeIn answers, read in q, how long before now the refresher last read its feeds, as the

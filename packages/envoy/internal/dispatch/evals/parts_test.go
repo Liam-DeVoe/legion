@@ -11,7 +11,7 @@ import (
 // TestADayRowsPartIsStoredAndReadBackWithNothingLost: a day row is its part (measures.DayPart)
 // beside its key and bookkeeping, and a row written with every field of its part set reads back
 // holding the same part, both as a stored row (scanDay) and as the window read the folds read
-// (DayWindow), with its key and bookkeeping kept, so a field added to the part and not to the
+// (DayWindowIn), with its key and bookkeeping kept, so a field added to the part and not to the
 // columns the writes and the reads name fails here. The row is an owner key's (owners.go): the
 // plain key of acme/web, which the project publishes as its default repository and so reads
 // through the repository, the one read that answers a row's via_repository as stored (a project's
@@ -63,7 +63,7 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	read := EvalID(r.project, SlugPRCI)
 	entry := Entry{Definition: Definition{EvalID: read, ProjectKey: r.project, Source: SourceFoldTiming},
 		Series: []Series{{EvalID: read, Series: part.Series, SeriesComputation: SeriesComputation{Agg: AggLast}}}}
-	window, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, "", []string{repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
+	window, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{entry}, "", []string{repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read the row's window: %v", err)
 	}

@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// The statements of a list read as the statement log holds them: evals.Store.ReadStoredFigures'
-// range-figures read with a compare range and its day-figures read, FiguresThrough's read beside
-// them, and evals.Store.DayWindow's union of the day rows, which the list read before the stored
-// figures.
+// The statements of a list read as the statement log holds them: evals.ReadStoredFiguresIn's
+// range-figures read with a compare range and its day-figures read, the read of how far the
+// figures are built beside them, and evals.DayWindowIn's union of the day rows, which the list
+// read before the stored figures.
 const (
 	rangeFiguresRead = `select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
 		where project_key = any($1::text[]) and eval_id = any($2::text[]) and days = $5 and end_day = $6::date

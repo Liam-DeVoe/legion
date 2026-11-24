@@ -236,7 +236,7 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 
 // TestTheAttributionModeWritesK15sCase: -attribution writes k15's case (verification version 26):
 // three projects, two of them with a default repository, three pull requests, two deploys and two
-// CI jobs, and the read the eval routes fold (evals.Store.DayWindow, over the rows the refresher
+// CI jobs, and the read the eval routes fold (evals.DayWindowIn, over the rows the refresher
 // builds, evals.Store.RefreshThrough) counts each row for exactly the projects the case's R15
 // oracle names and through what it names: pr-open-to-merge counts the pull requests,
 // deploy-frequency the deploys and pr-ci the CI jobs, each day row carries how many of them came
@@ -307,7 +307,7 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 		if len(entries) != len(series) {
 			t.Fatalf("%s holds %d of the evals %v", project, len(entries), slices.Sorted(maps.Keys(series)))
 		}
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, window, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, deployRepo, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
 		}

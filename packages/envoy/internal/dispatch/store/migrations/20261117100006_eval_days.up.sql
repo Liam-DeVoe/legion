@@ -97,7 +97,7 @@
 -- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"); the read keeps each eval's
 -- rows of its own writer and deploy repository from what the range holds. The primary key is the
 -- read and the upsert of one writer's days of one series of one deploy repository, and its first
--- day (evals.Store.FirstDays) is one probe of it.
+-- day (evals.FirstDaysIn) is one probe of it.
 -- eval_days_stamps, (project_key, eval_id, writer, day) over the listed rows, is the stored
 -- figures' read of the rows a write may have moved (evals.movedFigureDays): one range of an eval's
 -- days of every series, repository and deploy repository, which every write of day rows reads for

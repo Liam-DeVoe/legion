@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"testing"
 	"time"
@@ -317,19 +316,7 @@ func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
 
 	loop := r.startLoop(t, RefresherGap, make(chan struct{}, 1))
 	loop.awaitRan(t, 4, 5*time.Second)
-	var ends []time.Time
-	for _, record := range loop.log.Records() {
-		if record.Message != "dispatch duty: leased pass ran" {
-			continue
-		}
-		record.Attrs(func(attr slog.Attr) bool {
-			if attr.Key == "lease" && attr.Value.String() == RefresherLease {
-				ends = append(ends, record.Time)
-				return false
-			}
-			return true
-		})
-	}
+	ends := loop.passEnds()
 	var apart []time.Duration
 	for i, wait := range []time.Duration{horizonRetry, 2 * horizonRetry, 4 * horizonRetry} {
 		gap := ends[i+1].Sub(ends[i])

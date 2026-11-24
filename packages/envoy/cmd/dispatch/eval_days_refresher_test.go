@@ -103,9 +103,9 @@ func TestTheEvalDayRefresherCatchesUpInTheDispatchProcess(t *testing.T) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	age, found, err := evals.New(database, nil, nil, nil).RefresherAge(t.Context(), time.Now())
+	age, found, err := evals.RefresherAgeIn(t.Context(), database.Pool, time.Now())
 	if err != nil || !found || age < 0 || age > refresherCatchUpWait {
-		t.Errorf("RefresherAge answers %s, found %t, %v; want the age of a pass the process just ran", age, found, err)
+		t.Errorf("RefresherAgeIn answers %s, found %t, %v; want the age of a pass the process just ran", age, found, err)
 	}
 	t.Logf("caught up: %s; the last pass ran %s ago", state, age.Round(time.Millisecond))
 }
@@ -129,7 +129,7 @@ func databaseClock(t *testing.T, database *store.Store) time.Time {
 // refresherPassedSince reports whether the eval day-row refresher's events cursor was stamped
 // after since. Every pass stamps it with the moment the pass ran as of, after its load has seeded
 // the projects the pass owes, and a process's first pass seeds every project
-// (evals.Store.RefresherAge). So a stamp after since, the database's clock read before a process
+// (evals.RefresherAgeIn). So a stamp after since, the database's clock read before a process
 // started while no other process ran, says that process's first pass has committed, its seed of
 // every project with it.
 func refresherPassedSince(t *testing.T, database *store.Store, since time.Time) bool {

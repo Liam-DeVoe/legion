@@ -663,13 +663,12 @@ func parseEvalRepos(query url.Values) ([]string, error) {
 	return repos, nil
 }
 
-// evalListRequest is one read of the eval list: what every eval read reads of its query, the
-// projects it reads, in order, and the kind it keeps, "" for every kind. projectsIn, where it is
-// set, reads those projects in the answer's snapshot in place of projects: the project route's
-// project, found (loadProject), and the cross-project read's (evalProjectsIn).
+// evalListRequest is one read of the eval list: what every eval read reads of its query, the kind
+// it keeps, "" for every kind, and projectsIn, which reads in the answer's snapshot the projects it
+// reads, in order: the project route's project, found (loadProject), and the cross-project read's
+// (evalProjectsIn).
 type evalListRequest struct {
 	evalReadQuery
-	projects   []string
 	kind       string
 	projectsIn func(ctx context.Context, tx pgx.Tx) ([]string, error)
 }
@@ -800,12 +799,11 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 		return evalListResponse{}, fmt.Errorf("begin the read of the eval list: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if request.projectsIn != nil {
-		if request.projects, err = request.projectsIn(ctx, tx); err != nil {
-			return evalListResponse{}, err
-		}
+	projects, err := request.projectsIn(ctx, tx)
+	if err != nil {
+		return evalListResponse{}, err
 	}
-	page, err := evals.CurrentIn(ctx, tx, request.projects, request.kind, request.limit, request.offset)
+	page, err := evals.CurrentIn(ctx, tx, projects, request.kind, request.limit, request.offset)
 	if err != nil {
 		return evalListResponse{}, err
 	}
@@ -818,7 +816,7 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 		return evalListResponse{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return evalListResponse{}, fmt.Errorf("end the read of the evals of %v: %w", request.projects, err)
+		return evalListResponse{}, fmt.Errorf("end the read of the evals of %v: %w", projects, err)
 	}
 	items, freshness := values.items()
 	answer := evalListResponse{

@@ -81,7 +81,7 @@ func leaveAttributionInputsUnread(t *testing.T, pool *store.Pool) {
 
 // storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
 // refresher writes for every project), listed or not, every repository's, in key order: the rows
-// the partition is checked over, and the unlisted job series DayWindow leaves out.
+// the partition is checked over, and the unlisted job series DayWindowIn leaves out.
 func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `
@@ -204,7 +204,7 @@ func partsByEval(project string, rows []evals.WindowRow) map[string][]measures.D
 }
 
 // seededEntries seeds project's evals as the project's creation does (evals.Store.Ensure) and
-// answers every one as the list read holds it (evals.Store.Current): the entries a DayWindow read
+// answers every one as the list read holds it (evals.Store.Current): the entries a DayWindowIn read
 // of the project's evals names.
 func seededEntries(t *testing.T, registry *evals.Store, project string) []evals.Entry {
 	t.Helper()
@@ -220,7 +220,7 @@ func seededEntries(t *testing.T, registry *evals.Store, project string) []evals.
 
 // jobParts is the unlisted job series of pr-ci among stored (every one of the project's rows),
 // those of repo's cut on the days of [from, to): the parts the slowest-jobs table folds, which a
-// DayWindow read, of listed rows alone, leaves out.
+// DayWindowIn read, of listed rows alone, leaves out.
 func jobParts(project string, stored []evals.DayRow, repo string, from, to time.Time) []measures.DayPart {
 	var parts []measures.DayPart
 	for _, row := range stored {
@@ -393,9 +393,9 @@ type evalDaysWindow struct {
 	withPRs  int
 }
 
-// compareDayRowsWithRoutes folds the day rows of window, read by DayWindow for the project's cut
-// and each repository's, through the folds the delivery routes answer through, and compares each
-// with the route's answer: GET /api/v1/delivery/measures for that window, and
+// compareDayRowsWithRoutes folds the day rows of window, read by DayWindowIn on pool for the
+// project's cut and each repository's, through the folds the delivery routes answer through, and
+// compares each with the route's answer: GET /api/v1/delivery/measures for that window, and
 // GET /api/v1/delivery/pipeline at the window's last instant, which shows the seven days ending on
 // it whatever the window's length and so is compared with the rows of those seven days, for the
 // all-repositories cut; the measures route's pull-request measures (lead_time, rework_share)
@@ -406,7 +406,7 @@ type evalDaysWindow struct {
 // deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one that ships
 // any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the window's
 // tally and every difference found.
-func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
+func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, pool *store.Pool, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
 	var differences []string
@@ -427,7 +427,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	pipelineDays := measures.ShownDays(pipelineAt)
 	query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
 	read := func(repos []string, span evals.Range) map[string][]measures.DayPart {
-		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, fixture.DeployRepo, repos, span, nil)
+		rows, err := evals.DayWindowIn(t.Context(), pool, []string{fixture.Project}, entries, fixture.DeployRepo, repos, span, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s..%s for %v: %v", span.From.Format(time.DateOnly), span.To.Format(time.DateOnly), repos, err)
 		}
@@ -521,7 +521,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 // publishes as its default, R15), the day rows of every day of the history are written as the
 // server's refresher writes them (refreshEvalDays); their partition by repository is checked; and
 // for evalDaysWindows seeded windows of 1 to 84 whole days, the rows of each cut, read by
-// evals.Store.DayWindow, folded by the folds the routes answer through, equal the routes' answers
+// evals.DayWindowIn, folded by the folds the routes answer through, equal the routes' answers
 // (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then one day's rows of the first
 // window are deleted, and the same comparison must differ.
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
@@ -565,7 +565,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	}
 	total := 0
 	for _, window := range windows {
-		tally, differences := compareDayRowsWithRoutes(t, handler, registry, fixture, settings, entries, stored, window[0], window[1])
+		tally, differences := compareDayRowsWithRoutes(t, handler, registry, database.Pool, fixture, settings, entries, stored, window[0], window[1])
 		for _, difference := range differences {
 			t.Error(difference)
 		}
@@ -583,7 +583,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete the day rows of %s: %v", gone.Format(time.DateOnly), err)
 	}
-	_, differences := compareDayRowsWithRoutes(t, handler, registry, fixture, settings, entries, storedDayRows(t, database.Pool, fixture.Project), windows[0][0], windows[0][1])
+	_, differences := compareDayRowsWithRoutes(t, handler, registry, database.Pool, fixture, settings, entries, storedDayRows(t, database.Pool, fixture.Project), windows[0][0], windows[0][1])
 	if len(differences) == 0 {
 		t.Fatalf("with the %d day rows of %s deleted, %s..%s still folds to the routes' answers, so the comparison cannot see a day it lacks",
 			deleted.RowsAffected(), gone.Format(time.DateOnly), windows[0][0].Format(time.DateOnly), windows[0][1].Format(time.DateOnly))
@@ -690,7 +690,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		entries = slices.DeleteFunc(entries, func(entry evals.Entry) bool {
 			return entry.Definition.EvalID != evals.EvalID(project, evals.SlugDeployFrequency)
 		})
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, fixture.DeployRepo, nil, evals.Range{From: from, To: to}, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, fixture.DeployRepo, nil, evals.Range{From: from, To: to}, nil)
 		if err != nil {
 			t.Fatalf("read the deploy-frequency rows of %s: %v", project, err)
 		}

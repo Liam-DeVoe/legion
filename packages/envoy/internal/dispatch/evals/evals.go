@@ -7,7 +7,7 @@
 // writes the next version (Register), and a reader reads the newest (Current). Its readings are
 // append-only too: a correction is a new reading naming the one it replaces (WriteReadings). A
 // logged eval's day rows are kept by the readings write in its own transaction (days.go), so no
-// window read reads a reading (DayWindow); a computed eval's day rows are the refresher's, which
+// window read reads a reading (DayWindowIn); a computed eval's day rows are the refresher's, which
 // builds the delivery and CI evals' from one day's delivery population (delivery_days.go) and the
 // Legion evals' from one day's stored Legion facts and filings (legion_days.go), and a reading
 // logged under a computed eval's slug is stored and answered by its items alone. Each row records
@@ -280,7 +280,7 @@ type DayRow struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// WindowRow is one day row as a DayWindow read answers it: the range it answers for
+// WindowRow is one day row as a DayWindowIn read answers it: the range it answers for
 // (RangeWindow or RangeCompare), its eval, its part as the folds read it, and when it was last
 // written. The part holds a sample list only where its series' fold reads one (readsSamples),
 // and no counts where the row holds none (Counts nil, not an empty map).
@@ -295,7 +295,7 @@ type WindowRow struct {
 	owner string
 }
 
-// The two ranges a DayWindow read answers rows for.
+// The two ranges a DayWindowIn read answers rows for.
 const (
 	RangeWindow  = "window"
 	RangeCompare = "compare"

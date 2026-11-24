@@ -135,17 +135,7 @@ func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition
 	return entries, nil
 }
 
-// EvalVersions is EvalVersionsIn in a snapshot of its own (BeginSnapshot).
-func (s *Store) EvalVersions(ctx context.Context, evalID string, limit, offset int) (Entry, Page[Definition], bool, error) {
-	tx, err := s.BeginSnapshot(ctx)
-	if err != nil {
-		return Entry{}, Page[Definition]{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
-	}
-	defer tx.Rollback(ctx)
-	return EvalVersionsIn(ctx, tx, evalID, limit, offset)
-}
-
-// EvalVersionsIn reads in tx one eval as Eval does and one page of the versions of its definition,
+// EvalVersionsIn reads in tx one eval as EvalIn does and one page of the versions of its definition,
 // newest first, with how many versions it holds, all in tx's one snapshot (BeginSnapshot), as
 // CurrentIn reads its statements: a register write committing between the reads would otherwise
 // answer a newest version that is not the definition read, which the eval's read states the
@@ -177,18 +167,6 @@ func EvalVersionsIn(ctx context.Context, tx pgx.Tx, evalID string, limit, offset
 	return entry, versions, true, nil
 }
 
-// Eval reads one eval as Current reads each: its newest definition, through evals_current, and
-// the newest version of each of its series, the primary series first, then by name, the two in
-// one snapshot. found is false where no version holds evalID.
-func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
-	tx, err := s.BeginSnapshot(ctx)
-	if err != nil {
-		return Entry{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
-	}
-	defer tx.Rollback(ctx)
-	return EvalIn(ctx, tx, evalID)
-}
-
 // BeginSnapshot begins a read-only repeatable-read transaction, whose statements read one
 // snapshot: the one database moment of an answer whose every read runs in it (ProjectsIn,
 // CurrentIn, EvalVersionsIn, EvalIn, FirstDaysIn, ReadStoredFiguresIn, DayWindowIn, EvalDaysIn,
@@ -198,7 +176,10 @@ func (s *Store) BeginSnapshot(ctx context.Context) (pgx.Tx, error) {
 	return s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 }
 
-// EvalIn is Eval's two reads, in tx: an answer's read of its eval in the answer's one snapshot.
+// EvalIn reads in tx one eval as CurrentIn reads each: its newest definition, through
+// evals_current, and the newest version of each of its series, the primary series first, then by
+// name, the two in tx's one snapshot (BeginSnapshot), as an answer reads its eval in the answer's
+// one snapshot. found is false where no version holds evalID.
 func EvalIn(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) {
 	definition, err := scanDefinition(tx.QueryRow(ctx, `
 		select `+definitionColumns+` from evals_current where eval_id = $1
@@ -220,11 +201,6 @@ func EvalIn(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) 
 		return Entry{}, false, fmt.Errorf("read the series of %s: %w", evalID, err)
 	}
 	return Entry{Definition: definition, Series: nonNil(series)}, true, nil
-}
-
-// FirstDays is FirstDaysIn on the pool.
-func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
-	return FirstDaysIn(ctx, s.database.Pool, entries, deployRepo)
 }
 
 // FirstDaysIn reads in q, for each series of entries' evals that holds a day row of all its
@@ -258,7 +234,7 @@ func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deplo
 		join eval_project_owners o on o.project_key = given.project_key
 		cross join lateral (
 			select d.day from eval_days d
-			where d.project_key = o.owner and d.eval_id = o.owner || substr(given.eval_id, length(given.project_key) + 1)
+			where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "given.project_key")+`
 			  and d.writer = given.writer and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
 			order by d.day
 			limit 1
@@ -284,11 +260,6 @@ func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deplo
 		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 	}
 	return firsts, nil
-}
-
-// EvalDays is EvalDaysIn on the pool.
-func (s *Store) EvalDays(ctx context.Context, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
-	return EvalDaysIn(ctx, s.database.Pool, definition, deployRepo, series, repos, window)
 }
 
 // EvalDaysIn reads in q every day row of definition's eval on the days of window, listed or not
@@ -373,12 +344,6 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 		return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
 	}
 	return items, nil
-}
-
-// DayWindow is DayWindowIn on the pool, each of its statements reading the rows that stand when it
-// runs.
-func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	return DayWindowIn(ctx, s.database.Pool, projects, entries, deployRepo, repos, window, compare)
 }
 
 // DayWindowIn reads in q the listed day rows of entries, evals of projects, for a window of days

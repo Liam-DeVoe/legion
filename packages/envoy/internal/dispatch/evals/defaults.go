@@ -161,11 +161,7 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 	}
 	slices.Sort(moved)
 	for _, project := range slices.Compact(moved) {
-		spans := make(map[string]daySpan, len(deliveryDaySlugs))
-		for _, slug := range deliveryDaySlugs {
-			spans[EvalID(project, slug)] = everyDay
-		}
-		if err := foldFiguresInTx(ctx, tx, build, map[string]map[string]daySpan{project: spans}); err != nil {
+		if err := foldFiguresInTx(ctx, tx, build, map[string]map[string]daySpan{project: slugSpans(project, deliveryDaySlugs, everyDay)}); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,

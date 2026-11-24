@@ -12,7 +12,7 @@ import (
 )
 
 // The probe, after the first paint: where the 84-day compare read's stored-figures statements
-// (evals.Store.ReadStoredFigures, as the server ran them) spend their time on the loaded database,
+// (evals.ReadStoredFiguresIn, as the server ran them) spend their time on the loaded database,
 // so the next change to them is chosen from a measurement. The list answers an offered range of the
 // project's own rows with two of them: the range-figures read, the `union all` of the window's and
 // the compare range's rows of eval_range_figures, one row an eval each, and the day-figures read,
@@ -65,7 +65,7 @@ var (
 // the table. The narrow variant keeps the first and the last.
 var figuresColumn = regexp.MustCompile(`(\bselect\s[^;]*?),\s*figures\b([^;]*?\bfrom eval_(?:range|day)_figures\b)`)
 
-// storedFiguresStatements are the two statements of evals.Store.ReadStoredFigures the probe
+// storedFiguresStatements are the two statements of evals.ReadStoredFiguresIn the probe
 // measures, each by the name its lines carry and the text that marks it in the statement log.
 var storedFiguresStatements = []struct{ name, mark string }{
 	{"range-figures", "from eval_range_figures"},
@@ -136,7 +136,7 @@ func storedFiguresReads(read measuredCase) (found []probedStatement, skipped []s
 		}
 	}
 	if len(found) == 0 {
-		return nil, nil, fmt.Errorf("%s ran neither stored-figures read of evals.Store.ReadStoredFigures: no statement holding %q (the %s read) "+
+		return nil, nil, fmt.Errorf("%s ran neither stored-figures read of evals.ReadStoredFiguresIn: no statement holding %q (the %s read) "+
 			"or %q (the %s read), so its list no longer reads the stored figures and the probe measured nothing", read.name,
 			storedFiguresStatements[0].mark, storedFiguresStatements[0].name, storedFiguresStatements[1].mark, storedFiguresStatements[1].name)
 	}

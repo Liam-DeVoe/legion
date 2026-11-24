@@ -68,12 +68,6 @@ func OwnerKey(repo string, sharers []string, lists []attributionList) string {
 	return key + "|" + strings.Join(slices.Compact(encoded), ";")
 }
 
-// legionfactsDefault is the repository a Legion row of an issue whose own chain names none is
-// stored under (legionfacts.DefaultRepo): a project's cut of a repository reads those rows too
-// where that repository is the one it publishes as its default, so a default move moves the cut
-// and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)).
-const legionfactsDefault = legionfacts.DefaultRepo
-
 // isOwner reports whether key is an owner key (OwnerKey) rather than a project's.
 func isOwner(key string) bool {
 	return strings.HasPrefix(key, ownerPrefix)
@@ -192,6 +186,13 @@ func asReader(owner, project, evalID string) string {
 	return EvalID(project, slugOf(owner, evalID))
 }
 
+// evalIDAs is asReader's rule in SQL: the eval id evalID, of the key of, under key, the same slug
+// (key || substr(evalID, length(of) + 1)), each argument an expression of the statement: an owner
+// key's eval id as a project reads it, or a project's eval id as an owner key stores it.
+func evalIDAs(key, evalID, of string) string {
+	return key + ` || substr(` + evalID + `, length(` + of + `) + 1)`
+}
+
 // viaAsRead is via, the via_repository column of a day row of the owner o of eval_project_owners
 // names, as the project o names reads it: the rows a project reads through an issue of its own
 // count none through a repository (o.via false: its own rows, and an owner key's whose list picks
@@ -221,18 +222,20 @@ func ownedKeys(alias, projects string) string {
 
 // repoCut is the condition that a row (alias) read through eval_project_owners o is one of the
 // repositories repos (a text[] expression) names: a row of one of them, or a row of the project's
-// own stored under legionfacts.DefaultRepo where project (an expression of its key) publishes one
-// of them as its default (eval_project_repos), since such a row is one of that repository. A read
-// that names no repository adds none of it.
+// own stored under legionfacts.DefaultRepo (a Legion row of an issue whose own chain names no
+// repository) where project (an expression of its key) publishes one of them as its default
+// (eval_project_repos), since such a row is one of that repository: a move of the default moves the
+// cut and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)). A read that names no repository
+// adds none of it.
 func repoCut(alias, repos, project string) string {
-	return `(` + alias + `.repo = any(` + repos + `) or (` + alias + `.repo = '` + legionfactsDefault + `' and ` + alias + `.project_key = o.project_key and exists (
+	return `(` + alias + `.repo = any(` + repos + `) or (` + alias + `.repo = '` + legionfacts.DefaultRepo + `' and ` + alias + `.project_key = o.project_key and exists (
 		select 1 from eval_project_repos p where p.project_key = ` + project + ` and p.repo = any(` + repos + `))))`
 }
 
 // ownedDayColumns is dayColumns of a day row d read through eval_project_owners o: the row as the
 // project o names reads it, under its own key and its eval id of the row's slug, its
 // via_repository as that project reads it (viaAsRead).
-var ownedDayColumns = `o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1), d.deploy_repo, d.series, d.repo,
+var ownedDayColumns = `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, d.repo,
 	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at,
 	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository") + `, d.built_by, d.updated_at`
 

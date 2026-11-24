@@ -521,7 +521,7 @@ func TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns(t 
 				held = append(held, &again[i].Rows[j])
 			}
 		}
-		for _, run := range staleRuns(held, paramBytes(11, writerComputation)+writtenReserve(projects, deliveryFamily.slugs), settingsKeyBytes)[1:] {
+		for _, run := range staleRuns(held, paramBytes(11, writerComputation)+writtenReserve(projects, deliveryFamily.slugs), dayRowKeyBytes)[1:] {
 			if rows == 0 && rowKey(*run.rows[0]) == rowKey(again[1].Rows[0]) {
 				rows = n
 			}

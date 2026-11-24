@@ -1417,7 +1417,7 @@ func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
 // whatever order the rows come in and whichever repository's key sorts first. On the 1st acme/b's
 // reading is written first and acme/a's in a later write; on the 2nd acme/a's first and acme/b's
 // later; on the 3rd one batch holds acme/b's and then acme/a's. Each day's window over both
-// repositories, its two rows folded in the order DayWindow answered them and reversed, answers
+// repositories, its two rows folded in the order DayWindowIn answered them and reversed, answers
 // the later write's value, which the project's row of that day holds as its last.
 func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
 	r := newRig(t)
@@ -1440,7 +1440,7 @@ func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
 		if project := r.day(t, evalID, "depth", "", window.From); project.LastValue == nil || *project.LastValue != want.value {
 			t.Fatalf("the project's row of the %d. holds the last value %s, want %g, the later write's", want.day, showValue(project.LastValue), want.value)
 		}
-		rows, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, "", []string{"acme/a", "acme/b"}, window, nil)
+		rows, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{entry}, "", []string{"acme/a", "acme/b"}, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of the %d.: %v", want.day, err)
 		}

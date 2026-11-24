@@ -372,6 +372,20 @@ var attributionRowColumns = attributionColumns{
 	BranchKeys: "src.attribution_branch_keys", CommitKeys: "src.attribution_commit_keys",
 }
 
+// attributionRowTerms is the terms the two statements over stored rows splice after their batch
+// (attributionBatchQuery, resolvedCandidatesQuery): `candidates`, each batch row's (src) candidates
+// read from its own columns (attributionRowColumns), with the row's repository and number
+// (pr_repo, pr_number), then attributionSubjects and the repository walk over their keys
+// (refs.IssueRepoTerms). One text, for attributionSubjects' reason: the two statements must resolve
+// the same candidates alike.
+func attributionRowTerms(renames refs.Renames) string {
+	return `candidates as (
+			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n
+			from batch src
+			left join lateral (` + attributionCandidates(renames, attributionRowColumns) + `) f on true
+		), ` + attributionSubjects + `, ` + refs.IssueRepoTerms
+}
+
 // attributionBatchQuery is the statement AttributePullRequests resolves a whole batch of stored
 // rows with: the same five sources and the same holding as attributionCandidatesQuery above,
 // read from each row's own columns instead of bound parameters, with the batch's size the one
@@ -386,11 +400,7 @@ func attributionBatchQuery(renames refs.Renames) string {
 			where attribution_title_keys is not null
 			order by attribution_checked_at nulls first, repo, number
 			limit $1
-		), candidates as (
-			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n
-			from batch src
-			left join lateral (` + attributionCandidates(renames, attributionRowColumns) + `) f on true
-		), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `, held as (
+		), ` + attributionRowTerms(renames) + `, held as (
 			select c.pr_repo, c.pr_number, c.key, c.rank, c.n
 			from candidates c
 				left join issues i on i.key = c.key
@@ -437,11 +447,7 @@ func resolvedCandidatesQuery(renames refs.Renames) string {
 			from unnest($1::text[], $2::int[]) as given(repo, number)
 			join delivery_pull_requests pr on pr.repo = given.repo and pr.number = given.number
 			where pr.attribution_title_keys is not null
-		), candidates as (
-			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n
-			from batch src
-			left join lateral (` + attributionCandidates(renames, attributionRowColumns) + `) f on true
-		), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `
+		), ` + attributionRowTerms(renames) + `
 		select c.pr_repo, c.pr_number, c.key, i.project_key, coalesce(` + owned + `, ''),
 			coalesce(lower(` + owned + `) = lower(` + refs.CanonicalRepoSQL(renames, "c.pr_repo") + `), false),
 			` + refs.IssueRepoTooDeep + `

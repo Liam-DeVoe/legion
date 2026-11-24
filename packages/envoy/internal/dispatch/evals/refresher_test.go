@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refresherNow is the moment the refresher's tests run their passes as of: noon of deliverytest's
@@ -395,15 +396,15 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 // time on its first close, its idle time on its first close on or after the first whole day after
 // its first claim observation, and the logged eval's on its reading's day. The days with no input
 // (today, and a day before a reading) hold zero rows, n 0. The cursors stand at the feeds' heads,
-// stamped with the pass's moment, which RefresherAge reads.
+// stamped with the pass's moment, which RefresherAgeIn reads.
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
 	r.leaveInputsUnread(t)
 	readingDay := refresherToday.AddDate(0, 0, -3)
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 12.5, "measured_at": readingDay.Add(9 * time.Hour)}))
-	if _, found, err := r.registry.RefresherAge(t.Context(), r.now); err != nil || found {
-		t.Fatalf("before any pass RefresherAge answers found %t, %v, want no age", found, err)
+	if _, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now); err != nil || found {
+		t.Fatalf("before any pass RefresherAgeIn answers found %t, %v, want no age", found, err)
 	}
 
 	r.batch = 2
@@ -498,9 +499,9 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if got := cursors.changes; got.Seq != head.Seq || got.At == nil || head.At == nil || !got.At.Equal(*head.At) {
 		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head.Seq, head.At)
 	}
-	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))
+	age, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now.Add(time.Minute))
 	if err != nil || !found || age != time.Minute {
-		t.Errorf("RefresherAge a minute after the last pass answers %s, found %t, %v; want a minute", age, found, err)
+		t.Errorf("RefresherAgeIn a minute after the last pass answers %s, found %t, %v; want a minute", age, found, err)
 	}
 }
 
@@ -637,23 +638,28 @@ func (l *refresherLoop) wake() {
 	}
 }
 
-// ran is how many of the loop's passes have run so far: duty.Exclusive logs each one that ran
-// under the refresher's lease, as it ends.
-func (l *refresherLoop) ran() int {
-	n := 0
+// passEnds is when each of the loop's passes that has run so far ended: duty.Exclusive logs each
+// one that ran under the refresher's lease, as it ends.
+func (l *refresherLoop) passEnds() []time.Time {
+	var ends []time.Time
 	for _, record := range l.log.Records() {
 		if record.Message != "dispatch duty: leased pass ran" {
 			continue
 		}
 		record.Attrs(func(attr slog.Attr) bool {
 			if attr.Key == "lease" && attr.Value.String() == RefresherLease {
-				n++
+				ends = append(ends, record.Time)
 				return false
 			}
 			return true
 		})
 	}
-	return n
+	return ends
+}
+
+// ran is how many of the loop's passes have run so far (passEnds).
+func (l *refresherLoop) ran() int {
+	return len(l.passEnds())
 }
 
 // awaitRan waits until n of the loop's passes have run, failing t once bound has passed, and
@@ -663,19 +669,28 @@ func (l *refresherLoop) awaitRan(t *testing.T, n int, bound time.Duration) time.
 	return awaitAt(t, time.Now().Add(bound), fmt.Sprintf("pass %d of the loop", n), func() bool { return l.ran() >= n })
 }
 
-// awaitAt asks holds every 10 ms until it holds, failing t once deadline has passed, and answers
-// the moment it was seen to hold.
+// awaitAt asks holds every 10 ms until it holds (testwait.Holds), failing t once deadline has
+// passed, and answers the moment it was seen to hold.
 func awaitAt(t *testing.T, deadline time.Time, what string, holds func() bool) time.Time {
 	t.Helper()
-	for {
-		if holds() {
-			return time.Now()
+	var seen time.Time
+	if !testwait.Holds(time.Until(deadline), 10*time.Millisecond, func() bool {
+		if !holds() {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not seen by %s", what, deadline.Format(time.RFC3339Nano))
-		}
-		time.Sleep(10 * time.Millisecond)
+		seen = time.Now()
+		return true
+	}) {
+		t.Fatalf("%s: not seen by %s", what, deadline.Format(time.RFC3339Nano))
 	}
+	return seen
+}
+
+// tracedStore is a registry over the rig's database whose statements tracer traces, beside the
+// rig's documents, events and attributor: the registry of a check that reads what a write sends.
+func (r rig) tracedStore(t *testing.T, tracer pgx.QueryTracer) *Store {
+	t.Helper()
+	return New(storetest.TracedStore(t, r.database, tracer), r.documents, r.registry.events, r.registry.attributor)
 }
 
 // workTime is EVAL's legion-work-time n of each day, of its all-repositories rows of hours, by the

@@ -16,11 +16,11 @@
 -- the moment the pass that last wrote the row ran as of, which every pass stamps whether or not its
 -- feed held anything new, and on the `delivery_changes` row when a page last read the change log to
 -- its end (delivery.ChangeCursor's ReadAt), which a full page leaves where it stood; so
--- evals.Store.RefresherAge reads how long ago the last pass ran or a pass last read the whole
+-- evals.RefresherAgeIn reads how long ago the last pass ran or a pass last read the whole
 -- change log, whichever is older. A third row, `figures` (migration 20261120072042), is the stored
 -- figures' own read of the same change log, kept as the `delivery_changes` row is, which every
 -- build that writes the figures reads its eval_days and eval_versions changes from, so a change the
--- refresher's page of a build with no figures read is still folded; RefresherAge reads the two
+-- refresher's page of a build with no figures read is still folded; RefresherAgeIn reads the two
 -- feeds' rows alone. It is a table of its own rather than rows of issue_facts_cursor:
 -- legionfacts.CursorAge reads that table's oldest row as the age of the Legion facts, and a row of
 -- another loop would stand in its answer.
