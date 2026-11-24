@@ -2,8 +2,9 @@
 # .github/scripts/test-fence.test.sh
 #
 # Tests .github/scripts/test-fence.sh with no root, no cgroup made and no rule applied: fakes of
-# sudo, iptables, ip6tables, docker and dmesg on PATH record what they were asked, sudo runs what
-# it was given as this user, and a directory of this test stands for /sys/fs/cgroup. It checks,
+# sudo, iptables and ip6tables on PATH record what they were asked, sudo then runs it as this
+# user, fakes of docker and dmesg answer from this test's own files, and a directory of this test
+# (LEGION_TEST_CGROUP_ROOT) stands for /sys/fs/cgroup. It checks,
 # one CHECK line each: that fence refuses a machine with no cgroup v2 hierarchy before any rule;
 # that it makes the cgroup; that each family's chain passes established connections, loopback
 # and the bridge of each named network (and of each network of a named container), then logs

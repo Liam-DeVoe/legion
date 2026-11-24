@@ -41,8 +41,8 @@ connections=$1
 # $RUNNER_TEMP holds everything this step writes: the server below and the run directories the
 # third file's stacks make under TMPDIR.
 export TMPDIR="$RUNNER_TEMP"
-# The server LEGION_TEST_PG_DSN names: psql-session.test.ts makes a database of its own on it and
-# drops it again, and harness-stacks.test.ts runs `select 1` on it. This image's PostgreSQL 18,
+# The server LEGION_TEST_PG_DSN names: psql-session-postgres.test.ts makes a database of its own on
+# it and drops it again, and harness-stacks-postgres.test.ts runs `select 1` on it. This image's PostgreSQL 18,
 # which .github/docker/browser.Dockerfile puts on PATH, started as
 # .github/scripts/dispatch-browser-postgres.sh starts its own, on a port no stack takes (the
 # stacks take ports the OS chooses) and trusting the one account this job runs as, and stopped
