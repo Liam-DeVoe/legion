@@ -24,6 +24,7 @@ func checkProfiles(t *testing.T, profiles string, args ...string) (int, string, 
 // Without the flag it takes that block, exits 0 and writes one line saying the block's tie to the
 // destination was not checked, so the command says what it could not see.
 func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
+	t.Parallel()
 	plain := `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.test"]}}`
 	for _, c := range []struct{ name, profiles, says string }{
 		{"a *. host", mintedProfiles(`"*.test"`, []string{"FIRST_TOKEN"}), "one exact host"},
