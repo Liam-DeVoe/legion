@@ -21,16 +21,13 @@
     ],
     "waiting": [
       "LEGION-212",
-      "LEGION-211",
-      "LEGION-216"
+      "LEGION-211"
     ],
     "trees": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-211",
       "LEGION-212",
-      "LEGION-215",
-      "LEGION-216",
       "LEGION-218",
       "LEGION-219"
     ],
@@ -43,7 +40,7 @@
         ]
       },
       {
-        "issue": "LEGION-216",
+        "issue": "LEGION-211",
         "blockedBy": [
           "LEGION-210"
         ]
@@ -61,13 +58,6 @@
       {
         "issue": "LEGION-214",
         "reason": "label_off"
-      },
-      {
-        "issue": "LEGION-215",
-        "reason": "ancestry",
-        "heldBy": [
-          "LEGION-208"
-        ]
       }
     ]
   },
@@ -104,11 +94,6 @@
         "head": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
         "state": "merged",
         "reviewDecision": "approved"
-      },
-      "designGate": {
-        "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
-        "currentVersion": 4,
-        "approvedVersion": 4
       },
       "gatedSteps": [
         {
@@ -281,15 +266,15 @@
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         "currentVersion": 7,
-        "approvedVersion": 7
+        "approvedVersion": 6
       },
       "gatedSteps": [
         {
           "step": "spec",
           "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
           "currentVersion": 7,
-          "approvedVersion": 7,
-          "status": "approved"
+          "approvedVersion": 6,
+          "status": "waiting"
         }
       ],
       "slot": {
@@ -325,7 +310,6 @@
       "generation": 1,
       "phase": "admitted",
       "status": "in_progress",
-      "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
@@ -336,8 +320,6 @@
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
-      "treeMovedAt": "2026-09-22T09:17:12Z",
-      "quietHours": 0.013333333333333334,
       "assignments": [
         {
           "experiment": "memory",
@@ -402,10 +384,6 @@
           "status": "unregistered"
         }
       ],
-      "slot": {
-        "index": 1,
-        "admittedAt": "2026-09-21T19:05:26Z"
-      },
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
@@ -427,10 +405,14 @@
       "key": "LEGION-211",
       "generation": 2,
       "phase": "implementing",
-      "status": "todo",
+      "status": "in_progress",
       "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "ancestry": [
+        "LEGION-209",
+        "LEGION-208"
+      ],
       "workers": {
         "implementer": {
           "claim": {
@@ -449,11 +431,6 @@
           "rounds": 1
         }
       },
-      "designGate": {
-        "artifactId": "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
-        "currentVersion": 3,
-        "approvedVersion": 3
-      },
       "gatedSteps": [
         {
           "step": "spec",
@@ -465,16 +442,16 @@
       ],
       "waitingLine": {
         "place": 2,
-        "length": 3,
+        "length": 2,
         "part": "starting",
         "kind": "queued_root",
         "partPlace": 1,
-        "partLength": 2,
+        "partLength": 1,
         "holdsSlot": false,
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
       },
       "why": {
         "state": "claim_stopped",
@@ -493,23 +470,7 @@
       "tree": "LEGION-212",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {
-        "tester": {
-          "claim": {
-            "session": "ses_tester_212",
-            "state": "retired",
-            "pluginContract": 0,
-            "updateState": "none"
-          },
-          "pass": 0,
-          "rounds": 0
-        }
-      },
-      "designGate": {
-        "artifactId": "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
-        "currentVersion": 2,
-        "approvedVersion": null
-      },
+      "workers": {},
       "gatedSteps": [
         {
           "step": "spec",
@@ -526,7 +487,7 @@
       },
       "waitingLine": {
         "place": 1,
-        "length": 3,
+        "length": 2,
         "part": "returned",
         "kind": "answered",
         "partPlace": 1,
@@ -557,88 +518,7 @@
       "tree": "LEGION-214",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
-      "workers": {},
-      "designGate": {
-        "artifactId": "4e8b2a61-7d93-4c05-b1f6-8a3e5c9d2074",
-        "currentVersion": 2,
-        "approvedVersion": 1
-      },
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "artifactId": "4e8b2a61-7d93-4c05-b1f6-8a3e5c9d2074",
-          "currentVersion": 2,
-          "approvedVersion": 1,
-          "status": "waiting"
-        }
-      ],
-      "why": {
-        "state": "unlisted",
-        "reason": "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."
-      }
-    },
-    "LEGION-215": {
-      "key": "LEGION-215",
-      "generation": 1,
-      "phase": "admitted",
-      "status": "todo",
-      "tree": "LEGION-215",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "ancestry": [
-        "LEGION-209",
-        "LEGION-208"
-      ],
-      "workers": {},
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "approvedVersion": null,
-          "status": "unregistered"
-        }
-      ],
-      "why": {
-        "state": "unlisted",
-        "reason": "Its Dispatch chain reaches live work above it: LEGION-208. It stands as that tree's unreleased work."
-      },
-      "treeMovedAt": "2026-09-22T07:45:00Z",
-      "quietHours": 1.55
-    },
-    "LEGION-216": {
-      "key": "LEGION-216",
-      "generation": 1,
-      "phase": "admitted",
-      "status": "todo",
-      "tree": "LEGION-216",
-      "repo": "acme/widgets",
-      "defaultBranch": "main",
-      "workers": {},
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "approvedVersion": null,
-          "status": "unregistered"
-        }
-      ],
-      "waitingLine": {
-        "place": 3,
-        "length": 3,
-        "part": "starting",
-        "kind": "queued_root",
-        "partPlace": 2,
-        "partLength": 2,
-        "holdsSlot": false,
-        "rootRank": "00016",
-        "ownRank": "00016",
-        "rootKey": "LEGION-216",
-        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
-      },
-      "why": {
-        "state": "waiting",
-        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-210, which is not done."
-      },
-      "treeMovedAt": "2026-09-22T08:30:00Z",
-      "quietHours": 0.8
+      "workers": {}
     },
     "LEGION-218": {
       "key": "LEGION-218",
@@ -653,8 +533,7 @@
           "claim": {
             "session": "ses_implementer_218",
             "state": "idle",
-            "pluginContract": 0,
-            "updateState": "none"
+            "pluginContract": 0
           },
           "handoffCommit": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
           "pass": 1,
@@ -664,8 +543,7 @@
           "claim": {
             "session": "ses_reviewer_218",
             "state": "idle",
-            "pluginContract": 0,
-            "updateState": "none"
+            "pluginContract": 0
           },
           "pass": 1,
           "rounds": 0
@@ -678,11 +556,6 @@
         "state": "open",
         "reviewDecision": "approved"
       },
-      "designGate": {
-        "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
-        "currentVersion": 5,
-        "approvedVersion": 5
-      },
       "gatedSteps": [
         {
           "step": "spec",
@@ -692,10 +565,6 @@
           "status": "approved"
         }
       ],
-      "slot": {
-        "index": 3,
-        "admittedAt": "2026-09-22T08:14:52Z"
-      },
       "mergeWait": {
         "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
         "headUpdatedAt": "2026-09-22T08:58:40Z",
@@ -719,8 +588,7 @@
           "claim": {
             "session": "ses_implementer_219",
             "state": "idle",
-            "pluginContract": 0,
-            "updateState": "none"
+            "pluginContract": 0
           },
           "handoffCommit": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
           "pass": 2,
@@ -733,8 +601,7 @@
           "claim": {
             "session": "ses_reviewer_219",
             "state": "idle",
-            "pluginContract": 0,
-            "updateState": "none"
+            "pluginContract": 0
           },
           "pass": 2,
           "rounds": 1
@@ -748,11 +615,6 @@
         "mergeState": "blocked",
         "reviewDecision": "approved"
       },
-      "designGate": {
-        "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
-        "currentVersion": 2,
-        "approvedVersion": 2
-      },
       "gatedSteps": [
         {
           "step": "spec",
@@ -762,10 +624,6 @@
           "status": "approved"
         }
       ],
-      "slot": {
-        "index": 4,
-        "admittedAt": "2026-09-19T10:27:44Z"
-      },
       "mergeWait": {
         "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
         "mergeState": "blocked",
