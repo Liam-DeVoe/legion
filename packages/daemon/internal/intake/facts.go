@@ -1261,14 +1261,20 @@ func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
 // task's branch, Branch, on GitHub at the work of Needs, the task's needs in their order as its row
 // read them, at Generation, and GitHub refused as a conflict the merge of each need in Conflicts
 // into the branch the join is made on: the task's join branch where it has one
-// (record.StoredPlan.BaseOf), else Branch. Unmerged says GitHub refused as a conflict the merge of
-// that join branch into Branch, which the task's own work there makes at a start again; it is false
-// for a task with no join branch. The workflow ends the wait of the task's step for its join and
-// starts that step, where the step waits for this join: the task, running at Generation, on Branch
-// with Needs. Any other end of a join changes nothing, so a row that a stop and a later version of
-// the task left behind, whose start again queued a join of its own, starts nothing. The outbox
-// names it by the issue, the generation, the task and the row (internal/daemon's taskBranch), so a
-// row that runs again applies one fact.
+// (record.StoredPlan.BaseOf), else Branch. A need in Conflicts is one whose work GitHub refused: for
+// a need whose work did not merge, the merge of its own branch; for the default branch, the merge
+// of that branch, which holds the work of each need that merged, so each of those needs is named.
+// Unmerged says GitHub refused as a conflict the merge of that join branch into Branch, which the
+// task's own work there makes at a start again; it is false for a task with no join branch. Base,
+// "" at a join, is the default branch where the row served the start of the task's merge instead:
+// it joined nothing, and set the base of the task's open pull request to Base where GitHub's
+// differed, which the workflow records on the pull request and as the task's base before it starts
+// the merge. The workflow ends the wait of the task's step for its join and starts that step,
+// where the step waits for this join: the task, running at Generation, on Branch with Needs. Any
+// other end of a join changes nothing, so a row that a stop and a later version of the task left
+// behind, whose start again queued a join of its own, starts nothing. The outbox names it by the
+// issue, the generation, the task and the row (internal/daemon's taskBranch), so a row that runs
+// again applies one fact.
 type TaskJoined struct {
 	Issue      string
 	Generation uint64
@@ -1277,6 +1283,7 @@ type TaskJoined struct {
 	Needs      []string
 	Conflicts  []string
 	Unmerged   bool
+	Base       string
 }
 
 func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }

@@ -97,6 +97,9 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 		return nil
 	}
 	branch := task.BranchOf(issue.Key)
+	if task.Place.Kind == record.PlaceMerge {
+		return r.mergeBase(ctx, row, issue, task, branch, payload.Generation)
+	}
 	starts, err := stored.StartsFrom(issue, task.Task)
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s: %w", branch, task.Task, issue.Key, err)
@@ -124,6 +127,43 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	}
 	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: payload.Generation, Task: task.Task, Branch: branch, Needs: task.Needs,
 		Conflicts: conflicts, Unmerged: unmerged})
+}
+
+// mergeBase serves the row the start of a task's merge queued (workflow's Engine.start), where the
+// task's open pull request is based on a branch other than the issue's default branch: the base its
+// start fixed, a need's branch or its join branch, where a later version made the task merge. It
+// creates no branch, merges nothing and reads no join branch. It reads the task's open pull request
+// on GitHub and sets its base to the default branch the issue's record names where GitHub's differs
+// (ghbranch.SetBase), as branchClient makes each write of a branch, within branchRowTimeout, then
+// applies the end of the join with that base (intake.TaskJoined.Base), which records it and starts
+// the merge. A row that runs again finds the base set and sends no second PATCH. A task with no open
+// pull request recorded has no base to move, and its merge starts. A failure fails the row, which
+// tries again on its backoff, and the merge waits for it.
+func (r *outbox) mergeBase(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, branch string, generation uint64) error {
+	var pr *record.PullRequest
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		pr, err = r.records.PullRequestOfTask(ctx, tx, issue.Key, task.Task)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the pull request of task %s of %s, whose merge waits for its base: %w", task.Task, issue.Key, err)
+	}
+	if pr != nil && pr.State == record.PullRequestOpen {
+		client, repo, err := r.branchClient(ctx, issue)
+		if err != nil {
+			return err
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, branchRowTimeout)
+		defer cancel()
+		moved, err := ghbranch.SetBase(writeCtx, client, repo, pr.Number, issue.DefaultBranch)
+		if err != nil {
+			return fmt.Errorf("move the pull request of task %s of %s to its default branch at its merge: %w", task.Task, issue.Key, err)
+		}
+		r.log.Info("outbox task branch: the pull request of a task at its merge is based on the default branch", "row", row.ID, "issue", issue.Key,
+			"task", task.Task, "pullRequest", pr.Number, "base", issue.DefaultBranch, "moved", moved)
+	}
+	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: generation, Task: task.Task, Branch: branch, Needs: task.Needs,
+		Base: issue.DefaultBranch})
 }
 
 // openTaskPullRequest opens the pull request of task of issue, on branch against base, as

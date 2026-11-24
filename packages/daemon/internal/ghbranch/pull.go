@@ -84,3 +84,25 @@ func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo
 	}
 	return true, nil
 }
+
+// SetBase sets the base of pull request number of repo, whose REST API github calls, to base
+// (PATCH /repos/{owner}/{repo}/pulls/{number} with the base), and answers whether it changed it. A
+// pull request GitHub shows against base already is left as it is, with no PATCH, so a set made
+// again changes nothing. Every answer other than 2xx is an error naming the repository, the pull
+// request and the base and wrapping GitHub's *githubrest.Answer.
+func SetBase(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, base string) (bool, error) {
+	failed := func(err error) error {
+		return fmt.Errorf("set the base of pull request #%d on %s to %s: %w", number, repo, base, err)
+	}
+	var pull githubrest.PullRequest
+	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", number), &pull); err != nil {
+		return false, failed(err)
+	}
+	if pull.Base.Ref == base {
+		return false, nil
+	}
+	if err := github.Patch(ctx, fmt.Sprintf("/pulls/%d", number), map[string]string{"base": base}, nil); err != nil {
+		return false, failed(err)
+	}
+	return true, nil
+}

@@ -465,6 +465,9 @@ const testerVerdictLabel = "Tester's verdict"
 // and no start is queued. The settle hands the agent on when it is free (handOnAgents), through
 // this function again. A run with no plan rows passes no agent's check: its walk names no agent.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, told func(Standing) string, movedBack bool) error {
+	if waits, err := e.mergeWaitsForBase(ctx, tx, &s); err != nil || waits {
+		return err
+	}
 	if s.walk.Wait == record.StepWaitJoin {
 		waits, err := e.joinNeeds(ctx, tx, &s, role)
 		if err != nil || waits {
@@ -493,6 +496,39 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 		return err
 	}
 	return e.started(ctx, tx, s, role, sent, entry, startMarks{stored: true})
+}
+
+// mergeWaitsForBase says whether the merge of s's task waits for the base of its pull request to
+// move to the issue's default branch, and queues that move: at the task's merge place, of an issue
+// with plan rows, where its pull request (record.Store.PullRequestOfTask) is open and recorded
+// against another branch than the default one. That is the base its start fixed (a need's branch or
+// its join branch) where a later version made the task merge, and a stack a person or the
+// implementer made. The merge waits for the join (record.StepWaitJoin) and the task's task_branch
+// row is queued (record.TaskBranch), whose executor sets the base and applies the end of the join
+// with it (intake.TaskJoined.Base): taskJoined records it and starts the merge, which finds the base
+// equal. So the merger never merges the task's work into a branch that is not main. The base moves
+// at this one moment, never at a step of the task nor at a version, and an issue with no plan rows
+// moves none, so its pull request keeps the base its implementer gave it.
+func (e *Engine) mergeWaitsForBase(ctx context.Context, tx pgx.Tx, s *TaskScope) (bool, error) {
+	issue, w := s.issue, &s.walk
+	if s.plan == nil || w.Place != (record.TaskPlace{Kind: record.PlaceMerge}) {
+		return false, nil
+	}
+	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, w.Task)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen || pr.Base == "" || pr.Base == issue.DefaultBranch {
+		return false, err
+	}
+	now := e.now()
+	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitJoin, &now); err != nil {
+		return false, err
+	}
+	w.Wait, w.WaitSince = record.StepWaitJoin, &now
+	if err := e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: w.Task}); err != nil {
+		return false, err
+	}
+	e.logOnCommit(ctx, "workflow: a task's merge waits for its pull request to move to the default branch", "issue", issue.Key, "tree", issue.Tree,
+		"task", w.Task, "pullRequest", pr.Number, "base", pr.Base, "defaultBranch", issue.DefaultBranch)
+	return true, nil
 }
 
 // waitForAgent says whether the act at the place of s's task, a step, its retro or its merge, waits
