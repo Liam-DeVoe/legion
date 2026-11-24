@@ -11,46 +11,22 @@
         "matchConstraints": {
           "resourceRules": [
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "CONNECT"
-              ],
-              "resources": [
-                "pods/exec"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/exec"]
             },
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "CONNECT"
-              ],
-              "resources": [
-                "pods/attach"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/attach"]
             },
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "CONNECT"
-              ],
-              "resources": [
-                "pods/portforward"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/portforward"]
             }
           ]
         },
@@ -72,17 +48,13 @@
               {
                 "key": "kubernetes.io/metadata.name",
                 "operator": "In",
-                "values": [
-                  "dispatch"
-                ]
+                "values": ["dispatch"]
               }
             ]
           }
         },
         "policyName": "broker-pod-connect",
-        "validationActions": [
-          "Deny"
-        ]
+        "validationActions": ["Deny"]
       }
     },
     {
@@ -93,32 +65,16 @@
         "matchConstraints": {
           "resourceRules": [
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "UPDATE"
-              ],
-              "resources": [
-                "pods"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["UPDATE"],
+              "resources": ["pods"]
             },
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "UPDATE"
-              ],
-              "resources": [
-                "pods/ephemeralcontainers"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["UPDATE"],
+              "resources": ["pods/ephemeralcontainers"]
             }
           ]
         },
@@ -140,17 +96,13 @@
               {
                 "key": "kubernetes.io/metadata.name",
                 "operator": "In",
-                "values": [
-                  "dispatch"
-                ]
+                "values": ["dispatch"]
               }
             ]
           }
         },
         "policyName": "broker-pod-update",
-        "validationActions": [
-          "Deny"
-        ]
+        "validationActions": ["Deny"]
       }
     },
     {
@@ -161,18 +113,10 @@
         "matchConstraints": {
           "resourceRules": [
             {
-              "apiGroups": [
-                ""
-              ],
-              "apiVersions": [
-                "v1"
-              ],
-              "operations": [
-                "CREATE"
-              ],
-              "resources": [
-                "pods"
-              ]
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CREATE"],
+              "resources": ["pods"]
             }
           ]
         },
@@ -194,17 +138,13 @@
               {
                 "key": "kubernetes.io/metadata.name",
                 "operator": "In",
-                "values": [
-                  "dispatch"
-                ]
+                "values": ["dispatch"]
               }
             ]
           }
         },
         "policyName": "broker-pod-create",
-        "validationActions": [
-          "Deny"
-        ]
+        "validationActions": ["Deny"]
       }
     },
     {
@@ -222,17 +162,13 @@
               {
                 "key": "kubernetes.io/metadata.name",
                 "operator": "In",
-                "values": [
-                  "dispatch"
-                ]
+                "values": ["dispatch"]
               }
             ]
           }
         },
         "policyName": "broker-workload-create",
-        "validationActions": [
-          "Deny"
-        ]
+        "validationActions": ["Deny"]
       }
     },
     {
@@ -250,17 +186,13 @@
               {
                 "key": "kubernetes.io/metadata.name",
                 "operator": "In",
-                "values": [
-                  "dispatch"
-                ]
+                "values": ["dispatch"]
               }
             ]
           }
         },
         "policyName": "broker-workload-update",
-        "validationActions": [
-          "Deny"
-        ]
+        "validationActions": ["Deny"]
       }
     }
   ],
