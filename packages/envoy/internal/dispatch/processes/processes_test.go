@@ -83,7 +83,7 @@ func mustRegisterOn(t *testing.T, database *store.Store, c clock.Clock, commit, 
 }
 
 // ageHeartbeat sets the row's heartbeat to age before the database's now(), the clock the
-// registry measures by.
+// registry measures by; a negative age puts it that far ahead.
 func ageHeartbeat(t *testing.T, database *store.Store, id string, age time.Duration) {
 	t.Helper()
 	tag, err := database.Pool.Exec(context.Background(),
@@ -495,6 +495,10 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 	fake := clocktest.New(time.Now())
 	var dead string
 	underRegistryLock(t, database, func(tx pgx.Tx) { dead = livePeer(t, tx, "K9") })
+	// The dead row's heartbeat is put an hour ahead of the database's clock, so it counts as live
+	// until the test ages it below (ageHeartbeat), however much time passes before then, and no
+	// verdict of this row depends on LiveWindow not passing.
+	ageHeartbeat(t, database, dead, -time.Hour)
 
 	// The newcomer is refused while the dead row still counts as live, and waits: its retry gap
 	// is armed on this clock. The row then lapses on the database's clock, which this test

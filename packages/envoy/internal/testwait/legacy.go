@@ -6,8 +6,11 @@ import (
 )
 
 // This file holds the bounded waits main had before the one wait of testwait.go, with main's
-// bodies, for the tests of the Envoy module that have not moved to that wait yet. No new caller
-// takes them.
+// bodies, for the tests of the Envoy module that have not moved to that wait yet: files this
+// pull request does not edit, among them callers main added since (#5132's
+// cmd/listener/role_claim_copy_behind_test.go, and bus/async_error_test.go and
+// cmd/listener/drain_watchers_test.go). A2 moves each such caller onto the one wait and deletes
+// this file with the last of them.
 
 // Poll is how often a condition is asked.
 // A2's callers still use this; A2 deletes it with its last caller.
