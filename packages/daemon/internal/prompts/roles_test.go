@@ -383,8 +383,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	for _, want := range []string{
 		"## A head that conflicts with its base",
 		"A conflict with the base, and a check the base's newer code breaks, are yours",
-		"Merge; do not rebase.",
-		"git show --remerge-diff <merge>",
 		"so that both sides keep their intent",
 		"adapt the change in the same merge commit",
 		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",

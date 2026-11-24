@@ -134,7 +134,7 @@ They override this skill, except:
 
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 
-- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit:
+- A conflict, the daemon's merge-forward message, a need for the base, a retarget:
   `skill://legion-worker/references/conflicts-and-rewrites.md`.
 
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.

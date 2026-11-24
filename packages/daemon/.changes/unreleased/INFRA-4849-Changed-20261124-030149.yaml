@@ -3,7 +3,8 @@ body: |-
   The implementer and the tester run each `before_merge` check of the issue, not each check. A
   refusal of `release_children` or `rerun_child` under a root that the daemon has already accepted
   names the backward move that undoes it. The root's own close does not undo it, because that close
-  lingers the tree.
+  lingers the tree. The implementer, the merger and every role that pushes are no longer told not to
+  rebase or rewrite a pushed commit, nor how to bring the base in.
 time: 2026-11-24T03:01:49Z
 custom:
     Issue: INFRA-4849
