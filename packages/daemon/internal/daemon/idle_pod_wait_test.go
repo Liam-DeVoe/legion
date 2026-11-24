@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -107,8 +108,8 @@ func TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce(t *testing.T) {
 // claims of one issue can hold one role: here the start of `implementer-2`, a second agent of the
 // implementer role, waits beside a start of the role's own claim, and the operator suspended the
 // claims of both. The second agent's start and its suspension are each named by the role with the
-// claim's token beside it. The role's own claim, the control, is named by its role alone: every
-// place its token stands in the notice is inside the second agent's token, which begins with it.
+// claim's token beside it. The role's own claim, the control, is named by its role alone: the
+// notice sets its token beside no name.
 func TestThePodWaitHeldNoticeNamesEachStartAndSuspensionByItsClaim(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -165,9 +166,34 @@ func TestThePodWaitHeldNoticeNamesEachStartAndSuspensionByItsClaim(t *testing.T)
 		t.Errorf("the notice's reason %q does not name the state %s and the issue %s", reason,
 			supervise.StateSuspended, rig.issue.Key)
 	}
-	own, inSecond := strings.Count(reason, string(rig.token)), strings.Count(reason, string(second))
-	if own != inSecond {
+	if own := "(claim " + string(rig.token) + ")"; strings.Contains(reason, own) {
 		t.Errorf("the notice's reason %q names the role's own claim %s by its token, "+
 			"want it named by its role alone", reason, rig.token)
+	}
+}
+
+// The notice of a pod an operator's suspension holds names each waiting start by the claim it
+// starts, by the one rule the outbox's start and the served state name it by: the claim its row
+// names, else the claim the record gives its role's step. A start whose claim that rule cannot give,
+// which only a role no token spells gives, is a fault of the record, which the served state is
+// refused for: the pass queues no notice that names such a start, and its warning names the start's
+// role and why. The control is TestAnOperatorsSuspensionThatHoldsAWaitingPodIsToldOnce, whose start
+// of a role the grammar spells is told. The fault: the rule's error was dropped, and the notice named
+// the start by its role alone, as though it started the role's own claim.
+func TestThePodWaitHeldNoticeNamesNoStartWhoseClaimNoTokenSpells(t *testing.T) {
+	t.Parallel()
+	rig := newIdleRig(t)
+	rig.w.records = rig.issues
+	logs := &syncBuffer{}
+	rig.w.log = slog.New(slog.NewTextHandler(logs, nil))
+	rig.suspendedByOperator(t)
+	rig.startWaitsForPod(t, "Checker")
+
+	rig.w.releaseUnownedPods(context.Background())
+	if notices := podWaitHeldNotices(t, rig); len(notices) != 0 {
+		t.Errorf("the pass queued the pod-wait-held notices %q, want none: no token spells the claim of the start of Checker", notices)
+	}
+	if logged := logs.String(); !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, `\"Checker\" is not a role`) {
+		t.Errorf("the pass logged %q, want a warning that names the start of Checker and why its claim has no token", logged)
 	}
 }
