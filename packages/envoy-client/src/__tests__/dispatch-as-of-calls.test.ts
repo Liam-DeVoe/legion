@@ -276,6 +276,7 @@ const TABLE: readonly TableRow[] = [
       "read: an issue named owner/repo#n",
       "read: an issue's log, with bodies its events cut",
       "read: an issue's children",
+      "read: an issue's comments",
       "read: an issue document's summary",
       "doc-read: an issue's primary document",
       "doc-read: an issue named owner/repo#n",
@@ -310,6 +311,7 @@ const TABLE: readonly TableRow[] = [
     kind: "answers",
     calledBy: [
       "read: an issue's comment by an id prefix",
+      "read: an issue's comments",
       "doc-read: an issue's primary document",
       "doc-read: an issue named owner/repo#n",
       "doc-read: --version",
@@ -518,6 +520,7 @@ const ROWS: readonly Row[] = [
     argv: ["read", "--ref", `dispatch://${ISSUE}/log`],
   },
   { form: "read: an issue's children", argv: ["read", "--ref", `dispatch://${ISSUE}/children`] },
+  { form: "read: an issue's comments", argv: ["read", "--ref", `dispatch://${ISSUE}/comments`] },
   { form: "read: --message", argv: ["read", "--message", MESSAGE] },
   {
     form: "read: an issue's ask by its whole id",
