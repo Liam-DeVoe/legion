@@ -1141,10 +1141,11 @@ const statusWriteReads = 3
 // ISSUE_CHANGED is no failure of the write and no permanent refusal (dispatch.PermanentRefusal),
 // so nothing is dropped over it. The row reads the issue again and writes again only while that
 // fresh read passes the rule its own kind is judged by (stillWanted). A read already at the status
-// the row carries is this write's work, done by someone else; a read at any other status is a
-// change made after the row's read, which the row never writes over, whether it took the issue
-// out of the workflow or moved it along within one. A PARENT_STATUS_CONFLICT and a 403
-// LEGION_STATUS_SCOPE_REQUIRED are the refusals the row answers itself (statusRefusal).
+// the row carries is this write's work, done by someone else; a read at any status the row does
+// not take the issue at (statusMoved) is a change made after the row's read, which the row never
+// writes over, whether it took the issue out of the workflow or moved it along within one. A
+// PARENT_STATUS_CONFLICT and a 403 LEGION_STATUS_SCOPE_REQUIRED are the refusals the row answers
+// itself (statusRefusal).
 //
 // What this read never does is reach the engine. Dispatch's read says what the issue is now and
 // never who wrote it, so the engine would have to take every change it shows for a person's, and
@@ -1209,9 +1210,9 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 }
 
 // rereadWanted says whether a row may write again after its issue changed under it, read as read
-// shows it now and at another status than the row's: never over a status neither the row's nor
-// the one it observed, which is somebody's move made after the row's read (statusMoved), and
-// otherwise as the row's kind judges (stillWanted).
+// shows it now and at another status than the row's: never over a status the row does not take
+// the issue at, which is somebody's move made after the row's read (statusMoved), and otherwise as
+// the row's kind judges (stillWanted).
 func (r *outbox) rereadWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) (bool, error) {
 	if statusMoved(payload, read) {
 		r.log.Info("outbox status write finished without writing: its issue was moved to another status after the row read it",
@@ -1729,9 +1730,16 @@ func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
 	}
 }
 
-// statusMoved says whether somebody moved the issue since the row read the status it observed:
-// Dispatch shows neither that status nor the one the row carries, so the row's write is
-// superseded by a change made after it was queued.
+// statusMoved says whether somebody moved the issue since the row was queued: Dispatch shows
+// neither the status it observed, nor the status its record last saw Dispatch show when it was
+// queued (record.StatusWrite.DispatchStatus, which only an ordinary row carries), nor the one the
+// row carries, so the row's write is superseded by a change made after it was queued. The status
+// an ordinary row observed is the one its record counts (R16 of dispatch://INFRA-3320), which an
+// earlier write of the issue still queued puts on Dispatch only if it runs: a write of an earlier
+// phase entry finishes unwritten at a later one (record.LateAt), and Dispatch then shows what the
+// record last saw it show, a move the daemon had already applied and answered before it queued
+// this row, which this row writes over. A move the daemon had not applied when it queued the row
+// is at neither, and stands.
 //
 // The daemon's own close (record.CloseStatusRow) is superseded so only by a status out of the
 // workflow (record.OutOfWorkflow): a person's stop or close, which ends the run the close was
@@ -1743,7 +1751,7 @@ func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
 // write of an earlier phase entry the entry fence refused can leave Dispatch behind (R20 and R24
 // of dispatch://INFRA-3320).
 func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
-	if issue.Status == payload.ObservedStatus || issue.Status == payload.Status {
+	if issue.Status == payload.ObservedStatus || issue.Status == payload.Status || payload.DispatchStatus != "" && issue.Status == payload.DispatchStatus {
 		return false
 	}
 	return payload.Kind != record.CloseStatusRow || record.OutOfWorkflow(issue.Status)
@@ -1933,16 +1941,18 @@ func (r *outbox) personHandoverStands(row record.OutboxRow, issue dispatch.Issue
 // row carries is of a workflow the issue has left, so the row finishes having written nothing. An
 // issue the daemon keeps no record of is judged by the read alone.
 //
-// A row whose status stands on the other side of the workflow's edge from the status it observed
-// (crossesWorkflow) is an API call's write — set_status, rerun_child or release_children taking an
-// issue into the workflow or out of it (decision 5 of dispatch://INFRA-4730) — and the rule above
-// reads it backwards. Its caller has already finished it where Dispatch shows a status that is
-// neither, so the read still shows the status it observed, and it is wanted while the record, which
-// counted the write before its echo (R16 of dispatch://INFRA-3320), still stands on the side of
-// the edge the write's status is on: a person's move since, which the engine took, has moved the
-// record back across it. An issue the daemon keeps no record of is judged by the read alone.
+// A row whose status stands on the other side of the workflow's edge from the status the read
+// shows (crossesWorkflow) is an API call's write — set_status, rerun_child or release_children
+// taking an issue into the workflow or out of it (decision 5 of dispatch://INFRA-4730) — or a
+// workflow move over a status out of the workflow that its record last saw Dispatch show
+// (record.StatusWrite.DispatchStatus), a session's that the daemon set back, and the rule above
+// reads it backwards. Its caller has already finished it where Dispatch shows a status the row does
+// not take the issue at (statusMoved), and it is wanted while the record, which counted the write
+// before its echo (R16 of dispatch://INFRA-3320), still stands on the side of the edge the write's
+// status is on: a person's move since, which the engine took, has moved the record back across it.
+// An issue the daemon keeps no record of is judged by the read alone.
 func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
-	if crossesWorkflow(payload) {
+	if crossesWorkflow(payload, read.Status) {
 		issue, err := r.recordedIssue(ctx, row.Issue)
 		if err != nil {
 			return false, fmt.Errorf("judge the status write of %s: %w", row.Issue, err)
@@ -1970,12 +1980,15 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 	return true, nil
 }
 
-// crossesWorkflow says whether payload, an ordinary status row, writes a status on the other side of
-// the workflow's edge from the one it observed (record.OutOfWorkflow): a todo over a backlog, a
-// backlog over an in_progress. The workflow's own moves write within the workflow, and its closes
-// are close rows, so only an API call's write crosses (statusStillWanted).
-func crossesWorkflow(payload record.StatusWrite) bool {
-	return payload.ObservedStatus != "" && record.OutOfWorkflow(payload.Status) != record.OutOfWorkflow(payload.ObservedStatus)
+// crossesWorkflow says whether payload, an ordinary status row, writes a status on the other side
+// of the workflow's edge from shown, the status a read shows that the row takes the issue at
+// (statusMoved): its observed status, or the one its record last saw Dispatch show when it was
+// queued (record.OutOfWorkflow): a todo over a backlog, a backlog over an in_progress. The
+// workflow's own moves write within the workflow from the status they observed, and its closes are
+// close rows, so what crosses is an API call's write, or a workflow move over a status out of the
+// workflow its record last saw, a session's that the daemon set back (statusStillWanted).
+func crossesWorkflow(payload record.StatusWrite, shown string) bool {
+	return shown != "" && record.OutOfWorkflow(payload.Status) != record.OutOfWorkflow(shown)
 }
 
 // publishGatedSteps writes the deployment's design-gate steps onto the project's Dispatch row.

@@ -114,8 +114,9 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // at admitted; one unfinished row of each kind this release writes, each with the fence it queues
 // it with, and a row of each new shape (a retention_end, a reparented notice, a status-scope
 // controller notice, a status write with an option, R18's seed, a status write that waits for
-// another and one the controller asked for); another project's status write with its fence and
-// its retention_end; both projects' records of their conversion; and session writes the repair
+// another, one the controller asked for and one carrying the Dispatch status its record held when
+// it was queued); another project's status write with its fence and its retention_end; both
+// projects' records of their conversion; and session writes the repair
 // holds on unknown chains (held_session_writes): on a record in the workflow that Dispatch shows at
 // the last of two held writes, on one Dispatch shows at its own status, on records at phase done,
 // on a record at each status of record.OutOfWorkflowStatuses, and on another project's record.
@@ -240,8 +241,11 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		// for a row the way back leaves as it was queued.
 		after string
 	}{
-		{name: "a phase status write", issue: root, payload: record.Fenced(record.OrdinaryStatusWrite("testing", "in_progress", ""), fence), refused: true,
-			after: `{"kind":"ordinary","status":"testing","observedStatus":"in_progress"}`},
+		{name: "a phase status write, with the Dispatch status its record held when it was queued", issue: root, payload: record.Fenced(func() record.OutboxPayload {
+			write := record.OrdinaryStatusWrite("testing", "in_progress", "")
+			write.DispatchStatus = "todo"
+			return write
+		}(), fence), refused: true, after: `{"kind":"ordinary","status":"testing","observedStatus":"in_progress"}`},
 		{name: "a status write with an option", issue: root, payload: record.Fenced(func() record.OutboxPayload {
 			write := record.OrdinaryStatusWrite("backlog", "in_progress", "")
 			write.UnlinkChildren = true

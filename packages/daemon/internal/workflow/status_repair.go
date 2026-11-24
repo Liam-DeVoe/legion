@@ -50,8 +50,9 @@ func legionOnChain(chains *record.Chains, key string) bool {
 //  2. its phase has no status of its own (an empty PhaseStatus): the issue keeps what it shows;
 //  3. its recorded Dispatch status is empty or out of the workflow (record.OutOfWorkflow). An
 //     empty status would otherwise pass this walk, and the row it queued could never be written:
-//     the outbox writes a status only where Dispatch shows the row's observed or target status
-//     (daemon's (*outbox).status), which an empty observed status never matches;
+//     the outbox writes a status only where Dispatch shows the row's observed or target status,
+//     or the status its record last saw Dispatch show (daemon's statusMoved), and this row's
+//     observed status and that one are the same empty status, which nothing matches;
 //  4. the status recorded and the phase's status agree, so there is nothing to correct;
 //  5. no issue on its Dispatch chain carries the legion label (legionOnChain): its status is
 //     anyone's to write (R26 of dispatch://INFRA-3320);

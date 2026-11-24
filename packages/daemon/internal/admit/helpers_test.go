@@ -235,12 +235,14 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 }
 
 // unfenced is payload with its fence cleared, for a kind whose run and entry fields are its fence
-// and nothing else (record.FenceOf). Every other kind is left whole: a supervise start's
-// generation and entry are the work it hands out, and a retention end's are what it ends.
+// and nothing else (record.FenceOf), and an ordinary status row without the Dispatch status its
+// record held when it was queued (record.StatusWrite.DispatchStatus), which record.NewFencedRow
+// stamps beside the fence. Every other kind is left whole: a supervise start's generation and entry
+// are the work it hands out, and a retention end's are what it ends.
 func unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	switch value := payload.(type) {
 	case record.StatusWrite:
-		value.Generation, value.Entry = 0, 0
+		value.Generation, value.Entry, value.DispatchStatus = 0, 0, ""
 		return value
 	case record.MessagePost:
 		value.Generation, value.Entry = 0, 0

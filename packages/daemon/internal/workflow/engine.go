@@ -606,7 +606,9 @@ func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // beside it (heldParentWait's reason), so the person who set the todo reads why the board went back,
 // as the release of any other hold queues the status of the phase it ends in: every later status
 // write of the issue is keyed on the record's status (Engine.status), the retro's that ends the
-// hold among them (startHeldRetro), and finds the board at it only once this row has put it back.
+// hold among them (startHeldRetro), and also takes the board at the todo the record saw Dispatch
+// show when it was queued (record.StatusWrite.DispatchStatus), so the retro lands whether this row
+// put the board back first or the retro's raised entry refused it before it ran (record.LateAt).
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue, returning bool) error {
 	released := observedIssue(issue, fact)
 	w, err := e.walk(ctx, tx, released)

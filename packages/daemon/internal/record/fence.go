@@ -53,24 +53,31 @@ func IssueFence(issue Issue, rows []PhaseRow) Fence {
 // FirstFence for an issue the daemon records nothing of. withPod reads the pod its claims run in
 // too (Store.IssuePodUID), which only a kind that acts on a pod asks for.
 func ReadFence(ctx context.Context, tx pgx.Tx, store Store, key string, withPod bool) (Fence, error) {
+	fence, _, err := readFence(ctx, tx, store, key, withPod)
+	return fence, err
+}
+
+// readFence is ReadFence, and the record it read the fence from: nil for an issue the daemon
+// records nothing of.
+func readFence(ctx context.Context, tx pgx.Tx, store Store, key string, withPod bool) (Fence, *Issue, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil {
-		return Fence{}, err
+		return Fence{}, nil, err
 	}
 	fence := FirstFence
 	if issue != nil {
 		rows, err := store.Phases(ctx, tx, key)
 		if err != nil {
-			return Fence{}, err
+			return Fence{}, nil, err
 		}
 		fence = IssueFence(*issue, rows)
 	}
 	if withPod {
 		if fence.PodUID, err = store.IssuePodUID(ctx, tx, key); err != nil {
-			return Fence{}, err
+			return Fence{}, nil, err
 		}
 	}
-	return fence, nil
+	return fence, issue, nil
 }
 
 // Outlives says whether an effect queued at queued does nothing to an issue standing at f: the
@@ -377,18 +384,20 @@ func fenced(payload OutboxPayload, fence Fence) (OutboxPayload, fenceStamp) {
 
 // NewFencedRow is NewOutboxRow for a writer that holds the transaction the row is queued in: the
 // payload carries the fence issue stands at as tx holds it (ReadFence, Fenced), every part a
-// writer names itself kept. It is how every writer of a fenced kind queues one. A row whose
-// phase entry it filled is marked for the settle of a fact that writes it (WithFencedRows): the
-// fact's own moves may raise the issue's entry after the row is queued, and the row belongs to
-// the entry the fact leaves the issue at (Postgres.RefenceFactRows).
+// writer names itself kept, and an ordinary status row the status the issue's record last saw
+// Dispatch show (StatusWrite.DispatchStatus), read off the same record. It is how every writer of
+// a fenced kind queues one. A row whose phase entry it filled is marked for the settle of a fact
+// that writes it (WithFencedRows): the fact's own moves may raise the issue's entry after the row
+// is queued, and the row belongs to the entry the fact leaves the issue at
+// (Postgres.RefenceFactRows).
 func NewFencedRow(ctx context.Context, tx pgx.Tx, store Store, issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if _, carries := FenceOf(payload); carries {
-		fence, err := ReadFence(ctx, tx, store, issue, actsOnPod(payload))
+		fence, recorded, err := readFence(ctx, tx, store, issue, actsOnPod(payload))
 		if err != nil {
 			return OutboxRow{}, fmt.Errorf("read the fence of %s's %s row: %w", issue, payload.OutboxKind(), err)
 		}
 		var stamp fenceStamp
-		payload, stamp = fenced(payload, fence)
+		payload, stamp = fenced(shownTo(payload, recorded), fence)
 		row, err := NewOutboxRow(issue, payload, nextAt)
 		row.refence = stamp
 		return row, err

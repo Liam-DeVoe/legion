@@ -56,8 +56,9 @@ const (
 var StatusRowKinds = []StatusRowKind{OrdinaryStatusRow, PersonHandoverStatusRow, ReassertStatusRow, CloseStatusRow}
 
 // StatusWrite is a Dispatch status the daemon writes. ObservedStatus is the status Dispatch shows
-// until the write runs: the runner writes Status only while Dispatch still shows ObservedStatus, so a
-// move someone else made since the write was queued stands. Kind is what the write is for, set by
+// until the write runs: the runner writes Status only while Dispatch still shows ObservedStatus, or
+// the Dispatch status an ordinary row's record held when it was queued (DispatchStatus), so a move
+// someone else made since the write was queued stands. Kind is what the write is for, set by
 // the constructor its queueing site goes through — OrdinaryStatusWrite, PersonHandoverStatusWrite,
 // ReassertStatusWrite or CloseStatusWrite — which are the only places one is built, so no row
 // reaches the outbox without a kind (validateOutboxPayload refuses one that does).
@@ -109,6 +110,18 @@ type StatusWrite struct {
 	// release wrote it. That release decodes a payload strictly, so a rollback removes the key
 	// first (the way back of migration 20261120012547).
 	ObservedSeq int64 `json:"observedSeq,omitempty"`
+	// DispatchStatus is the status the record of an ordinary row's issue (OrdinaryStatusRow) last
+	// saw Dispatch show (Issue.DispatchStatus) when the row was queued: the last Dispatch move the
+	// daemon applied before it. NewFencedRow stamps it, as it stamps the fence, on every ordinary row
+	// of an issue the daemon records, whatever path queued it, and it is empty on every other kind.
+	// The runner takes Dispatch at it as it takes Dispatch at ObservedStatus, as no move someone
+	// else made since the row was queued (the daemon's statusMoved). ObservedStatus is the status
+	// the record counts, which an earlier write of the issue still queued puts on Dispatch only if it
+	// runs; a write of an earlier phase entry finishes unwritten at a later one (LateAt), and a row
+	// queued after it then finds Dispatch where the record last saw it (R20 of
+	// dispatch://INFRA-3320). The release before decodes a payload strictly, so a rollback removes
+	// the key first (the way back of migration 20261122154645).
+	DispatchStatus string `json:"dispatchStatus,omitempty"`
 }
 
 // HasOption says whether the write carries an option of the status-change route, the one route
@@ -120,11 +133,24 @@ func (w StatusWrite) HasOption() bool {
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
 
 // OrdinaryStatusWrite is the workflow's own move of an issue inside the workflow, to status from
-// the observed status Dispatch shows until the write runs. reason is posted as a message before
-// the status lands (StatusWrite.Reason): a done write's, or a move's that no worker's act on
-// Dispatch explains; every other write has none.
+// the observed status Dispatch shows until the write runs, beside the status the issue's record
+// last saw Dispatch show, which NewFencedRow stamps where it queues the row (DispatchStatus).
+// reason is posted as a message before the status lands (StatusWrite.Reason): a done write's, or a
+// move's that no worker's act on Dispatch explains; every other write has none.
 func OrdinaryStatusWrite(status, observed, reason string) StatusWrite {
 	return StatusWrite{Kind: OrdinaryStatusRow, Status: status, ObservedStatus: observed, Reason: reason}
+}
+
+// shownTo is payload with the status recorded last saw Dispatch show (StatusWrite.DispatchStatus)
+// where it is an ordinary status row that names none: what NewFencedRow stamps beside the fence.
+// recorded is nil for an issue the daemon records nothing of, whose row names none.
+func shownTo(payload OutboxPayload, recorded *Issue) OutboxPayload {
+	write, ok := payload.(StatusWrite)
+	if !ok || write.Kind != OrdinaryStatusRow || write.DispatchStatus != "" || recorded == nil {
+		return payload
+	}
+	write.DispatchStatus = recorded.DispatchStatus
+	return write
 }
 
 // PersonHandoverStatusWrite is the write a person's handover queues, observed at the status that

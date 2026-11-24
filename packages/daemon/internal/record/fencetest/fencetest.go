@@ -10,11 +10,13 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // (record.Fenced): the phase entry and the pod, and the run on a kind whose run field is the
 // fence's alone. A run a kind carried before the fence (a supervise request's, a gate seed's, a
 // pod effect's, a branch's) is part of what the row says, and stays. A supervise start keeps its
-// entry, which is its task's entry and no fence.
+// entry, which is its task's entry and no fence. An ordinary status row also loses the Dispatch
+// status its record held when it was queued (record.StatusWrite.DispatchStatus), which
+// record.NewFencedRow stamps beside the fence.
 func Unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	switch value := payload.(type) {
 	case record.StatusWrite:
-		value.Generation, value.Entry = 0, 0
+		value.Generation, value.Entry, value.DispatchStatus = 0, 0, ""
 		return value
 	case record.MessagePost:
 		value.Generation, value.Entry = 0, 0

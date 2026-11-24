@@ -3211,7 +3211,7 @@ An earlier daemon reads this much of the release:
   An earlier release knows none of the three options, and written without its option the write would break Dispatch's parent rule (dispatch://INFRA-3320 R24).
 
 - **The new keys of existing payloads.**
-  An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a row that carries a key this release adds is refused at every attempt: the run and the phase entry each effect names, the pod a stop, a cleanup, a save or a release names, the architect a notice names, the row a status write waits for and the controller that asked for it, and the parts of a reparent seed beside the parent, the tree and the words the earlier release requires of it.
+  An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a row that carries a key this release adds is refused at every attempt: the run and the phase entry each effect names, the pod a stop, a cleanup, a save or a release names, the architect a notice names, the row a status write waits for, the controller that asked for it and the Dispatch status its record held when it was queued, and the parts of a reparent seed beside the parent, the tree and the words the earlier release requires of it.
 
 - **A root the first boot's conversion made of a hand-over that had landed.**
   Its record carries `carried_generation` and stores another issue's key as its tree, and an earlier release re-admits only a record whose key is its tree, so the step gives it what that release's own re-admission and promotion would have written.
@@ -3243,7 +3243,7 @@ delete from outbox where split_part(issue, '-', 1) = '<PROJECT>' and (kind = 're
   or (kind = 'controller_notice' and payload->>'kind' = 'status-scope')
   or (kind = 'dispatch_status' and (payload ? 'includeChildren' or payload ? 'unlinkChildren' or payload ? 'includeParent')));
 -- The keys this release adds to the payloads of the kinds the release before reads.
-update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller'
+update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller' - 'dispatchStatus'
   where kind = 'dispatch_status' and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'generation' - 'entry' - 'to'
   where kind in ('notice', 'controller_notice') and split_part(issue, '-', 1) = '<PROJECT>';

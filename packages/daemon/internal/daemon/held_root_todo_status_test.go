@@ -24,14 +24,18 @@ import (
 // retro. The board's move is a person's todo on the held root, which leaves the hold as it stands
 // and sets the board back with the hold's why posted beside it, written for that person, so the
 // person reads why and is given none of the architect's rules for ending a child; or an outside
-// session's status on the root, which the daemon re-asserts its own status over; the control has
-// no move, so the same check is seen to pass where the board was never moved, and nothing posts
-// the sentence. The root's status rows run through the outbox's own status executor against the
-// board, oldest first, as the outbox runs an issue's status writes one at a time in the order they
-// were made: those of the board's move before the last issue leaves, and those of the release after
-// it. The release starts the retro at a new phase entry, where a status row of the entry before
-// finishes unwritten (record.LateAt), so the move's rows run at their own entry, as the outbox's
-// status lane runs them once they are due.
+// session's status on the root, in the workflow or out of it, which the daemon re-asserts its own
+// status over, and which the status repair never puts back where it is out of the workflow; the
+// control has no move, so the same check is seen to pass where the board was never moved, and
+// nothing posts the sentence. The root's status rows run through the outbox's own status executor
+// against the board, oldest first, as the outbox runs an issue's status writes one at a time in
+// the order they were made, and the move's set-back runs on either side of the last issue's leave.
+// Run before it, the set-back lands while the hold stands, and the board answers it with no
+// sequence for the record to take (applyOwnWrite), so the board shows the set-back while the
+// record still reads the move as what Dispatch shows. Still queued when the release starts the
+// retro at a new phase entry, the set-back finishes there unwritten and posts nothing
+// (record.LateAt), so the board still shows the move when the retro's write runs. Either way the
+// retro lands in the outbox's own run.
 func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	t.Parallel()
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
@@ -41,11 +45,16 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// moved is the status the board is moved to before the last issue leaves, "" for none, and
-		// session the session that moves it, "" for a person.
+		// session the session that moves it, "" for a person. setBackFirst runs the status rows of
+		// the move before the last issue leaves; otherwise they are still queued when it leaves.
 		moved, session string
+		setBackFirst   bool
 	}{
-		{name: "a person's todo on the held root, then the last issue beneath it leaves", moved: "todo"},
-		{name: "an outside session's status on the held root, then the last issue beneath it leaves", moved: "in_progress", session: "ses-outside"},
+		{name: "a person's todo on the held root, set back before the last issue beneath it leaves", moved: "todo", setBackFirst: true},
+		{name: "a person's todo on the held root, still to be set back when the last issue beneath it leaves", moved: "todo"},
+		{name: "an outside session's status on the held root, set back before the last issue beneath it leaves", moved: "in_progress", session: "ses-outside", setBackFirst: true},
+		{name: "an outside session's status on the held root, still to be set back when the last issue beneath it leaves", moved: "in_progress", session: "ses-outside"},
+		{name: "an outside session's backlog on the held root, still to be set back when the last issue beneath it leaves", moved: "backlog", session: "ses-outside"},
 		{name: "control: the last issue beneath it leaves with the board never moved"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,7 +74,9 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 				Rank: "B", LastDispatchSeq: 1, HandedOver: true}
 			// The copy of Dispatch's issues holds both, the child under the root, so the root's
 			// chain is known: the release of the hold reads what stands beneath the root and its
-			// gate root there (workflow's startHeldRetro).
+			// gate root there (workflow's startHeldRetro). The root carries the legion label there,
+			// so an outside session's status on it is the daemon's to set back (R26 of
+			// dispatch://INFRA-3320, workflow's sessionStatusWrite).
 			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				version := record.PlanVersion{Issue: rootKey, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, rootKey, claim.RoleArchitect), GivenAt: now.Add(-time.Hour)}
@@ -79,12 +90,13 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 					records.PutIssue(ctx, tx, root),
 					records.PutIssue(ctx, tx, child),
 					records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps),
+					records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: rootKey, Project: "LEGION", Seq: 1,
+						Status: record.Carry(root.DispatchStatus), Parent: record.Carry(""), Labels: record.Carry([]string{"legion"})}),
 				} {
 					if put != nil {
 						return put
 					}
 				}
-				seedCopyRow(t, tx, rootKey, "", root.DispatchStatus, 1)
 				seedCopyRow(t, tx, childKey, rootKey, child.DispatchStatus, 1)
 				return openIssueTx(ctx, tx, "legion", rootKey, treelifecycle.AuthorityWorkflow)
 			}); err != nil {
@@ -135,7 +147,13 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 				if got := stored(rootKey); !record.HeldForChildren(got) {
 					t.Fatalf("%s after the board moved to %s stands in %s with hold %+v, want it still held for its children", rootKey, tc.moved, got.Phase, got.Hold)
 				}
-				writeRootStatuses()
+				if tc.setBackFirst {
+					writeRootStatuses()
+					if got := stored(rootKey); board.status != "needs_review" || got.DispatchStatus != tc.moved {
+						t.Fatalf("after the set-back ran, Dispatch reads %s as %q and its record reads Dispatch at %q, want needs_review on the board and %s on the record",
+							rootKey, board.status, got.DispatchStatus, tc.moved)
+					}
+				}
 			}
 			apply("child-done", intake.DispatchIssue{Key: childKey, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed",
 				Status: "done", Title: "child", Parent: rootKey, Rank: "B", HandedOver: true})
@@ -155,8 +173,8 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 					t.Errorf("Dispatch was posted %q, which carries the architect's rules for ending a child: a person reads it", post)
 				}
 			}
-			if want := map[bool]int{true: 1, false: 0}[tc.moved == "todo"]; told != want {
-				t.Fatalf("Dispatch was posted the hold's retro-held sentence %d times (posts %q), want %d: a person's todo is set back with it, and nothing else posts it",
+			if want := map[bool]int{true: 1, false: 0}[tc.moved == "todo" && tc.setBackFirst]; told != want {
+				t.Fatalf("Dispatch was posted the hold's retro-held sentence %d times (posts %q), want %d: a person's todo set back while the hold stands is set back with it, a set-back the retro's entry refuses posts nothing, and nothing else posts it",
 					told, board.posted, want)
 			}
 		})

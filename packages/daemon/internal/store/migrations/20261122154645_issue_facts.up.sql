@@ -102,11 +102,12 @@
 -- person makes that write again). It takes off each payload key this release adds to a kind that
 -- release reads, so those effects run after the rollback: the run and the phase entry each effect
 -- names, the pod a stop, a cleanup, a save or a release names, the architect a notice names, the
--- row a status write waits for and the controller that asked for it, and the parts of R18's seed
--- beside the parent, the tree and the words that release requires of it. It gives each issue the
--- first boot's conversion made a root of its own from a hand-over that had landed (a record with
--- carried_generation set whose stored tree is another issue's) what the release before's own
--- re-admission and promotion would have written, since that release re-admits only a record whose
+-- row a status write waits for, the controller that asked for it and the Dispatch status its
+-- record held when it was queued, and the parts of R18's seed beside the parent, the tree and the
+-- words that release requires of it. It gives each issue the first boot's conversion made a root
+-- of its own from a hand-over that had landed (a record with carried_generation set whose stored
+-- tree is another issue's) what the release before's own re-admission and promotion would have
+-- written, since that release re-admits only a record whose
 -- key is its tree: the issue stores its own key as its tree, the tree it left where it still stands
 -- at admitted and no tree where it has started (handed_over_from), its claims name that tree and
 -- are bound to an open lifecycle of it, a handed_over_roots row says what it carried, and its
@@ -149,7 +150,7 @@
 --   or (kind = 'controller_notice' and payload->>'kind' = 'status-scope')
 --   or (kind = 'dispatch_status' and (payload ? 'includeChildren' or payload ? 'unlinkChildren' or payload ? 'includeParent')));
 -- -- The keys this release adds to the payloads of the kinds the release before reads.
--- update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller'
+-- update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller' - 'dispatchStatus'
 --   where kind = 'dispatch_status' and split_part(issue, '-', 1) = '<PROJECT>';
 -- update outbox set payload = payload - 'generation' - 'entry' - 'to'
 --   where kind in ('notice', 'controller_notice') and split_part(issue, '-', 1) = '<PROJECT>';
