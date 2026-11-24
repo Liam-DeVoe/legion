@@ -109,8 +109,8 @@ func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamCont
 // Only the "2.10" cases need a server this process cannot run: the module links nats-server
 // v2.15.1, so the "hub" cases above are each proved in process as well
 // (TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset). They stay
-// here because the image the hub runs is the one the deployment reconciles its stream on, and
-// only a real image is that.
+// here because the image the clustered hub runs (testnats.HubImage, nats-server 2.15.3) is the one
+// the deployment reconciles its stream on, and only a real image is that.
 func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereALowerCapIsRefused(t *testing.T) {
 	t.Run("hub", func(t *testing.T) {
 		uri, js := liveServerJetStream(t, testnats.HubImage)

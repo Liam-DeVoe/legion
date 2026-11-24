@@ -218,13 +218,13 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // no body on whatever reply subject a client names, each needing no other client: a no_wait pull
 // on a consumer with nothing to deliver is answered a "404 No Messages" status, and a synchronous
 // ack an empty reply, so either aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s> (the
-// consumer calls below, TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is
+// consumer calls below, TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete). That reach is
 // availability only - no message of any project crosses it - and was accepted for day one until
-// the hub's nats-server reached 2.15.3. That is met: nats-server 2.15.3, which the clustered hub
-// runs, refuses every publish whose reply is under $JS., and the clustered hub is the only hub the
-// deployment renders this set on, so no deployed edge has the reach. The row runs on both servers
-// and keeps its 2.15.1 half until the VM hub is removed. The two routes that would change a
-// stream's configuration are both held off:
+// the hub that renders this set ran nats-server 2.15.3. That is met: nats-server 2.15.3, which the
+// clustered hub runs, refuses every publish whose reply is under $JS., and the clustered hub is the
+// only hub the deployment renders this set on, so no deployed edge has the reach. The row runs on
+// both servers and keeps its 2.15.1 half until the VM hub is removed. The two routes that would
+// change a stream's configuration are both held off:
 //   - A republish carries the stored value to its destination with that value as its body, and a
 //     destination under $JS.API. is a request of the account's: on nats-server 2.15.1 an empty
 //     value republished to a stream delete deletes the stream, and a non-empty one is refused as
@@ -268,9 +268,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // program publishes one, since bus.DeliverSubject names a session by one token.
 //
 // What the lists do not hold back. TestTheEdgeGrantsConsumerCallsReachPastItsPublishList,
-// TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI,
-// TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt and
-// TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream pin these on the clustered hub's image
+// TestAnEdgePushConsumerDeliveringOnItsAccountsJetStreamAPI,
+// TestAPushConsumersHeartbeatAimedAtAStreamDeleteWhileAClientSubscribesIt and
+// TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete pin these on the clustered hub's image
 // (testnats.HubImage), the last three on nats-server 2.15.1 (testnats.VMHubImage) as well until the
 // VM hub is removed; the bucket-stream consumer is read from the server's rule, not run:
 //   - The session consumers' calls name the consumer by *, since each session's consumer is named
@@ -304,7 +304,7 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     synchronous ack ($JS.ACK.ENVOY_NOTIFICATIONS.*.>) an empty reply. The server sends each with
 //     no body on whatever reply subject the requester names, so on nats-server 2.15.1 one aimed at
 //     $JS.API.STREAM.DELETE.<s> deletes stream <s>, with no other client
-//     (TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). nats-server 2.15.3, which the
+//     (TestAPullStatusAndAnAckAnswerAimedAtAStreamDelete). nats-server 2.15.3, which the
 //     clustered hub runs, refuses that publish, naming its reply.
 //   - Its KV calls include a consumer on each bucket's stream (CONSUMER.CREATE.KV_<bucket>.>),
 //     and that stream does not carry the notification subjects, so such a consumer can deliver a

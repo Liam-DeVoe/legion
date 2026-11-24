@@ -1244,18 +1244,10 @@ ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
 ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
 
 
-def envoy_forced_order_step(server):
-    """The envoy-go-race step that runs the forced-order tests on nats-server `server`, or, for "",
-    on the version the workspace links."""
-    return f"Forced-order tests on the hooked nats-server v{server}" if server else \
-        "Forced-order tests on the hooked nats-server the module links"
-
-
-def daemon_forced_order_step(server):
-    """The daemon-go step that runs the daemon's forced-order tests on nats-server `server`, or, for
-    "", on the version the workspace links."""
-    return f"Forced-order tests of the daemon on the hooked nats-server v{server}" if server else \
-        "Forced-order tests of the daemon on the hooked nats-server the module links"
+def forced_order_step(server, of=""):
+    """The step that runs the forced-order tests on nats-server `server`, or, for "", on the
+    version the workspace links: envoy-go-race's, or daemon-go's with `of` "of the daemon "."""
+    return f"Forced-order tests {of}on the hooked nats-server " + (f"v{server}" if server else "the module links")
 
 
 def forced_order_run(job, step, workdir, pkgs):
@@ -1268,6 +1260,14 @@ def forced_order_reads(job, step):
     """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
     return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
                  (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
+
+
+def forced_order_steps(job, servers, workdir, pkgs, of=""):
+    """The runs and the reads of `job`'s forced-order steps, one per nats-server of `servers`
+    (forced_order_step, with `of`), over `pkgs` of the module at `workdir`."""
+    steps = [forced_order_step(server, of) for server in servers]
+    return ([forced_order_run(job, step, workdir, pkgs) for step in steps],
+            [read for step in steps for read in forced_order_reads(job, step)])
 
 
 def two_builds_go_step():
@@ -2934,6 +2934,12 @@ def browser_gate(filter, job):
       + CI_SELF + BROWSER_SITE_SELF, workflow=CI)
 
 
+# The forced-order steps' runs and reads, each gate's from the one helper.
+DAEMON_FORCED_ORDER_RUNS, DAEMON_FORCED_ORDER_READS = forced_order_steps(
+    "daemon-go", DAEMON_FORCED_ORDER_SERVERS, DAEMON, DAEMON_FORCED_ORDER_PKGS, of="of the daemon ")
+ENVOY_FORCED_ORDER_RUNS, ENVOY_FORCED_ORDER_READS = forced_order_steps(
+    "envoy-go-race", ENVOY_FORCED_ORDER_SERVERS, ENVOY, ENVOY_FORCED_ORDER_PKGS)
+
 GATES = [
     gate("typecheck", "typecheck", runs=[
         step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
@@ -2964,8 +2970,7 @@ GATES = [
         # daemon-go-race sizes its Postgres for the Dispatch processes internal/daemon's
         # scratch-Dispatch tests start; the job is the file's second, which the citation names.
         ceiling_run("daemon-go-race", job_file("daemon-go")),
-    ] + [forced_order_run("daemon-go", daemon_forced_order_step(server), DAEMON, DAEMON_FORCED_ORDER_PKGS)
-         for server in DAEMON_FORCED_ORDER_SERVERS], exact=[
+    ] + DAEMON_FORCED_ORDER_RUNS, exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
         # form that check reduces either. What it compiles is every test file of every package
@@ -3020,8 +3025,7 @@ GATES = [
                                                 f"consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                                f"const HubImage"),
-    ) + [read for server in DAEMON_FORCED_ORDER_SERVERS
-         for read in forced_order_reads("daemon-go", daemon_forced_order_step(server))]
+    ) + DAEMON_FORCED_ORDER_READS
       + ceiling_reads("daemon-go-race", job_file("daemon-go"))
       + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
@@ -3762,13 +3766,11 @@ GATES = [
     gate("envoy_go_race", "envoy-go-race",
          runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
          + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
-         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
-            for server in ENVOY_FORCED_ORDER_SERVERS],
+         + ENVOY_FORCED_ORDER_RUNS,
          reads=ceiling_reads("envoy-go-race")
          + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
          + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
-         + [read for server in ENVOY_FORCED_ORDER_SERVERS
-            for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
+         + ENVOY_FORCED_ORDER_READS
          + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
