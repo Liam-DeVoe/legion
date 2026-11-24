@@ -142,13 +142,9 @@ func TestAChildRouteThisDaemonDoesNotServeAnswersWithTheStatusToWrite(t *testing
 	if !written {
 		t.Fatalf("%s is not written yet: run `go test ./internal/api/ -update` once to write it", requestShapesFixture)
 	}
-	served := map[string]bool{}
-	for _, route := range (&server{}).routes() {
-		served[route.pattern] = true
-	}
 	var removed []string
 	for _, record := range onFile {
-		if strings.HasPrefix(record.Route, "POST /legion/v1/children/") && !served[record.Route] && !slices.Contains(removed, record.Route) {
+		if strings.HasPrefix(record.Route, "POST /legion/v1/children/") && RemovedRoutes[servedPattern(record.Route)] != 0 && !slices.Contains(removed, record.Route) {
 			removed = append(removed, record.Route)
 		}
 	}

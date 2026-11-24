@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -234,7 +234,7 @@ func (r *keptDecisionsRig) seedTheReleaseBefore() {
 	r.exec("step 1", `insert into processed_events (source, event_id) values ('parked-decision', $1)`, record.OutboxKey(r.design))
 	r.constraints = r.texts("step 1", `select conname::text from pg_constraint where conrelid = 'parked_decisions'::regclass order by conname`)
 	for _, name := range []string{"parked_decisions_pkey", "parked_decisions_issue_fkey", "parked_decisions_claimed_by_fkey"} {
-		if !strings.Contains(" "+strings.Join(r.constraints, " ")+" ", " "+name+" ") {
+		if !slices.Contains(r.constraints, name) {
 			r.t.Fatalf("step 1: the release before's constraints of the table = %v, want %s among them", r.constraints, name)
 		}
 	}
@@ -562,7 +562,7 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 		}
 	}
 	writeManifest("pi-envoy", envoyManifest)
-	port := freeKeptDecisionsPort(t)
+	port := idleRigFreePort(t)
 	configPath := filepath.Join(work, "legion.yaml")
 	if err := os.WriteFile(configPath, fmt.Appendf(nil, keptDecisionsConfig, project, port, dsn, state, token, keptDecisionsFixtureKey), 0o600); err != nil {
 		t.Fatalf("step 5: %v", err)
@@ -621,7 +621,7 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 			}
 			t.Fatalf("step 5: %s ended before it answered GET /readyz (%v); its log:\n%s", binary, ended, readLog())
 		}
-		status, body := getKeptDecisions(base + "/legion/v1/state")
+		status, body := keptDecisionsGet(base + "/legion/v1/state")
 		if err := daemon.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Errorf("step 5: stop %s: %v", binary, err)
 		}
@@ -679,17 +679,6 @@ func keptDecisionsManifest(t *testing.T, path string, withContract bool) (map[st
 	return map[string]any{"name": read.Name, "version": read.Version}, read.Legion.DaemonAPIVersion
 }
 
-// freeKeptDecisionsPort is a port of 127.0.0.1 nothing listens on as it answers.
-func freeKeptDecisionsPort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("step 5: find a free port: %v", err)
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
-}
-
 // waitForKeptDecisionsReady polls url until it answers 200, the daemon ends (exited), or within
 // passes. It answers whether the daemon answered, and how it ended where it ended first.
 func waitForKeptDecisionsReady(url string, exited <-chan error, within time.Duration) (bool, error) {
@@ -703,7 +692,7 @@ func waitForKeptDecisionsReady(url string, exited <-chan error, within time.Dura
 			return false, err
 		default:
 		}
-		if status, _ := getKeptDecisions(url); status == http.StatusOK {
+		if status, _ := keptDecisionsGet(url); status == http.StatusOK {
 			return true, nil
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -711,8 +700,8 @@ func waitForKeptDecisionsReady(url string, exited <-chan error, within time.Dura
 	return false, nil
 }
 
-// getKeptDecisions is the status and body of GET url, and 0 where no answer came.
-func getKeptDecisions(url string) (int, string) {
+// keptDecisionsGet is the status and body of GET url, and 0 where no answer came.
+func keptDecisionsGet(url string) (int, string) {
 	client := http.Client{Timeout: 10 * time.Second}
 	response, err := client.Get(url)
 	if err != nil {
