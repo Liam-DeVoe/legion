@@ -1,7 +1,7 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
 import { CONTROL, controlIn } from "../../components/control-names";
-import { pressMadeIn } from "../../components/focus-place";
+import { pressArmed, pressMadeIn } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 import { PANEL_ATTRIBUTE } from "./keymap";
 
@@ -51,9 +51,9 @@ interface Snapshot extends AnchorRow, Place {
   windowTop: number | null;
 }
 
-/** The page's control row (`components/ControlRow.tsx`) holding the control a press of the
- *  reader's is on, and the row's top, in viewport pixels, immediately before the commit: the
- *  reader's place in that press's commit (`pressedRow`). */
+/** The page's control row (`components/ControlRow.tsx`) a press of the reader's is live in, on a
+ *  control of that row or at its root (`pressMadeIn`), and the row's top, in viewport pixels,
+ *  immediately before the commit: the reader's place in that press's commit (`pressedRow`). */
 interface PressedRow {
   row: Element;
   top: number;
@@ -708,10 +708,11 @@ export class ViewportAnchor extends Component<
    *  the only chip, or on Clear filters, drew the threads the narrowing had left out above the row
    *  nearest the list's centre, and holding that row scrolled the window to 1,269 px, which left
    *  the Filter trigger the control row hands the focus to at -1,140 px, in Chromium, Firefox and
-   *  WebKit. */
+   *  WebKit. The page is searched for the row only while a press is armed (`pressArmed`), so a
+   *  commit with none searches nothing. */
   private pressedRow(): PressedRow | null {
     const root = this.root;
-    if (root === null) return null;
+    if (root === null || !pressArmed()) return null;
     const row = controlIn(this.scrollerElement() ?? document, CONTROL.controlRow);
     if (row === null || root.contains(row) || !pressMadeIn(row)) return null;
     return { row, top: row.getBoundingClientRect().top };

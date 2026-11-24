@@ -13,6 +13,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { disarm } from "../__tests__/armed-press";
 import { layOutLine } from "../__tests__/chips-line";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { settle } from "../__tests__/fake-clock";
@@ -59,9 +60,8 @@ import { useTableLayout } from "./table-layout";
 const restores: (() => void)[] = [];
 afterEach(() => {
   for (const restore of restores.splice(0)) restore();
-  // A press a case left armed ends as the reader's next pointer press on the page ends it, so
-  // that none outlives its case.
-  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  // A press a case left armed ends, so that none outlives its case.
+  disarm();
 });
 
 /** Draws `tree`, unmounted after the case. */

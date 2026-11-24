@@ -5,6 +5,7 @@ import { act, fireEvent, render, renderHook } from "@testing-library/react";
 import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { disarm } from "../__tests__/armed-press";
 import { realClock } from "../__tests__/fake-clock";
 import { frameAndTasks, nextFrame } from "../__tests__/frames";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
@@ -741,13 +742,6 @@ function clickPress(control: HTMLElement): void {
   fireEvent.click(control);
 }
 
-/** Ends a press still armed as a case ends, as the reader's next pointer press on the page does,
- *  so that none outlives its case into the next one: a case that installs the fake clock would
- *  run that press's end on it, which is not that case's to move. */
-function disarm(): void {
-  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-}
-
 /** Runs `body` with the page's main content in the document, holding one button per label, and
  *  takes it away after, with any press still armed (`disarm`). */
 async function inMain<T>(
@@ -1355,5 +1349,66 @@ test("a second press on the control a pick's write holds leaves the pick the cau
     "a click on the held Snooze": "After",
     "a second Enter on the held Snooze": "After",
     "nothing after the pick": "After",
+  });
+});
+
+/** The project List's section (`IssuesTable`): a root that arms the hand-off at its own presses
+ *  (`armOnPress`), around two components that hand their own focus off and arm it at their own
+ *  roots (`ArmedLine`): the selection bar's line of `bar` buttons, and the table's body, whose
+ *  one row draws Start next, `held` while the bar's write is out (`perform`). */
+function ArmedSection(props: {
+  readonly bar: readonly string[];
+  readonly held: boolean;
+}): ReactNode {
+  return createElement(
+    "section",
+    ARM_ON_PRESS,
+    createElement(ArmedLine, { labels: props.bar }),
+    createElement(ArmedLine, { held: props.held ? ["Start next"] : [], labels: ["Start next"] })
+  );
+}
+
+// (dt) Armed by a press in one component whose write holds a control of another inside the same
+// root: the project List's selection bar's Take out of epic, whose run holds every row's Start
+// next, in the table's body, a root no press had reached by the arm. A double click on the held
+// Start next - in WebKit, which leaves the focus on the bar's button - takes nothing but its hold,
+// though its first click is the first press the body's root hears: the bar's press stays the
+// cause, and the write's answer that takes Take out of epic away hands the focus to the control
+// now at its place, as it does with no click.
+test("a double click on a control the press's write holds, in a root inside the press's own that first hears a press after the arm, leaves the press the cause", async () => {
+  const bar = ["Before", "Take out of epic", "After"];
+  const acts: Readonly<Record<string, (start: HTMLElement) => void>> = {
+    "a double click on the held Start next": (start) => {
+      pointerPress(start);
+      pointerPress(start);
+    },
+    "nothing after the press": () => undefined,
+  };
+  const landed: Record<string, string | null> = {};
+  for (const [named, actAgain] of Object.entries(acts)) {
+    landed[named] = await inMain([], async (main) => {
+      const host = document.createElement("div");
+      main.append(host);
+      const view = render(createElement(ArmedSection, { bar, held: false }), { container: host });
+      try {
+        clickPress(view.getByRole("button", { name: "Take out of epic" }));
+        // The run the press starts holds every row's Start next, and what answers it.
+        view.rerender(createElement(ArmedSection, { bar, held: true }));
+        const answered = holdHandOff();
+        actAgain(view.getByRole("button", { name: "Start next" }));
+        for (const _ of [0, 1, 2]) await frameAndTasks();
+        // The writes land, and their answer takes Take out of epic away with the selection.
+        view.rerender(createElement(ArmedSection, { bar: ["Before", "After"], held: false }));
+        answered();
+        return landing();
+      } finally {
+        view.unmount();
+        host.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({
+    "a double click on the held Start next": "After",
+    "nothing after the press": "After",
   });
 });

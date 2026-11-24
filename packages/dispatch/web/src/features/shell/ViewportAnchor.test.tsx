@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 
+import { disarm } from "../../__tests__/armed-press";
 import { nextFrame } from "../../__tests__/frames";
 import { CONTROL } from "../../components/control-names";
 import { ARM_ON_PRESS } from "../../components/focus-place";
@@ -998,12 +999,6 @@ function Narrowed({ scroller }: { scroller?: RefObject<HTMLDivElement | null> })
       <List rows={narrowed ? ids(9, 4) : ids(12)} scroller={scroller} />
     </>
   );
-}
-
-/** Ends a press still armed as a case ends, as the reader's next pointer press on the page does
- *  (`components/focus-place.ts`'s `armHandOff`), so none outlives its case into the next one. */
-function disarm(): void {
-  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
 }
 
 // The reader takes the list's only narrowing off from the keyboard with the window scrolled, and
