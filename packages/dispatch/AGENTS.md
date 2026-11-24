@@ -61,7 +61,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - `components/focus-place.ts`: a component's own hand-off of a control a press takes out of it (`useFocusPlace`), armed by the reader's press at the component's root (`armOnPress`); `components/row-marker.ts` says what it treats as a row.
 
-- `components/held-press.ts`: the hold on a control whose press started a write or a read that is still out.
+- `components/held-press.ts`: the hold on a control that cannot be pressed now: one whose press started a write or a read that is still out, or a step with no page to go to (`StepButton.tsx`, `Pager.tsx`).
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 

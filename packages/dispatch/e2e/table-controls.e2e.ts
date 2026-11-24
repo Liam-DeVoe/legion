@@ -5,7 +5,7 @@
  *  are in `table-controls.stub.e2e.ts`.
  */
 
-import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_COMMITTED, ISSUE_STATUSES } from "@legion/contracts";
 import type { APIResponse, Locator, Route } from "@playwright/test";
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { CONTROL, NARROW_BELOW } from "../web/src/components/control-names";
@@ -27,6 +27,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import {
+  answerAsk,
   createAgentMessage,
   createAsk,
   createComment,
@@ -9516,5 +9517,857 @@ test("offline, Take out of epic hands the focus to the marked row's checkbox in 
       await page.unrouteAll({ behavior: "ignoreErrors" });
     }
   }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
+// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
+// Change answer on a decided ask takes itself away and puts the answer form in its place, as
+// Add a priority's + does. At aa057a19 a click on it scrolled the page 65 px at 1440 in Firefox
+// and WebKit. Restored by the tester in round 25, by the architect's ruling of 2026-11-24
+// 08:07Z: by a press of Enter and by a click, at 1440 and 390, the form opens and its first
+// choice, Ship, stands whole in the window. In builds Job infra-3135-r-cah-ml77m at 683f1fdf it
+// did in Chromium, Firefox and WebKit, Ship at 650 px in the 900 px window at 1440 and at 388 px
+// in the 664 px one at 390, and the press scrolled nothing. Where the focus goes once the button
+// has gone is not read: the round-14 row's check that it lands in the form read a landing the
+// page's focus rescue made, and it left with the rescue (dispatch://INFRA-5564). A focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("Change answer opens the answer form with its first choice whole in the window, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    SURFACE_SESSION
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}/conversation`);
+      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+      await expect(turn).toContainText("Answered by alice");
+      const change = turn.getByRole("button", { name: "Change answer" });
+      await change.scrollIntoViewIfNeeded();
+      if (press === "Enter") {
+        await change.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await change.click();
+      }
+      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
+      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
+      const ship = form.getByRole("radio", { name: "Ship" });
+      const whole = await expect
+        .poll(() =>
+          ship.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight &&
+              box.left >= 0 &&
+              box.right <= window.innerWidth
+            );
+          })
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): an issue page opened at each of two widths, and its Status list walked by the arrows
+// through its eight open statuses at each.
+// INFRA-3135, round 25 (the tester's, measured in builds Jobs infra-3135-p-hc-fhjbh, -p-hf-x8mfh
+// and -p-hw-m2tvp at 683f1fdf and -p-bc-cdxbx, -p-bf-45fn7 and -p-bw-ptvwn at 3fce6150, and
+// this row in infra-3135-p-red2-kvtkk at 683f1fdf): the reader opens the issue header's Status
+// from the keyboard, over the issue's Artifacts tab, and walks its statuses with ArrowDown. The
+// list holds the eight open statuses in a box 286 px tall whose text box stands stuck to its top,
+// so it shows five of them; at the sixth, Testing, the option the list marks active (its text
+// box's `aria-activedescendant`) stands below what the box shows, and so do Needs review and
+// Retro, in Chromium, Firefox and WebKit at 1440x900 and 390x664. Enter there picks an option the
+// reader cannot see (components/MultiSelect.tsx:436-442); a pointer reaches the three by
+// scrolling the box. At 3fce6150 the Status was a native select, whose popup the browser draws
+// and scrolls. The cause: the shared list's ArrowDown and ArrowUp move its active row and scroll
+// nothing (components/MultiSelect.tsx:424-435), in a panel capped at `max-h-72` (:548), and
+// 20f534c5 made the Status that list (features/issue/IssueHeader.tsx:538-563). The rule: a list
+// the reader walks with the arrows shows the option it marks active, as the select it replaced
+// did (the round's item 6: every option of an open list can be reached).
+test("the issue header's Status list keeps the option its arrows mark active wholly inside the list's box, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with an issue page opened and its eight statuses walked.
+  test.setTimeout(90_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Statuses in sight" });
+  // The statuses an open issue's Status offers, in the list's order: every one but done.
+  const statuses = ISSUE_STATUSES.filter((status) => status !== "done");
+  /** Where the option the open list marks active (the text box's `aria-activedescendant`) stands
+   *  in the list's scroll box, in that box's content: the option's top and bottom, and the part
+   *  of the content the box shows - below what it draws stuck to its top (the text box), above
+   *  what it draws stuck to its bottom, and cut to the window - with the box's scrollTop and
+   *  height. `inside` is whether the option stands wholly in that part. */
+  const activeOptionSight = () =>
+    page.evaluate(() => {
+      const id = document.activeElement?.getAttribute("aria-activedescendant") ?? "";
+      const option = id === "" ? null : document.getElementById(id);
+      const none = {
+        bottom: 0,
+        height: 0,
+        inside: false,
+        name: "no option",
+        scrollTop: 0,
+        shownBottom: 0,
+        shownTop: 0,
+        top: 0,
+      };
+      if (option === null) return none;
+      const name = `"${(option.textContent ?? "").replace("✓", "").replace(/\s+/g, " ").trim()}"`;
+      let found = option.parentElement;
+      while (found !== null && !/(auto|scroll)/.test(getComputedStyle(found).overflowY)) {
+        found = found.parentElement;
+      }
+      if (found === null) return { ...none, name };
+      const box = found;
+      const boxTop = box.getBoundingClientRect().top + box.clientTop;
+      let shownTop = Math.max(boxTop, 0);
+      let shownBottom = Math.min(boxTop + box.clientHeight, window.innerHeight);
+      for (const child of box.children) {
+        if (getComputedStyle(child).position !== "sticky") continue;
+        const stuck = child.getBoundingClientRect();
+        if (stuck.top <= boxTop + 1) shownTop = Math.max(shownTop, stuck.bottom);
+        else if (stuck.bottom >= boxTop + box.clientHeight - 1) {
+          shownBottom = Math.min(shownBottom, stuck.top);
+        }
+      }
+      const own = option.getBoundingClientRect();
+      const content = (y: number) => Math.round(y - boxTop + box.scrollTop);
+      return {
+        bottom: content(own.bottom),
+        height: box.clientHeight,
+        inside: own.top >= shownTop - 1 && own.bottom <= shownBottom + 1,
+        name,
+        scrollTop: Math.round(box.scrollTop),
+        shownBottom: content(shownBottom),
+        shownTop: content(shownTop),
+        top: content(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `the issue header's Status at ${size.width}x${size.height}`;
+    await page.goto(`/issues/${issue.key}/artifacts`);
+    const trigger = listTrigger(page.getByTestId("issue-header"), "Status");
+    await expect(trigger).toBeVisible();
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const panel = listOf(trigger);
+    await expect(panel.getByRole("combobox", { name: "Search statuses" })).toBeFocused();
+    await expect(panel.getByRole("option")).toHaveCount(statuses.length);
+    // The list opens on the status the issue holds, Triage, the first, so the arrows mark every
+    // status active once in as many steps as there are statuses.
+    for (let step = 0; step < statuses.length; step += 1) {
+      if (step > 0) {
+        await page.keyboard.press("ArrowDown");
+        await nextFrames(page);
+      }
+      // One read is the answer: the key's render has run, and nothing else scrolls the box.
+      const sight = await activeOptionSight();
+      if (!sight.inside) {
+        wrong.push(
+          `${where}: after ${step} ArrowDown the list marks ${sight.name} active at ${sight.top}-${sight.bottom} px of its content, and its box shows ${sight.shownTop}-${sight.shownBottom} px of it (scrollTop ${sight.scrollTop}, height ${sight.height}): the active option is out of sight`
+        );
+        break;
+      }
+    }
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): eight questions seeded at each of two widths, and two snoozes of two marked rows
+// held through the reader's presses at each.
+// INFRA-3135, round 25 (the tester's, measured in builds Jobs infra-3135-p-hc-fhjbh, -p-hf-x8mfh
+// and -p-hw-m2tvp at 683f1fdf and -p-bc-cdxbx, -p-bf-45fn7 and -p-bw-ptvwn at 3fce6150, isolated
+// in -p3-h-cj42g at 683f1fdf and -p3-b-zzd9d at 3fce6150, and this row in
+// infra-3135-p-red2-kvtkk at 683f1fdf): the reader marks Inbox rows, picks Tomorrow from the
+// selection bar's Snooze selected asks with the keyboard, and presses Enter again on the trigger
+// while the snooze is out. The trigger is held (`aria-disabled`), keeps the focus, opens nothing
+// and sends no second snooze. Once the snooze lands and the bar goes, the focus is on the body,
+// in Chromium, Firefox and WebKit at 1440x900 and 390x664. The same pick with no second Enter
+// puts it on a row's checkbox at 1440 and on the Inbox list's own stop at 390, as the bar's
+// hand-off says. At 3fce6150 the page's focus rescue put it on Answered by you, a row's checkbox
+// or the Inbox list. The cause: the pick's Enter arms the bar's hand-off on the list's text box
+// (the shared list picks at that box's keydown, components/MultiSelect.tsx:436-443, and puts the
+// focus on its trigger, :312-318), which the pick takes away. A second Enter on the held trigger
+// is a press on another control: armHandOff keeps the first press only for a press on its
+// control or inside a control that press holds (components/focus-place.ts:782-795), read by
+// `heldControl`, which answers null for an element gone from the page (:664-666). So it ends the
+// pick's press and arms one on the trigger, held already at the arm, which nothing keeps live
+// (:900-905), and when the snooze lands the bar's hand-off (components/SelectionBar.tsx:371-380)
+// finds nothing armed. The rules: a repeated Enter on a held control keeps the first press as the
+// cause (components/focus-place.ts:744-747), and a shared control whose own press takes the
+// focused control away and drops the focus onto the body, where its code arms a hand-off, fails
+// (the architect's ruling of 2026-11-23 21:2xZ, open-items.md, "#3729 sheds the rescue").
+test("a second Enter on the held Snooze selected asks leaves the focus where the pick alone puts it once the snooze lands and the bar goes, never on the body @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with eight questions seeded and two snoozes held.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  // Every snooze sent while `holding` is held until the row lets it through, so the page is read
+  // while the bar's write is out; the row lets each through once the reader's presses are done.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route("**/api/v1/me/asks/*/snooze", async (route) => {
+    if (route.request().method() !== "PUT" || !holding) return route.fallback();
+    held.push(route);
+  });
+  /** Where the keyboard focus rests once the selection bar has gone: the body, or the focused
+   *  element and its place among the rows a pick seeded (`slots`, by ask id), as "the checkbox
+   *  of the row below the marked two". An element in no seeded row - the Inbox list's own stop -
+   *  is its own place. */
+  const landingOf = (slots: Record<string, string>) =>
+    page.evaluate((slots) => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { body: true, name: "the body", place: "the body" };
+      }
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      const name = `${focused.tagName.toLowerCase()} "${words}"`;
+      const row = focused.closest<HTMLElement>("[data-inbox-row]")?.dataset.inboxRow;
+      if (row === undefined) return { body: false, name, place: name };
+      const what = focused.matches('input[type="checkbox"]')
+        ? "the checkbox"
+        : `a ${focused.tagName.toLowerCase()}`;
+      return { body: false, name, place: `${what} of ${slots[row] ?? "a row no pick seeded"}` };
+    }, slots);
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const landings: Partial<
+      Record<"no second Enter" | "a second Enter", { body: boolean; name: string; place: string }>
+    > = {};
+    for (const press of ["no second Enter", "a second Enter"] as const) {
+      const where = `Snooze selected asks at ${size.width}x${size.height} with ${press}`;
+      // Four questions made oldest first, so the Inbox lists them newest first, over the rows an
+      // earlier pick left: one above the two the reader marks, and one below them. Their titles
+      // share most of their words, so each is filed past the server's duplicate check.
+      const ids: string[] = [];
+      for (const part of ["below", "second marked", "first marked", "above"]) {
+        const owner = await createIssue({
+          force: true,
+          project: "CORE",
+          title: `Snooze the ${part} row at ${size.width} with ${press}`,
+        });
+        const question = `Defer the ${part} row at ${size.width} with ${press}?`;
+        ids.push((await createAsk(owner.key, { question }, SURFACE_SESSION)).id);
+      }
+      const [below = "", second = "", first = "", above = ""] = ids;
+      const slots = {
+        [above]: "the row above the marked two",
+        [first]: "the first marked row",
+        [second]: "the second marked row",
+        [below]: "the row below the marked two",
+      };
+      await page.goto("/");
+      for (const id of ids) await expect(inboxRow(page, id)).toBeVisible();
+      await inboxRow(page, first).getByRole("checkbox").first().check();
+      await inboxRow(page, second).getByRole("checkbox").first().check();
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
+      const trigger = listTrigger(bar, "Snooze selected asks");
+      await trigger.focus();
+      holding = true;
+      await page.keyboard.press("Enter");
+      await page.keyboard.type("tom");
+      await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => held.length, { message: `${where}: the bar sent no snooze` })
+        .toBeGreaterThan(0);
+      await expect(trigger, `${where}: the trigger is not held`).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(trigger, `${where}: the held trigger lost the focus`).toBeFocused();
+      if (press === "a second Enter") {
+        await page.keyboard.press("Enter");
+        await nextFrames(page);
+        await expect(trigger, `${where}: the held trigger opened its list`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+      }
+      holding = false;
+      for (const route of held.splice(0)) await route.continue();
+      await expect(bar).toHaveCount(0);
+      await expect(inboxRow(page, first)).toHaveCount(0);
+      await expect(inboxRow(page, second)).toHaveCount(0);
+      // The bar's hand-off runs after the commit that took the bar away, so it is done after
+      // these frames.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: the snooze has landed, the bar has gone and its hand-off has run.
+      const landed = await landingOf(slots);
+      landings[press] = landed;
+      if (landed.body && press === "no second Enter") {
+        wrong.push(`${where}: once the snooze lands and the bar goes the focus is on the body`);
+      }
+    }
+    const alone = landings["no second Enter"];
+    const again = landings["a second Enter"];
+    if (alone !== undefined && again !== undefined && again.place !== alone.place) {
+      wrong.push(
+        `Snooze selected asks at ${size.width}x${size.height}: with a second Enter on the held trigger, once the snooze lands and the bar goes the focus is on ${again.body ? "the body" : `${again.name} (${again.place})`}; the same pick with no second Enter puts it on ${alone.name} (${alone.place})`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the Delivery page opened three times in a fixture, with its live socket held, closed and open.
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered, never as a 0 that stands for
+// "not read yet". Measured in builds Jobs infra-3135-dl-h2-pbn4c (head 683f1fdf) and
+// infra-3135-dl-m2-hdf8z (main 642bc1ed), in Chromium, Firefox and WebKit at 1440x900: with the
+// live socket held (nothing answers the timeline's subscribe) or closed by the network, the
+// head's Filter panel offers Rework and Deployed, and every verdict reads "0 PRs"
+// (DeliveryPage.tsx:415 `counts[value] ?? 0` over `data?.facet_counts`, :495, where `data` is
+// undefined until the first answer). Main drew its FacetPanel only once the timeline answered.
+// With the socket open the same fixture reads value 1, rework 1, deployed 1, waiting 1 and
+// not tracked 0, which this row reads too, so it can tell a count from a placeholder.
+test("the Delivery page's Filter panel draws no count beside a verdict before the timeline answers, nor after its socket fails @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedDeliveryFixture();
+  const main = page.getByTestId("main-content");
+  /** The accessible name of each option of one facet of the open Filter panel, read once its
+   *  list holds every verdict, so the read is of a list that is whole. */
+  const verdicts = async (facet: "Rework" | "Deployed", count: number): Promise<string[]> => {
+    const panel = await openFilterPanel(page, main);
+    await panel.getByRole("button", { name: new RegExp(`^${facet}: `) }).click();
+    const options = page.getByRole("listbox", { name: `${facet} options` }).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? element.textContent ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await closeControlPanel(main);
+    return names;
+  };
+  const wrong: string[] = [];
+  // One route for the page's live socket, whose mode each load sets: open passes it through to
+  // the server, held opens it and answers nothing, closed drops it as a network would.
+  let mode: "open" | "held" | "closed" = "open";
+  await page.routeWebSocket(/\/ws\/live$/u, (socket) => {
+    if (mode === "open") socket.connectToServer();
+    if (mode === "closed") socket.close({ code: 1011, reason: "test network drop" });
+  });
+  // The control: the page with its socket open reads the fixture's own counts.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await expect(main.getByRole("img", { name: /^Delivery timeline/ })).toBeVisible();
+  expect(await verdicts("Rework", 2)).toEqual(["value, 1 PR", "rework, 1 PR"]);
+  for (const how of ["held", "closed"] as const) {
+    mode = how;
+    await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+    for (const [facet, count] of [
+      ["Rework", 2],
+      ["Deployed", 3],
+    ] as const) {
+      const counted = (await verdicts(facet, count)).filter((name) => /\d+ PRs?$/u.test(name));
+      wrong.push(
+        ...counted.map(
+          (name) => `socket ${how}: ${facet} offers "${name}" before the timeline answered`
+        )
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the Inbox opened three times over two asks and two threads, with the thread read held, refused and answered.
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered, never as a 0 that stands for
+// "not read yet" (B2 of dispatch://INFRA-3135/artifact/t23-class-search-md, moved into this pull
+// request). Measured in builds Job infra-3135-b2-h-lrxq6 (head 683f1fdf), in Chromium, Firefox and
+// WebKit at 1440x900: with the reader's thread read (/api/v1/me/replies?state=inbox) held or
+// answered 500, the Filter panel's Type list reads "Reply, 0 rows" and "Agent message, 0 rows"
+// while two reply threads wait, because the counts are taken over the rows read so far
+// (Inbox.tsx:2051-2052, `counts.get(value) ?? 0`). With the read answered it reads "Reply, 2 rows",
+// which this row reads too, so it can tell a count from a placeholder. The questions' count comes
+// from the Inbox's own read, which answered, so it stands throughout.
+test("the Inbox's Type list draws no count for the thread kinds while the thread read is out or refused @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 2; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Ask item ${index}` });
+    await createAsk(
+      issue.key,
+      { question: `Item ${index}: what is the rule?`, urgency: "med" },
+      SURFACE_SESSION
+    );
+  }
+  for (const title of ["Nightly mirror", "Weekly digest"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await seedCommentThread(issue.key, `${title}: when does it run?`, "It moved to 03:00.");
+  }
+  const main = page.getByTestId("main-content");
+  const rows = main.locator("[data-inbox-row]");
+  /** Each option of the Type list, by its accessible name, read once the list holds all five. */
+  const typeOptions = async (): Promise<string[]> => {
+    await openFilterPanel(page, main);
+    await page.getByRole("button", { name: "Filter by type" }).click();
+    const options = page.getByRole("listbox", { name: "Type options" }).getByRole("option");
+    await expect(options).toHaveCount(5);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await closeControlPanel(main);
+    return names;
+  };
+  const threadRead = (url: URL) =>
+    url.pathname === "/api/v1/me/replies" && url.searchParams.get("state") === "inbox";
+  const wrong: string[] = [];
+  try {
+    for (const how of ["held", "refused"] as const) {
+      await page.route(threadRead, async (route) => {
+        // Held: the read is never answered. Refused: the server answers it 500 every time.
+        if (how === "refused") {
+          await route.fulfill({
+            body: '{"error":{"code":"TEST_REFUSED","message":"test refusal"}}',
+            contentType: "application/json",
+            status: 500,
+          });
+        }
+      });
+      await page.goto("/");
+      // The two asks are the Inbox's own read, which answered; the threads are not listed yet.
+      await expect(rows).toHaveCount(2);
+      const names = await typeOptions();
+      wrong.push(
+        ...names
+          .filter((name) => /^(Reply|Agent message), \d+ rows?$/u.test(name))
+          .map((name) => `thread read ${how}: the Type list offers "${name}"`)
+      );
+      expect(names, `thread read ${how}: the questions' count`).toContain("Question, 2 rows");
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+    }
+    // The control: the same Inbox with its thread read answered counts both reply threads.
+    await page.goto("/");
+    await expect(rows).toHaveCount(4);
+    expect(await typeOptions()).toContain("Reply, 2 rows");
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// INFRA-3135, round 25 (the tester's): the panel `+N more` opens lists the chips the line has no
+// room for in a box at most 20rem tall that scrolls what it cannot hold (`MORE_PANEL_CLASS`,
+// web/src/components/ControlRow.tsx:36, over `PANEL_FRAME`, web/src/components/PanelTrigger.tsx:12-13,
+// drawn at ControlRow.tsx:524-552). At 390x664 these eleven narrowings put ten chips in it, 528 px
+// of chips in a box 318 px tall, so the Tab key walks onto chips that start out of sight. Chromium
+// and WebKit scroll each chip the focus lands on wholly into the box. Firefox scrolls the panel to
+// 183 of the 210 px it can go and leaves the last chip, Waiting on you, 19 of its 44 px below the
+// box's bottom, the same 600 ms later (builds Jobs infra-3135-c2-h-wp7ns and infra-3135-c3-h-rjqps
+// at 683f1fdf). A keyboard reader then sees part of the chip Enter takes off, which round 13
+// failed. The row above that walks the same panel by Tab, "a chip of the Inbox's row that has the
+// keyboard focus is shown whole", runs in Chromium alone and reads a chip's clip sideways alone
+// (`shownOf`), so a chip cut at the panel's bottom passes it.
+// SLOW(>=2s): twenty-two seeded questions, eleven narrowings, and their panel walked chip by chip.
+test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly inside the panel's visible box while the panel scrolls, at 390 @firefox @webkit", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  await page.setViewportSize({ height: 664, width: 390 });
+  const row = controlRow(page.getByTestId("main-content"));
+  const more = row.getByRole("button", { name: MORE_FILTERS });
+  // Three priorities, three urgencies, two kinds, the one project, everyone's asks and the
+  // needs-you section, a chip each, over the seventeen questions they keep; the text draws none.
+  await page.goto(
+    "/?section=needs-you&q=Item&assignee=everyone&priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE"
+  );
+  // The eleven chips, the line's and then the ones its `+N more` lists, each named once. Its
+  // Escape leaves the focus on `+N more`, where a reader who reached it by Tab stands.
+  const drawn = await chipsInLineAndPanel(row, 11, "390x664");
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const standing: {
+    name: string;
+    above: number;
+    below: number;
+    left: number;
+    right: number;
+    chip: string;
+    box: string;
+    scrolled: number;
+  }[] = [];
+  for (const [index, name] of drawn.panel.entries()) {
+    const chip = panel.getByRole("button", { exact: true, name });
+    // The panel opens with the focus on its first chip, and each Tab moves it to the next.
+    if (index > 0) await page.keyboard.press("Tab");
+    await expect(
+      chip,
+      `390x664: the Tab key did not bring the focus to "${name}" in the panel of +N more`
+    ).toBeFocused();
+    // The browser scrolls the panel to the chip as the focus moves onto it, so the boxes read
+    // once the chip holds the focus are where they settle: Firefox's stood the same 600 ms later.
+    // The visible box is the panel's padding box, cut by the window.
+    const reading = await chip.evaluate((node) => {
+      const holder = node.closest('[role="dialog"]') ?? document.documentElement;
+      const frame = holder.getBoundingClientRect();
+      const top = Math.max(0, frame.top + holder.clientTop);
+      const left = Math.max(0, frame.left + holder.clientLeft);
+      const bottom = Math.min(innerHeight, frame.top + holder.clientTop + holder.clientHeight);
+      const right = Math.min(innerWidth, frame.left + holder.clientLeft + holder.clientWidth);
+      const own = node.getBoundingClientRect();
+      return {
+        above: Math.max(0, top - own.top),
+        below: Math.max(0, own.bottom - bottom),
+        left: Math.max(0, left - own.left),
+        right: Math.max(0, own.right - right),
+        chip: `${Math.round(own.top)}-${Math.round(own.bottom)} px down, ${Math.round(own.left)}-${Math.round(own.right)} px across`,
+        box: `${Math.round(top)}-${Math.round(bottom)} px down, ${Math.round(left)}-${Math.round(right)} px across`,
+        scrolled: Math.round(holder.scrollTop),
+      };
+    });
+    standing.push({ name, ...reading });
+  }
+  await test.info().attach("the panel of +N more walked by the Tab key at 390x664", {
+    body: standing
+      .map(
+        ({ name, chip, box, scrolled }) => `${name}: ${chip}, box ${box}, scrolled ${scrolled} px`
+      )
+      .join("\n"),
+    contentType: "text/plain",
+  });
+  // The row is about chips that start out of sight, so a panel that never scrolled read none.
+  expect(
+    Math.max(...standing.map(({ scrolled }) => scrolled)),
+    `390x664: the panel of +N more never scrolled while the Tab key walked ${drawn.panel.join(", ")}`
+  ).toBeGreaterThan(0);
+  // A pixel of rounding either way is no cut.
+  const cut = standing.flatMap(({ name, above, below, left, right, chip, box, scrolled }) => {
+    const sides = [
+      [above, "above"],
+      [below, "below"],
+      [left, "left of"],
+      [right, "right of"],
+    ] as const;
+    const out = sides
+      .filter(([pixels]) => pixels > 1)
+      .map(([pixels, side]) => `${Math.round(pixels)}px ${side}`);
+    return out.length === 0
+      ? []
+      : [
+          `390x664: "${name}" holds the focus with ${out.join(" and ")} the panel's visible box (the chip at ${chip}, the box at ${box}, the panel scrolled ${scrolled} px)`,
+        ];
+  });
+  // R1 and the keyboard's own promise in ControlRow.tsx: every chip the line has no room for is
+  // one the panel lists and the Tab key reaches whole, so a keyboard reader sees which narrowing
+  // Enter takes off.
+  expect(cut, cut.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): at two widths, a project List's Move refused for two open issues and a Move with
+// only closed issues marked, each followed by another person's live update that empties the bar.
+// INFRA-3135, round 25 (the tester's, from t23's B8, which the architect ruled into this round on
+// 2026-11-24 03:2xZ: a hold that only says there is nothing to do keeps no press live). Measured in
+// builds Jobs infra-3135-h-h2-thk26 at 683f1fdf, infra-3135-h-b2-gjpk7 at 3fce6150 and
+// infra-3135-h-p8-4nhkv at ae48d8a1, the commit before a5464d6e. The reader marks two issues on
+// the project List, picks an epic in Move to epic and presses Move by Enter; Move's own press
+// leaves it held with no epic staged (`ariaDisabled={busy || epic === ""}`,
+// features/project/issues-table-page.tsx:394-397). Then bob closes or reopens the marked issues,
+// and his live update takes them off the view and empties the selection bar while Move holds the
+// focus. That going is not the reader's, so the bar hands the focus nowhere (SelectionBar.tsx,
+// "Nor does a going the reader did not cause ... leaves the focus on the body").
+// - The Move refused (400) for two open issues: at 683f1fdf the focus stays on the body in
+//   Chromium, Firefox and WebKit at 1440 and 390; at ae48d8a1 it lands on a row's checkbox
+//   (`Select MVA-4`), which a5464d6e fixed.
+// - The Move with only closed issues marked, which the List answers "Only open issues can change
+//   epic." without a write: at 683f1fdf, 3fce6150 and ae48d8a1 the bar's hand-off lands the focus
+//   on `TABLE:Project issues table`, the list's own stop, in all three engines at both widths.
+//   `moveTo` returns at that answer before any action begins a hold on what answers the press
+//   (features/project/issues-table-actions.ts:284-289), so nothing marks the press answered, and
+//   `writeOut` (components/focus-place.ts:882-883) keeps counting Move's own hold, begun after the
+//   arm, up to the 30 s write deadline: the press stays live, and the bar reads its going as the
+//   reader's (`causedByReader`).
+// The refused Move is the control: the row asserts that the closed-issues path ends where the
+// refused path ends, so it pins no landing of its own.
+test("a Move with only closed issues marked keeps no press live: a live update that empties the List's bar then lands the focus where it lands after a refused Move, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const sizes = [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ] as const;
+  /** One project per width and path: an epic and six tasks, the first two closed on the closed
+   *  path. Each task's title is its own words, since the server refuses a near copy of a title it
+   *  holds (409 POSSIBLE_DUPLICATE). */
+  const seeds: { epic: string; key: string; marked: [string, string] }[] = [];
+  const words = ["Harbor", "Lantern", "Quarry", "Meadow", "Falcon", "Copper"];
+  for (const [index, path] of ["refused", "closed", "refused", "closed"].entries()) {
+    const key = `MV${String.fromCharCode(65 + index)}`;
+    await createProject({ key, name: `Move ${path} ${index}` });
+    const epic = await createIssue({ project: key, title: `Target epic ${key}` });
+    await patchIssue(epic.key, { labels: ["epic"] });
+    const tasks: string[] = [];
+    for (const [at, word] of words.entries()) {
+      tasks.push((await createIssue({ project: key, title: `${word} ${key} task ${at}` })).key);
+    }
+    if (path === "closed") {
+      for (const task of tasks.slice(0, 2)) await patchIssue(task, { status: "done" });
+    }
+    seeds.push({ epic: `Target epic ${key}`, key, marked: [tasks[1] ?? "", tasks[0] ?? ""] });
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const move = bar.getByRole("button", { exact: true, name: "Move" });
+  /** What holds the focus: its name, or "the body", and the row and the table around it. */
+  const landing = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { inRow: null, inTable: false, name: "the body" };
+      }
+      return {
+        inRow: focused.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null,
+        inTable: focused.closest("table") !== null,
+        name: `${focused.tagName}:${(focused.getAttribute("aria-label") ?? focused.textContent ?? "").trim().slice(0, 40)}`,
+      };
+    });
+  /** Marks the seed's two issues from the keyboard, the lower one first, and picks its epic. */
+  const markAndPick = async (seed: (typeof seeds)[number]) => {
+    for (const key of seed.marked) {
+      const mark = page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+      await mark.focus();
+      await page.keyboard.press("Space");
+      await expect(mark).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    await pickFromList(listTrigger(bar, "Move to epic"), seed.epic);
+    await expect(move).not.toHaveAttribute("aria-disabled", "true");
+    await move.focus();
+  };
+  /** bob's live update takes the marked issues off the view, and the bar goes with them. The
+   *  bar's hand-off runs with the commit that took it away, which two frames see done. */
+  const emptyTheBar = async (seed: (typeof seeds)[number], status: "done" | "todo") => {
+    for (const key of seed.marked) await patchIssue(key, { status }, { login: "bob" });
+    await expect(bar).toHaveCount(0);
+    await nextFrames(page);
+    await nextFrames(page);
+  };
+  const refuseUpdates = async (route: Route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    return route.fulfill({
+      body: JSON.stringify({ code: "REFUSED_FOR_THE_ROW", error: "refused for the row" }),
+      contentType: "application/json",
+      status: 400,
+    });
+  };
+  const wrong: string[] = [];
+  for (const [step, size] of sizes.entries()) {
+    await page.setViewportSize(size);
+    const where = `project List at ${size.width}x${size.height}`;
+    const refused = seeds[step * 2];
+    const closed = seeds[step * 2 + 1];
+    if (refused === undefined || closed === undefined)
+      throw new Error("the seed holds four projects");
+
+    // The control: a Move every write of which is refused. The action is answered and lets its
+    // controls go, and Move stays held with no epic staged.
+    await openIssuesTab(page, refused.key, "List");
+    await markAndPick(refused);
+    await page.route(/\/api\/v1\/issues\/[^/?]+$/, refuseUpdates);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(/Retry each failed change/).first()).toBeVisible();
+    await expect(
+      bar.getByRole("button", { exact: true, name: "Take out of epic" })
+    ).not.toHaveAttribute("aria-disabled", "true");
+    await page.unroute(/\/api\/v1\/issues\/[^/?]+$/, refuseUpdates);
+    await expect(move).toHaveAttribute("aria-disabled", "true");
+    await expect(move).toBeFocused();
+    await nextFrames(page);
+    await emptyTheBar(refused, "done");
+    // One read is the answer: the bar went two frames back, its hand-off ran with that commit,
+    // and nothing else moves the focus now.
+    const afterRefused = await landing();
+
+    // The closed path: the List answers the press without a write, and Move stays held with no
+    // epic staged, as above.
+    await openIssuesTab(page, closed.key, "List");
+    await page.goto(`/projects/${closed.key}/issues?status=done`);
+    await expect(page.locator("[data-issue-row]")).toHaveCount(2);
+    await markAndPick(closed);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(/^Only open issues can change epic\./).first()).toBeVisible();
+    await expect(move).toHaveAttribute("aria-disabled", "true");
+    await expect(move).toBeFocused();
+    await nextFrames(page);
+    await emptyTheBar(closed, "todo");
+    // One read is the answer: the bar went two frames back, its hand-off ran with that commit,
+    // and nothing else moves the focus now.
+    const afterClosed = await landing();
+
+    if (afterClosed.name !== afterRefused.name || afterClosed.inRow !== afterRefused.inRow) {
+      wrong.push(
+        `${where}: after a Move with only closed issues marked and a live update that emptied the bar, the focus is on ${afterClosed.name}${afterClosed.inTable ? " (in the table)" : ""}${afterClosed.inRow === null ? "" : ` in row ${afterClosed.inRow}`}, where after a refused Move and the same update it is on ${afterRefused.name}${afterRefused.inRow === null ? "" : ` in row ${afterRefused.inRow}`}`
+      );
+    }
+  }
+  // A hand-off that runs for a loss the reader did not cause moves a keyboard reader's place to a
+  // control they never chose.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// INFRA-3135, round 25 (the tester's; measured at 683f1fdf in builds Jobs
+// infra-3135-f-h-ch-2mcxd, infra-3135-f-h-fi-j5t4t and infra-3135-f-h-we-glhk8, again in
+// infra-3135-f-h2-ch-g4f2b, infra-3135-f-h2-fi-k2jtf and infra-3135-f-h2-we-spngw, and at 3fce6150
+// in infra-3135-f-b-ch-6v9q6, infra-3135-f-b-fi-scqg8 and infra-3135-f-b-we-mx5fq): on the Inbox at
+// 390x664, narrowed to its questions with threads waiting above them, the window scrolled 30 px
+// with the control row in sight, Enter on the only chip hands the focus to the Filter trigger
+// (components/ControlRow.tsx:438-439), and in the same commit the Inbox's anchor holds the row
+// nearest the list's centre in place once the window is scrolled at all
+// (features/shell/ViewportAnchor.tsx:541-549, mounted at features/inbox/Inbox.tsx:2634) and
+// scrolls the window by every row the cleared narrowing draws above that row
+// (ViewportAnchor.tsx:744-748). The window went from 30 px to 797 px and the trigger stood at
+// -668 px; Enter on Clear filters took it from 30 px to 1,740 px, the trigger at -1,611 px.
+// This row, run at 683f1fdf in builds Job infra-3135-f-red-62spp over three threads, read 30 px
+// -> 1,269 px with the trigger at -1,140 px after either press (Firefox: 1,265.7 px, -1,137 px).
+// Chromium, Firefox and WebKit alike; with the window at 0 the anchor holds no row and the trigger
+// stays wholly in sight. A shared control's own press that lands the focus out of sight is a
+// failure of this pull request's controls (open-items.md, the rescue's removal, 2026-11-23 21:2xZ).
+// WebKit has no scroll anchoring of its own, which Chromium and Firefox apply beside the anchor's,
+// so the row runs in all three engines.
+// SLOW(>=2s): twenty-three seeded rows, and four presses at 390 px waiting out the list's redraw.
+test("taking off the Inbox's only narrowing by its chip or by Clear filters at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "CORE", name: "Core" });
+  // The questions first and the threads last, so the threads are the newest rows: the ones the
+  // narrowing to questions leaves out and that come back at the head of the list when it goes.
+  for (let index = 0; index < 20; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Narrowed ask ${index}` });
+    await createAsk(
+      issue.key,
+      { question: `Narrowed ${index}: what is the rule?` },
+      SURFACE_SESSION
+    );
+  }
+  for (let index = 0; index < 3; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Unnarrowed thread ${index}` });
+    await seedCommentThread(issue.key, `Unnarrowed ${index}: when does it run?`, "At 03:00.");
+  }
+  const row = controlRow(page.getByTestId("main-content"));
+  const chip = row.getByRole("button", { name: /^Remove .* filter$/ });
+  const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+  const rows = page.locator("[data-inbox-row]");
+  const threads = page.locator('[data-inbox-row^="reply:"]');
+  /** What holds the keyboard focus: its name, its `data-control`, its top, and whether the
+   *  window and every box that clips it show the whole of it; the body is in no sight. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { control: null, inSight: false, name: "the body", top: null };
+      }
+      const own = focused.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      let left = 0;
+      let right = window.innerWidth;
+      for (let box = focused.parentElement; box !== null; box = box.parentElement) {
+        const style = getComputedStyle(box);
+        const clip = box.getBoundingClientRect();
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left);
+          right = Math.min(right, clip.right);
+        }
+      }
+      return {
+        control: focused.getAttribute("data-control"),
+        inSight:
+          own.height > 0 &&
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= left - 1 &&
+          own.right <= right + 1,
+        name: focused.getAttribute("aria-label") || focused.textContent?.trim() || focused.tagName,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const offset of [30, 0]) {
+    for (const [pressed, target] of [
+      ["the only chip", chip],
+      ["Clear filters", clear],
+    ] as const) {
+      const where = `Inbox at 390x664, the window at ${offset} px, Enter on ${pressed}`;
+      await page.goto("/?group=none&type=question");
+      await expect(chip, `${where}: the narrowing to questions draws no one chip`).toHaveCount(1);
+      await expect(rows.nth(12), `${where}: the list is no longer than the window`).toBeAttached();
+      await expect(threads, `${where}: the narrowing lists a thread`).toHaveCount(0);
+      await page.evaluate((top) => window.scrollTo(0, top), offset);
+      // The control is focused where it stands, so the focus itself scrolls nothing.
+      await target.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
+      await expect(target).toBeFocused();
+      // Where the window stands just before the press, read once it has held still after the
+      // scroll above; it is only reported, never branched on.
+      const before = await settledScrollTop(page);
+      await page.keyboard.press("Enter");
+      await expect(chip, `${where}: the narrowing stayed on`).toHaveCount(0);
+      await expect(threads, `${where}: the list did not draw the threads again`).toHaveCount(3);
+      // The commit that drew the threads ran the row's hand-off and the list's anchor in its layout
+      // effects, so the window is read once it has held still after them; it is only reported.
+      await nextFrames(page);
+      const after = await settledScrollTop(page);
+      // One read is the answer: the hand-off and the anchor ran in the commit waited for above,
+      // and the window has settled since, so nothing moves the focus or the page after this.
+      const focus = await focusNow();
+      if (!focus.inSight) {
+        wrong.push(
+          `${where}: the focus is on "${focus.name}" (data-control ${focus.control}), its top at ${focus.top} px in the 664 px window, out of sight; window.scrollY ${before} -> ${after}`
+        );
+      }
+    }
+  }
+  // A keyboard reader who takes the narrowing off is left on a control they cannot see: their next
+  // Tab starts from a place the window has carried away from them.
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
