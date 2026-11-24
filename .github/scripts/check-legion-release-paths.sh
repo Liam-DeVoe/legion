@@ -7,23 +7,31 @@
 # ../envoy is one a hand forgets: packages/envoy/programfile, the writer of every program file the
 # daemon runs, was linked for a whole pull request before anyone saw it missing.
 #
-# So this check holds the list to what the release builds legion from. It keeps no rule of its
-# own: each question goes to the program that answers it for the release.
+# So this check holds the list to what the release builds legion from. It asks each question a
+# program answers for the release of that program, and holds the one rule no program answers:
+# how GitHub Actions runs the step that reads the list.
 #   * The words of LEGION_VERSION_ARGS: release.yaml's step that runs `release-push.sh version
 #     legion-v $LEGION_VERSION_ARGS` expands the variable unquoted, in bash, at the repository's
 #     root, so bash splits it on the default IFS and expands each word that matches a path of the
 #     checkout. This script reads the value from the workflow's env with a YAML parser and expands
-#     it the same way, in bash, at the root, with IFS and globbing as bash starts them; and it
-#     fails when that step is not so: when no step or more than one runs that command, or a job or
-#     step env sets the variable, or a working directory or a shell other than bash is set for it.
+#     it the same way, in bash, at the root, with IFS and globbing as bash starts them. That the
+#     step reads it so is the rule it holds, from that step's text and GitHub Actions' scoping: it
+#     fails when no step or more than one runs that command; when that step's `run:`, comment
+#     lines and blank lines apart, is anything but the command and its `>> "$GITHUB_OUTPUT"`;
+#     when a step of its job before it writes $GITHUB_ENV in its `run:`; when its job's env or
+#     its own sets the variable; and when a working directory, or a shell other than bash, is set
+#     for it at the step, its job's defaults or the workflow's. It reads no action an earlier step
+#     uses.
 #   * Which of those words are the paths: release-push.sh's own parse of `version`'s arguments,
 #     which `release-push.sh version-paths` runs and prints.
 #   * Which files those paths cover: git, which reads them as pathspecs when release-bump.sh runs
 #     `git log ... -- <paths>`. `git ls-files -- <paths>` at the root lists the files they cover,
 #     and `git ls-files` the files git tracks.
 #   * Which targets legion is built for, with which environment and command:
-#     release-build-legion.sh, whose `targets`, `list`, `env` and `modules` modes run what its
-#     build runs.
+#     release-build-legion.sh, whose modes run what its build runs. Its `targets` is
+#     `release-push.sh legion-targets`, the one read of .github/go-release-targets.json, which the
+#     release's publish job runs too, and which refuses a target that is not <os>/<arch>; this
+#     script reads its lines as they are, as the build does.
 #   * Which files a target's binary is built from: go. `go list -deps -f` over ./cmd/legion, run
 #     through release-build-legion.sh list, names for each package the files it compiles or
 #     embeds (GoFiles, CgoFiles, CFiles, CXXFiles, MFiles, HFiles, FFiles, SFiles, SwigFiles,
@@ -39,11 +47,12 @@
 #
 # It fails naming each package directory of this repository with a required file the paths do
 # not cover, and each module or workspace file the paths do not cover. It fails, too, when
-# release-build-legion.sh cannot read the legion targets or reads none, when go list or go env
-# fails for a target, when the go.work the build reads is outside the repository, when
-# release.yaml has no LEGION_VERSION_ARGS, when release-push.sh refuses its words, when git
-# cannot list the files, and when go list printed no package of this repository: a check that
-# compared nothing would read the same as one that found nothing missing.
+# release-build-legion.sh cannot read the legion targets, refuses one or reads none, when go list
+# or go env fails for a target, when the go.work the build reads or a module it uses is outside
+# the repository, when release.yaml has no LEGION_VERSION_ARGS or its step does not read the list
+# as this script does (above), when release-push.sh refuses its words, when git cannot list the
+# files, and when go list printed no package of this repository: a check that compared nothing
+# would read the same as one that found nothing missing.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.sh
 # CI runs it in ci.yaml's lint job, which holds no credential, after setup-go and the go-notices
@@ -60,7 +69,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 release=.github/workflows/release.yaml
 
-# The targets the release builds legion for, one <os>/<arch> a line.
+# The targets the release builds legion for, one <os>/<arch> a line, each read as it is.
 if ! .github/scripts/release-build-legion.sh targets >"$work/targets" 2>"$work/errors"; then
   echo "::error file=.github/go-release-targets.json::could not read the legion targets of .github/go-release-targets.json (release-build-legion.sh targets), so the packages the legion binary links are unknown:" >&2
   cat "$work/errors" >&2
@@ -70,6 +79,7 @@ if [ ! -s "$work/targets" ]; then
   echo "::error file=.github/go-release-targets.json::.github/go-release-targets.json lists no legion target, so the packages the legion binary links are unknown" >&2
   exit 1
 fi
+mapfile -t targets <"$work/targets"
 
 # One line for each package go list prints that is not of the standard library: its directory,
 # its module's go.mod, and each file it compiles or embeds, separated by tabs. Every target's
@@ -83,7 +93,7 @@ format+='{{"\n"}}{{end}}'
 : >"$work/listed"
 : >"$work/gowork"
 : >"$work/modules"
-while read -r target; do
+for target in "${targets[@]}"; do
   if ! .github/scripts/release-build-legion.sh list "$target" -deps -f "$format" </dev/null >>"$work/listed" 2>"$work/errors"; then
     echo "::error file=packages/daemon/cmd/legion::go list -deps ./cmd/legion failed in packages/daemon, so the packages the legion binary links are unknown (target $target):" >&2
     cat "$work/errors" >&2
@@ -99,11 +109,12 @@ while read -r target; do
     cat "$work/errors" >&2
     exit 1
   fi
-done <"$work/targets"
+done
 
 # LEGION_VERSION_ARGS as release.yaml's workflow env holds it, and the step that reads it, which
-# must read it as this script does.
+# must read it as this script does (the header's first point).
 if ! arguments=$(python3 - "$release" <<'PY'
+import re
 import sys
 from pathlib import Path
 
@@ -111,6 +122,9 @@ import yaml
 
 RELEASE = Path(sys.argv[1])
 COMMAND = ".github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS"
+LINE = f'{COMMAND} >> "$GITHUB_OUTPUT"'
+# A run: line that writes the environment of every later step of its job.
+ENV_WRITE = re.compile(r"\$\{?GITHUB_ENV\b")
 
 
 def fatal(message: str) -> None:
@@ -126,18 +140,35 @@ document = document or {}
 arguments = (document.get("env") or {}).get("LEGION_VERSION_ARGS")
 if not isinstance(arguments, str):
     fatal(f"{RELEASE} has no env LEGION_VERSION_ARGS, the paths whose change releases the Go legion")
-steps = [(name, job or {}, step) for name, job in (document.get("jobs") or {}).items()
-         for step in (job or {}).get("steps") or [] if COMMAND in str(step.get("run", ""))]
-if len(steps) != 1:
-    fatal(f"{RELEASE} has {len(steps)} steps that run `{COMMAND}`, want one: this check expands the list as that step's bash does")
-name, job, step = steps[0]
+found = [(name, job or {}, index) for name, job in (document.get("jobs") or {}).items()
+         for index, step in enumerate((job or {}).get("steps") or []) if COMMAND in str(step.get("run", ""))]
+if len(found) != 1:
+    fatal(f"{RELEASE} has {len(found)} steps that run `{COMMAND}`, want one: this check expands the list as that step's bash does")
+name, job, index = found[0]
+step = job["steps"][index]
+
+
+def commands(step: dict) -> list:
+    """The lines of step's run: that bash runs: each one stripped, with blank lines and comment
+    lines left out."""
+    lines = (line.strip() for line in str(step.get("run", "")).splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
 
 
 def run_default(scope: dict, key: str):
     return ((scope.get("defaults") or {}).get("run") or {}).get(key)
 
 
-problems = [f"sets LEGION_VERSION_ARGS in {where}" for where, env in (("its job's env", job.get("env")), ("its env", step.get("env")))
+def label(step: dict, at: int) -> str:
+    return str(step.get("name") or step.get("id") or step.get("uses") or f"number {at + 1}")
+
+
+problems = []
+if (run := commands(step)) != [LINE]:
+    problems.append(f"runs {' and '.join(f'`{line}`' for line in run)}, not `{LINE}` alone")
+problems += [f'comes after the step "{label(earlier, at)}", which writes $GITHUB_ENV'
+             for at, earlier in enumerate(job["steps"][:index]) if any(ENV_WRITE.search(line) for line in commands(earlier))]
+problems += [f"sets LEGION_VERSION_ARGS in {where}" for where, env in (("its job's env", job.get("env")), ("its env", step.get("env")))
             if isinstance(env, dict) and "LEGION_VERSION_ARGS" in env]
 problems += [f"sets {where} ({value})" for where, value in (
     ("its working-directory", step.get("working-directory")),
@@ -175,7 +206,7 @@ if ! git ls-files -z -- "${paths[@]}" >"$work/covered" 2>"$work/errors" ||
   exit 1
 fi
 
-python3 - "$work/listed" "$work/gowork" "$work/tracked" "$work/covered" "$work/modules" "$(wc -l <"$work/targets")" <<'PY'
+python3 - "$work/listed" "$work/gowork" "$work/tracked" "$work/covered" "$work/modules" "${#targets[@]}" <<'PY'
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -251,8 +282,8 @@ for gowork in sorted(set(text(GOWORK).splitlines()) - {"", "off"}):
 missing += [path for path in workspace if path not in covered]
 if missing:
     fatal(
-        f"{RELEASE}'s LEGION_VERSION_ARGS names no path that covers {len(missing)} of what the legion binary links "
-        f"(go list -deps ./cmd/legion in packages/daemon), so a change to it alone would release no legion: "
+        f"{RELEASE}'s LEGION_VERSION_ARGS names no path that covers {len(missing)} of what the legion binary is built "
+        f"from, so a change to it alone would release no legion: "
         + ", ".join(missing)
         + ". Add each after the `--` (.github/ci-notes/release.md, \"The Go legion's version arguments and the command "
         "that prints its envoy packages\")."
@@ -261,6 +292,6 @@ bound = f", and {' and '.join(workspace)}, which {'bind' if len(workspace) > 1 e
 print(
     f"{RELEASE}'s LEGION_VERSION_ARGS covers every tracked file that the {len(packages)} packages of this repository "
     f"go list -deps ./cmd/legion prints for the {TARGETS} legion targets of .github/go-release-targets.json compile or "
-    f"embed, and the go.mod and go.sum of their {len(modules)} modules{bound}"
+    f"embed, and the go.mod and go.sum of the {len(modules)} modules the build uses{bound}"
 )
 PY

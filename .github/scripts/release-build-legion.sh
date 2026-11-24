@@ -16,12 +16,14 @@
 # No argument: the build. It reads five variables of the step's environment: $VERSION, the
 # version this run releases, and $PI_LEGION_VERSION and $PI_ENVOY_VERSION, the plugin pair this
 # binary links, which the step's `env:` carries from the version and plugin_versions steps, and
-# $GITHUB_SHA and $GITHUB_WORKSPACE, which the runner sets. It reads .github/go-release-targets.json
-# and writes out/ and assets/ of the checkout, and stops, building nothing, when it cannot read
-# the targets.
+# $GITHUB_SHA and $GITHUB_WORKSPACE, which the runner sets. It reads the targets and writes out/
+# and assets/ of the checkout, and stops, building nothing, when it cannot read the targets or
+# one is not <os>/<arch>.
 #
-# targets: the legion targets of .github/go-release-targets.json, one <os>/<arch> a line, the list
-# the build loops over, a line at a time.
+# targets: the legion targets, one <os>/<arch> a line, the list the build loops over, a line at a
+# time: release-push.sh legion-targets, beside this script, the one read of
+# .github/go-release-targets.json, which the release's publish job runs too and which refuses a
+# target that is not <os>/<arch>.
 # list: `go list <go list flag>... ./cmd/legion` in packages/daemon, with the environment the build
 # gives <os>/<arch>: what that target's binary is built from.
 # env: `go env <go env argument>...` in packages/daemon with that environment, such as GOWORK, the
@@ -30,21 +32,21 @@
 # in workspace mode each module the go.work uses, whose require lines all feed the one version
 # selection the binary is built with, whether or not a package of it is linked.
 # The modes read none of the build's five variables and write nothing. A mode the script does not
-# know, `targets` with an argument, and `list`, `env` or `modules` without a target exit 2 with the
-# usage.
+# know, `targets` with an argument, `list`, `env` or `modules` without a target, and `modules` with
+# more than its target exit 2 with the usage.
 #
 # Run from the repository root.
 # CI runs the build in release.yaml's legion_build job, at the step "Build legion", and
-# .github/scripts/check-legion-release-paths.sh runs the four modes in ci.yaml's lint job.
+# .github/scripts/check-legion-release-paths.sh runs its modes in ci.yaml's lint job.
 set -euo pipefail
 
 usage='usage: release-build-legion.sh [targets | list <os>/<arch> <go list flag>... | env <os>/<arch> <go env argument>... | modules <os>/<arch>]'
-targets_file=.github/go-release-targets.json
 
-# targets: print the legion targets, one a line; jq's failure is the function's, so the build's
-# `list=$(targets)` stops on a list it cannot read rather than read it as an empty one.
+# targets: print the legion targets, one a line; release-push.sh's failure is the function's, so
+# the build's `list=$(targets)` stops on a list it cannot read or refuses rather than read it as an
+# empty one.
 targets() {
-  jq -r '.legion[]' "$targets_file"
+  "$(dirname -- "${BASH_SOURCE[0]}")/release-push.sh" legion-targets
 }
 
 # for_target <os>/<arch> <command>...: run <command> with the environment the build gives that
@@ -97,6 +99,7 @@ case $1 in
     elif [ "$mode" = env ]; then
       for_target "$target" go -C packages/daemon env "$@"
     else
+      [ $# -eq 0 ] || refuse "modules takes a target alone"
       for_target "$target" go -C packages/daemon list -m -f '{{.GoMod}}'
     fi
     ;;

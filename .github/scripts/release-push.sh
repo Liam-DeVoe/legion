@@ -6,7 +6,7 @@
 # the credentials and runs no dependency code. `version`, `check-built`,
 # `extract-built`, `no-credential` and `fold-notes` are the build job's;
 # `release`, `release-section`, `restart` and `push-tag` the publish job's;
-# `tag`, `tagged`, `pair-version` and `handed` serve both;
+# `tag`, `tagged`, `pair-version`, `handed` and `legion-targets` serve both;
 # `fold-orphans`, `fold-check` and `version-paths` are a pull request's.
 #
 # version:   the one version step every build job calls: print the release
@@ -200,6 +200,23 @@
 #            not their names; what the publish job writes into <dir> itself,
 #            such as SHA256SUMS, it writes after this check. Every refusal is an
 #            ::error:: on stderr naming what is wrong, and prints no tag.
+# legion-targets: print the targets .github/go-release-targets.json lists for
+#            legion, one <os>/<arch> a line in the list's order, and nothing
+#            else. It is the one read of that list: release-build-legion.sh
+#            builds the targets it prints and prints them in its `targets`
+#            mode, which a pull request's release path check reads, and
+#            release.yaml's publish job names the archives it checks after
+#            them, each reading the lines as they are. Each entry must be two
+#            names of lower-case letters and digits on each side of one /, as
+#            every GOOS and GOARCH go knows is: go builds an empty GOOS or
+#            GOARCH for the host's own and refuses a padded one only when it
+#            builds, and a reader that split the list into words would read
+#            either another way. An entry of another shape, named as JSON, a
+#            list jq cannot read and a legion key that is no list are each an
+#            ::error:: and exit 1, with nothing printed; an empty list prints
+#            nothing. It reads the list beside this script, at
+#            ../go-release-targets.json, so the checkout whose copy runs is
+#            the one whose list it reads.
 # no-credential: the tripwire a build job runs last: fail when a credential is
 #            reachable from the job. It prints presence and names, never a
 #            value: git configuration matching credential, insteadOf,
@@ -292,7 +309,7 @@
 #            and stood in for.
 set -euo pipefail
 
-command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh version-paths <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
+command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh version-paths <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh legion-targets | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
 
 # is_plain_version <value>: true when <value> is X.Y.Z, each field a number
 # without leading zeros (release-bump.sh does arithmetic on the fields, where a
@@ -601,6 +618,29 @@ extract_built() {
   # The tar is the whole of both directories: a file it lacks is deleted.
   rm -rf packages/claude-envoy/dist packages/claude-envoy/legion
   tar -xf "$tar_file" -C packages/claude-envoy --no-same-owner || fail_error "extracting $shown_tar into packages/claude-envoy failed"
+}
+
+# legion_targets: the legion-targets command (the header's paragraph).
+legion_targets() {
+  local file listed entry
+  local -a entries targets=()
+  file="$(dirname -- "${BASH_SOURCE[0]}")/../go-release-targets.json"
+  # One line for each entry, as JSON, so an entry that holds a newline or is no string is still
+  # one line, and is refused below.
+  if ! listed=$(jq -r '.legion | if type == "array" then .[] | tojson else error("its legion key is no list") end' "$file" 2>&1); then
+    echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: could not read the legion targets of $file: $listed" >&2
+    exit 1
+  fi
+  [ -n "$listed" ] || return 0
+  mapfile -t entries <<<"$listed"
+  for entry in "${entries[@]}"; do
+    if ! [[ $entry =~ ^\"([a-z0-9]+/[a-z0-9]+)\"$ ]]; then
+      echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: the legion target $entry is not <os>/<arch>, two names of lower-case letters and digits on each side of one /; refusing the list" >&2
+      exit 1
+    fi
+    targets+=("${BASH_REMATCH[1]}")
+  done
+  printf '%s\n' "${targets[@]}"
 }
 
 # check_hand_over <dir> <what> <file>...: refuse a <dir> that does not hold
@@ -1225,6 +1265,13 @@ case "$command" in
     fi
     check_hand_over "$dir" "the release does not ship" "$@"
     printf '%s\n' "$prefix$version"
+    ;;
+  legion-targets)
+    if [ $# -ne 1 ]; then
+      echo "::error::release-push.sh legion-targets takes no argument; usage: release-push.sh legion-targets" >&2
+      exit 1
+    fi
+    legion_targets
     ;;
   fold-orphans)
     shift

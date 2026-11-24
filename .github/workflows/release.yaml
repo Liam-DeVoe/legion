@@ -1074,9 +1074,10 @@ jobs:
           git clean -ffdx
           dir="$RUNNER_TEMP/legion-assets"
           archives=()
-          targets=$(jq -r '.legion[]' .github/go-release-targets.json)
-          [ -n "$targets" ] || { echo "::error::.github/go-release-targets.json lists no legion target"; exit 1; }
-          for target in $targets; do
+          list=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" legion-targets)
+          [ -n "$list" ] || { echo "::error::.github/go-release-targets.json lists no legion target"; exit 1; }
+          mapfile -t targets <<<"$list"
+          for target in "${targets[@]}"; do
             os=${target%/*}
             arch=${target#*/}
             archives+=("legion-$os-$arch.tar.gz")
