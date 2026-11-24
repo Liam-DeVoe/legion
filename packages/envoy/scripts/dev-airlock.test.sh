@@ -755,7 +755,12 @@ if ! grep -qxF -- "$want_git" "$stands_calls"; then
   echo "FAIL: github.com's stand-in was not started as $want_git" >&2
   exit 1
 fi
-mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -v 'rules= ')
+mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -F "profiles=$(exported AIRLOCK_PROFILES_FILE) ")
+if [[ "${#airlock_lines[@]}" -ne 2 ]]; then
+  cat "$log" >&2
+  echo "FAIL: ${#airlock_lines[@]} broker(s) of a --git-stand-in run were started with the airlock's profiles file; want 2" >&2
+  exit 1
+fi
 for line in "${airlock_lines[@]}"; do
   if [[ "$line" != *"dial_allow="*'github.com:443'* || "$line" != *'resolve='*'github.com=127.0.0.6'* ]]; then
     echo "FAIL: a broker of a --git-stand-in run is not sent to github.com's stand-in: $line" >&2
