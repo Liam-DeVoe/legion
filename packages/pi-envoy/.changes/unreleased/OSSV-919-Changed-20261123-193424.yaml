@@ -1,9 +1,0 @@
-kind: Changed
-body: |-
-  The `agent-secrets` skill says that a secret request that waits for a person is already in that
-  person's Dispatch Inbox, so the agent opens no Dispatch ask, comment or message asking them to
-  approve it, continues its work, and reads the decision with `agent-secrets status`.
-  `dispatch-first`'s rule to open an ask when a person blocks the work names this one exception.
-time: 2026-11-23T19:34:24Z
-custom:
-    Issue: OSSV-919
