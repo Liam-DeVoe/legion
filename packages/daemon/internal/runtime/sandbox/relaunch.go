@@ -311,26 +311,31 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// moved is read of a live pod alone, as the expression below read it before: a pod that is not
 	// live may be no pod at all, and is replaced for that.
 	moved := live && slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 })
-	replace := !live || (accountDrifted && !covered) ||
-		(replacement != "" && !drifted) ||
-		moved ||
-		(!installing && !covered && (drifted ||
-			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
-		(installing && !covered && podImageDrift(s, r.podShapes[l.shapeKey()]))
-	// took is why this launch replaces a pod a round covers on its own account, rather than as a
-	// round's own replacement, and unread is why no read of its workspace can be made first, ""
-	// where the pod's launcher can make one (R7 of dispatch://INFRA-3271). The daemon is told what
-	// such a replacement took (Options.LaunchTook, launchTaken).
+	// took is why this launch replaces the pod whether a round covers it or not: the pod is not
+	// live, the Sandbox has a disk shape this launch does not render and the pod's shape record
+	// does not drift, or a facet fixed for the pod's life moved. Where a round covers the pod,
+	// these are the reasons this launch replaces it before it reads the pod's bindings and stored
+	// template (below), and took is why it replaces the pod on its own account, rather than as a
+	// round's own replacement; unread is why no read of its workspace can be made first, "" where
+	// the pod's launcher can make one (R7 of dispatch://INFRA-3271). The daemon is told what such a
+	// replacement took (Options.LaunchTook, launchTaken). A pod no round covers is this launch's
+	// to replace for every drift above as well, and the daemon is told nothing of it (took "").
 	var took, unread string
-	if covered && replace {
-		switch {
-		case !live:
-			took, unread = "the pod was not live", "the pod is not live, so no process in it can read the workspace"
-		case replacement != "" && !drifted:
-			took = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
-		case moved:
-			took = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
-		}
+	switch {
+	case !live:
+		took, unread = "the pod was not live", "the pod is not live, so no process in it can read the workspace"
+	case replacement != "" && !drifted:
+		took = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
+	case moved:
+		took = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
+	}
+	replace := took != "" ||
+		(!covered && (accountDrifted ||
+			(!installing && (drifted ||
+				len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
+			(installing && podImageDrift(s, r.podShapes[l.shapeKey()]))))
+	if !covered {
+		took, unread = "", ""
 	}
 	// A pod whose launchers are not bound to it is replaced by this launch on its own account
 	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
