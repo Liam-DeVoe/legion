@@ -50,6 +50,33 @@ type commentInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
+// storedSuggestion is a suggestion as the create writes it into the row's suggestion column: the
+// suggestion itself, and the kind its mark recorded when the comment was made (docs.SuggestionKind:
+// "insert", "replace" or "delete"; the mark a quote anchor writes is a replace). An insert's mark
+// wraps the words the suggestion itself put in the document, so its anchor's quote is a copy of
+// the comment's own text until an accept makes those words document text, and the delete reads
+// the kind (loadStoredSuggestion) to empty that quote once the mark is gone and answers no kind:
+// an orphaned suggestion's, and a rejected one's, whose reject took the words out
+// (deleteComment). An accept or a reject merges what it decides into the column, which keeps the
+// kind (commentAction), so a decided suggestion keeps it. Only the delete reads the kind; every
+// other read decodes the column into model.Suggestion, which has no kind and drops it, so no
+// answer and no event carries it. A suggestion with no anchor has no mark and stores no kind.
+type storedSuggestion struct {
+	model.Suggestion
+	Kind string `json:"kind,omitempty"`
+}
+
+// loadStoredSuggestion is the kind comment id's suggestion column holds (storedSuggestion), read
+// in tx: "" for a row with no suggestion, for one with no anchor, and for one made before the
+// create stored the kind.
+func loadStoredSuggestion(ctx context.Context, tx pgx.Tx, id string) (string, error) {
+	var kind string
+	err := tx.QueryRow(ctx, `
+		select coalesce(suggestion->>'kind', '') from comments where id = $1
+	`, id).Scan(&kind)
+	return kind, err
+}
+
 // askReplyTurn is who holds the turn once an ask reply by actor is posted: a human's
 // reply always hands it to the agent; a session's reply hands it to the human unless
 // the request marks it a progress note (turn "agent").
@@ -229,7 +256,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, hydrated[0])
+	s.writeRefreshed(w, http.StatusCreated, stored, hydrated[0])
 }
 
 // owedCommentMentions is each mention of the comment whose one attempt is pending with no live
@@ -291,6 +318,15 @@ func (s *server) normalizeCommentThreadTarget(
 		parent, err := s.loadOwnedComment(ctx, tx, owner, *input.ReplyTo)
 		if err != nil {
 			return commentThreadTarget{}, err
+		}
+		// A reply adds text under the post it answers, and a deleted post takes none: the
+		// thread reply is refused as the delivery callback's reply is (comment_delivery.go's
+		// replyComment), on the parent this walk has already locked, so the refusal costs no
+		// read of its own. Only the comment the request named is judged: a reply under a live
+		// comment stands whatever became of the root above it, and a reply written before the
+		// delete keeps its text and its place.
+		if parent.DeletedAt != nil {
+			return commentThreadTarget{}, deletedPostError(refs.ItemComment)
 		}
 		target, err := s.threadHeadOf(ctx, tx, owner, parent)
 		if err != nil || input.ReplyToBlock == nil {
@@ -833,7 +869,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		ReplyTo: input.ReplyTo, Answers: threadTarget.Answers, AskID: input.AskID, Turn: turn, Suggestion: suggestion,
 		Mentions: mentions, Deliveries: []model.CommentDelivery{}, RepliesToBlock: threadTarget.ReplyBlock.nodeID(),
 	}
-	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment)
+	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, projectionKind)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1063,7 +1099,8 @@ type issueComment struct {
 // (commentStored) and is never left out of the store: its node and its two base attributes are
 // written as every comment's are. An author graphstore.AuthorOf names nobody of, as Dispatch's
 // system actors are, writes no authored_by and no author's node (graphstore.QueueAuthored), which
-// is what the store census reads off such a row (graphcensus's commentAuthor).
+// is what the store census reads off such a row (graphcensus's commentAuthor). It has no
+// suggestion, so its row stores no suggestion and no kind (queueCommentRow).
 //
 // The body takes the comment route's own checks (createCommentFor): its line endings become line
 // feeds (pmdoc.LineFeeds), then the block bounds and the refusal of a decision block hold it
@@ -1090,7 +1127,7 @@ func (s *server) queueIssueComment(
 		ID: id, IssueKey: owner.IssueKey, Author: author, Body: body,
 		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
 	}
-	stored, err := queueCommentRow(ctx, tx, ledger, &comment)
+	stored, err := queueCommentRow(ctx, tx, ledger, &comment, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -1116,6 +1153,11 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // the comment route's (lockCommentOwner), or that of the issue write that leaves the comment
 // (writeIssue, lockIssueOwners).
 //
+// The row's suggestion column holds comment's suggestion with suggestionKind, the kind its mark
+// recorded (storedSuggestion), which the delete reads (loadStoredSuggestion). Every caller states
+// the kind: the comment route the kind its mark projection read (commentProjectionKind), and a
+// caller whose comment has no suggestion or no anchor "". A comment with no suggestion stores none.
+//
 // The row's created_at is the clock at the insert (migration 0065's default), which orders an
 // owner's comments as they commit because every comment insert holds the owner's lock. The insert
 // is queued, so the clock is read here, at the insert's place and under that lock. That still
@@ -1125,7 +1167,9 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // row, its node and the facts it projects carry that one time: the store's census digests the
 // row's created_at against its node's made_at, and graph_edges answers a comment's edges from the
 // row before its kind's cutover and from the tuples after it.
-func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment) (commentStoreWrite, error) {
+func queueCommentRow(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, suggestionKind string,
+) (commentStoreWrite, error) {
 	author, err := encodeJSON(comment.Author)
 	if err != nil {
 		return commentStoreWrite{}, err
@@ -1138,7 +1182,7 @@ func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, commen
 	}
 	var suggestion any
 	if comment.Suggestion != nil {
-		if suggestion, err = encodeJSON(comment.Suggestion); err != nil {
+		if suggestion, err = encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Kind: suggestionKind}); err != nil {
 			return commentStoreWrite{}, err
 		}
 	}
