@@ -208,7 +208,7 @@ type outboxTrees interface {
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
-	ClearIssueRelease(ctx context.Context, project, issue string) error
+	ClearIssueRelease(ctx context.Context, project, issue string, releasedAt time.Time) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
@@ -3508,8 +3508,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	}
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
-	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// and acted on below, and its time (store.ReleaseDecision.At) is the fence the finish of a
+	// release of a pod no claim owns records. A runtime that takes the pod without asking leaves
+	// this read's answer standing, which is the same release.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
 		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
@@ -3570,7 +3571,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
 		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
-		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue, decision.At)
 	}
 	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",
 		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "bundle", savedBytes)
@@ -3585,7 +3586,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if err := r.armBackstops(ctx, issue); err != nil {
 		return err
 	}
-	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue, decision.At)
 }
 
 // issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is

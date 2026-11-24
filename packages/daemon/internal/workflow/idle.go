@@ -99,7 +99,10 @@ const (
 	// that any claim of it ever ran in.
 	IdleHoldUnownedNoClaim
 	// IdleHoldUnownedSandboxGone: the cluster holds no Sandbox for the issue, so the pod this
-	// rule would release is already gone and nothing of it is reserved. The hold also means a
+	// rule would release is already gone and nothing of it is reserved. The fence of a release of
+	// this rule at or after the newest write to any claim of the issue
+	// (pods.IdleView.UnownedReleasedAt) is a second sign of the same fact, so the hold is given
+	// too while the runtime still reports the Sandbox that release deleted. The hold also means a
 	// Sandbox that owns the issue's kept volume, kept Suspended by an earlier release, that runs
 	// no pod: its volume waits for the issue's next pod, and there is no pod to release.
 	IdleHoldUnownedSandboxGone
@@ -380,17 +383,17 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
 //     close's to stop, exactly as it is for the idle rule (IdleHoldUnownedTreeNotLive);
 //
-//   - the runtime holds the issue's Sandbox, and no release of this rule has finished since the
-//     issue's claims last changed (pods.IdleView.UnownedReleasedAt, against view.QuietSince).
-//     Where either fails, the pod this rule would release is already gone and nothing of it is
-//     reserved (IdleHoldUnownedSandboxGone). The second conjunct is there because the first is
-//     the runtime's informer store, which can still hold a Sandbox a release deleted a moment
-//     before: on main's CI the next pass, 45 ms after the delete, read it present and released
-//     the issue a second time (internal/daemon's
-//     TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain, job 137803188625). This
-//     release changes no claim, so a release finished after the newest claim write took the pod
-//     that write knew of, and a pod made again since would have been made by a claim's start,
-//     which writes the claim;
+//   - the runtime holds the issue's Sandbox, and no release of this rule took the pod at or
+//     after the newest write to any claim of the issue (releasedSinceTheClaimsChanged). Where
+//     either fails, the pod this rule would release is already gone and nothing of it is
+//     reserved (IdleHoldUnownedSandboxGone). The runtime answers the first from its informer
+//     store, which can still hold a Sandbox a release deleted a moment before, so the second is
+//     read beside it. A release's fence (pods.IdleView.UnownedReleasedAt) is the database's
+//     clock when the store authorized its teardown under the pod's launch turn, the clock of
+//     the claims' writes. This release changes no claim, so a release whose fence is at or after
+//     the newest claim write took the pod that write knew of. A pod made again after it is made
+//     by a claim's launch, which waits for the launch turn the teardown holds, and the launch's
+//     outcome is written to its claim after that turn, so after the fence;
 //
 //   - no pause holds the pod (pods.IdleView.PauseHeld). A pause stopped its roles and kept it,
 //     and it stays until a role of it is ready again or something deletes it
@@ -473,9 +476,10 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	return IdleDecision{Release: true}
 }
 
-// releasedSinceTheClaimsChanged is whether a release of a pod no claim owns finished for the
-// issue at or after its claims' newest write (UnownedPodRelease's Sandbox conjunct). Both times
-// are the database's (pods.IdleView.UnownedReleasedAt).
+// releasedSinceTheClaimsChanged is whether the fence of a release of a pod no claim owns
+// (pods.IdleView.UnownedReleasedAt) is at or after the newest write to any claim of the issue:
+// the second half of UnownedPodRelease's Sandbox conjunct, which says why. Both times are the
+// database's.
 func releasedSinceTheClaimsChanged(view pods.IdleView) bool {
 	if view.UnownedReleasedAt.IsZero() {
 		return false

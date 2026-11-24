@@ -719,12 +719,21 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 			}
 
 			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			var before time.Time
+			if err := st.Pool().QueryRow(ctx, `select now()`).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if tc.want == ReleaseActs {
-				if err != nil || teardown.Act != ReleaseActs {
-					t.Fatalf("the teardown = %s, %v; want it to act", teardown.Act, err)
+				// The decision that acts carries its own time on the database's clock: the fence
+				// the finish of a release of a pod no claim owns records (ClearIssueRelease).
+				if err != nil || teardown.Act != ReleaseActs || teardown.At.Before(before) {
+					t.Fatalf("the teardown = %s at %v, %v; want it to act at or after %v", teardown.Act, teardown.At, err, before)
 				}
 				return
+			}
+			if !teardown.At.IsZero() {
+				t.Fatalf("the cancelled teardown carries the time %v, want none: only a decision that acts carries one", teardown.At)
 			}
 			if err != nil || teardown.Act != ReleaseCancel || teardown.Cause != ReleaseCauseOvertaken {
 				t.Fatalf("the teardown = %s for %s, %v; want %s for %s", teardown.Act, teardown.Cause, err,

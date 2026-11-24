@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -105,12 +106,19 @@ func (c ReleaseCause) String() string {
 // release of a pod no role can use suspends none and saves no bundle, so its rows must be able
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
+//
+// At is the database's clock when IssueRelease decided ReleaseActs (now() of its transaction), and
+// zero for every other decision. The teardown asks that decision under the pod's launch turn, so
+// At is a moment after every launch of the pod before the teardown and before every launch after
+// it. The finish of a release of a pod no claim owns records it as that release's fence
+// (ClearIssueRelease).
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
 	Release        int64
 	Suspended      []claim.Role
 	SuspendsNoRole bool
+	At             time.Time
 }
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -447,15 +455,16 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// The release's own save is its issue_bundle row inside the mark's range, the range holds
 		// reads; a save below it is an earlier release's and holds no pod of this one.
 		var saving bool
+		var at time.Time
 		if err := tx.QueryRow(ctx, `select exists (
-			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
-			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3), now()`,
+			release.Issue, mark.first, mark.last).Scan(&saving, &at); err != nil {
 			return err
 		}
 		if saving {
 			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
 		}
-		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
+		decision.Act, decision.Cause, decision.At = ReleaseActs, ReleaseCauseNone, at
 		return nil
 	})
 	if err != nil {

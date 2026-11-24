@@ -280,7 +280,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		t.Fatalf("outbox rows = %d, want the first release's three alone", rows)
 	}
 
-	if err := st.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
+	if err := st.ClearIssueRelease(ctx, "legion", rootIssue, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if cleared := idleViewOf(t, st, rootIssue); cleared.Releasing || !cleared.UnownedReleasedAt.IsZero() {
@@ -289,11 +289,11 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 }
 
-// The finish of a release of a pod no claim owns records when it finished, in the transaction
-// that clears its mark (unowned_release_fences), and the view reads it on the database's clock,
-// the clock of the claims' writes (pods.IdleView.UnownedReleasedAt): a pass that reads no mark
-// reads the fence, so a runtime store that still holds the deleted Sandbox cannot have the rule
-// release the issue again. A second finish moves the fence to its own time.
+// The finish of a release of a pod no claim owns records that release's fence, the time the store
+// authorized its teardown (ReleaseDecision.At), in the transaction that clears its mark
+// (unowned_release_fences), and the view reads it back as it was written
+// (pods.IdleView.UnownedReleasedAt): a pass that reads no mark reads the fence. A second finish
+// moves the fence to its own time.
 func TestTheFinishOfAnUnownedReleaseRecordsItsFence(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -313,31 +313,32 @@ func TestTheFinishOfAnUnownedReleaseRecordsItsFence(t *testing.T) {
 			t.Fatalf("mark the unowned release = %t, %v", marked, err)
 		}
 	}
-	var before time.Time
-	if err := st.Pool().QueryRow(ctx, `select now()`).Scan(&before); err != nil {
+	var authorized time.Time
+	if err := st.Pool().QueryRow(ctx, `select now()`).Scan(&authorized); err != nil {
 		t.Fatal(err)
 	}
 	release()
 	if marked := idleViewOf(t, st, rootIssue); !marked.Releasing || !marked.UnownedReleasedAt.IsZero() {
 		t.Fatalf("view while the release is marked = releasing %t, fence %v; want releasing and no fence yet", marked.Releasing, marked.UnownedReleasedAt)
 	}
-	if err := st.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
+	if err := st.ClearIssueRelease(ctx, "legion", rootIssue, authorized); err != nil {
 		t.Fatal(err)
 	}
 	first := idleViewOf(t, st, rootIssue)
-	if first.Releasing || first.UnownedReleasedAt.Before(before) {
-		t.Fatalf("view after the finish = releasing %t, fence %v; want no release in progress and a fence at or after %v",
-			first.Releasing, first.UnownedReleasedAt, before)
+	if first.Releasing || !first.UnownedReleasedAt.Equal(authorized) {
+		t.Fatalf("view after the finish = releasing %t, fence %v; want no release in progress and the fence %v the finish was given",
+			first.Releasing, first.UnownedReleasedAt, authorized)
 	}
 	if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1`, rootIssue); err != nil {
 		t.Fatal(err)
 	}
 	release()
-	if err := st.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
+	again := authorized.Add(time.Minute)
+	if err := st.ClearIssueRelease(ctx, "legion", rootIssue, again); err != nil {
 		t.Fatal(err)
 	}
-	if second := idleViewOf(t, st, rootIssue); !second.UnownedReleasedAt.After(first.UnownedReleasedAt) {
-		t.Fatalf("fence after a second finish = %v, want after the first's %v", second.UnownedReleasedAt, first.UnownedReleasedAt)
+	if second := idleViewOf(t, st, rootIssue); !second.UnownedReleasedAt.Equal(again) {
+		t.Fatalf("fence after a second finish = %v, want its own %v", second.UnownedReleasedAt, again)
 	}
 }
 
