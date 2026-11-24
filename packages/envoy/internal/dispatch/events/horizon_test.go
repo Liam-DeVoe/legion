@@ -69,11 +69,14 @@ func TestHorizonProvesAnObservationOnlyFromALaterSnapshot(t *testing.T) {
 // held-back id another reader of the one Horizon proved meanwhile still asks to read it.
 func TestHorizonHeldBackSaysAReaderLeftAnIDAboveWhatItRead(t *testing.T) {
 	ctx := context.Background()
+	// Each observation is {newest, the oldest transaction id its read found open, its own id}: an
+	// observation proves itself, and every pending one below that oldest id, once the oldest is its
+	// own. The fields go by position, so the script reads the same whichever name the second has.
 	db := &scriptedHorizonDB{script: []scriptedObservation{
-		{newest: 8, xmin: 101, xid: 102},
-		{newest: 8, xmin: 103, xid: 103},
-		{newest: 9, xmin: 103, xid: 104},
-		{newest: 9, xmin: 105, xid: 105},
+		{8, 101, 102, false, nil},
+		{8, 103, 103, false, nil},
+		{9, 103, 104, false, nil},
+		{9, 105, 105, false, nil},
 	}}
 	horizon := NewHorizon(db)
 	for step, want := range []struct {
