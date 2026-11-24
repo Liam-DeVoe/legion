@@ -15,9 +15,10 @@
 // is resolved against the file's directory and kept as a path. What sits at that path is read at
 // boot, by ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's
 // client, so a configuration loads on a machine that has none of the files it names; `legion
-// config check` then reads them as boot does (daemon.CheckStart). A model provider's key
-// (`answers.providers.<provider>`'s `api_key_file` or `api_key_command`) is read at none of these:
-// AnswerCredential reads it again for every model call.
+// config check` then reads them as boot does (daemon.CheckStart). The daemon reads an
+// instructions file again at each launch, so an edit of one needs no restart. A model provider's
+// key (`answers.providers.<provider>`'s `api_key_file` or `api_key_command`) is read at none of
+// these: AnswerCredential reads it again for every model call.
 package config
 
 import (
