@@ -24,19 +24,18 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-
-	// TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds: a removal retag whose second write, the
-	// requesters rewrite, IAM refuses (refusingTags: a definite refusal, so the store did not act) says
-	// what the requesters tag holds now, which is what it held before.
-	// Where the guard was leaving the tag (the last project tag removed), it still holds the guard,
-	// which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads.
-	// Where the guard was joining it (a secret that keeps a dispatch-project tag written without the
-	// guard, and a removal of another tag), the tag does not hold it yet, and a broker from before the
-	// project tags would serve the secret: the message must not claim the guard is there.
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds: a removal retag whose second write, the
+// requesters rewrite, IAM refuses (refusingTags: a definite refusal, so the store did not act) says
+// what the requesters tag holds now, which is what it held before.
+// Where the guard was leaving the tag (the last project tag removed), it still holds the guard,
+// which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads.
+// Where the guard was joining it (a secret that keeps a dispatch-project tag written without the
+// guard, and a removal of another tag), the tag does not hold it yet, and a broker from before the
+// project tags would serve the secret: the message must not claim the guard is there.
 func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 	for _, c := range []struct {
 		name, held, args, want, notWant string

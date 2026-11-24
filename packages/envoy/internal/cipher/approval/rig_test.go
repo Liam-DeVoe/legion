@@ -32,18 +32,17 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-
-	// clientID is the broker's own client at the test's provider, and domain the Workspace domain
-	// a person must belong to (BROKER_SIGNIN_DOMAIN).
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// clientID is the broker's own client at the test's provider, and domain the Workspace domain
+// a person must belong to (BROKER_SIGNIN_DOMAIN).
 const (
 	clientID = ciphertest.SignInClientID
 	domain   = ciphertest.SignInDomain
@@ -154,7 +153,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		Approval: ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine),
 	})
 

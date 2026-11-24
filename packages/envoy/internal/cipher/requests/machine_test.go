@@ -27,15 +27,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
-
-	// fixtureOperator is the person whose machine the fixture's session runs on.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// fixtureOperator is the person whose machine the fixture's session runs on.
 const testAudience = "broker"
 
 const (

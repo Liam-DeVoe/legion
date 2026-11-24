@@ -25,14 +25,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-
-	// TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
-	// the value and decodes it as that type, so the value that type decodes is stored first, as a
-	// writer other than this client stores it (a retag between two types cannot be preceded by a
-	// set, which decodes the value under the type the secret holds).
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
+// the value and decodes it as that type, so the value that type decodes is stored first, as a
+// writer other than this client stores it (a retag between two types cannot be preceded by a
+// set, which decodes the value under the type the secret holds).
 func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))

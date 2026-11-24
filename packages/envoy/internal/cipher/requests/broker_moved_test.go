@@ -27,14 +27,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
-
-	// askOfAnotherBroker is a pending request for names that enrollment enr's session made of
-	// anotherBroker: its request object and its record are signed for that broker's address. m answers
-	// for testAudience again before it returns, whatever the Create answered.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
+// askOfAnotherBroker is a pending request for names that enrollment enr's session made of
+// anotherBroker: its request object and its record are signed for that broker's address. m answers
+// for testAudience again before it returns, whatever the Create answered.
 func askOfAnotherBroker(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, names ...string) Request {
 	t.Helper()
 	m.Audience = anotherBroker

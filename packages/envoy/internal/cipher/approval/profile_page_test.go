@@ -15,16 +15,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/logtest"
-
-	// TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
-	// name it asks for, the profile's source, its permissions, its accounts, its repositories, the
-	// target the record's signed request narrows it to and the hosts its proxy block sends the
-	// credential to, each read from the live profiles file and the record itself. Each is its own
-	// row, so a page that leaves one of them out fails that row alone.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
+// TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
+// name it asks for, the profile's source, its permissions, its accounts, its repositories, the
+// target the record's signed request narrows it to and the hosts its proxy block sends the
+// credential to, each read from the live profiles file and the record itself. Each is its own
+// row, so a page that leaves one of them out fails that row alone.
 func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 	r := newRig(t)
 	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)

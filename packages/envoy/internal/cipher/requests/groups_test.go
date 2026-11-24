@@ -20,14 +20,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
-
-	// The group and people of these tests: example.com names alone, since the repository is public.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// The group and people of these tests: example.com names alone, since the repository is public.
 const (
 	approversGroup = "approvers@example.com"
 	approversForm  = record.GroupPrefix + approversGroup

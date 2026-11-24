@@ -12,16 +12,15 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-
-	// TestCreateWritesTheProjectTag: create --project writes the secret's dispatch-project tag, the
-	// key as named, beside its owner and tier, on each store; a create naming no project writes no
-	// such tag, so the secret belongs to no project as before. The broker's answer to the reread
-	// that follows reaches the person at once: a broker that cannot check projects refuses the
-	// secret project-unchecked, which the create prints and exits 1 for.
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// TestCreateWritesTheProjectTag: create --project writes the secret's dispatch-project tag, the
+// key as named, beside its owner and tier, on each store; a create naming no project writes no
+// such tag, so the secret belongs to no project as before. The broker's answer to the reread
+// that follows reaches the person at once: a broker that cannot check projects refuses the
+// secret project-unchecked, which the create prints and exits 1 for.
 func TestCreateWritesTheProjectTag(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "stored-value")

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -42,13 +43,11 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
-
-	// podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
-	// MintPodToken and MintAccountToken sign tokens against — arbitrary, since a Rig both mints and
-	// verifies them itself; chosen only to read clearly in a failure message.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
+// MintPodToken and MintAccountToken sign tokens against — arbitrary, since a Rig both mints and
+// verifies them itself; chosen only to read clearly in a failure message.
 const podAudience = "legion-broker-pod"
 
 // ExchangeAudience is the audience every Rig's token exchange takes a pod's subject token for,
@@ -371,7 +370,14 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
-
+	// The rig's broker is on the AWS store over the fake, so its settings are the ones that store's
+	// configuration answers for the rig's prefix and key.
+	secretsCfg, err := aws.Backend{}.ParseConfig(policytest.Prefix, func(name string) string {
+		return map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": policytest.KeyARN}[name]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
@@ -384,7 +390,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: secretsCfg.Settings(),
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
 	}
 	api.Register(mux, deps)
