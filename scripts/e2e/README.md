@@ -1137,9 +1137,10 @@ The checks:
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
 
-- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, open its pull request, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
+- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, commit it on `legion/<issue>`, push the branch, write its handoff with `dispatch handoff-write`, open a pull request from `legion/<issue>` to the repository's default branch and call the `legion` tool's `handoff_complete`, it does:
   the daemon records the completion's Dispatch handoff record, which Dispatch holds as the issue's `implement` handoff written by the implementer's claim session (its Claude Code session, `assert_handoff_record`), and its commit, which the implement App authored and committed, which is on `sjawhar/legion-smoke` and which changes nothing under `.legion/`, and the transcript holds the `mcp__legion__legion` call with a result that is not an error.
-  The completion route applies an implementer's completion in implementing only while GitHub shows a pull request open on its branch, and answers `409 HANDOFF_NO_PULL_REQUEST` otherwise (`implementationPullRequest` in `packages/daemon/internal/api/handoff.go`), so the check reads exactly one open pull request on `legion/<issue>` (`implementer_pull_request` in `lib/workflow.sh`).
+  The completion route applies an implementer's completion in implementing only while GitHub shows a pull request open on its branch, and answers `409 HANDOFF_NO_PULL_REQUEST` otherwise (`implementationPullRequest` in `packages/daemon/internal/api/handoff.go`).
+  So the check first counts the pull requests open on `legion/<issue>` itself (`gh pr list --state open`) and fails unless there is exactly one, then reads that one's number (`implementer_pull_request` in `lib/workflow.sh`), which fails on none or more than one too.
   The `EXIT` trap closes it.
 
 - `claude-background-tasks`: the implementer's Claude Code carries no `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` and keeps `CLAUDE_CODE_DISABLE_CRON=1`, read once from `/proc/<pid>/environ` (the runtime never sets the first,
@@ -1277,9 +1278,10 @@ The checks, in order, which is the tmux proof's:
   The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "Your turn ended with your Legion phase still open" (a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
-- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, open its pull request, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
+- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, commit it on `legion/<issue>`, push the branch, write its handoff with `dispatch handoff-write`, open a pull request from `legion/<issue>` to the repository's default branch and call the `legion` tool's `handoff_complete`, it does:
   the daemon records the completion's Dispatch handoff record, which Dispatch holds as the issue's `implement` handoff written by the implementer's claim session (its Claude Code session, `assert_handoff_record`), and its commit, which the implement App authored and committed (read with `jj` in the pod's own workspace), which is on `sjawhar/legion-smoke` and which changes nothing under `.legion/`, and the transcript holds the `mcp__legion__legion` call with a result that is not an error.
-  As in the [tmux proof](#claude-backend-tmuxsh), the check reads exactly one open pull request on `legion/<issue>`, which the completion route requires before it applies the completion, and the `EXIT` trap closes it.
+  As in the [tmux proof](#claude-backend-tmuxsh), the check first counts the pull requests open on `legion/<issue>` itself and fails unless there is exactly one, then reads that one's number (`implementer_pull_request`), since the completion route requires that pull request before it applies the completion;
+  the `EXIT` trap closes it.
 
 - `pod-deleted-resumes-the-same-claude-session`:
   the transcript's size and the `sha256sum` of those bytes are read in the pod, and the pod is deleted, its disk and the transcript's file with it.
