@@ -116,16 +116,20 @@ skill's cases (`cases.ts`), one JSON object per line.
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
   started again skips it. A stage left unscreened (an arm lacks its judged runs after its 5 extra
-  runs) counts for nothing in the score, unless its runs show it can never be judged: an arm's runs
-  that read skill files past the last answered round drop its case as `reads-past-last-round`
-  (below); else a stage in which every run got no verdict because the provider refused the replay on
-  a content policy (a stream error whose type ends in `_policy`, such as `cyber_policy`) drops its
-  case as `provider-refused: provider refused every replay (<policy>): <n> refusals (old <a>, new
-  <b>, none <c>)`, the policies in the order first seen and the counts by the stage's arms (the
-  architect, 2026-11-24). A stage saved unscreened in that shape with no drop, from before this
-  rule, is dropped when `screen`, `confirm` or `control` reaches its case again, from its saved runs
-  and with no model call. A stage with a judged run, or a run with no verdict for another reason,
-  stays unscreened. Each drop records the stage that made it (`droppedAt`; a result written
+  runs) counts for nothing in the score, unless its runs show it can never be judged: an arm's
+  runs that read skill files past the last answered round drop its case as `reads-past-last-round`
+  (below); else a stage in which the provider refused, on a content policy (a stream error whose
+  type ends in `_policy`, such as `cyber_policy`), every replay that got no verdict in each arm
+  that lacks its judged runs drops its case as `provider-refused: provider refused every replay of
+  <arms> (<policy>): <n> refusals (old <a>, new <b>, none <c>)` (the architect, 2026-11-24): the
+  refused arms joined by "and" (`old and new`), none named where every arm of the stage is
+  refused, the policies in the order first seen, and the refusals counted for every arm of the
+  stage, 0 where it has none. An arm with its judged runs blocks nothing, so a screen whose old
+  and new arms the provider refused is dropped though its none arm was judged. A stage saved
+  unscreened in that shape with no drop, from before this rule, is dropped when `screen`,
+  `confirm` or `control` reaches its case again, from its saved runs and with no model call. A
+  stage where an arm that lacks its runs has a run with no verdict for another reason stays
+  unscreened. Each drop records the stage that made it (`droppedAt`; a result written
   before that field is read as dropped at screen when its screen runs are not counted, else at
   confirm when its screen flagged it and it has no confirm runs, else at control). No dropped case
   leaves the score (the architect, 2026-11-22): a case dropped at screen is not informative; a case

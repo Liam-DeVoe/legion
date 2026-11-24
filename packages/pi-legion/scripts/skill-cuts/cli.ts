@@ -160,16 +160,17 @@
  * and the reply after them. A run whose reply after the last answered round still only reads skill
  * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
  * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
- * drops its case under that reason, with the counts. A stage left unscreened in which every run
- * got no verdict because the provider refused the replay on a content policy (a stream error whose
- * type ends in `_policy`, as `cyber_policy`) can never be judged, and drops its case as
- * `provider-refused: provider refused every replay (<policy>): <n> refusals (<arm> <count>, ...)`;
- * a stage saved unscreened in that shape before this rule, with no drop, is dropped so when a
- * stage command reaches its case again, from its saved runs and with no model call. A stage with
- * a judged run, or a run with no verdict for another reason, stays unscreened. A capture made for
- * a stage shows the case's session (capture.ts, "The harness strings"), whose head the capture
- * reads once from its store through the configuration's `psqlCommand` and saves under
- * `<out>/sessions/`.
+ * drops its case under that reason, with the counts. A stage left unscreened in which the provider
+ * refused, on a content policy (a stream error whose type ends in `_policy`, as `cyber_policy`),
+ * every replay that got no verdict in each arm that lacks its judged runs can never be judged, and
+ * drops its case as `provider-refused: provider refused every replay of <arms> (<policy>): <n>
+ * refusals (<arm> <count>, ...)`, the refused arms joined by ` and `, and none named where every
+ * arm of the stage is refused; an arm with its judged runs blocks nothing. A stage saved unscreened
+ * in that shape before this rule, with no drop, is dropped so when a stage command reaches its case
+ * again, from its saved runs and with no model call. A stage where an arm that lacks its runs has a
+ * run with no verdict for another reason stays unscreened. A capture made for a stage shows the
+ * case's session (capture.ts, "The harness strings"), whose head the capture reads once from its
+ * store through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
  * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, else
@@ -1614,10 +1615,10 @@ async function runRound(
  * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
  * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
  * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`); else one
- * whose every run the provider refused on a content policy, under PROVIDER_REFUSED
- * (`refusedDrop`). A stage it starts records this runner (`r.runner`), and a confirm it runs or
- * goes on with under `--confirm-flagged` records that (`confirmFlagged`). Throws Stopped, after
- * saving, when the budget refused a call.
+ * in each of whose arms that lack their judged runs the provider refused, on a content policy,
+ * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
+ * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
+ * records that (`confirmFlagged`). Throws Stopped, after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -2063,8 +2064,8 @@ function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
   return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)})`;
 }
 
-/** How the drop of a case begins whose stage the provider refused on every replay, on a content
- *  policy (`refusedDrop`). */
+/** How the drop of a case begins whose stage the provider refused on a content policy, in each arm
+ *  that lacks its judged runs (`refusedDrop`). */
 const PROVIDER_REFUSED = "provider-refused";
 
 /** A run's reason when the provider refused its replay on a content policy: runRound's replay
@@ -2075,30 +2076,40 @@ const PROVIDER_REFUSED = "provider-refused";
  *  reads otherwise. */
 const REFUSED_REPLAY = new RegExp(`^${REPLAY_FAILED}: ${STREAM_FAILED}: ([^\\s:]*_policy): `);
 
-/** Why a case whose `stage` is unscreened is dropped because the provider refused every replay of
- *  it on a content policy, from the stage's `runs`: each policy (REFUSED_REPLAY) in the order first
- *  seen, and how many runs each arm of the stage made, every one of them a refusal. Undefined when
- *  the stage has no run, or a run that was judged or got no verdict for another reason: the stage
- *  then stays unscreened. */
+/** Why a case whose `stage` is unscreened is dropped because the provider refused it on a content
+ *  policy, from the stage's `runs`, as `readsPastDrop` reads an arm: each arm that lacks its
+ *  judged runs (STAGE_RUNS) is refused when each of its runs with no verdict is a refusal
+ *  (REFUSED_REPLAY), and an arm with its judged runs blocks nothing. The reason names the refused
+ *  arms joined by ` and ` (no arm where every arm of the stage is refused), each policy in the
+ *  order first seen, how many runs were refused, and each arm's count of them. Undefined when no
+ *  arm lacks its runs, or one that does has no refusal or a run with no verdict for another
+ *  reason: the stage then stays unscreened. */
 function refusedDrop(runs: readonly Run[], stage: Stage): string | undefined {
-  if (runs.length === 0) return undefined;
-  const policies = new Set<string>();
-  for (const run of runs) {
+  const refusals = runs.flatMap((run) => {
     const policy = run.verdict === null ? REFUSED_REPLAY.exec(run.reason)?.[1] : undefined;
-    if (policy === undefined) return undefined;
-    policies.add(policy);
+    return policy === undefined ? [] : [{ arm: run.arm, policy }];
+  });
+  const byArm: { arm: ArmName; count: number }[] = [];
+  const refused: ArmName[] = [];
+  for (const arm of STAGE_ARMS[stage]) {
+    const own = runs.filter((run) => run.arm === arm);
+    const unjudged = own.filter((run) => run.verdict === null).length;
+    const count = refusals.filter((each) => each.arm === arm).length;
+    byArm.push({ arm, count });
+    if (own.length - unjudged >= STAGE_RUNS[stage]) continue;
+    if (count === 0 || count < unjudged) return undefined;
+    refused.push(arm);
   }
-  const byArm = STAGE_ARMS[stage].map((arm) => ({
-    arm,
-    count: runs.filter((run) => run.arm === arm).length,
-  }));
-  return `${PROVIDER_REFUSED}: provider refused every replay (${[...policies].join(", ")}): ${runs.length} refusals (${armCounts(byArm)})`;
+  if (refused.length === 0) return undefined;
+  const of = refused.length === STAGE_ARMS[stage].length ? "" : ` of ${refused.join(" and ")}`;
+  const policies = [...new Set(refusals.map((each) => each.policy))].join(", ");
+  return `${PROVIDER_REFUSED}: provider refused every replay${of} (${policies}): ${refusals.length} refusals (${armCounts(byArm)})`;
 }
 
 /** Case `result` dropped at `stage` from its saved runs, where that stage is recorded unscreened
- *  with no drop and the provider refused every replay of it (`refusedDrop`): a stage saved before
- *  that rule, which a stage command that reaches the case again drops with no model call.
- *  Undefined for any other result. */
+ *  with no drop and the provider refused its arms that lack their runs (`refusedDrop`): a stage
+ *  saved before that rule, which a stage command that reaches the case again drops with no model
+ *  call. Undefined for any other result. */
 function savedRefusal(result: CaseResult, stage: Stage): CaseResult | undefined {
   const saved = result.stages[stage];
   if (result.dropped !== null || saved?.state !== "unscreened") return undefined;

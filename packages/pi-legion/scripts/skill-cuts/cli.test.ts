@@ -2880,12 +2880,56 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     expect(reported.stdout).toContain(`, ${NO_READS_PAST}, 1 provider-refused), `);
   }, 60_000);
 
-  // Catches: a stage dropped as provider-refused though one of its runs was judged, or though a
-  // run failed for another reason (a policy named outside a stream error's type among them), which
-  // a later run could get past.
-  test("an unscreened stage whose refusals sit beside judged runs, or beside a run that failed for another reason, stays unscreened, and the report counts it unscreened and none as provider-refused", async () => {
-    const s = scenario("provider-refused-mixed", LOSS_SKILL(), [{ id: "c01" }, { id: "c02" }]);
+  // Catches: a screen whose old and new arms the provider refused on every replay, its none arm
+  // judged, left unscreened as if a later run could judge old and new (dotfiles-93-46c17afdabdd),
+  // since the drop asked every run of the stage to be a refusal.
+  test("a screen whose old and new arms the provider refuses on every replay, with its none arm judged, is dropped at screen as provider-refused naming old and new, with the refusals of each arm", async () => {
+    const s = scenario("provider-refused-arms", LOSS_SKILL(), [{ id: "c04", marker: "REFUSED" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // The provider refuses each replay of c04's old and new arms, whose bodies hold the skill's
+    // reads; the none arm's body holds the user's message alone, and is answered.
+    answer = (body) =>
+      !isJudgement(body) &&
+      JSON.stringify(body.messages).includes("REFUSED") &&
+      (body.messages as unknown[]).length > 1
+        ? sseResponse(
+            `event: error\ndata: ${JSON.stringify({
+              type: "error",
+              error: { type: "cyber_policy", message: POLICY_TEXT },
+            })}\n\n`
+          )
+        : behaviourStandIn(body);
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason = `provider-refused: provider refused every replay of old and new (cyber_policy): ${2 * SCREEN_ALL} refusals (old ${SCREEN_ALL}, new ${SCREEN_ALL}, none 0)`;
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
+      dropped: reason,
+      at: "screen",
+      state: "unscreened",
+    });
+    expect(passes(c, "screen")).toEqual({ old: 0, new: 0, none: 0 });
+    expect(
+      c.stages.screen?.runs.filter((run) => run.arm === "none" && run.verdict !== null)
+    ).toHaveLength(SCREEN_RUNS);
+    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(`case c04: dropped at screen: ${reason}; `);
+    expect(reported.stdout).toContain(`, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, `);
+  }, 120_000);
+
+  // Catches: a stage left unscreened whose one arm short of its runs the provider refused, kept
+  // unscreened because its other arms were judged; or a stage dropped as provider-refused though an
+  // arm short of its runs has a run that failed for another reason (a policy named outside a
+  // stream error's type among them), which a later run could get past.
+  test("a saved unscreened stage whose one arm short of its runs the provider refused is dropped naming that arm, though its other arms were judged; one whose arm short of its runs has a run that failed for another reason stays unscreened; and the report counts each", async () => {
+    const s = scenario("provider-refused-mixed", LOSS_SKILL(), [
+      { id: "c01" },
+      { id: "c02" },
+      { id: "c03" },
+    ]);
     const passed = Array(SCREEN_RUNS).fill("pass");
+    // The none arm refused, the old and new arms judged.
     plantResult(s, "c01", {
       stages: {
         screen: unscreenedStage(s, "c01", "screen", {
@@ -2895,6 +2939,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
         }),
       },
     });
+    // Each arm refused, but one of the none arm's runs failed for another reason.
     plantResult(s, "c02", {
       stages: {
         screen: unscreenedStage(s, "c02", "screen", {
@@ -2904,11 +2949,28 @@ describe("behaviour: a case the provider refuses on every replay", () => {
         }),
       },
     });
+    // The old arm refused, the new arm failed for another reason, the none arm judged.
+    plantResult(s, "c03", {
+      stages: {
+        screen: unscreenedStage(s, "c03", "screen", {
+          old: allRefused("screen"),
+          new: Array(SCREEN_ALL).fill(OTHER_FAILURE),
+          none: passed,
+        }),
+      },
+    });
     const from = recorder.requests.length;
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(requestsSince(from)).toHaveLength(0);
-    for (const id of ["c01", "c02"]) {
+    const noneRefused = `provider-refused: provider refused every replay of none (cyber_policy): ${SCREEN_ALL} refusals (old 0, new 0, none ${SCREEN_ALL})`;
+    expect(ran.stdout).toContain(`case c01: dropped: ${noneRefused}; `);
+    const c01 = result(s.out, "c01");
+    expect({ dropped: c01.dropped, at: c01.droppedAt }).toEqual({
+      dropped: noneRefused,
+      at: "screen",
+    });
+    for (const id of ["c02", "c03"]) {
       expect(ran.stdout).toContain(`case ${id}: screened before, skipped`);
       const c = result(s.out, id);
       expect({ id, dropped: c.dropped, state: c.stages.screen?.state }).toEqual({
@@ -2919,7 +2981,7 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     }
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
-      `; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 2 unscreened, 0 not run`
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
     );
   }, 60_000);
 });

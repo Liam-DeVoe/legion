@@ -321,7 +321,8 @@ export function skillVerdict(counts: {
  *  serves its model no more, a directory of its context could not be read, its listing misses
  *  too many names, a block of its skill its arms cannot each rebuild, a file it reads by path an
  *  arm's text holds in a form the arms do not rebuild, an arm's runs read skill files past the
- *  last answered round, or the provider refused every replay of a stage on a content policy. */
+ *  last answered round, or the provider refused, on a content policy, every replay with no verdict
+ *  of each arm of a stage that lacks its judged runs. */
 export interface CaseDrop {
   readonly stage: Stage;
   readonly reason: string;
