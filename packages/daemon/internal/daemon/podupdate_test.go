@@ -2033,8 +2033,8 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times about a replacement that keeps failing, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "The runtime refused the pod replacement") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
-		t.Errorf("the notice says %q, want the refusal and the error the runtime gave", notices[0].Reason)
+	if !strings.Contains(notices[0].Reason, "The pod replacement failed.") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
+		t.Errorf("the notice says %q, want the failure and the error the runtime gave", notices[0].Reason)
 	}
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 	wantNoRefusedNotice(t, rig)

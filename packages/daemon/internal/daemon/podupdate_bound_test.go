@@ -700,7 +700,7 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
 		}
-		for _, want := range []string{"The runtime refused the pod replacement", refused.Error()} {
+		for _, want := range []string{"The pod replacement failed.", "The runtime can fail after it suspended the pod.", refused.Error()} {
 			if !strings.Contains(notices[0].Reason, want) {
 				t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
 			}
