@@ -34,7 +34,6 @@ import {
   FIRST_LINE_LIMIT,
   firstBlockWordsRaw,
   firstLineOf,
-  heldBy,
   type IssueTreeReads,
   lineWords,
   lineWordsRaw,
@@ -3676,52 +3675,6 @@ test("a string that only looks like an address stays as written in a node's line
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : lineWords(task), sent).toBe(line);
   }
-});
-
-/** A statement `id` holding `children`, with `extra` over it, counted as `heldBy` counts: what
- *  the folded count reads, which needs no read of the page's. */
-function counted(
-  id: string,
-  children: readonly TreeNode[] = [],
-  extra: Partial<TreeNode> = {}
-): TreeNode {
-  return {
-    alsoUnder: [],
-    children,
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: heldBy(children),
-    id,
-    question: false,
-    replaced: false,
-    text: id,
-    transcluded: false,
-    type: "requirement",
-    waiting: false,
-    ...extra,
-  };
-}
-
-// A parent's overtaken children fold to one line after its other children, so its folded count
-// counts them as that one row and nothing under them, whether it holds one of them or several, and
-// whatever each of them holds.
-test("an overtaken child is one row of its parent's folded count", () => {
-  const overtaken = (id: string, children: readonly TreeNode[]): TreeNode =>
-    counted(id, children, { life: "overtaken" });
-  const live = [counted("spec#b-r1", [counted("spec#b-r1a")])];
-  expect(heldBy(live)).toBe(2);
-  expect(
-    heldBy([...live, overtaken("spec#b-r2", [counted("spec#b-r2a"), counted("spec#b-r2b")])])
-  ).toBe(3);
-  expect(
-    heldBy([
-      ...live,
-      overtaken("spec#b-r2", [counted("spec#b-r2a")]),
-      overtaken("spec#b-r3", [counted("spec#b-r3a", [counted("spec#b-r3b")])]),
-    ])
-  ).toBe(3);
-  expect(heldBy([overtaken("spec#b-r2", [counted("spec#b-r2a")])])).toBe(1);
 });
 
 // A caller that names each reference itself, by the name the page publishes for

@@ -6,7 +6,6 @@ import { focusOnDocument } from "../../shell/roving";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
-import { useOvertakenTarget } from "../node-states/settle-write";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
@@ -52,9 +51,6 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
  * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
  * focus back as it leaves.
- *
- * Under Decisions, an address naming an overtaken node, or a node under one, which that view
- * draws nowhere, is replaced by the same address under no filter (`useOvertakenTarget`).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -72,7 +68,6 @@ export function StageSlot({
   const following = useFollowing();
   const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const { preset } = address;
-  useOvertakenTarget(props.issue, props.route);
   // Whether the address names a node beside the view's own address and opens no document, which
   // is the outline's to land on wherever the view draws none of it.
   const beside = address.target !== undefined && address.document === undefined;

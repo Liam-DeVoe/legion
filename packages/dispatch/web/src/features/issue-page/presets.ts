@@ -120,8 +120,7 @@ export interface PresetView {
   /** Whether this view is filtered at all: false for the page with no filter on and no words
    *  typed, whose fold is the frontier's alone (R1). While one is, every branch the view kept
    *  is drawn open (`IssueTree.tsx`): a filter exists to show what it matched, and the fold may
-   *  not hide it. A line of overtaken nodes is no branch: under words it is open until the reader
-   *  closes it, and with none it is closed until the reader or an address opens it. */
+   *  not hide it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
    *  the row's id: never rows (R4). Empty where the view is read off the tree. */

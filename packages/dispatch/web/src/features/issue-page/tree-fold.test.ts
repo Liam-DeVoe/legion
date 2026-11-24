@@ -9,9 +9,11 @@ import {
   frontier,
   NARROW_LEVELS,
   NOTHING_OPENED,
+  type OpenedBranches,
   treeRows,
   zoomBreadcrumb,
 } from "./tree-fold";
+import { everythingOpened } from "./tree-keys";
 
 /**
  * The fold, over a tree built by hand: the page opens folded to the frontier and not to a fixed
@@ -44,9 +46,6 @@ function node(
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  // A node's line of overtaken children reads as `line:<id>`.
-  if (!rows.every((row) => row.kind !== "overtaken"))
-    return rows.flatMap((row) => (row.kind === "overtaken" ? `line:${row.of.id}` : idsOf([row])));
   return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
 }
 
@@ -395,92 +394,127 @@ test("below 1024 px the frontier's paths are drawn whatever their depth", () => 
   expect(zoomBreadcrumb(root, "doc-1").map((one) => one.id)).toEqual(["CORE-1"]);
 });
 
-/** The line a node's overtaken children fold to, where the rows draw one under `id`. */
-function lineOf(rows: readonly DrawnRow[], id: string) {
-  const line = rows.find((row) => row.kind === "overtaken" && row.of.id === id);
-  return line?.kind === "overtaken" ? line : undefined;
+/** What each row draws but its node's own facts: the node's id, or the deeper branch's, its
+ *  level, its twisty and its count. */
+function shapeOf(rows: readonly DrawnRow[]): string[] {
+  return rows.map((row) =>
+    row.kind === "node"
+      ? `${row.node.id}@${row.level}:${String(row.expanded)}:${String(row.folded)}`
+      : `more:${row.of.id}@${row.level}:${row.held}`
+  );
 }
 
 /** What the model says of a node a later one took the place of. */
 const OVERTAKEN = { closed: true, life: "overtaken" } as const;
 
-/** An issue whose one document holds a live requirement between two overtaken ones, the second
- *  holding a note, and counts what it holds as the tree read does (`heldBy`). */
-function withOvertaken(): TreeNode {
+/** An issue whose one document holds a live requirement between two requirements with `life`,
+ *  overtaken unless a case gives another, the second holding a note, and counts what it holds as
+ *  the tree read does (`heldBy`). */
+function withOvertaken(life: Partial<TreeNode> = OVERTAKEN): TreeNode {
   const children = [
-    node("spec#b-r1", "requirement", [], OVERTAKEN),
+    node("spec#b-r1", "requirement", [], life),
     node("spec#b-r2", "requirement"),
-    node("spec#b-r3", "requirement", [node("spec#b-r3-note", "callout")], OVERTAKEN),
+    node("spec#b-r3", "requirement", [node("spec#b-r3-note", "callout")], life),
   ];
   return node("CORE-1", "issue", [node("spec", "document", children, { held: heldBy(children) })]);
 }
 
-// Under a parent that holds overtaken nodes, one line after its other children says how many it
-// holds directly, and is a row of the tree, which the keys reach.
-// Opened, each overtaken node is a row one level below the line, folded with its subtree.
-test("overtaken children are one focusable line that counts them", () => {
+// An overtaken node is a row at its place among its parent's children, in the tree's order, at
+// their level, and its subtree is drawn as any branch's is: the same tree with nothing overtaken
+// draws the same rows, whether the reader opened the branch, folded it, or the cycle key drew
+// everything, at the drawn levels of every width.
+test("an overtaken node is a row at its place with its subtree open", () => {
   const root = withOvertaken();
-  const opened = { ...NOTHING_OPENED, branches: new Set(["spec"]) };
-  const closed = treeRows(root, opened);
-  expect(idsOf(closed)).toEqual(["CORE-1", "spec", "spec#b-r2", "line:spec"]);
-  const line = lineOf(closed, "spec");
-  expect(line?.held).toBe(2);
-  expect(line?.level).toBe(3);
-  expect(line?.open).toBe(false);
-  expect(line?.trail).toEqual(["CORE-1"]);
-
-  const open = treeRows(root, { ...opened, overtaken: new Set(["spec"]) });
-  expect(idsOf(open)).toEqual([
+  const opened = { ...NOTHING_OPENED, branches: new Set(["spec", "spec#b-r3"]) };
+  const rows = treeRows(root, opened);
+  expect(idsOf(rows)).toEqual([
     "CORE-1",
     "spec",
-    "spec#b-r2",
-    "line:spec",
     "spec#b-r1",
+    "spec#b-r2",
     "spec#b-r3",
+    "spec#b-r3-note",
   ]);
-  expect(lineOf(open, "spec")?.open).toBe(true);
   for (const id of ["spec#b-r1", "spec#b-r3"]) {
-    expect(rowOf(open, id)?.level).toBe(4);
-    expect(rowOf(open, id)?.trail).toEqual(["CORE-1", "spec"]);
+    const row = rowOf(rows, id);
+    expect(row?.kind, id).toBe("node");
+    expect(row?.level, id).toBe(3);
+    expect(row?.trail, id).toEqual(["CORE-1", "spec"]);
   }
-  const holding = rowOf(open, "spec#b-r3");
-  expect(holding?.kind === "node" ? holding.expanded : undefined).toBe(false);
-  expect(holding?.kind === "node" ? holding.folded : undefined).toBe(1);
+  const holding = rowOf(rows, "spec#b-r3");
+  expect(holding?.kind === "node" ? holding.expanded : undefined).toBe(true);
+  expect(rowOf(rows, "spec#b-r3-note")?.level).toBe(4);
+
+  // Folded by the reader, it is one row counting what it holds, as any row is.
+  const shut: OpenedBranches = { ...opened, closed: new Set(["spec#b-r3"]) };
+  const folded = rowOf(treeRows(root, shut), "spec#b-r3");
+  expect(folded?.kind === "node" ? folded.expanded : undefined).toBe(false);
+  expect(folded?.kind === "node" ? folded.folded : undefined).toBe(1);
+
+  const live = withOvertaken({});
+  for (const opening of [opened, shut, everythingOpened(root)]) {
+    for (const levels of [DRAWN_LEVELS, NARROW_LEVELS]) {
+      expect(shapeOf(treeRows(root, opening, [], levels))).toEqual(
+        shapeOf(treeRows(live, opening, [], levels))
+      );
+    }
+  }
 });
 
-// An open question under an overtaken node opens no path, so neither that node nor its parent
-// unfolds because of it, and opened by the reader the overtaken node still arrives folded.
-test("the frontier never passes into an overtaken node", () => {
-  const question = node("spec#b-q1", "ask", [], { question: true, state: "open" });
-  const issueWith = (life: Partial<TreeNode>): TreeNode =>
-    node("CORE-1", "issue", [
-      node("spec", "document", [node("spec#b-r1", "requirement", [question], life)]),
-    ]);
-  // The control: under a live requirement, the question opens the path down to it.
-  expect([...frontier(issueWith({}))].sort()).toEqual(["CORE-1", "spec", "spec#b-r1"]);
-
-  const root = issueWith(OVERTAKEN);
-  expect([...frontier(root)]).toEqual([]);
-  expect(idsOf(treeRows(root))).toEqual(["CORE-1", "spec"]);
-  const opened = treeRows(root, {
-    ...NOTHING_OPENED,
-    branches: new Set(["spec"]),
-    overtaken: new Set(["spec"]),
-  });
-  expect(idsOf(opened)).toEqual(["CORE-1", "spec", "line:spec", "spec#b-r1"]);
-  const overtaken = rowOf(opened, "spec#b-r1");
-  expect(overtaken?.kind === "node" ? overtaken.expanded : undefined).toBe(false);
+// An open question at or under an overtaken node opens no path, however deep under it the question
+// stands, so the page unfolds nothing down to it and draws it as no row it opens on; the same trees
+// with nothing overtaken open the path down to the question.
+test("no path to an open question passes into an overtaken node", () => {
+  const open = { question: true, state: "open" } as const;
+  const trees = (overtaken: boolean): TreeNode[] => {
+    const life = overtaken ? OVERTAKEN : {};
+    const under = overtaken ? { closed: true as const } : {};
+    const question = node("spec#b-q1", "ask", [], { ...open, ...under });
+    return [
+      // The question itself is overtaken.
+      node("CORE-1", "issue", [
+        node("spec", "document", [node("spec#b-q1", "ask", [], { ...open, ...life })]),
+      ]),
+      // It stands right under an overtaken node.
+      node("CORE-1", "issue", [
+        node("spec", "document", [node("spec#b-r1", "requirement", [question], life)]),
+      ]),
+      // It stands two levels under one.
+      node("CORE-1", "issue", [
+        node("spec", "document", [
+          node(
+            "spec#b-r1",
+            "requirement",
+            [node("spec#b-r1a", "callout", [question], under)],
+            life
+          ),
+        ]),
+      ]),
+    ];
+  };
+  for (const [index, root] of trees(false).entries()) {
+    expect(frontier(root).size, `live tree ${index}`).toBeGreaterThan(0);
+    expect(rowOf(treeRows(root), "spec#b-q1"), `live tree ${index}`).toBeDefined();
+  }
+  for (const [index, root] of trees(true).entries()) {
+    expect([...frontier(root)], `overtaken tree ${index}`).toEqual([]);
+    expect(idsOf(treeRows(root)), `overtaken tree ${index}`).toEqual(["CORE-1", "spec"]);
+  }
 });
 
-// A folded branch's count counts its line of overtaken children as one row and nothing under it,
-// which is the number of rows the branch draws opened, its line closed.
-test("a folded count counts the line as one row", () => {
+// A folded branch's count counts an overtaken node and the nodes under it as it counts every node:
+// it is the count of the same tree with nothing overtaken, and the number of rows the branch draws
+// opened, folded to one row and below the drawn levels alike.
+test("a folded count counts an overtaken node as any node", () => {
   const root = withOvertaken();
+  expect(root.held).toBe(withOvertaken({}).held);
   const folded = rowOf(treeRows(root), "spec");
   expect(folded?.kind === "node" ? folded.expanded : undefined).toBe(false);
-  expect(folded?.kind === "node" ? folded.folded : undefined).toBe(2);
-  const opened = treeRows(root, { ...NOTHING_OPENED, branches: new Set(["spec"]) });
-  expect(idsOf(opened).slice(2)).toEqual(["spec#b-r2", "line:spec"]);
+  expect(folded?.kind === "node" ? folded.folded : undefined).toBe(4);
+  const opened = { ...NOTHING_OPENED, branches: new Set(["spec", "spec#b-r3"]) };
+  expect(treeRows(root, opened).slice(2)).toHaveLength(4);
+  const deeper = treeRows(root, opened, [], NARROW_LEVELS).find((row) => row.kind === "deeper");
+  expect(deeper?.kind === "deeper" ? deeper.held : undefined).toBe(4);
 });
 
 // A proposed node is only put forward until a person settles it, so a proposed statement no check

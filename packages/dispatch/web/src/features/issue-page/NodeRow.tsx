@@ -97,7 +97,7 @@ import { documentWord, RowText } from "./RowText";
  * "more · N words" opens the rest in place; a row of pictures the sixth line crosses is drawn
  * whole, and a person's words and a question that waits on the reader are never cut. A folded
  * branch is the one place a row draws a single line (R1): its first line, cut at a word by
- * `firstLineOf`, and how many rows it holds; its focus draws its words whole and keeps the
+ * `firstLineOf`, and how many nodes it holds; its focus draws its words whole and keeps the
  * count after them.
  *
  * The body is drawn for the focused row, for a row pinned open, and while the cycle key opens
@@ -178,7 +178,7 @@ export function NodeRow({
    *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
    *  view passes it. */
   foldable?: boolean;
-  /** How many rows it holds while it is folded (`TreeNode.held`). */
+  /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
   isClosed: boolean;
@@ -253,7 +253,7 @@ export function NodeRow({
   const first = firstLineOf(lineWords(node));
   // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
   const noVerdict = node.type === "lens" && node.text === "";
-  // How many rows a folded branch holds: on its one line, and after its words once its focus
+  // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
     folded === undefined ? null : (

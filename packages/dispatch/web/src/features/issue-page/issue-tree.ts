@@ -11,7 +11,6 @@ import type {
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
-import { isOvertaken } from "./issue-address";
 import type { LensFacts } from "./lenses/lens-drafts";
 import { closeOvertaken } from "./node-states/node-states";
 import type { GapKind, NodeState, NodeType } from "./page-words";
@@ -199,8 +198,7 @@ export interface TreeNode {
   /** What the model holds about the node that a row has no line for, drawn in its body. */
   readonly facts: readonly NodeFact[];
   readonly gaps: readonly GapKind[];
-  /** How many rows this one holds, at any depth, its overtaken children as the one line they
-   *  fold to and nothing under them: what a folded row says it holds. */
+  /** How many nodes this one holds, at any depth: what a folded row says it holds. */
   readonly held: number;
   /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
    *  the model gives it. */
@@ -745,12 +743,8 @@ export function targetNaming(reads: IssueTreeReads): {
   return { ambiguous, names };
 }
 
-/** How many rows a branch holds below `children`, at any depth, as `TreeNode.held` counts them. */
+/** How many nodes a branch holds below `children`, at any depth. */
 export function heldBy(children: readonly TreeNode[]): number {
-  // A parent's overtaken children fold to one line under it, so they count as that one row and
-  // nothing under them.
-  if (children.some(isOvertaken))
-    return heldBy(children.filter((child) => !isOvertaken(child))) + 1;
   return children.reduce((held, child) => held + child.held + 1, 0);
 }
 

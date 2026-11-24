@@ -25,8 +25,8 @@ import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeStatesProvider } from "./node-states/NodeMarks";
-import { linesIn, marksOf, statesByReference, withLine } from "./node-states/node-states";
-import { SettleIssueProvider, useHoldsWords } from "./node-states/settle-write";
+import { marksOf, statesByReference } from "./node-states/node-states";
+import { SettleIssueProvider } from "./node-states/settle-write";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
@@ -210,7 +210,7 @@ export function IssueTree({
   const branchAtMount = useRef(focusBranch ? request?.id : undefined);
   const [zoom, setZoom] = useState<string | undefined>(branchAtMount.current);
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
-  // second level, then every branch and body, with each line of overtaken nodes left as it was.
+  // second level, then everything.
   const [cycle, setCycle] = useState(0);
   // The branches the reader folded while the cycle's last state draws every branch. That state
   // holds the reader's earlier folds apart, so a fold made in it recorded a fold nobody saw: Left
@@ -299,20 +299,6 @@ export function IssueTree({
   const pathHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
     ids: [],
   });
-  // The lines of overtaken nodes on the address's path the reader closed since its landing, each
-  // let go of the path's hold for that following as a branch they fold is (`released`), and
-  // forgotten as those are; and the path's lines and following as last drawn, which a close of
-  // a line reads (`toggleOvertaken`).
-  const [releasedLines, setReleasedLines] = useState<{
-    readonly ids: ReadonlySet<string>;
-    readonly landing: string | undefined;
-  }>({ ids: NO_FOLDS, landing: undefined });
-  if (releasedLines.landing !== undefined && releasedLines.landing !== landingKey) {
-    setReleasedLines({ ids: NO_FOLDS, landing: undefined });
-  }
-  const lineHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
-    ids: [],
-  });
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -325,21 +311,6 @@ export function IssueTree({
     ? undefined
     : pathTo(root, rootedAt)) ?? [root];
   const rooted = rootedPath.at(-1) ?? root;
-  // Whether the words filter holds words (`?q=`, trimmed as `presets.ts` reads them). Every
-  // preset sets `filtering`, so the words are read on their own: while they are there, each
-  // line of overtaken nodes the view holds is drawn open, since the view holds only its
-  // matches and the chain above each, so each such line holds a match - less a line the reader
-  // closed under the filter, which stays closed (`toggleOvertaken`), and with every line the
-  // reader or an address opened. With no words, the lines the reader opened are the ones open.
-  const holdsWords = useHoldsWords();
-  // The lines the view holds, read again only as the tree or the words change.
-  const viewLines = useMemo(() => (holdsWords ? linesIn(rooted) : []), [holdsWords, rooted]);
-  const linesOpen = holdsWords
-    ? new Set([
-        ...(opened.overtaken ?? []),
-        ...viewLines.filter((id) => !opened.closed.has(closedLine(id))),
-      ])
-    : opened.overtaken;
   // The node the rows are drawn from where that is not the issue: the zoom's own row, which is
   // drawn open by definition. Undefined where the tree is drawn from the issue, which is no row.
   const zoomRoot = rooted.id === root.id ? undefined : rooted.id;
@@ -350,7 +321,7 @@ export function IssueTree({
   // than a count (`tree-fold.ts`'s `DRAWN_LEVELS`). The reader's own hand outranks it, so a
   // branch they folded shut stays shut.
   const filtered: OpenedBranches = filtering
-    ? { ...everythingOpened(rooted), closed: opened.closed, overtaken: linesOpen }
+    ? { ...everythingOpened(rooted), closed: opened.closed }
     : opened;
   // The address's own node is unfolded to whatever the reader has opened by hand, at every
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
@@ -364,24 +335,6 @@ export function IssueTree({
   const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
   const heldPath =
     releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
-  // The line of each overtaken node the path runs through (`withLine`), which the path holds
-  // open so the node it names is a row, less each line the reader closed since the landing and
-  // every line below it on the path: the address opens a line and holds it open no further,
-  // since held at every render, the line drew open again at once, and a press, Enter and Left on
-  // it closed nothing and said nothing. They are in the path's order, outermost first, read off
-  // the path by the node each hangs under, since a close lets go of the line it closes and each
-  // one after it here (`toggleOvertaken`), and `withLine` promises no order.
-  const linesOnPath = withLine(undefined, path);
-  const pathLines =
-    linesOnPath === undefined
-      ? []
-      : path.flatMap((above) => (linesOnPath.has(above.id) ? [above.id] : []));
-  lineHold.current = { ids: pathLines, landing: landingKey };
-  const releasedLinesHere = releasedLines.landing === landingKey ? releasedLines.ids : NO_FOLDS;
-  const heldLines =
-    releasedLinesHere.size === 0
-      ? pathLines
-      : pathLines.filter((line) => !releasedLinesHere.has(line));
   /** `closed` with the address's own path, as it is held, taken out of it. */
   const openPath = (closed: ReadonlySet<string>): ReadonlySet<string> =>
     heldPath.length === 0 || closed.size === 0
@@ -397,11 +350,6 @@ export function IssueTree({
           branches: new Set([...filtered.branches, ...heldPath.map((above) => above.id)]),
           closed: openPath(filtered.closed),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
-          // The line of each overtaken node the path runs through, so the node it names is a row.
-          overtaken:
-            heldLines.length === 0
-              ? filtered.overtaken
-              : new Set([...(filtered.overtaken ?? []), ...heldLines]),
         };
   // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
   // the issue whether or not the reader has zoomed: a body they pinned, the row they are
@@ -413,11 +361,7 @@ export function IssueTree({
   const drawn = treeRows(
     rooted,
     cycle === EVERYTHING
-      ? {
-          ...everythingOpened(rooted),
-          closed: openPath(foldedInEverything),
-          overtaken: shown.overtaken,
-        }
+      ? { ...everythingOpened(rooted), closed: openPath(foldedInEverything) }
       : shown,
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
@@ -497,18 +441,6 @@ export function IssueTree({
     setReport(undefined);
   }, []);
   const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
-  // A press on a line of overtaken nodes gives it the stop once the press is over, as a press
-  // gives a row the focus (`press`): the row above the line letting go of its body and its acts
-  // while the press was held moved the line up from under the pointer, and the click missed it.
-  // The stop goes to the line the press focused while that line still holds the focus; a key's
-  // move onto a line gives it the stop at once.
-  const linePress = usePressFocus<{ readonly line: HTMLElement; readonly row: string }>(
-    ({ row }) => {
-      leave();
-      setStop(row);
-    },
-    ({ line }) => line.contains(document.activeElement)
-  );
   // What the twisty and the arrow keys do to one branch. Folding a branch is held as its own
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
   // an open question of its own accord, so a reader folding one of those shut has nothing to
@@ -524,10 +456,6 @@ export function IssueTree({
         } else {
           branches.delete(id);
           closed.add(id);
-        }
-        // The lines of overtaken nodes the reader opened are no branch, and stay as they were.
-        if (held.overtaken !== undefined) {
-          return { branches, closed, deeper: held.deeper, overtaken: held.overtaken };
         }
         return { branches, closed, deeper: held.deeper };
       });
@@ -556,39 +484,8 @@ export function IssueTree({
       branches: held.branches,
       closed: held.closed,
       deeper: new Set(held.deeper).add(id),
-      overtaken: held.overtaken,
     }));
   }, []);
-  // A line of overtaken nodes, which the reader opens and closes in place. Under the words filter
-  // every line that holds a match is drawn open (`linesOpen`), so one the reader closes there is
-  // held closed under its own key until they open it again.
-  const toggleOvertaken = useCallback(
-    (id: string, open: boolean) => {
-      setOpened((held) => {
-        const overtaken = new Set(held.overtaken);
-        const closed = new Set(held.closed);
-        if (open) {
-          overtaken.add(id);
-          closed.delete(closedLine(id));
-        } else {
-          overtaken.delete(id);
-          if (holdsWords) closed.add(closedLine(id));
-        }
-        return { ...held, closed, overtaken };
-      });
-      // A close of a line the address's path holds open lets that line, and every line below it
-      // on the path, go of the hold for this following, so the close is drawn.
-      const { ids, landing } = lineHold.current;
-      const at = open ? -1 : ids.indexOf(id);
-      if (at !== -1) {
-        setReleasedLines((held) => ({
-          ids: new Set([...(held.landing === landing ? held.ids : []), ...ids.slice(at)]),
-          landing,
-        }));
-      }
-    },
-    [holdsWords]
-  );
   const pin = useCallback((row: string) => {
     setPinned((held) => {
       const next = new Set(held);
@@ -629,8 +526,6 @@ export function IssueTree({
       branches: new Set([...held.branches, ...above]),
       closed: withoutIds(held.closed, above),
       deeper: new Set([...held.deeper, ...above]),
-      // The lines of overtaken nodes the reader opened are no branch, and stay as they were.
-      ...(held.overtaken === undefined ? {} : { overtaken: held.overtaken }),
     }));
     // The cycle's last state draws its own folds and no other, so a branch the reader folded
     // there is opened again for the path too, or a key or address that goes to a node under
@@ -646,11 +541,6 @@ export function IssueTree({
     (id: string): readonly string[] => {
       const above = (pathTo(root, id) ?? []).slice(0, -1).map((node) => node.id);
       unfoldPath(above);
-      // The line of each overtaken node on the way, so the node is a row.
-      setOpened((held) => {
-        const overtaken = withLine(held.overtaken, pathTo(root, id));
-        return overtaken === undefined ? held : { ...held, overtaken };
-      });
       setWanted(id);
       return above;
     },
@@ -806,7 +696,6 @@ export function IssueTree({
     onEditEnd: stopEditing,
     onFold: unfold,
     onOpenDeeper: openDeeper,
-    onOvertaken: toggleOvertaken,
     onPin: pin,
     onReport: reportHere,
     onReveal: goToNode,
@@ -1335,8 +1224,6 @@ export function IssueTree({
         onBlur={releaseFocus}
         // A press in the tree, whose focus the row takes once the press is over (`press`).
         onMouseDown={press.onMouseDown}
-        // And whose stop a line of overtaken nodes takes then (`linePress`).
-        onMouseDownCapture={linePress.onMouseDown}
         ref={body}
         role="tree"
       >
@@ -1355,14 +1242,7 @@ export function IssueTree({
                 isClosed={isClosed}
                 onFocus={(row, node) => press.focus({ node, row })}
                 onOpenDeeper={openDeeper}
-                onOvertaken={toggleOvertaken}
                 onPin={pin}
-                // A line of overtaken nodes takes the stop as a row does, and lets go of the row
-                // the focus left, as the focus leaving the tree does (`leave`): its body, its
-                // focused look, its acts, which no key reaches from the line, and what a key
-                // reported there; under a press, once it is over (`linePress`). The line focuses
-                // no node: Details goes on drawing what it drew.
-                onStop={(row, line) => linePress.focus({ line, row })}
                 // A branch opens where it is at every width: below 1024 px the outline draws
                 // one level under the node it is read from, so an opened branch deeper than that is
                 // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
@@ -1495,9 +1375,6 @@ function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undef
 /** The row of `tree` that holds the focus, on the row itself or on a control inside it; null
  *  where the focus is on no row of it. */
 function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
-  // The outline's line of overtaken nodes takes the focus as a row does, and is placed as one.
-  const line = document.activeElement?.closest<HTMLElement>("[data-overtaken-line]") ?? null;
-  if (line !== null && tree?.contains(line) === true) return line;
   const row = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
   return row !== null && tree?.contains(row) === true ? row : null;
 }
@@ -1548,13 +1425,6 @@ function landingParent(
   under: { readonly id: string; readonly kind: string } | undefined
 ): TreeNode | undefined {
   return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
-}
-
-/** The key a line of overtaken nodes the reader closed under the words filter is held under in
- *  `OpenedBranches`'s `closed`, beside the branches they folded shut, by the id of the node
- *  whose children it folds. */
-function closedLine(id: string): string {
-  return `overtaken:${id}`;
 }
 
 /** The facts of `node` the panel draws while its row has the focus: who wrote it, the

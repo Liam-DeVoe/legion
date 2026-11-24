@@ -59,7 +59,7 @@ import {
   type OvertakenLines,
   toggledLines,
 } from "../node-states/node-states";
-import { OvertakenLine } from "../node-states/OvertakenLine";
+import { OvertakenLine, type OvertakenRow } from "../node-states/OvertakenLine";
 import { useHoldsWords } from "../node-states/settle-write";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
@@ -612,7 +612,6 @@ export function SpecFilterBody({
     onEditEnd: NOTHING,
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
-    onOvertaken: openOvertaken,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
@@ -644,9 +643,11 @@ export function SpecFilterBody({
     oneNodeAtATime: false,
     readsHeld: asksHeld,
     rows,
-    // Where a statement at or under an overtaken node folds, the keys step through the rows as
-    // the body draws them, its lines among them.
-    ...(folds.rows === undefined ? {} : { rows: folds.rows }),
+    // Where a statement at or under an overtaken node folds, the keys step through the statements
+    // as the body draws them; a line is no node's row, which the keys step past.
+    ...(folds.rows === undefined
+      ? {}
+      : { rows: folds.rows.filter((row): row is DrawnRow => row.kind !== "overtaken") }),
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
     root,
@@ -883,9 +884,9 @@ function cellNodeOf(
   };
 }
 
-/** A line of statements at or under an overtaken node as the keys read it (`tree-fold.ts`'s
+/** A line of statements at or under an overtaken node as the body walks it (`OvertakenLine`'s
  *  `OvertakenRow`). */
-type LineRow = Extract<DrawnRow, { kind: "overtaken" }>;
+type LineRow = { readonly kind: "overtaken" } & OvertakenRow;
 
 /** A group's line of statements at or under an overtaken node: its row, as the keys read it;
  *  the key the reader opens it under and it holds the tree's one tab stop and a key's report
@@ -917,8 +918,8 @@ const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
  * holds folded statements draws one line after its other statements, keyed by the group's first
  * statement (`line:` and its id), so two groups under one parent draw two lines, and the line
  * counts the overtaken nodes its statements fold with: "1 overtaken", "N overtaken". Its row
- * carries the key as its `of`'s id too, which the keys hand back to open or close it
- * (`useTreeKeymap.ts`'s `onOvertaken`). The line holds the statements run by run as their runs
+ * carries the key as its `of`'s id too, which the line hands back to open or close it
+ * (`OvertakenLine`'s `onOvertaken`). The line holds the statements run by run as their runs
  * are headed in `groups`, the groups the body draws, a run that waits on the asks read included,
  * each by the key `specDecidedBy` split it by (`runsOf`); `closed` is the ids of the tree's nodes
  * at or under an overtaken node.
@@ -1001,7 +1002,7 @@ function openedRows(
   groups: readonly SpecGroup[],
   others: readonly TreeNode[],
   open: (key: string) => boolean
-): FoldedLines & { readonly rows?: DrawnRow[] } {
+): FoldedLines & { readonly rows?: (DrawnRow | LineRow)[] } {
   if (folded.size === 0) return NO_FOLDS;
   const lines = new Map<SpecGroup, GroupLine>();
   const holding = new Map<string, GroupLine>();
@@ -1013,7 +1014,7 @@ function openedRows(
     }
   }
   const rowOf = (node: TreeNode): DrawnRow => ({ kind: "node", level: 1, node, trail: [] });
-  const rows: DrawnRow[] = [];
+  const rows: (DrawnRow | LineRow)[] = [];
   for (const group of groups) {
     for (const run of group.runs) {
       for (const statement of run.statements) {

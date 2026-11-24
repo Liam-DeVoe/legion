@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 
 import type { Message } from "../../api/types";
-import * as addresses from "./issue-address";
 import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
+import { NOTHING_OPENED, treeRows } from "./tree-fold";
+import { rowKeyOf } from "./tree-keys";
 
 /** A message of the issue, which the rows below give an author and an id. */
 const messageFixture: Message = {
@@ -351,11 +352,12 @@ test("the children's address names the first row of their group, and the documen
   expect(documents.target).toBeUndefined();
 });
 
-// An address that names an overtaken node, or a node under one, opens the line its parent folds
-// its overtaken children to, which the path to it runs through. Each kind of address
-// names that parent: a `#b-` block, an item's own route (`/asks/<id>`), and a node under an
-// overtaken one; an address whose path runs through no overtaken node opens no line.
-test("a path through an overtaken node opens its line", () => {
+// An address that names an overtaken node, or a node under one, is the path to that node's row:
+// the path runs through the overtaken node as through any other, and the page's own rule for an
+// address's path - each node above the one it names unfolded - draws the named node as a row at
+// its end, keyed by that path, as it draws a live one. Each kind of address: a `#b-` block, an
+// item's own route (`/asks/<id>`), a node under an overtaken one, and a live block beside them.
+test("a path through an overtaken node is the path to its row", () => {
   const overtakenAsk = node("spec#b-q8", "ask", {
     life: "overtaken",
     reference: "dispatch://CORE-1/ask/ask-8",
@@ -372,37 +374,26 @@ test("a path through an overtaken node opens its line", () => {
       }),
     ],
   });
-  const lineOf = (target: addresses.AddressTarget | undefined) =>
-    addresses.overtakenLineOf(pathToTarget(root, target));
-
-  const block = issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r8", "spec").target;
-  expect(block).toEqual({ id: "r8", kind: "block" });
-  expect(lineOf(block)).toBe("spec");
-
-  const ask = issueAddress({ id: "ask-8", key: "CORE-1", kind: "ask" }, "", "", "spec").target;
-  expect(ask).toEqual({ id: "ask-8", kind: "item" });
-  expect(lineOf(ask)).toBe("spec");
-
-  const below = issueAddress(
-    { id: "comment-9", key: "CORE-1", kind: "comment" },
-    "",
-    "",
-    "spec"
-  ).target;
-  expect(pathToTarget(root, below)?.map((found) => found.id)).toEqual([
-    "CORE-1",
-    "spec",
-    "spec#b-r8",
-    "comment-9",
-  ]);
-  expect(lineOf(below)).toBe("spec");
-
-  const live = issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r7", "spec").target;
-  expect(pathToTarget(root, live)?.map((found) => found.id)).toEqual([
-    "CORE-1",
-    "spec",
-    "spec#b-r7",
-  ]);
-  expect(lineOf(live)).toBeUndefined();
-  expect(addresses.overtakenLineOf(undefined)).toBeUndefined();
+  const cases = [
+    [issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r8", "spec"), "spec#b-r8"],
+    [issueAddress({ id: "ask-8", key: "CORE-1", kind: "ask" }, "", "", "spec"), "spec#b-q8"],
+    [
+      issueAddress({ id: "comment-9", key: "CORE-1", kind: "comment" }, "", "", "spec"),
+      "spec#b-r8>comment-9",
+    ],
+    [issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r7", "spec"), "spec#b-r7"],
+  ] as const;
+  for (const [address, below] of cases) {
+    const ids = ["CORE-1", "spec", ...below.split(">")];
+    const path = pathToTarget(root, address.target);
+    expect(path?.map((found) => found.id)).toEqual(ids);
+    const rows = treeRows(root, {
+      ...NOTHING_OPENED,
+      branches: new Set(ids.slice(0, -1)),
+      deeper: new Set(ids),
+    });
+    const row = rows.find((drawn) => drawn.kind === "node" && drawn.node.id === ids.at(-1));
+    expect(row, `${below} is no row`).toBeDefined();
+    expect(row === undefined ? undefined : rowKeyOf(row)).toBe(ids.join(">"));
+  }
 });

@@ -227,28 +227,11 @@ test("every row of a narrow drawing has a key of its own", () => {
 /** What the model says of a node a later one took the place of. */
 const OVERTAKEN = { closed: true, life: "overtaken" } as const;
 
-// A parent's line of overtaken children takes the focus as a row does, so it holds a key of its
-// own: the path down to the parent, told apart from the parent's own row and from its deeper
-// branch's.
-test("a line's key is overtaken and its path", () => {
-  const spec = node("spec", "document", [node("spec#b-r1", "requirement", [], OVERTAKEN)]);
-  expect(
-    rowKeyOf({ held: 1, kind: "overtaken", level: 3, of: spec, open: false, trail: ["CORE-1"] })
-  ).toBe("overtaken:CORE-1>spec");
-
-  const keys = treeRows(node("CORE-1", "issue", [spec]), {
-    ...NOTHING_OPENED,
-    branches: new Set(["spec"]),
-    overtaken: new Set(["spec"]),
-  }).map(rowKeyOf);
-  expect(keys).toEqual(["CORE-1", "CORE-1>spec", "overtaken:CORE-1>spec", "CORE-1>spec>spec#b-r1"]);
-});
-
-// What `q` and `w` look for, `nextQuestion` and `decisionBehind`, walks the tree and not the rows
-// (`nodesInOrder`), so each names an overtaken question or decision though neither is a row while
-// its parent's line is closed, and each of those lines holds a key of its own. That the keys take
-// the reader there, opening the line, is the tree's own (`node-states.test.ts`).
-test("the finders name an overtaken question and decision, and each line has its own key", () => {
+// What `q` and `w` look for, `nextQuestion` and `decisionBehind`, walks the tree (`nodesInOrder`),
+// so each names an overtaken question or decision as it names any other, and each of those is a
+// row at its place with a key of its own, its path, as every row is. That the keys take the reader
+// there is the tree's own (`node-states.test.ts`).
+test("the finders name an overtaken question and decision, each a row with its own key", () => {
   const root = node("CORE-1", "issue", [
     node("spec", "document", [
       node("spec#b-r1", "requirement", [], { reference: "dispatch://CORE-1/spec#b-r1" }),
@@ -264,8 +247,8 @@ test("the finders name an overtaken question and decision, and each line has its
     "CORE-1",
     "CORE-1>spec",
     "CORE-1>spec>spec#b-r1",
-    "overtaken:CORE-1>spec",
-    "overtaken:CORE-1",
+    "CORE-1>spec>spec#b-q1",
+    "CORE-1>decisions-md#b-d1",
   ]);
 
   expect(nextQuestion(root, undefined)?.id).toBe("spec#b-q1");

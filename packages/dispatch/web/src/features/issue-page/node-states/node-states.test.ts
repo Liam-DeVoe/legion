@@ -4,14 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useMemo } from "react";
-import {
-  MemoryRouter,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-  useSearchParams,
-} from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 
 import { api, type WriteRequest } from "../../../api/client";
 import {
@@ -29,7 +22,6 @@ import type {
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { contentsEntries } from "../contents-entries";
@@ -52,9 +44,7 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider } from "../focused-node";
 import { ContentsList, contentsOf } from "../IssueContents";
-import { IssuePresets } from "../IssuePresets";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
-import { overtakenLineOf } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import {
   buildIssueTree,
@@ -74,19 +64,16 @@ import {
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GLYPH_TOKENS,
-  LINE_KEY_REPORTS,
   NODE_STATE_WORDS,
   type NodeType,
   PLAN_WORDS,
-  type Preset,
   ROW_MARK_WORDS,
   VERIFICATION_WORDS,
 } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
-import { type PresetSignal, presetView } from "../presets";
+import { presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
-import { ShortcutHelpOpener } from "../shortcut-help-opener";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
   answerNode,
@@ -103,7 +90,6 @@ import { pathTo } from "../tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
-import { useIssueKeymap } from "../useIssueKeymap";
 import { queryTyped, VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
@@ -112,23 +98,15 @@ import {
   statementNode,
 } from "../verification-filter/verification-fixtures";
 import { NodeMarks, NodeStatesProvider } from "./NodeMarks";
-import {
-  linesIn,
-  marksAt,
-  type NodeStates,
-  stampStates,
-  statesByReference,
-  withLine,
-} from "./node-states";
+import { linesIn, marksAt, type NodeStates, stampStates, statesByReference } from "./node-states";
 import { OvertakenLine } from "./OvertakenLine";
-import { useOvertakenTarget } from "./settle-write";
 
 /**
  * A node's life and who may read it, put on a tree built by hand: the states arrive by the read's
  * own id, which each node built here carries as its id (`TreeNode.readId`), and every place that
- * draws a node, and every count over the tree, reads them from the one tree. The lines a path
- * opens, and the marks and the line as a row draws them, are read here too, and so are the tree's
- * keys and its opening on a line, over `IssueTree` drawn under the page's keymap (`renderTree`);
+ * draws a node, and every count over the tree, reads them from the one tree. The marks as a row
+ * draws them are read here too, and so are an overtaken node's row, the tree's keys on it and an
+ * address to it, over `IssueTree` drawn under the page's keymap (`renderTree`);
  * the rows of a whole page are the browser's. The states the tree read's answers give, with no
  * view and with one, are read over trees `buildIssueTree` and `presetView` build.
  */
@@ -330,9 +308,9 @@ test("a tree given no states is answered as it is", () => {
   expect(stampStates(root, new Map(), heldBy)).toBe(root);
 });
 
-// A parent's overtaken children fold to one line, so its folded count counts that line as
-// one row and nothing under it, while each overtaken node still counts what it holds itself.
-test("a parent's overtaken children are one row of its held count", () => {
+// A folded branch's count counts an overtaken node and the nodes under it as it counts every
+// node, so the states put on the tree leave every count as it was.
+test("an overtaken node counts in its parent's held count as any node", () => {
   const root = node(KEY, "issue", [
     node("spec#b-r1", "requirement", [node("verification-md#b-c1", "check")]),
     node("spec#b-r2", "requirement", [
@@ -347,53 +325,9 @@ test("a parent's overtaken children are one row of its held count", () => {
     "spec#b-r3": { life: "overtaken" },
   });
 
-  expect(tree.held).toBe(3);
+  expect(tree.held).toBe(7);
   expect(pathTo(tree, "spec#b-r2")?.at(-1)?.held).toBe(2);
-  expect(stamped(root, { "spec#b-r3": { life: "overtaken" } }).held).toBe(6);
-});
-
-// An address, a chip, a Contents entry, `q` or `w` that names an overtaken node, or a node
-// under one, opens the line that holds it - each line, where an overtaken node stands under
-// another - and a path through no overtaken node leaves the fold as it was.
-test("a path opens the line of each overtaken node it runs through, and none for a path through none", () => {
-  const deep = node("comment-2", "comment", [], { closed: true });
-  const inner = node("verification-md#b-c1", "check", [deep], { closed: true, life: "overtaken" });
-  const outer = node("spec#b-r8", "requirement", [inner], { closed: true, life: "overtaken" });
-  const root = node(KEY, "issue", [
-    node("spec", "document", [node("spec#b-r7", "requirement"), outer]),
-  ]);
-  const opened: ReadonlySet<string> = new Set(["elsewhere"]);
-
-  expect(overtakenLineOf(pathTo(root, "comment-2"))).toBe("spec");
-  expect(withLine(opened, pathTo(root, "comment-2"))).toEqual(
-    new Set(["elsewhere", "spec", "spec#b-r8"])
-  );
-  expect(withLine(undefined, pathTo(root, "spec#b-r8"))).toEqual(new Set(["spec"]));
-  // The set the reader's own lines are held in is a new one, never the one they had.
-  expect(opened).toEqual(new Set(["elsewhere"]));
-
-  expect(overtakenLineOf(pathTo(root, "spec#b-r7"))).toBeUndefined();
-  expect(withLine(opened, pathTo(root, "spec#b-r7"))).toBe(opened);
-  expect(withLine(opened, undefined)).toBe(opened);
-});
-
-// Under the words filter each line of the view holds a match, so each is drawn open: the
-// lines are the nodes that hold an overtaken child, at any depth, and no other.
-test("each node that holds an overtaken child holds a line, in reading order", () => {
-  const root = node(KEY, "issue", [
-    node("spec", "document", [
-      node("spec#b-r8", "requirement", [node("verification-md#b-c1", "check")], {
-        life: "overtaken",
-      }),
-      node("spec#b-r9", "requirement", [
-        node("verification-md#b-c2", "check", [], { life: "overtaken" }),
-      ]),
-    ]),
-    node("plan-md", "document", [node("plan-md#b-t1", "plan_task", [], { life: "proposed" })]),
-  ]);
-
-  expect(linesIn(root)).toEqual(["spec", "spec#b-r9"]);
-  expect(linesIn(node(KEY, "issue"))).toEqual([]);
+  expect(stamped(root, { "spec#b-r3": { life: "overtaken" } }).held).toBe(7);
 });
 
 // A node's marks are its words and its shapes, its life first, in every place that
@@ -427,54 +361,58 @@ test("a proposed node is marked Proposed with its shape, and a node with no mark
   }
 });
 
-// A parent's overtaken children fold to one line after its other children, which says how
-// many it holds in one text node, takes the focus with `aria-expanded`, and opens and closes in
-// place: in the outline a press opens it, drawing each child as a row, and the next press closes
-// it again. It is no line of a deeper branch and holds no Unfold, so nothing that opens every
-// branch opens it.
-test("a parent's overtaken children fold to one line that a press opens and closes", async () => {
+/** An issue whose second row is a requirement a later one took the place of, holding a comment,
+ *  between two live comments. */
+function overtakenBetween(): TreeNode {
+  return stamped(
+    node(KEY, "issue", [
+      node("comment-1", "comment"),
+      node("spec#b-r8", "requirement", [node("comment-8", "comment")], {
+        reference: `dispatch://${KEY}/spec#b-r8`,
+      }),
+      node("comment-3", "comment"),
+    ]),
+    { "spec#b-r8": { life: "overtaken" } }
+  );
+}
+
+/** The ids of the nodes whose rows the tree draws under the issue, in the order it draws them. */
+function rowIds(container: HTMLElement): (string | undefined)[] {
+  return [...container.querySelectorAll<HTMLElement>("[data-node-row]")]
+    .map((row) => row.dataset.nodeId)
+    .filter((id) => id !== KEY);
+}
+
+// An overtaken node is a row at its place among its parent's other children, at their level, and
+// carries the word Overtaken and its shape; drawn whole, here by the cycle key's last state, its
+// child is a row under it, one level down, as under any row. No line of overtaken nodes is drawn.
+test("an overtaken node is a row at its place with its mark and its child row under it", async () => {
   readWide();
   const user = userEvent.setup();
-  const view = renderTree(
-    stamped(
-      node(KEY, "issue", [
-        node("comment-1", "comment"),
-        node("spec#b-r8", "requirement"),
-        node("spec#b-r9", "requirement"),
-      ]),
-      { "spec#b-r8": { life: "overtaken" }, "spec#b-r9": { life: "overtaken" } }
-    )
-  );
+  const view = renderTree(overtakenBetween());
+  const levelOf = (id: string) => Number(rowOf(view.container, id)?.getAttribute("aria-level"));
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("role", "treeitem");
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    // At the level of the children it stands after.
-    expect(line.getAttribute("aria-level")).toBe(
-      rowOf(view.container, "comment-1")?.getAttribute("aria-level") ?? null
+    expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-3"]);
+    expect(levelOf("spec#b-r8")).toBe(levelOf("comment-1"));
+    const marks = [
+      ...(rowOf(view.container, "spec#b-r8")?.querySelectorAll<HTMLElement>("[data-node-mark]") ??
+        []),
+    ];
+    expect(marks.map((mark) => mark.dataset.nodeMark)).toEqual(["overtaken"]);
+    expect(marks[0]?.textContent).toBe(ROW_MARK_WORDS.overtaken);
+    expect(marks[0]?.querySelector("svg")).toHaveAttribute(
+      "data-glyph",
+      GLYPH_TOKENS.marks.overtaken
     );
-    expect(line).toHaveAttribute("tabindex", "-1");
-    const texts: string[] = [];
-    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
-    for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-      texts.push(text.textContent ?? "");
-    }
-    expect(texts).toEqual([`2 ${CONTROL_LABELS.overtaken_count}`]);
-    expect(view.container.querySelector("[data-branch-more]")).toBeNull();
-    expect(line.querySelector("button")).toBeNull();
-    expect(rowOf(view.container, "spec#b-r8")).toBeNull();
-    expect(rowOf(view.container, "spec#b-r9")).toBeNull();
+    expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
 
-    await user.click(line);
-    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true"));
-    expect(rowOf(view.container, "spec#b-r8")).not.toBeNull();
-    expect(rowOf(view.container, "spec#b-r9")).not.toBeNull();
-
-    await user.click(theLine(view.container));
-    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, "spec#b-r8")).toBeNull();
-    expect(rowOf(view.container, "spec#b-r9")).toBeNull();
+    await user.keyboard("z");
+    await user.keyboard("z");
+    await waitFor(() => expect(rowOf(view.container, "comment-8")).not.toBeNull());
+    expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-8", "comment-3"]);
+    expect(levelOf("comment-8")).toBe(levelOf("spec#b-r8") + 1);
+    expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -595,118 +533,6 @@ function theLine(container: HTMLElement): HTMLElement {
   return line;
 }
 
-/** An issue whose first row is a comment, and whose second comment a later one took the place
- *  of, so the tree draws the comment and then the line its overtaken sibling folds to. */
-function commentAndLine(): TreeNode {
-  return stamped(node(KEY, "issue", [node("comment-1", "comment"), node("comment-2", "comment")]), {
-    "comment-2": { life: "overtaken" },
-  });
-}
-
-// The line takes the focus as a row does, so it is the tree's one tab stop once the
-// reader is on it: Shift+Tab comes back to it, and the row they left takes no Tab of its own.
-test("the overtaken line is the tree's tab stop once the reader is on it", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const view = renderTree(commentAndLine());
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(rowOf(view.container, "comment-1")).toHaveAttribute("tabindex", "0");
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("tabindex", "-1");
-
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    await waitFor(() => expect(line).toHaveAttribute("tabindex", "0"));
-    expect(rowOf(view.container, "comment-1")).toHaveAttribute("tabindex", "-1");
-  } finally {
-    view.unmount();
-  }
-});
-
-/** A proposed requirement the tree draws first, and the line its overtaken sibling folds to. */
-function proposedAndLine(R7: string): TreeNode {
-  return stamped(
-    node(KEY, "issue", [
-      node(R7, "requirement", [], { reference: `dispatch://${KEY}/${R7}` }),
-      node("comment-2", "comment"),
-    ]),
-    { [R7]: { life: "proposed" }, "comment-2": { life: "overtaken" } }
-  );
-}
-
-// The focus going from a row to the line lets go of the row it left, as the focus leaving the
-// tree does: its focused look and its acts, Settle among them for a proposed row, which no key
-// reaches from the line. The line looks focused instead.
-test("the row the reader leaves for the overtaken line no longer looks focused", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const R7 = "spec#b-r7";
-  const view = renderTree(proposedAndLine(R7));
-  const left = () => rowOf(view.container, R7);
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe(R7));
-    expect(left()?.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
-    expect(left()?.querySelector('[data-row-act="settle"]')).not.toBeNull();
-    const line = theLine(view.container);
-    expect(line.className).not.toContain(pageFocusedRow);
-
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    await waitFor(() =>
-      expect(
-        left()?.querySelector("[data-node-card]")?.className,
-        "the row left for the line still looks focused"
-      ).not.toContain(pageFocusedRow)
-    );
-    expect(left()?.querySelector("[data-row-acts]"), "the row left kept its acts").toBeNull();
-    expect(line.className, "the line holds the focus with no focused look").toContain(
-      pageFocusedRow
-    );
-  } finally {
-    view.unmount();
-  }
-});
-
-// A press focuses the line as it goes down, and the row above it letting go of its look and its
-// acts then would shrink the rows under the pointer, so the press could end off the line and open
-// nothing. The row the press left is let go once the press is over, as a pressed row takes the
-// focus then (`press-focus.ts`), and the line holds the stop from then on.
-test("a press on the overtaken line lets go of the row the reader left once it ends", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const R7 = "spec#b-r7";
-  const view = renderTree(proposedAndLine(R7));
-  const left = () => rowOf(view.container, R7);
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe(R7));
-    await waitFor(() => expect(left()?.querySelector('[data-row-act="settle"]')).not.toBeNull());
-    const line = theLine(view.container);
-
-    await user.pointer({ keys: "[MouseLeft>]", target: line });
-    expect(document.activeElement, "the press did not focus the line").toBe(line);
-    expect(
-      left()?.querySelector("[data-node-card]")?.className,
-      "the held press let go of the row's focused look"
-    ).toContain(pageFocusedRow);
-    expect(
-      left()?.querySelector('[data-row-act="settle"]'),
-      "the held press let go of the row's acts"
-    ).not.toBeNull();
-    expect(line, "the held press gave the line the stop").toHaveAttribute("tabindex", "-1");
-
-    await user.pointer({ keys: "[/MouseLeft]", target: line });
-    await waitFor(() =>
-      expect(left()?.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow)
-    );
-    expect(left()?.querySelector("[data-row-acts]"), "the row left kept its acts").toBeNull();
-    expect(line).toHaveAttribute("tabindex", "0");
-    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
-  } finally {
-    view.unmount();
-  }
-});
-
 // The line hands its own element to the tree as its focus lands (`onStop`), so a press that
 // focused it is checked against the line itself once it ends, whatever holds the focus when the
 // tree reads it.
@@ -729,233 +555,111 @@ test("the overtaken line hands itself to the tree as it takes the focus", () => 
   }
 });
 
-/** The page's chords of the view row, under the page's keymap (`useIssueKeymap.ts`). */
-function IssueChords(): ReactNode {
-  useIssueKeymap(KEY);
-  return null;
-}
-
-/** What each control of the view row draws after its name: nothing is counted here. */
-const NO_SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
-  conversation: { count: 0 },
-  decisions: { count: 0 },
-  plan: { count: 0 },
-  spec: { count: 0 },
-  verification: { count: 0 },
-};
-
-/** The outline of a comment and the line its overtaken sibling folds to, drawn with the view
- *  row, whose Keys hands `opened` the element that holds the focus as the list of keys opens,
- *  and with the page's chords; and that line, once the reader is on it, holding the tree's one
- *  tab stop, with the focus back on the page itself. */
-async function lineHoldingTheStop(opened: (Element | null)[]) {
-  const user = userEvent.setup();
-  const view = renderTree(
-    commentAndLine(),
-    createElement(IssueChords),
-    createElement(
-      ShortcutHelpOpener.Provider,
-      { value: () => opened.push(document.activeElement) },
-      createElement(IssuePresets, { active: "conversation", issueKey: KEY, signals: NO_SIGNALS })
-    )
-  );
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  const line = theLine(view.container);
-  await user.keyboard("j");
-  await waitFor(() => expect(document.activeElement).toBe(line));
-  act(() => line.blur());
-  expect(document.activeElement).toBe(document.body);
-  expect(line).toHaveAttribute("tabindex", "0");
-  return { line, user, view };
-}
-
-// While the reader's last place in the outline is an overtaken line, the line holds the tree's
-// one tab stop and no row does, so the chord that brings the reader to the outline puts the
-// focus on the line.
-test("the chord to the outline focuses an overtaken line that holds the tab stop", async () => {
-  readWide();
-  const { line, user, view } = await lineHoldingTheStop([]);
-  try {
-    await user.keyboard("tc");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-  } finally {
-    view.unmount();
-  }
-});
-
-// Keys puts the focus on the outline's tab stop before the list of keys opens, so the list
-// offers the outline's keys: that stop is an overtaken line where the line holds it.
-test("Keys focuses an overtaken line that holds the tab stop before the keys list opens", async () => {
-  readWide();
-  const opened: (Element | null)[] = [];
-  const { line, user, view } = await lineHoldingTheStop(opened);
-  try {
-    await user.click(view.getByRole("button", { name: CONTROL_LABELS.keys }));
-    // By identity: a failed deep comparison of two elements walks the whole page.
-    expect(opened).toHaveLength(1);
-    expect(opened[0] === line).toBe(true);
-  } finally {
-    view.unmount();
-  }
-});
-
-// A key pressed on the line that answers in words - `w` there has no decision behind
-// it, since the line stands for no node - is drawn at the line, and the next move lets it go.
-test("a key's report on the overtaken line is drawn at the line", async () => {
+// `j` and `k` step onto an overtaken row and off it as they do any row: down from the row above
+// it, on to the row after it, and back up, the row the reader is on holding the tree's tab stop.
+test("`j` and `k` reach and leave an overtaken row as any row", async () => {
   readWide();
   const user = userEvent.setup();
-  const view = renderTree(commentAndLine());
+  const view = renderTree(overtakenBetween());
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    const line = theLine(view.container);
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-
-    await user.keyboard("w");
-    await waitFor(() =>
-      expect(line.querySelector("[data-row-report]")?.textContent).toBe(KEY_REPORTS.no_decision)
-    );
-    expect(view.container.querySelectorAll("[data-row-report]")).toHaveLength(1);
-
-    await user.keyboard("k");
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(view.container.querySelector("[data-row-report]")).toBeNull();
+    const steps = [
+      ["j", "spec#b-r8"],
+      ["j", "comment-3"],
+      ["k", "spec#b-r8"],
+      ["k", "comment-1"],
+    ] as const;
+    for (const [key, to] of steps) {
+      await user.keyboard(key);
+      await waitFor(() => expect(focusedRow(view.container), `${key} to ${to}`).toBe(to));
+      expect(rowOf(view.container, to)).toHaveAttribute("tabindex", "0");
+    }
   } finally {
     view.unmount();
   }
 });
 
-// A key's report on one line of overtaken nodes is that line's: a press on another line
-// takes the reader there, and the report does not follow them to it.
-test("a key's report on one overtaken line does not move to another line pressed after it", async () => {
+// An overtaken row's fold control opens its branch and folds it again as any row's does: its
+// child is a row under it while the branch is open, and none once it is folded.
+test("an overtaken row's fold control folds it and opens it again", async () => {
   readWide();
   const user = userEvent.setup();
-  const view = renderTree(
-    stamped(
-      node(KEY, "issue", [
-        node("comment-1", "comment", [
-          node("comment-1a", "comment"),
-          node("comment-1b", "comment"),
-        ]),
-        node("comment-2", "comment"),
-      ]),
-      { "comment-1b": { life: "overtaken" }, "comment-2": { life: "overtaken" } }
-    )
-  );
+  const view = renderTree(overtakenBetween());
+  const control = () =>
+    rowOf(view.container, "spec#b-r8")?.querySelector<HTMLElement>("button[data-node-bullet]");
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    // The cycle's last state, which draws every branch, so both lines are drawn.
-    await user.keyboard("z");
-    await user.keyboard("z");
-    const lines = () => [...view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]")];
-    await waitFor(() => expect(lines()).toHaveLength(2));
-
-    await user.click(lines()[0] as HTMLElement);
-    await waitFor(() => expect(document.activeElement).toBe(lines()[0]));
-    await user.keyboard("w");
-    await waitFor(() =>
-      expect(lines()[0]?.querySelector("[data-row-report]")?.textContent).toBe(
-        KEY_REPORTS.no_decision
-      )
-    );
-
-    await user.click(lines()[1] as HTMLElement);
-    await waitFor(() => expect(document.activeElement).toBe(lines()[1]));
-    expect(lines()[1]?.querySelector("[data-row-report]")).toBeNull();
-    expect(view.container.querySelectorAll("[data-row-report]")).toHaveLength(0);
+    const presses = [
+      [CONTROL_LABELS.unfold, true],
+      [CONTROL_LABELS.fold, false],
+      [CONTROL_LABELS.unfold, true],
+    ] as const;
+    for (const [label, open] of presses) {
+      expect(control()).toHaveAttribute("aria-label", label);
+      await user.click(control() as HTMLElement);
+      await waitFor(() => expect(rowOf(view.container, "comment-8") !== null, label).toBe(open));
+      expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", String(open));
+    }
   } finally {
     view.unmount();
   }
 });
 
-// The cycle key's last state draws every branch, and a line the reader opens there opens:
-// the lines are no branch, so that state keeps the ones the reader opened.
-test("in the cycle's last state, Enter on the overtaken line opens it", async () => {
+// An address that names an overtaken node, or a node under one, focuses that node's row, which
+// stands at its place among its parent's children, as an address to any node does.
+test("an address to an overtaken node focuses its row", async () => {
   readWide();
-  const user = userEvent.setup();
-  const view = renderTree(commentAndLine());
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    await user.keyboard("z");
-    await user.keyboard("z");
-    const line = theLine(view.container);
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "comment-2")).toBeNull();
-
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    expect(rowOf(view.container, "comment-2")).not.toBeNull();
-  } finally {
-    view.unmount();
+  const tree = overtakenBetween();
+  const cases = [
+    ["spec#b-r8", "comment-1"],
+    ["comment-8", "spec#b-r8"],
+  ] as const;
+  for (const [id, above] of cases) {
+    const view = renderTreeAt(pathTo(tree, id), tree);
+    try {
+      await waitFor(() => expect(focusedRow(view.container), id).toBe(id));
+      const ids = rowIds(view.container);
+      expect(ids.indexOf(id), `${id} after ${above}`).toBe(ids.indexOf(above) + 1);
+      expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
+    } finally {
+      view.unmount();
+    }
   }
 });
 
-// The cycle key draws bodies above what holds the focus and moves no focus, so the outline puts
-// what holds it back on screen once the cycle's tree is drawn: on the outline's line of overtaken
-// nodes that is the line, which the bodies drawn above it would otherwise push off the screen.
-test("the cycle key brings the overtaken line that holds the focus on screen", async () => {
+// An overtaken open question that waited on the reader waits no more, so the page opens on the
+// outline's first row, though the question is a row of its own with its mark; and a question
+// under an overtaken node opens no path down to it, so that node's branch arrives folded.
+test("the page does not open on an overtaken open question", async () => {
   readWide();
-  const user = userEvent.setup();
-  const view = renderTree(commentAndLine());
-  // happy-dom lays nothing out, so the line's box is given: below the window's foot. Every other
-  // box is empty.
-  const below = { bottom: 2028, top: 2000 };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return this.matches("[data-overtaken-line]")
-      ? new DOMRect(0, below.top, 800, below.bottom - below.top)
-      : new DOMRect();
-  });
-  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    const line = theLine(view.container);
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    scrolled.mockClear();
-
-    await user.keyboard("z");
-    expect(document.activeElement).toBe(line);
-    expect(scrolled, "the cycle left the line where it stood").toHaveBeenCalled();
-    // Scrolled by that much, the line stands whole inside the window.
-    const by = (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0;
-    expect(below.top - by).toBeGreaterThanOrEqual(0);
-    expect(below.bottom - by).toBeLessThanOrEqual(window.innerHeight);
-  } finally {
-    boxes.mockRestore();
-    scrolled.mockRestore();
-    view.unmount();
-  }
-});
-
-// An overtaken question that waited on the reader waits no more, so the page opens on
-// the outline's first row, with the line that holds the question closed.
-test("the page does not open on an overtaken question", async () => {
-  readWide();
+  const asking = { question: true, state: "open", waiting: true } as const;
   const view = renderTree(
     stamped(
       node(KEY, "issue", [
         node("comment-1", "comment"),
-        node("ask-1", "ask", [], { question: true, state: "open", waiting: true }),
+        node("ask-1", "ask", [], asking),
+        node("spec#b-r8", "requirement", [node("ask-2", "ask", [], asking)]),
       ]),
-      { "ask-1": { life: "overtaken" } }
+      { "ask-1": { life: "overtaken" }, "spec#b-r8": { life: "overtaken" } }
     )
   );
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "ask-1")).toBeNull();
-    expect(focusedRow(view.container)).not.toBe("ask-1");
+    expect(rowIds(view.container)).toEqual(["comment-1", "ask-1", "spec#b-r8"]);
+    expect(
+      rowOf(view.container, "ask-1")?.querySelector('[data-node-mark="overtaken"]')
+    ).not.toBeNull();
+    expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, "ask-2")).toBeNull();
+    await act(async () => {});
+    expect(focusedRow(view.container)).toBe("comment-1");
   } finally {
     view.unmount();
   }
 });
 
-// `q` and `w` take the reader to an overtaken question and an overtaken decision, which are
-// no rows while their line is closed: each key opens the line and focuses the node's row.
+// `q` and `w` take the reader to an overtaken question and an overtaken decision as to any
+// other: each is a row at its place, which the key focuses.
 test("`q` and `w` reach an overtaken question and decision", async () => {
   readWide();
   const user = userEvent.setup();
@@ -973,210 +677,19 @@ test("`q` and `w` reach an overtaken question and decision", async () => {
   );
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "ask-1")).toBeNull();
+    expect(rowIds(view.container)).toEqual([
+      "comment-1",
+      "spec#b-r1",
+      "ask-1",
+      "decisions-md#b-d1",
+    ]);
 
     await user.keyboard("q");
     await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
-    expect(line).toHaveAttribute("aria-expanded", "true");
-
-    // The line closed again, from the line itself, so `w` finds its decision no row.
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, "decisions-md#b-d1")).toBeNull();
     await user.keyboard("k");
     await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
-
     await user.keyboard("w");
     await waitFor(() => expect(focusedRow(view.container)).toBe("decisions-md#b-d1"));
-    expect(line).toHaveAttribute("aria-expanded", "true");
-  } finally {
-    view.unmount();
-  }
-});
-
-// An address that names an overtaken node opens the line that holds it, so the node is a row the
-// page lands on, and holds it open no further: a press on the line, Enter and the left arrow each
-// close it, as they close any line, and a press opens it again. The address's path held the line
-// open at every render, so each of them closed nothing and said nothing.
-test("a press, Enter and the left arrow close the overtaken line an address opened", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const tree = commentAndLine();
-  const closers: readonly (readonly [string, (line: HTMLElement) => Promise<void>])[] = [
-    ["a press", (line) => user.click(line)],
-    ["Enter", () => user.keyboard("{Enter}")],
-    ["the left arrow", () => user.keyboard("{ArrowLeft}")],
-  ];
-  for (const [what, close] of closers) {
-    const view = renderTreeAt(pathTo(tree, "comment-2"), tree);
-    try {
-      await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
-      const line = theLine(view.container);
-      expect(line).toHaveAttribute("aria-expanded", "true");
-      // Up from the node the address names to the line that holds it.
-      await user.keyboard("k");
-      await waitFor(() => expect(document.activeElement).toBe(line));
-
-      await close(line);
-      await waitFor(() =>
-        expect(line, `${what} left the address's line open`).toHaveAttribute(
-          "aria-expanded",
-          "false"
-        )
-      );
-      expect(rowOf(view.container, "comment-2"), `${what} left its node a row`).toBeNull();
-
-      await user.click(line);
-      await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-      expect(rowOf(view.container, "comment-2")).not.toBeNull();
-    } finally {
-      view.unmount();
-    }
-  }
-});
-
-// An address that names an overtaken node under another overtaken node opens the two lines on
-// its path, and a close of either lets go of that line and of each line below it on the path,
-// and of no line above it: the inner line closes alone, the outer one closes both, and a press
-// opens the outer one again with the inner one closed. The release takes the lines after the
-// closed one in the path's order, outermost first; taken innermost first, the inner line's close
-// let go of the outer line too, which closed with it.
-test("closing the inner of two overtaken lines an address opened leaves the outer one open", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const tree = stamped(
-    node(KEY, "issue", [
-      node("comment-1", "comment"),
-      node("comment-2", "comment", [node("comment-3", "comment"), node("comment-4", "comment")]),
-    ]),
-    { "comment-2": { life: "overtaken" }, "comment-4": { life: "overtaken" } }
-  );
-  const view = renderTreeAt(pathTo(tree, "comment-4"), tree);
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-4"));
-    const [outer, inner] = linesOf(view.container);
-    if (outer === undefined || inner === undefined) throw new Error("two lines are drawn");
-    expect(outer).toHaveAttribute("aria-expanded", "true");
-    expect(inner).toHaveAttribute("aria-expanded", "true");
-
-    await user.click(inner);
-    await waitFor(() => expect(rowOf(view.container, "comment-4")).toBeNull());
-    expect(outer, "the inner line's close closed the outer line").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    expect(inner).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "comment-2")).not.toBeNull();
-
-    await user.click(outer);
-    await waitFor(() => expect(outer).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, "comment-2")).toBeNull();
-    expect(linesOf(view.container)).toEqual([outer]);
-
-    await user.click(outer);
-    await waitFor(() => expect(outer).toHaveAttribute("aria-expanded", "true"));
-    expect(rowOf(view.container, "comment-2")).not.toBeNull();
-    const [, reopened] = linesOf(view.container);
-    expect(reopened, "the outer line's close left the inner line open").toHaveAttribute(
-      "aria-expanded",
-      "false"
-    );
-    expect(rowOf(view.container, "comment-4")).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-// Below 1024 px the left arrow on a closed line of overtaken nodes does what it does on a row at
-// the line's level, the line's parent being the node whose children it folds. Where the tree is
-// zoomed to that node already - the issue, or a row the reader zoomed into - the key says so at
-// the line, in the words a row at that level says, and the zoom stays. It zoomed to that node
-// again, which moved nothing and said nothing.
-test("at 390 px the left arrow on a closed overtaken line says the tree is zoomed to its parent", async () => {
-  readAt(390);
-  const user = userEvent.setup();
-  const view = renderTree(
-    stamped(
-      node(KEY, "issue", [
-        node("comment-1", "comment", [
-          node("comment-1a", "comment"),
-          node("comment-1b", "comment"),
-        ]),
-        node("comment-2", "comment"),
-      ]),
-      { "comment-1b": { life: "overtaken" }, "comment-2": { life: "overtaken" } }
-    )
-  );
-  const crumbs = () =>
-    [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")].map(
-      (crumb) => crumb.dataset.crumb
-    );
-  /** Left on the tree's last row, the closed line the zoom's own overtaken children fold to,
-   *  says `report` at the line, and leaves the focus on it and the zoom where it was. */
-  const leftOnTheZoomsLine = async (report: string) => {
-    const zoom = crumbs();
-    await user.keyboard("{End}");
-    const lines = view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]");
-    const line = [...lines].at(-1) ?? null;
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    expect(line).toHaveAttribute("aria-expanded", "false");
-
-    await user.keyboard("{ArrowLeft}");
-    await waitFor(() => expect(line?.querySelector("[data-row-report]")?.textContent).toBe(report));
-    expect(document.activeElement).toBe(line);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(crumbs()).toEqual(zoom);
-  };
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    expect(crumbs()).toEqual([]);
-    await leftOnTheZoomsLine(KEY_REPORTS.whole_tree);
-
-    await user.keyboard("{Home}");
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    await user.keyboard(".");
-    await waitFor(() => expect(crumbs()).toEqual([KEY]));
-    await leftOnTheZoomsLine(KEY_REPORTS.parent_zoomed);
-    expect(rowOf(view.container, "comment-1a")).not.toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-// Below 1024 px the right arrow zooms into a row, and a line of overtaken nodes holds no node to
-// zoom into: on the line, closed or open, the key says at the line that Enter opens and closes
-// it at this width, and opens or closes nothing. It moved nothing and said nothing.
-test("at 390 px the right arrow on an overtaken line says Enter opens and closes it", async () => {
-  readAt(390);
-  const user = userEvent.setup();
-  const view = renderTree(commentAndLine());
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    const line = theLine(view.container);
-    const report = () => line.querySelector("[data-row-report]")?.textContent;
-    for (const open of [false, true]) {
-      await user.keyboard("j");
-      await waitFor(() => expect(document.activeElement).toBe(line));
-      expect(report()).toBeUndefined();
-
-      await user.keyboard("{ArrowRight}");
-      await waitFor(() =>
-        expect(report(), `open: ${open}`).toBe(LINE_KEY_REPORTS.right_arrow_narrow)
-      );
-      expect(document.activeElement).toBe(line);
-      expect(line).toHaveAttribute("aria-expanded", String(open));
-      expect(rowOf(view.container, "comment-2") !== null, `open: ${open}`).toBe(open);
-
-      // Enter opens and closes the line, and the key back to the row above lets the report go.
-      await user.keyboard("{Enter}");
-      await waitFor(() => expect(line).toHaveAttribute("aria-expanded", String(!open)));
-      await user.keyboard("k");
-      await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-    }
   } finally {
     view.unmount();
   }
@@ -3476,80 +2989,6 @@ test("the Verification issue's line counts the overtaken node its statements sta
     comment,
     comment,
   ]);
-});
-
-/** Where the page's address stands, drawn by a probe that runs `useOvertakenTarget` as the
- *  stage runs it, on the route the address names. */
-function AddressProbe(): ReactNode {
-  const { hash, pathname, search } = useLocation();
-  useOvertakenTarget(ISSUE, parseIssuePath(pathname, search) ?? { key: KEY, kind: "issue" });
-  return createElement("output", { "data-address": `${pathname}${search}${hash}` });
-}
-
-/** The page at `address`, with `tree` the tree read the page holds and no other read. */
-function drawAddress(address: string, tree: TreeAnswer) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(issueTreeKey(KEY), tree);
-  return render(
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(MemoryRouter, { initialEntries: [address] }, createElement(AddressProbe))
-    )
-  );
-}
-
-/** The address the probe last drew. */
-function addressOf(container: HTMLElement): string | null | undefined {
-  return container.querySelector("[data-address]")?.getAttribute("data-address");
-}
-
-/** A tree read holding an overtaken decision with a question under it, and a live decision. */
-function overtakenDecision(): TreeAnswer {
-  return readAnswer([
-    ISSUE_NODE,
-    readBlock("d1", "decision", "decisions-md", 0, { state: "overtaken" }),
-    readNode("a1", "ask", { parent: "d1" }),
-    readBlock("d2", "decision", "decisions-md", 1),
-  ]);
-}
-
-// The Decisions view draws an overtaken decision, and each node under one, nowhere, so an address
-// naming one under that view is replaced by the same address under no filter, its search and its
-// fragment kept, where the outline opens the line that holds it. Under another view, or naming a
-// live decision, the address stays. The tree read is the one the page already holds: nothing is
-// read for it.
-test("an address naming an overtaken decision under the Decisions view is replaced by the same address under no filter", async () => {
-  const fetched = spyOn(globalThis, "fetch").mockRejectedValue(new Error("no request"));
-  const reads = [
-    spyOn(api, "getIssue").mockRejectedValue(new Error("no request")),
-    spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("no request")),
-    spyOn(api, "getIssueTree").mockRejectedValue(new Error("no request")),
-  ];
-  const cases: readonly (readonly [string, string])[] = [
-    [`/issues/${KEY}/decisions#b-d1`, `/issues/${KEY}#b-d1`],
-    [`/issues/${KEY}/decisions?q=words#b-d1`, `/issues/${KEY}?q=words#b-d1`],
-    [`/issues/${KEY}/decisions?ask=a1`, `/issues/${KEY}?ask=a1`],
-    [`/issues/${KEY}/decisions#b-d2`, `/issues/${KEY}/decisions#b-d2`],
-    [`/issues/${KEY}/plan#b-d1`, `/issues/${KEY}/plan#b-d1`],
-  ];
-  try {
-    for (const [address, landed] of cases) {
-      const view = drawAddress(address, overtakenDecision());
-      try {
-        await waitFor(() => expect(addressOf(view.container), address).toBe(landed));
-        await act(async () => {});
-        expect(addressOf(view.container), address).toBe(landed);
-      } finally {
-        view.unmount();
-      }
-    }
-    expect(fetched).not.toHaveBeenCalled();
-    for (const read of reads) expect(read).not.toHaveBeenCalled();
-  } finally {
-    fetched.mockRestore();
-    for (const read of reads) read.mockRestore();
-  }
 });
 
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */

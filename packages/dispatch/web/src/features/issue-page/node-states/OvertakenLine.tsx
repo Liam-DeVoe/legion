@@ -6,21 +6,36 @@ import {
   pageMutedText,
   pageQuietText,
 } from "../../../theme/classes";
+import type { TreeNode } from "../issue-tree";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS } from "../page-words";
-import type { OvertakenRow } from "../tree-fold";
+
+/** The one row standing for the overtaken nodes a view folds, after the rows they fold among: a
+ *  later node took each one's place, so none is a row of its own until the reader opens this
+ *  line. */
+export interface OvertakenRow {
+  /** How many overtaken nodes the line counts, which it says. */
+  readonly held: number;
+  /** The level the line is drawn at. */
+  readonly level: number;
+  /** The node the line stands under, whose id it is opened and closed by. */
+  readonly of: TreeNode;
+  /** Whether the reader opened the line: opened, the view draws what it folds under it. */
+  readonly open: boolean;
+  /** The ids of the nodes `of` sits under, as a `DeeperRow`'s trail. */
+  readonly trail: readonly string[];
+}
 
 /**
- * The one line a node's overtaken children fold to, after its other children and at their level
- * (`tree-fold.ts`'s `OvertakenRow`): how many it holds directly, in one text node ("1 overtaken",
- * "2 overtaken"), under the guides of the levels above it, as `TreeRows.tsx`'s line of a deeper
- * branch draws them.
+ * The one line a view folds its overtaken nodes to (`OvertakenRow`): how many it holds, in one
+ * text node ("1 overtaken", "2 overtaken"), under the guides of the levels above it, as
+ * `TreeRows.tsx`'s line of a deeper branch draws them.
  *
  * Unlike that line it takes the focus as a row does, a `treeitem` with `aria-expanded`, and it
  * is no `[data-branch-more]` and holds no button, so nothing that opens every deeper branch or
- * every fold opens it: the reader does. A press opens or closes it in place, and so do the keys
- * `useTreeKeymap.ts` binds on it (Enter, and the arrows). It stands for no node, so its focus
- * focuses none: Details goes on drawing what it drew, as it does for a deeper branch's line.
+ * every fold opens it: the reader does, with a press, which opens or closes it in place. It
+ * stands for no node, so its focus focuses none: Details goes on drawing what it drew, as it does
+ * for a deeper branch's line.
  * Its focus makes it the tree's one tab stop, as a row's does (`onStop`), so a key pressed on it
  * that answers in words, which no row holds the focus to draw, is drawn at it (`report`); and the
  * row the focus left lets go of its body, its focused look and its acts. While the line holds the
@@ -50,7 +65,7 @@ export function OvertakenLine({
   // Whether the line holds the focus, which draws it with a focused row's look.
   const [focused, setFocused] = useState(false);
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the tree's keymap opens and closes it from the keyboard (`useTreeKeymap.ts`'s Enter and arrows), as it moves through every row.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: a press is what opens and closes it; the tree's keys step past it, as they step past a deeper branch's line.
     <div
       aria-expanded={row.open}
       aria-level={row.level}

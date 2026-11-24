@@ -14,7 +14,6 @@ import type { TreeNode } from "./issue-tree";
 import { LensActContext } from "./lenses/LensMenu";
 import { lensPlaceOf, useStandingAddress } from "./lenses/lens-reads";
 import { NodeRow } from "./NodeRow";
-import { OvertakenLine } from "./node-states/OvertakenLine";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
@@ -27,10 +26,8 @@ import { nodeEditable } from "./useNodeEditing";
  *
  * It is the drawing alone: which rows there are is the fold's (`tree-fold.ts`), and what the
  * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
- * what it is. A row below the levels the fold drew is one line saying how many rows it holds
+ * what it is. A row below the levels the fold drew is one line saying how many nodes it holds
  * and opening them in place.
- * A node's overtaken children fold to one line of their own after its other children, which
- * takes the focus and opens them in place (`OvertakenLine`).
  */
 export function TreeRows({
   artifacts,
@@ -41,9 +38,7 @@ export function TreeRows({
   isClosed,
   onFocus,
   onOpenDeeper,
-  onOvertaken,
   onPin,
-  onStop,
   onToggle,
   pinned,
   report,
@@ -68,12 +63,7 @@ export function TreeRows({
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
   onOpenDeeper: (id: string) => void;
-  /** Opens or closes the line a node's overtaken children fold to, by that node's id. */
-  onOvertaken?: (id: string, open: boolean) => void;
   onPin: (row: string) => void;
-  /** Makes the line of overtaken nodes `key` names the tree's one tab stop as it takes the
-   *  focus, which a row's own `onFocus` does for a row, with the line's own element. */
-  onStop?: (key: string, line: HTMLElement) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
@@ -123,20 +113,6 @@ export function TreeRows({
       <LensActContext.Provider value={lensAct}>
         {rows.map((row) => {
           const key = rowKeyOf(row);
-          // A node's overtaken children fold to one line, which takes the focus as a row does and
-          // opens them in place.
-          if (row.kind === "overtaken") {
-            return (
-              <OvertakenLine
-                key={key}
-                onOvertaken={onOvertaken}
-                onStop={(line) => onStop?.(key, line)}
-                {...(report?.row === key ? { report: report.line } : {})}
-                row={row}
-                tabStop={tabStop === key}
-              />
-            );
-          }
           if (row.kind === "deeper") {
             return (
               <BranchMore
@@ -199,9 +175,9 @@ export function TreeRows({
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
  * rows as the fold left them, those rows with every body down to the second level open, and
  * everything - every branch unfolded and every body open, but for a branch the reader folds
- * while it is drawn, which is drawn folded at once, and each line of overtaken nodes left as it
- * was. The key leaves the reader's own folds and pins as they are, so the cycle comes back to
- * the tree they had, with any fold made in the last state among them.
+ * while it is drawn, which is drawn folded at once. The key leaves the reader's own folds and
+ * pins as they are, so the cycle comes back to the tree they had, with any fold made in the last
+ * state among them.
  */
 export const CYCLE_STATES = 3;
 

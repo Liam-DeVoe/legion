@@ -53,9 +53,6 @@ function statement(
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  // A node's line of overtaken children reads as `line:<id>`.
-  if (!rows.every((row) => row.kind !== "overtaken"))
-    return rows.flatMap((row) => (row.kind === "overtaken" ? `line:${row.of.id}` : idsOf([row])));
   return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
 }
 

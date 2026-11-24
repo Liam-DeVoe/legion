@@ -1,6 +1,5 @@
-import { isOvertaken, isProposed, overtakenLineOf } from "../issue-address";
+import { isOvertaken, isProposed } from "../issue-address";
 import type { NodeChip, NodeLife, TreeNode } from "../issue-tree";
-import { LINE_KEY_REPORTS } from "../page-words";
 import { withoutVersion } from "../tree-keys";
 import { nodeStatesOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer } from "../tree-read/tree-read";
@@ -18,18 +17,11 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: its caller hands it `heldBy`,
- * the folded count that counts a parent's overtaken children as one row, and a node's life is
- * read through `issue-address.ts`'s predicates, since that module imports no value of
- * `issue-tree.ts` or of any module that does. The read's own values are read in
- * `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no value of this module or of
- * `issue-tree.ts`.
+ * the folded count, and a node's life is read through `issue-address.ts`'s predicates, since that
+ * module imports no value of `issue-tree.ts` or of any module that does. The read's own values
+ * are read in `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no value of this module
+ * or of `issue-tree.ts`.
  */
-
-/** What the right arrow says on a line of overtaken nodes below 1024 px, where it opens nothing
- *  (spec R5 opens a line with it from 1024 px up): how the line opens and closes there. The
- *  keys (`useTreeKeymap.ts`) read it here, since their own import of `page-words.ts` is part
- *  I's line. */
-export const NARROW_LINE_REPORT = LINE_KEY_REPORTS.right_arrow_narrow;
 
 /** What the tree read says of one node beside its kind: its life, where it has one, and whether
  *  it is reserved for its author, who is the reader. A live or settled node that every reader
@@ -88,7 +80,7 @@ function carriesMarks(root: TreeNode): boolean {
  * `chips` and in `alsoUnder`, carries the marks of the node of `root` whose reference it names,
  * whatever version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
  * wherever it is drawn. Every node's `held` is counted again by `heldBy` over its new children,
- * which counts a parent's overtaken children as the one row that folds them.
+ * which counts an overtaken node and what it holds as it counts every node.
  *
  * With no states and no `closedAbove`, over a tree that carries no mark, it answers `root` itself.
  */
@@ -231,27 +223,26 @@ export function marksAt(
 }
 
 /**
- * `opened`, the lines of overtaken nodes the reader opened (`OpenedBranches`'s `overtaken`), with
- * the line of every overtaken node `path` runs through opened, so the node at its end is drawn as
- * a row: an address, a chip, a Contents entry, `q` or `w` that names an overtaken node or a node
- * under one opens the line that holds it. An overtaken node under another is behind two lines,
- * and both open. `opened` itself where the path runs through no overtaken node.
+ * `opened`, the lines of overtaken nodes a view folds by itself, by the node each stands under,
+ * with the line of every overtaken node `path` runs through opened, so the node at its end is
+ * drawn as a row: a view's address that names an overtaken node or a node under one opens the
+ * line that holds it (`settle-write.ts`'s `useAddressLines`). An overtaken node under another is
+ * behind two lines, and both open. `opened` itself where the path runs through no overtaken node.
  */
 export function withLine(
   opened: ReadonlySet<string> | undefined,
   path: readonly TreeNode[] | undefined
 ): ReadonlySet<string> | undefined {
-  const line = overtakenLineOf(path);
+  // The line stands under the node before the first overtaken node the path runs through, which
+  // is that node's parent; the path's first node is where it starts, which no line stands above.
+  const at = path?.findIndex((node, index) => index > 0 && isOvertaken(node)) ?? -1;
+  const line = at === -1 ? undefined : path?.[at - 1];
   if (line === undefined || path === undefined) return opened;
-  // The rest of the path from the line's own node, which may stand above another line.
-  const below = path.slice(path.findIndex((node) => node.id === line) + 1);
-  return withLine(new Set(opened).add(line), below);
+  // The rest of the path from the overtaken node, which may stand above another line.
+  return withLine(new Set(opened).add(line.id), path.slice(at));
 }
 
-/** The id of each node of `root` that holds an overtaken child, in reading order: each node a
- *  line of overtaken nodes is drawn under (`tree-fold.ts`'s `OvertakenRow`). Under the words
- *  filter the view holds only its matches and the chain above each, so each of these lines in
- *  that view holds a match, which the outline draws open. */
+/** The id of each node of `root` that holds an overtaken child, in reading order. */
 export function linesIn(root: TreeNode): readonly string[] {
   const parents: string[] = [];
   const walk = (node: TreeNode): void => {
