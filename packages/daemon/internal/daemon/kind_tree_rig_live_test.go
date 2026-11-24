@@ -10,9 +10,9 @@
 // Where each part comes from:
 //
 //   - the cluster, Agent Sandbox, gVisor, the image, the fake GitHub (internal/fakegithub), which
-//     the pods reach as github.com and api.github.com, and the stand-ins for the image probe's
-//     public sites and for the npm registry (kindtest.TLSSites), which the pods reach under those
-//     hosts' names: kindtest.Start;
+//     the pods reach as github.com and api.github.com, and the stand-ins for the npm registry and
+//     the pods' web-search provider (kindtest.TLSSites), which the pods reach under those hosts'
+//     names: kindtest.Start;
 //   - PostgreSQL on the kind network (kindtest.Rig.StartPostgres): the daemon's store, Dispatch's
 //     database and the session store every pod keeps its sessions in (`session_store: postgres`);
 //   - NATS, the Envoy listener and Dispatch, each built from this checkout and run as a process of
@@ -429,7 +429,7 @@ func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) 
 		t.Fatalf("Dispatch shows no primary document for %s, which its design gate names", key)
 	}
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Repo: r.repo.Slug(), DefaultBranch: "main", GitHubRepo: r.repo.Slug(), Tree: key, Project: r.cfg.Project,
 			Title: listed.Title, Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

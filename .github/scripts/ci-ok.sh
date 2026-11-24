@@ -54,8 +54,8 @@
 #   NEEDS              `changes`' result and outputs, as `toJSON(needs.changes)` gives them, and
 #                      every other job's result, in the shape `toJSON(needs)` would give it. One
 #                      of those outputs, `filter_verdicts`, is the paths filter's own answer for
-#                      every filter rather than a gate on a job: it is how a job the `full-ci`
-#                      label held back is told from one its paths never selected (ci-ok.jq).
+#                      every filter rather than a gate on a job: it is how a job a pull request
+#                      held back is told from one its paths never selected (ci-ok.jq).
 #                      Another, `unnamed_files`, is the unnamed-file step's verdict: 'true' when a
 #                      changed file matches no filter, which selects every job. On a merge group,
 #                      where every job runs, the two together say which failed job no pull request
@@ -71,8 +71,9 @@
 #   PULL_REQUEST_ONLY  a JSON array of the jobs whose `if:` also admits only pull_request: one is
 #                      selected only when EVENT is pull_request too. (A job an event must hold
 #                      back otherwise needs no list: `changes` sets its output false there, as it
-#                      does for the slow suites on a pull request without the label full-ci,
-#                      whose skip this verdict accepts and whose line says the label held it back.)
+#                      does for the slow suites on a pull request without the label full-ci or the
+#                      job's own lane:<output>, whose skip this verdict accepts and whose line says
+#                      the pull request held it back.)
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
 #                      skip, a cancellation or an absence fails. ci.yaml's env names them in
@@ -93,11 +94,25 @@
 #                      github.sha, which is the expression ci.yaml's ci-ok job and the
 #                      ci-ok-report action both already pass.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run those check runs are of.
+#   GITHUB_STEP_SUMMARY, optional, as Actions sets it: the job summary the not-run list and the
+#                      notes go to.
 # A job of NEEDS that ALWAYS_RUN does not name, on a run whose `changes` succeeded with no output
 # of the name that job is selected by, fails (ci-ok does not know what to make of its result), and
 # so does a job ALWAYS_RUN or SELECTED_BY names that is absent from NEEDS. It
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
+#
+# A job its paths selected and a pull request held back (ci-ok.jq's `gated`) did not run at this
+# head, and the verdict accepts its skip as it accepts any job changes did not select. Its own
+# line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
+# changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
+# So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
+# <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in
+# the merge queue)`, naming the job's own `changes` output, and the job summary lists those lines
+# apart from the jobs that ran and passed. No job runs in part: each runs all its steps wherever
+# it runs, or its own output skips it, so a success is the whole job's. A run that held nothing
+# back writes no summary: only a pull request can hold a job back, so ci-ok-report.sh's
+# merge-group calls, inside other jobs, never write one.
 #
 # Run from anywhere:
 #   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... \
@@ -160,12 +175,13 @@ if [ "${#failed[@]}" -gt 0 ] && killed_jobs=$(runner_shutdown_kills "${failed[@]
 fi
 
 # One row per line, tab-separated: `info` and the line to print, `note` and a line that is also
-# the step summary's, or `error` and the ::error:: text. Every job is printed in NEEDS order, after
-# each ALWAYS_RUN job NEEDS lacks and before each SELECTED_BY job it lacks. A job $shutdown names
-# ended `failure` only because its runner was shut down, so `result` reads it as cancelled.
-# `cut_off` is why a selected job that did not succeed failed: the causes those results carry are
-# not one fault, and only the skip is the filter's. A `note` names a job that failed in a merge
-# group although no pull request that changes the group's files runs it (missed_by_filters).
+# the step summary's, `error` and the ::error:: text, `passed` and a job that ended `success`, or
+# `not_run` and the line naming a job a pull request held back. Every job is printed in NEEDS
+# order, after each ALWAYS_RUN job NEEDS lacks and before each SELECTED_BY job it lacks. A job
+# $shutdown names ended `failure` only because its runner was shut down, so `result` reads it as
+# cancelled. `cut_off` is why a selected job that did not succeed failed: the causes those results
+# carry are not one fault, and only the skip is the filter's. A `note` names a job that failed in a
+# merge group although no pull request that changes the group's files runs it (missed_by_filters).
 read -r -d '' program <<'JQ' || true
 include "ci-ok";
 (.changes.outputs // {}) as $out
@@ -190,6 +206,7 @@ include "ci-ok";
     end;
   def rows($job; $raw):
     result($job; $raw) as $result |
+    (select($result == "success") | ["passed", $job]),
     if $job == "changes" then
       ["info", "changes: \($result)"],
       (select($result != "success")
@@ -207,6 +224,8 @@ include "ci-ok";
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($result == "failure" and missed_by_filters($job; $map; $out; $event))
          | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($output) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
+        (select($s.gated and $result == "skipped")
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without full-ci or lane:\($output); runs in the merge queue)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but needs.changes.outputs.\($output) selects it; the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every job ci-ok judges a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -222,11 +241,12 @@ include "ci-ok";
 | @tsv
 JQ
 rows=$(jq -L "$script_dir" -r --arg event "$EVENT" --argjson map "$SELECTED_BY" --argjson pr "$PULL_REQUEST_ONLY" \
-  --argjson always "$ALWAYS_RUN" --argjson shutdown "$shutdown" \
-  "$program" <<<"$NEEDS")
+  --argjson always "$ALWAYS_RUN" --argjson shutdown "$shutdown" "$program" <<<"$NEEDS")
 
 errors=()
 notes=()
+passed=()
+not_run=()
 while IFS=$'\t' read -r level text; do
   case $level in
     info) echo "$text" ;;
@@ -235,6 +255,8 @@ while IFS=$'\t' read -r level text; do
       notes+=("$text")
       ;;
     error) errors+=("$text") ;;
+    passed) passed+=("$text") ;;
+    not_run) not_run+=("$text") ;;
   esac
 done <<<"$rows"
 
@@ -248,13 +270,34 @@ if [ "${#notes[@]}" -gt 0 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
+# The job summary, written only when a pull request held a job back (the header says why): the
+# jobs that ran and passed, and apart from them each job its paths selected that did not run at
+# this head.
+if [ "${#not_run[@]}" -gt 0 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  verdict=success
+  [ "${#errors[@]}" -eq 0 ] || verdict=failure
+  passed_text=none
+  [ "${#passed[@]}" -eq 0 ] || passed_text=$(jq -rn '$ARGS.positional | join(", ")' --args "${passed[@]}")
+  {
+    echo "### ci-ok: $verdict, and not every job its paths selected ran at this head"
+    echo
+    echo "**Not run at this head**, so this verdict says nothing of them:"
+    echo
+    printf -- '- %s\n' "${not_run[@]}"
+    echo
+    echo "**Ran and passed at this head:** $passed_text"
+  } >>"$GITHUB_STEP_SUMMARY"
+fi
+
 if [ "${#errors[@]}" -gt 0 ]; then
   for error in "${errors[@]}"; do
     echo "::error::$error"
   done
+  [ "${#not_run[@]}" -eq 0 ] || printf '%s\n' "${not_run[@]}"
   exit 1
 fi
 # The pass line names the jobs it held to success, as the errors above name theirs: ALWAYS_RUN in
 # the file's order, "a, b and c".
 always_run_text=$(jq -r 'if length > 1 then (.[:-1] | join(", ")) + " and " + .[-1] else .[0] end' <<<"$ALWAYS_RUN")
 echo "$always_run_text succeeded, every job changes selected succeeded, and every other job succeeded or was skipped"
+[ "${#not_run[@]}" -eq 0 ] || printf '%s\n' "${not_run[@]}"

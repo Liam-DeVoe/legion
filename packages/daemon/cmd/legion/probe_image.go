@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -69,11 +70,11 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
 // probe's message, exit 1, so a broken image never publishes. Each check is judged as it returns,
 // by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
-// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), and a TLS
-// run with no verdict (probeTLSClients) have no verdict, which ends nothing, so the later checks
-// still run. Where nothing failed and something has no verdict, it prints
-// bootprobe.NoVerdictLine, naming each, to stderr and exits bootprobe.NoVerdictExit, which
-// asks the daemon's probe Sandbox for another attempt rather than refusing the image. Unlike the
+// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), has no
+// verdict, which ends nothing, so the later checks still run. Where nothing failed and something
+// has no verdict, it prints bootprobe.NoVerdictLine, naming each, to stderr and exits
+// bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for another attempt rather than
+// refusing the image. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
 // same commit must declare. The load probe also holds every task agent the
@@ -83,11 +84,7 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // (`browser.enabled: false`), which carries no Chromium, the capability check leaves the browser
 // row unchecked, and the OK line's capabilities mark says so (capabilities=browser-skipped, which
 // the daemon's probe Sandbox refuses: it never passes the flag, and passes only an image whose
-// whole capability list was checked). With --skip-tls, which only the kind job's build of the
-// worker image under test passes (LEGION_PROBE_SKIP_TLS in worker.Dockerfile), the TLS check is
-// not run, so that build, which every merge group makes, reaches none of the check's public sites;
-// the probe prints a line saying so. The daemon's probe Sandbox never passes it, and the
-// worker-image job's build and the release's run the check against the real authorities. The
+// whole capability list was checked). The
 // probe Sandbox starts it on the pod baseline's variables, with no state home of its
 // own: with --pod-safety, as a worker's shim starts Oh My Pi (podsafety.Apply: the two
 // session-placing variables where the pod leaves them unset, and no overlay of Legion's own,
@@ -128,7 +125,6 @@ func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags.DurationVar(&f.probeBudget, "probe-budget", 0, "the duration the daemon's probe pod reserves for this command")
 	flags.BoolVar(&f.skipAgentModels, "skip-agent-models", false, "leave the prompt-named task agents' models unresolved (the image build's probe)")
 	flags.BoolVar(&f.skipBrowser, "skip-browser", false, "leave the browser row unchecked: the build of an image for a deployment that turns Oh My Pi's browser off (browser.enabled: false), which carries no Chromium")
-	flags.BoolVar(&f.skipTLS, "skip-tls", false, "run no TLS check, which reaches public sites: the kind job's build of the worker image under test, whose pods meet the rig's stand-ins instead")
 	flags.StringVar(&f.roleReferences, "role-references", "", "the task agents and skills the daemon's own role prompts name, resolved in place of the role prompts this binary embeds")
 	flags.StringVar(&f.roleNamespaces, "role-namespaces", "", "run one role generation's namespaces (legion launcher role-init) over a layout of its own in this directory, on a volume of its own, and refuse when it fails; its home is an empty directory there, not the image's (the probe Sandbox passes it)")
 	flags.StringVar(&f.testPostgres, "test-postgres", "", "prove the pod's own test database in this directory — the image's legion-testpg checked and started, a database made and dropped through LEGION_TEST_PG_DSN, and the server stopped — and refuse when it fails (the probe Sandbox passes it for a deployment that sets runtime.kubernetes.test_postgres; the image build does not)")
@@ -141,7 +137,7 @@ func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 type probeImageFlags struct {
 	omp, contract, pluginRoot, envoyPluginRoot, claudeRoot, claudeCodePin, providerEnvDir string
 	roleReferences, roleNamespaces, testPostgres                                          string
-	podSafety, skipAgentModels, skipBrowser, skipTLS                                      bool
+	podSafety, skipAgentModels, skipBrowser                                               bool
 	probeBudget                                                                           time.Duration
 	roleOverlays                                                                          roleConfigFilesFlag
 }
@@ -205,14 +201,18 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		}
 		references = decoded
 	}
-	invocation := f.omp
-	if invocation == "" {
-		invocation = os.Getenv("LEGION_OMP_PATH")
+	// --omp and LEGION_OMP_PATH each name the OMP executable, a path, as LEGION_OMP_PATH is for the
+	// daemon (omplaunch.ResolveInvocation). Every launch below is shell text, so the path goes in as
+	// one shell word: a path holding a space or a glob character still names the one file.
+	omp := f.omp
+	if omp == "" {
+		omp = os.Getenv("LEGION_OMP_PATH")
 	}
-	if invocation == "" {
+	if omp == "" {
 		fmt.Fprintln(stderr, "legion probe-image: set LEGION_OMP_PATH (or pass --omp) to the OMP executable to probe")
 		return 1
 	}
+	invocation := shellprefix.Word(omp)
 	expected, err := strconv.Atoi(f.contract)
 	if !digits.MatchString(f.contract) || err != nil || expected < 1 {
 		fmt.Fprintf(stderr, "legion probe-image: --daemon-api-version must be a positive integer (got %q)\n", f.contract)
@@ -257,7 +257,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// From here on each step is judged as it returns: a failure it saw while ctx was alive ends
 	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
 	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
-	// names each step and TLS run with no verdict; where nothing failed, they make the exit
+	// names each step with no verdict; where nothing failed, they make the exit
 	// bootprobe.NoVerdictExit.
 	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
@@ -298,41 +298,6 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
 		}
 	}
-	if f.skipTLS {
-		fmt.Fprintln(stdout, tlsSkippedLine)
-	} else {
-		// The sites the positive controls reached, where a TLS client's run its own limit ends
-		// with no answer has no verdict (probeTLSClients): every compromised site once the
-		// controls passed.
-		var reached []tlsSite
-		var controlsNoVerdict tlsNoVerdicts
-		switch err := newTLSPositiveControls(ctx, environ); {
-		case errors.As(err, &controlsNoVerdict):
-			noVerdict = append(noVerdict, controlsNoVerdict...)
-		case err != nil:
-			fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-			return 1
-		default:
-			reached = compromisedTLSSites()
-			fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
-		}
-		tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
-		if err != nil {
-			fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-			return 1
-		}
-		defer removeTLSStateDir()
-		observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
-		for _, observation := range observations {
-			fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
-				observation.client, observation.site.name, observation.status, observation.detail)
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-			return 1
-		}
-		noVerdict = append(noVerdict, clientsNoVerdict...)
-	}
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
@@ -364,7 +329,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback))
 	return 0
 }
 

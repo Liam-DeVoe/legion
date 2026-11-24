@@ -1,8 +1,8 @@
 // Package kindtest is the kind rig a Go test of the Sandbox runtime runs on: a throwaway kind
 // cluster with Agent Sandbox's controller and gVisor, a registry the node pulls from, the fake
 // GitHub (internal/fakegithub), which the cluster's pods reach as github.com and api.github.com,
-// the stand-ins for the public TLS hosts the pods reach beside it (TLSSites: the sites the daemon's
-// image probe reaches, the npm registry and the pods' web-search provider), and an image built
+// the stand-ins for the public TLS hosts the pods reach beside it (TLSSites: the npm registry and
+// the pods' web-search provider), and an image built
 // FROM the worker image under test that reads those stand-ins as the real services. Start
 // brings it up from the test process on an amd64 Linux host with Docker, which the kind job of
 // ci.yaml is, and tears it down when the test ends, keeping the cluster's state when the test
@@ -813,9 +813,7 @@ func loadZstdArchive(ctx context.Context, archive string) (string, error) {
 //   - the same two in NODE_EXTRA_CA_CERTS, which node and bun read beside their own roots;
 //   - UV_SYSTEM_CERTS, so uv reads the system store in place of its own roots;
 //   - the same two in Chrome for Testing's managed CACertificates policy, since Chromium reads no
-//     file of the system store;
-//   - each compromised site's stand-in root at the path of its real root (tlssites.Site.Root), in
-//     no trust store, as the real roots are.
+//     file of the system store.
 //
 // Debian's update-ca-certificates is called by its full path, /usr/sbin/update-ca-certificates,
 // since the worker image's PATH (its ENV, packages/daemon/docker/worker.Dockerfile) holds no
@@ -827,7 +825,7 @@ func loadZstdArchive(ctx context.Context, archive string) (string, error) {
 func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 	t.Helper()
 	dir := filepath.Join(r.work, "stand-in-image")
-	if err := os.MkdirAll(filepath.Join(dir, "roots"), 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	authorities := slices.Concat(r.GitHub.CAPEM(), r.Sites.AuthorityPEM())
@@ -853,11 +851,6 @@ func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 		"COPY fake-github-ca.crt tls-sites-ca.crt /usr/local/share/ca-certificates/\n" +
 		"COPY authorities.pem /usr/local/share/legion-kind/authorities.pem\n" +
 		"COPY chrome-policy.json /etc/opt/chrome_for_testing/policies/managed/legion-kind.json\n"
-	for _, path := range slices.Sorted(maps.Keys(r.Sites.RootsPEM())) {
-		name := filepath.Join("roots", filepath.Base(path))
-		files[name] = r.Sites.RootsPEM()[path]
-		dockerfile += "COPY " + name + " " + path + "\n"
-	}
 	dockerfile += "RUN /usr/sbin/update-ca-certificates\n" +
 		"ENV NODE_EXTRA_CA_CERTS=/usr/local/share/legion-kind/authorities.pem UV_SYSTEM_CERTS=1\n"
 	user := strings.TrimSpace(r.docker(t, "image", "inspect", "--format", "{{.Config.User}}", worker))

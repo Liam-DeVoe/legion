@@ -534,6 +534,7 @@ jobs:
     with:
       # why: .github/ci-notes/ci.md#what-the-lane-input-reads
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
+      job: dispatch-browser
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-go-envoy-job-and-its-legs
@@ -878,6 +879,8 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -909,6 +912,8 @@ jobs:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
@@ -929,8 +934,13 @@ jobs:
     needs: [changes,lint,scripts,ci-images,tool-fallback,go-daemon,daemon-go,plugin-pack,daemon-live,agent-harness,kind-image,kind,docs,ts,pi,claude-envoy-names,dispatch-browser,go-envoy,envoy-go-checks,go-envoy-held,envoy-go,envoy-go-race-api,envoy-go-race-docs,envoy-go-docs-finalizers,dispatch-memory,airlock-arm,text-checks,notices,worker-image,browser-image]
     if: ${{ always() }}
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
+    # hold does not), with three over for the checkout and the two refusals.
+    timeout-minutes: 188
+    env:
+      JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
+      actions: read
       checks: write
     steps:
       # why: .github/ci-notes/ci.md#what-ci-ok-checks-out
@@ -964,7 +974,10 @@ jobs:
 
       # why: .github/ci-notes/ci.md#what-needs-holds
       - name: Judge every job of this run
+        id: verdict
+        timeout-minutes: 10
         env:
+          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
@@ -974,10 +987,28 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
+      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
+      - name: Hold a failing verdict until this group is the front of the queue
+        if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
+        # The age's 170 minutes and the last pause and read's ladder, two minutes.
+        timeout-minutes: 175
+        env:
+          STEP_TIMEOUT_MINUTES: 175 # this step's timeout-minutes, for gh-read.sh's wait
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          CI_OK_HOLD_AGE_SECONDS: 10200 # 170 minutes, inside the queue's 180
+          CI_OK_HOLD_RUN_SECONDS: 3330 # the longest merge-group run of 2026-11-22 (44966798236)
+        run: .github/scripts/ci-ok-hold.sh
+
       # why: .github/ci-notes/ci.md#the-reconcile-step
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
+        timeout-minutes: 10
         env:
+          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}

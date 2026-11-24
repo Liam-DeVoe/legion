@@ -1,8 +1,0 @@
-kind: Added
-body: |-
-  `legion probe-image --skip-tls` runs no TLS check and says so in its log. Only the kind job's
-  build of the worker image passes it, through the build argument `LEGION_PROBE_SKIP_TLS`, so that
-  build reaches none of the check's public sites; the daemon's probe never passes it.
-time: 2026-11-21T02:03:41Z
-custom:
-  Issue: pr4397

@@ -260,7 +260,7 @@ EOF
 skips=packages/envoy/scripts/database-skips.sh
 { cat "$repo/$skips"; echo '# an edit after the reading its pin is of'; } >"$fixture/$skips"
 check "a step whose script has moved past its pin is refused, by step and reason" \
-  "$(contains "$(reader_refusals "$fixture")" "^\.github/workflows/ci-job-envoy-go\.yaml's envoy-go / Count the database broker suites' skips: $skips has SHA-256 ")"
+  "$(contains "$(reader_refusals "$fixture")" "^\.github/workflows/ci-job-envoy-go\.yaml's envoy-go / Unit test envoy Go package: $skips has SHA-256 ")"
 cat >"$fixture/.github/workflows/ci-job-envoy-go.yaml" <<'EOF'
 jobs:
   envoy-go:

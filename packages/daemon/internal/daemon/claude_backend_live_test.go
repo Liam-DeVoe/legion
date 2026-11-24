@@ -379,7 +379,7 @@ func (r *claudeBackendLive) seed() {
 	t.Helper()
 	ctx := context.Background()
 	listed := r.dispatch.issue(r.key)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: listed.Title, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

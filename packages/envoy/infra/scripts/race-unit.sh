@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # packages/envoy/infra/scripts/race-unit.sh
 #
-# The race build of envoy-infra's unit tests: the one command envoy-infra-go's unit step runs and
-# ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
+# The race build of envoy-infra's unit tests: the one command envoy-infra-build's unit step runs
+# and ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
 #   race-unit.sh run       .github/scripts/go-test.sh --jsonfile envoy-infra-go-unit.json
 #                          --packages "PACKAGES" -- -count=1 -race (envoy-infra-go's unit step:

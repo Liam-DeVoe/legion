@@ -237,6 +237,7 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 // and run, and that start delivers nothing more (keepsStartTask), so the new session's task is
 // the kept one.
 func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	refusal := "Refusal (reasoning_extraction): this request was blocked"
@@ -315,6 +316,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 // the one command that must give that phase a working agent: the stopped claim forgets the session
 // it recorded, the workflow starts its phase again, and the new session is given the phase's task.
 func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	route := "/legion/v1/operator/claims/" + string(rig.implementer)

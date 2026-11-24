@@ -436,10 +436,12 @@ echo "nats-callout-sessions: starting dev-stack.sh --callout (log $stack_log)"
 # with this run's scratch directory inside it can pass. Go's build scratch (GOTMPDIR, about 1 GB of
 # link output for the stack's commands) stays in the caller's own TMPDIR, read before the override,
 # so it does not land in /tmp, which holds small files alone.
+# The server reaches it as LEGION_TEST_PG_DSN for that one command, never in its arguments, where
+# a password the DSN holds would be in the process list.
 stack_tmp=$(mktemp -d /tmp/ncs-stack.XXXXXX)
 go_tmp=${TMPDIR:-/tmp}
-GOTMPDIR=$go_tmp TMPDIR=$stack_tmp \
-  bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
+LEGION_TEST_PG_DSN=$pg_dsn GOTMPDIR=$go_tmp TMPDIR=$stack_tmp \
+  bash "$root/packages/envoy/scripts/dev-stack.sh" --callout "${stack_args[@]}" \
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {

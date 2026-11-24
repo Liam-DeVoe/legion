@@ -17,6 +17,7 @@ import {
   deliveryFor,
   type Interactive,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -837,12 +838,6 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** The text of a Messages request's last message: what the turn it answers was started on. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
-}
-
 /**
  * Whether the session has settled on `reply`: the screen shows the reply and no busy row, and the
  * transcript's last message is the assistant's, ended normally.
@@ -1222,7 +1217,7 @@ test.skipIf(skip)(
     const startAt = held.indexOf(START_MESSAGE_JSON);
     expect(startAt).toBeGreaterThanOrEqual(0);
     expect(held.indexOf(typed)).toBeGreaterThan(startAt);
-    expect(lastMessage(next.request)).toContain(typed);
+    expect(newestMessage(next.request.body)).toContain(typed);
     next.reply("Typed message answered.");
     await settledOn(session, "Typed message answered.");
   },
@@ -1263,7 +1258,7 @@ test.skipIf(skip)(
   async () => {
     const session = await startController();
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     await settledOn(session, "Start procedure done.");
 
@@ -1346,8 +1341,8 @@ test.skipIf(skip)(
     );
     expect(firstStart).toBeGreaterThanOrEqual(0);
     for (const request of requests.slice(0, firstStart)) {
-      expect(lastMessage(request)).not.toContain(card.summary);
-      expect(lastMessage(request)).not.toContain(published);
+      expect(newestMessage(request.body)).not.toContain(card.summary);
+      expect(newestMessage(request.body)).not.toContain(published);
     }
     // From the first request carrying it on, the start message comes before the card and the
     // notice wherever they are.
@@ -1545,7 +1540,7 @@ test.skipIf(skip)(
     expect(reclaimed.sessionId).toBe(switched);
     const messages = Array.isArray(start.request.body.messages) ? start.request.body.messages : [];
     expect(messages).toHaveLength(1);
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     await session.shows("the start turn's reply", "Start procedure done.");
 
@@ -1723,7 +1718,7 @@ test.skipIf(skip)(
       ? start.request.body.messages
       : [];
     expect(startMessages).toHaveLength(1);
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     let reply = "Start procedure done.";
     start.reply(reply);
 
@@ -1796,7 +1791,7 @@ test.skipIf(skip)(
     session.deliver(START_MESSAGE);
 
     const start = await session.nextTurn("the first model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const first = conversation(start.request);
     expect(first).not.toMatch(WAKE_TEXT);
     expect(first.indexOf(card.summary)).toBeGreaterThanOrEqual(0);
@@ -1804,7 +1799,7 @@ test.skipIf(skip)(
     start.reply("Start procedure done.");
 
     const wake = await session.nextTurn("the startup wake's model request");
-    expect(lastMessage(wake.request)).toContain(WAKE_ONE);
+    expect(newestMessage(wake.request.body)).toContain(WAKE_ONE);
     wake.reply("Read the startup card.");
     await session.until("the session to settle", async () =>
       (await session.state()).isSettled ? true : undefined
@@ -1847,14 +1842,16 @@ test.skipIf(skip)(
     expect(session.turns).toHaveLength(0);
     session.deliver(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     expect(conversation(start.request)).toContain(card.summary);
     await session.abort();
 
     const noRequestAfterStart = (): undefined => {
       const extra = session.turns[1];
       if (extra !== undefined) {
-        throw new Error(`a model request came before the probe, on ${lastMessage(extra.request)}`);
+        throw new Error(
+          `a model request came before the probe, on ${newestMessage(extra.request.body)}`
+        );
       }
       return undefined;
     };
@@ -1868,7 +1865,7 @@ test.skipIf(skip)(
     const prompt = `PROBE-${randomUUID().slice(0, 8)}`;
     session.deliver(prompt);
     const probe = await session.nextTurn("the probe's model request");
-    expect(lastMessage(probe.request)).toContain(prompt);
+    expect(newestMessage(probe.request.body)).toContain(prompt);
     expect(conversation(probe.request)).toContain(card.summary);
     expect(conversation(probe.request)).not.toMatch(WAKE_TEXT);
     probe.reply("Probe answered.");
@@ -1911,7 +1908,7 @@ test.skipIf(skip)(
     startupHold.release();
 
     const start = await session.nextTurn("the first model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const first = conversation(start.request);
     expect(first).not.toMatch(WAKE_TEXT);
     expect(first.indexOf(card.summary)).toBeGreaterThanOrEqual(0);
@@ -1919,7 +1916,7 @@ test.skipIf(skip)(
     start.reply("Start procedure done.");
 
     const wake = await session.nextTurn("the startup wake's model request");
-    expect(lastMessage(wake.request)).toContain(WAKE_ONE);
+    expect(newestMessage(wake.request.body)).toContain(WAKE_ONE);
     wake.reply("Read the startup card.");
     await settledOn(session, "Read the startup card.");
     expect(session.turns).toHaveLength(2);
@@ -1958,7 +1955,7 @@ test.skipIf(skip)(
     startupHold.release();
 
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     const during = inbound.card(opened, "during-start");
     await during.taken;
     await inbound.repeat(opened, during.card);
@@ -1973,7 +1970,7 @@ test.skipIf(skip)(
     // A real clock, as in "the operator sees a claim refusal": a wake that is not sent emits no
     // signal to await, so only a quiet window with no further Messages request shows its absence.
     await Bun.sleep(3_000);
-    expect(session.turns.slice(2).map(({ request }) => lastMessage(request))).toEqual([]);
+    expect(session.turns.slice(2).map(({ request }) => newestMessage(request.body))).toEqual([]);
   },
   CASE_TIMEOUT_MS
 );
@@ -2022,7 +2019,7 @@ for (const variant of ["the start claim never answers", "the start command never
         90_000
       );
       expect(conversation(first.request)).toContain(card.summary);
-      expect(lastMessage(first.request)).toContain(WAKE_ONE);
+      expect(newestMessage(first.request.body)).toContain(WAKE_ONE);
     },
     CASE_TIMEOUT_MS
   );
@@ -2097,7 +2094,7 @@ test.skipIf(skip)(
     // what arrives after it is an idle session's to read.
     session.deliver(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
     start.reply("Start procedure done.");
     let answered = 1;
     /**

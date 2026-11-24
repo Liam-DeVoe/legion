@@ -54,7 +54,7 @@
 # kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE... sends the cluster's pods to
 # ADDRESS:GITHUB_PORT for github.com and api.github.com, and to ADDRESS:SITES_PORT for each SITE,
 # the public TLS hosts the rig stands in for beside GitHub (internal/kindtest's TLSSites.Hosts:
-# the sites the image probe reaches, the npm registry and the pods' web-search provider): for
+# the npm registry and the pods' web-search provider): for
 # each, a selectorless Service on 443 whose one endpoint is that address, and a CoreDNS answer
 # naming its cluster IP (kind_github_address, kind_sites_address). CoreDNS (kind_corefile) answers
 # NXDOMAIN for every other name outside cluster.local, with no forward to the runner's resolver,

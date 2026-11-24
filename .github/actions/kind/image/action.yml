@@ -30,11 +30,10 @@ runs:
     # worker-image.yaml's build of the same Dockerfile and context, reading main's layer cache
     # under the same scope and writing none, with the version label and the plugin versions left
     # to their pull-request defaults. The two env names keep the run's event out of the metadata
-    # the action logs, as that build's comment says. LEGION_PROBE_SKIP_TLS has the build's final
-    # probe run no TLS check, which reaches public sites: the kind tests' pods meet the rig's
-    # stand-ins for them (worker.Dockerfile's ARG). The archive's layers are uncompressed, cached
-    # ones included (force-compression), so the zstd step below compresses the image's own bytes
-    # rather than gzip streams it cannot shrink.
+    # the action logs, as that build's comment says. Its final probe runs in full, as
+    # worker-image.yaml's does. The archive's layers are uncompressed, cached ones included
+    # (force-compression), so the zstd step below compresses the image's own bytes rather than gzip
+    # streams it cannot shrink.
     - name: Build the worker image into a docker archive
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       env:
@@ -51,9 +50,6 @@ runs:
         cache-from: type=gha,scope=worker-image
         build-args: |
           LEGION_REVISION=${{ github.sha }}
-          LEGION_PROBE_SKIP_TLS=1
-        secrets: |
-          github_token=${{ github.token }}
 
     # The whole archive in one zstd frame, multi-threaded (-T0) with a 1 GiB long-distance window
     # (--long=30), which finds the files one layer repeats of another. On the uncompressed layers

@@ -40,6 +40,7 @@ func git(t *testing.T, clone string, args ...string) string {
 // logs nothing; a clone with the current helper and no useHttpPath is rewritten. A state directory
 // with no clone is nothing to do.
 func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	_, err := os.Stat(realGit)
 	testprereq.Require(t, err == nil, "daemon-go", "no git at %s: %v", realGit, err)
 	// The clone's helper keys are read with `git config --get-all`, which lists every scope, and the

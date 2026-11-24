@@ -112,7 +112,7 @@ runs:
         TARBALL: ${{ fromJSON(inputs.steps).docker-plugin.outputs.tarball }}
       run: .github/scripts/tool-fallback-installed-versions.sh "$TARBALL"
 
-    # why: .github/ci-notes/tool-fallback.md#the-sixteen-corrupted-payloads-and-case-1-of-them
+    # why: .github/ci-notes/tool-fallback.md#the-eighteen-corrupted-payloads-and-case-1-of-them
     - name: Corrupt crane for its primary case
       if: inputs.after == 'head'
       shell: bash
@@ -169,7 +169,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome "$OUTCOME" --row changie --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/tool-fallback.md#case-6-of-16-and-what-the-case-before-it-left
+    # why: .github/ci-notes/tool-fallback.md#case-6-of-18-and-what-the-case-before-it-left
     - name: Corrupt the jj copy for its second-source case
       if: inputs.after == 'changie-second-source'
       shell: bash
@@ -191,7 +191,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome "$OUTCOME" --row jj --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/tool-fallback.md#case-7-of-16-and-the-branch-setup-bun-takes-for-it
+    # why: .github/ci-notes/tool-fallback.md#case-7-of-18-and-the-branch-setup-bun-takes-for-it
     - name: Corrupt nothing at the origin for the bun-primary case
       if: inputs.after == 'jj-second-source'
       shell: bash
@@ -219,7 +219,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome "$OUTCOME" --row bun-linux-x64 --expect-source github-release
 
-    # why: .github/ci-notes/tool-fallback.md#case-8-of-16-and-why-it-takes-the-bun-pair-away-itself
+    # why: .github/ci-notes/tool-fallback.md#case-8-of-18-and-why-it-takes-the-bun-pair-away-itself
     - name: Take any Bun away, so the second source must serve this case
       if: inputs.after == 'bun-primary'
       shell: bash
@@ -277,7 +277,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome "$OUTCOME" --row elan --expect-source ghcr-mirror
 
-    # why: .github/ci-notes/tool-fallback.md#case-11-of-16-and-the-digest-the-changed-byte-trips
+    # why: .github/ci-notes/tool-fallback.md#case-11-of-18-and-the-digest-the-changed-byte-trips
     - name: Corrupt uv for its primary case
       if: inputs.after == 'elan-second-source'
       shell: bash
@@ -291,7 +291,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome "$OUTCOME" --row uv --expect-source github-release --expect-untried pypi
 
-    # why: .github/ci-notes/tool-fallback.md#case-12-of-16-where-the-changed-byte-is-and-how-each-archive-refuses-it
+    # why: .github/ci-notes/tool-fallback.md#case-12-of-18-where-the-changed-byte-is-and-how-each-archive-refuses-it
     - name: Corrupt uv for its second-source case
       if: inputs.after == 'uv-primary'
       shell: bash
@@ -320,7 +320,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome "$OUTCOME" --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
 
-    # why: .github/ci-notes/tool-fallback.md#case-14-of-16-and-the-one-payload-the-origin-serves-on-two-routes
+    # why: .github/ci-notes/tool-fallback.md#case-14-of-18-and-the-one-payload-the-origin-serves-on-two-routes
     - name: Corrupt the docker provider plugin for its second-source case
       if: inputs.after == 'pulumi-docker-primary'
       shell: bash
@@ -334,7 +334,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome "$OUTCOME" --row pulumi-docker --expect-source pulumi-releases
 
-    # why: .github/ci-notes/tool-fallback.md#case-15-of-16-and-why-the-untried-reading-is-a-reading
+    # why: .github/ci-notes/tool-fallback.md#case-15-of-18-and-why-the-untried-reading-is-a-reading
     - name: Corrupt the Pulumi CLI for its primary case
       if: inputs.after == 'pulumi-docker-second-source'
       shell: bash
@@ -348,7 +348,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome "$OUTCOME" --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
 
-    # why: .github/ci-notes/tool-fallback.md#case-16-of-16-and-why-it-is-a-dead-port-rather-than-the-fault
+    # why: .github/ci-notes/tool-fallback.md#case-16-of-18-and-why-it-is-a-dead-port-rather-than-the-fault
     - name: Corrupt the Pulumi CLI for its second-source case
       if: inputs.after == 'pulumi-cli-primary'
       shell: bash
@@ -362,7 +362,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome "$OUTCOME" --row pulumi-cli --expect-source github-release
 
-    # why: .github/ci-notes/tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals
+    # why: .github/ci-notes/tool-fallback.md#what-this-runner-holds-after-the-eighteen-refusals
     - name: Print what every tool answers now
       if: inputs.after == 'pulumi-cli-second-source'
       shell: bash

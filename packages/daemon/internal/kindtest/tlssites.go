@@ -34,8 +34,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/tlssites"
 )
 
 // NPMHost is the npm registry, which the rig stands in for too: a Claude Code role's install of its
@@ -52,30 +50,16 @@ const NPMHost = "registry.npmjs.org"
 const WebSearchHost = "search.parallel.ai"
 
 // TLSSites is the rig's stand-in for the public hosts the cluster's pods reach over TLS beside
-// GitHub: the sites the daemon's image probe reaches (internal/tlssites), the npm registry
-// (NPMHost) and the pods' web-search provider (WebSearchHost), so no pod of a kind test leaves the
-// runner. The cluster's pods reach it under the hosts' own names (kind_sandbox_route_stand_ins),
-// and Image is built to read it as the probe reads the real sites: the emSign and AAA stand-ins
-// serve chains that end at roots of the rig's own, which Image carries at the paths of the real
-// pinned roots (tlssites.Site.Root) and holds in no trust store, so every client refuses them, as
-// the probe requires, and the positive controls verify them with those files; the control, the
-// isolation endpoint, the registry and the web-search provider serve chains of the rig's sites
-// authority (AuthorityPEM), which Image trusts as it trusts the fake GitHub's, so every client
-// accepts the control and no pinned root verifies the isolation endpoint. Measured on 2026-11-21
-// in an INFRA issue pod, with the stand-ins on 127.0.0.1:443 and Image's changes made in
-// namespaces of their own: the probe's positive controls and every client that pod's image
-// carries passed (az and mise were not on its PATH).
+// GitHub: the npm registry (NPMHost) and the pods' web-search provider (WebSearchHost), so no pod
+// of a kind test leaves the runner. The cluster's pods reach it under the hosts' own names
+// (kind_sandbox_route_stand_ins), and each host serves a chain of the rig's sites authority
+// (AuthorityPEM), which Image trusts as it trusts the fake GitHub's.
 //
-// The answers follow what the probe was measured against: each compromised site serves a 200
-// text/plain page at every path, the control a 200 HTML page at / and 404 elsewhere, and the
-// isolation endpoint a 200 HTML page. The registry serves the files a test gives it (ServeNPMLock,
-// PublishNPM) and 404 for any other path. The web-search provider answers a search with one
-// result (answerWebSearch).
+// The registry serves the files a test gives it (ServeNPMLock, PublishNPM) and 404 for any other
+// path. The web-search provider answers a search with one result (answerWebSearch).
 type TLSSites struct {
 	server *http.Server
 	addr   string
-	// roots is each compromised site's stand-in root, as PEM, by the path Image carries it at.
-	roots map[string][]byte
 	// authority is the sites authority, as PEM.
 	authority []byte
 
@@ -91,14 +75,9 @@ type TLSSites struct {
 func StartTLSSites(t *testing.T, listen string) *TLSSites {
 	t.Helper()
 	authority, authorityKey := newRoot(t, "legion kind rig sites authority")
-	s := &TLSSites{roots: map[string][]byte{}, authority: pemOf(authority), npm: map[string][]byte{}}
+	s := &TLSSites{authority: pemOf(authority), npm: map[string][]byte{}}
 	certificates := map[string]tls.Certificate{}
-	for _, site := range []tlssites.Site{tlssites.EmSign, tlssites.AAA} {
-		root, key := newRoot(t, "stand-in for the root of "+site.Name)
-		s.roots[site.Root] = pemOf(root)
-		certificates[host(site)] = leafOf(t, host(site), root, key)
-	}
-	for _, name := range []string{host(tlssites.Control), host(tlssites.Isolation), NPMHost, WebSearchHost} {
+	for _, name := range []string{NPMHost, WebSearchHost} {
 		certificates[name] = leafOf(t, name, authority, authorityKey)
 	}
 	listener, err := tls.Listen("tcp", listen, &tls.Config{GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -122,14 +101,11 @@ func (s *TLSSites) Addr() string { return s.addr }
 
 // Hosts is the name of every host the stand-ins serve.
 func (s *TLSSites) Hosts() []string {
-	return []string{host(tlssites.EmSign), host(tlssites.AAA), host(tlssites.Control), host(tlssites.Isolation), NPMHost, WebSearchHost}
+	return []string{NPMHost, WebSearchHost}
 }
 
 // AuthorityPEM is the sites authority, which Image trusts.
 func (s *TLSSites) AuthorityPEM() []byte { return s.authority }
-
-// RootsPEM is each compromised site's stand-in root by the path Image carries it at.
-func (s *TLSSites) RootsPEM() map[string][]byte { return s.roots }
 
 // Requests is every request the stand-ins answered, in order, each with its body.
 func (s *TLSSites) Requests() []string {
@@ -141,9 +117,8 @@ func (s *TLSSites) Requests() []string {
 // maxRecordedBody is the most of a request's body the stand-ins read and record.
 const maxRecordedBody = 1 << 20
 
-// answer answers a request as the host it names answered the probe, as the registry serves the
-// files it was given, or as the web-search provider answers a search, and records it with its
-// body.
+// answer answers a request as the registry serves the files it was given, or as the web-search
+// provider answers a search, and records it with its body.
 func (s *TLSSites) answer(w http.ResponseWriter, r *http.Request) {
 	name, _, err := net.SplitHostPort(r.Host)
 	if err != nil {
@@ -152,16 +127,6 @@ func (s *TLSSites) answer(w http.ResponseWriter, r *http.Request) {
 	received, _ := io.ReadAll(io.LimitReader(r.Body, maxRecordedBody))
 	status := http.StatusOK
 	switch name {
-	case host(tlssites.EmSign), host(tlssites.AAA):
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "the kind rig's stand-in for %s\n", name)
-	case host(tlssites.Control):
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if r.URL.Path != "/" {
-			status = http.StatusNotFound
-			w.WriteHeader(status)
-		}
-		fmt.Fprintln(w, "<!doctype html><title>Example Domain</title><p>the kind rig's stand-in</p>")
 	case NPMHost:
 		s.mu.Lock()
 		body, ok := s.npm[r.URL.Path]
@@ -372,14 +337,6 @@ func npmIntegrity(body []byte) string {
 	return "sha512-" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
-func host(site tlssites.Site) string {
-	parsed, err := url.Parse(site.URL)
-	if err != nil {
-		panic(fmt.Sprintf("tlssites.%s's URL %q: %v", site.Name, site.URL, err))
-	}
-	return parsed.Hostname()
-}
-
 // newRoot is a fresh self-signed authority named name, valid from an hour before now for a day.
 func newRoot(t *testing.T, name string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
@@ -398,8 +355,7 @@ func newRoot(t *testing.T, name string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	return root, key
 }
 
-// leafOf is a server certificate for name that root's key signed, served alone, as the probe's
-// sites serve no root.
+// leafOf is a server certificate for name that root's key signed, served alone, with no root.
 func leafOf(t *testing.T, name string, root *x509.Certificate, rootKey *ecdsa.PrivateKey) tls.Certificate {
 	t.Helper()
 	key := newKey(t)

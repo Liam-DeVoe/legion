@@ -18,10 +18,16 @@ import (
 // `permission denied to terminate process` (SQLSTATE 42501), at a different handful of tests each
 // run, and only where that server is: CI's login is a superuser, so CI stays green while every
 // Legion issue pod goes red. This holds the right the drop needs on whatever server
-// LEGION_TEST_PG_DSN names, which is the one the tests will use.
+// LEGION_TEST_PG_DSN names, which is the one the tests will use. It connects as the helpers' own
+// admin connection does, to that server's postgres database through testdb.DatabaseURL, whose URL
+// holds none of pgxpool's keys: pgx.Connect sends one to the server, which refuses it.
 func TestTheDSNRoleMayTerminateAnotherRolesBackend(t *testing.T) {
 	dsn := testdb.DSN(t)
-	conn, err := pgx.Connect(t.Context(), dsn)
+	admin, err := testdb.DatabaseURL(dsn, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(t.Context(), admin)
 	if err != nil {
 		t.Fatalf("connect to the test server: %v", err)
 	}

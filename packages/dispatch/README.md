@@ -10,7 +10,7 @@ suggestions, artifacts, and durable event history. The Go server in
 `AuthGate` requests `GET /auth/whoami` and sends unauthenticated visitors to the
 Google sign-in flow. All application requests are same-origin. React Router serves
 the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
-repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
+settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
@@ -86,13 +86,18 @@ harness as `127.0.0.1:<port>`, never `localhost`: under that flag the router
 refuses any other `Host`. The server process has no caller Home or XDG
 directory and receives no inherited `DISPATCH_*`, `ENVOY_*` or `NATS_*`
 variable, so neither a shell setting nor `~/.config/legion/envoy.json` /
-`~/.local/share/dispatch` can redirect it. The one way in from outside is the
-broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
+`~/.local/share/dispatch` can redirect it. There are two ways in from outside.
+One is the broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
 of a ServiceAccount that broker lists in
 `DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, points the server's credential
 requests at a broker the caller runs, as the secrets broker's docs rig
 (`docs/site/media/broker/rig.sh`) does with the token its local issuer
-(`packages/envoy/cmd/dev-oidc-issuer`) keeps.
+(`packages/envoy/cmd/dev-oidc-issuer`) keeps. The other is
+`DISPATCH_E2E_NATS_URLS`: a NATS address there reaches the server as its
+`NATS_URLS` in place of `DISPATCH_NATS_DISABLED=1`, which turns the events
+publisher on for a driver that proves what a delivery writes. It is the rig's
+own variable because a shell's `NATS_URLS` is the Envoy listener's, and a server
+that took it would publish test notifications where real sessions receive them.
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
@@ -174,11 +179,16 @@ command line held, so it needs all three engines downloaded
 node while the same command line without `--ui` runs green.
 
 To point a session at a stack that is already up instead, start one, apply the
-variables it prints, and start the UI in that environment:
+variables it prints, and start the UI in that environment. The file holds the
+stack's `DATABASE_URL` with any password it carries, so it is made for you
+alone: the subshell creates it under `umask 077` and then runs the harness in
+its place, so `$!` is the harness, and a file an earlier run left is removed
+first, since an existing file keeps its mode:
 
 ```bash
 cd packages/dispatch
-bun e2e/harness-up.ts > exports.sh &
+rm -f exports.sh
+(umask 077 && exec bun e2e/harness-up.ts > exports.sh) &
 # wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then
 . ./exports.sh
 bunx playwright test --config e2e/playwright.config.ts --ui

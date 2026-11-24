@@ -132,6 +132,7 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 // standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
 // step is the one the live test takes before it reaches the cluster.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })

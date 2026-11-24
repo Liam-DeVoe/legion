@@ -55,6 +55,9 @@ func environmentReads(roots ...string) (reads, fixtureImporters []string, err er
 			if err != nil {
 				return err
 			}
+			// A file of a fixture's own tree is test support: its environment reads are the
+			// fixture's, and its import of the fixture is a shared helper's that only test files
+			// import in turn (TestTheGuardFindsAStoretestImportOutsideTheFixtureTree).
 			fixture := false
 			for _, directory := range testFixtures {
 				fixture = fixture || strings.Contains(filepath.ToSlash(path), directory)
@@ -63,7 +66,7 @@ func environmentReads(roots ...string) (reads, fixtureImporters []string, err er
 			packages := map[string]string{}
 			for _, spec := range file.Imports {
 				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if _, ok := testFixtures[importPath]; ok {
+				if _, ok := testFixtures[importPath]; ok && !fixture {
 					fixtureImporters = append(fixtureImporters, filepath.ToSlash(path)+" "+importPath)
 				}
 				if _, reads := environmentReaders[importPath]; !reads {
@@ -150,6 +153,31 @@ func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
 			}
 			if len(reads) != 1 || !strings.HasPrefix(reads[0], filepath.ToSlash(path)+" ") {
 				t.Errorf("environment reads %q, want the one in %s", reads, path)
+			}
+		})
+	}
+}
+
+// The guard's storetest rule is that only test code imports the Postgres fixture: a test file, or a
+// file of the fixture's own tree under store/storetest/, which is test support the guard already
+// reads as fixture for its environment reads - a shared helper there, such as the lock-step
+// prover (store/storetest/lockstep), is imported only by test files itself. A non-test file
+// anywhere else that imports storetest is still found.
+func TestTheGuardFindsAStoretestImportOutsideTheFixtureTree(t *testing.T) {
+	storetestImport := "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	probe := "package probe\n\nimport _ \"" + storetestImport + "\"\n"
+	for name, want := range map[string]bool{
+		filepath.Join("auth", "probe.go"):                                          true,
+		filepath.Join("dispatch", "store", "storetest", "lockstep", "lockstep.go"): false,
+	} {
+		t.Run(filepath.ToSlash(name), func(t *testing.T) {
+			path := writeFile(t, name, probe)
+			_, importers, err := environmentReads(filepath.Dir(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found := slices.Contains(importers, filepath.ToSlash(path)+" "+storetestImport); found != want {
+				t.Errorf("the guard found %s importing storetest: %t, want %t (it found %q)", path, found, want, importers)
 			}
 		})
 	}

@@ -80,7 +80,6 @@ holder_pid=
 # database_created, which the `create database` sets, and never names a database that is not there.
 database=
 database_created=
-ok=
 
 note() { echo "   $*"; }
 fail() {
@@ -89,6 +88,8 @@ fail() {
 }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
 
@@ -104,6 +105,8 @@ stop_omp() {
   stop_pid "$1"
 }
 
+# cleanup stops what the run started, drops its database, and prints its last line through
+# lib/run-verdict.sh: PASS only for a run that reached run_end, the script's last statement.
 cleanup() {
   local status=$? pid start
   set +e
@@ -125,11 +128,9 @@ cleanup() {
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
-    echo "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
-  fi
+  run_verdict "$status" \
+    "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND"' ERR
@@ -266,4 +267,4 @@ driver_status=0
 bun "$driver" run "$work/rig.json" || driver_status=$?
 cp "$work/home/.omp/agent/models.yml" "$work/home/.omp/agent/config.yml" "$evidence/logs/" 2>/dev/null || true
 [ "$driver_status" -eq 0 ] || fail "the driver exited $driver_status (the check it failed in is named above)"
-ok=1
+run_end

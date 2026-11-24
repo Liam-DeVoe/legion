@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/termsafe"
 )
 
 // The live run's environment. BenchmarkMemoryGuardLiveSandbox runs only where liveEnv is 1, which
@@ -702,7 +703,7 @@ func relayLines(out *liveLog, name string, r *os.File, onLine func(string)) {
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		out.printf("%s: %s", name, escaped(line, liveRelayLineBytes))
+		out.printf("%s: %s", name, termsafe.Escaped(line, liveRelayLineBytes))
 		if onLine != nil {
 			onLine(line)
 		}

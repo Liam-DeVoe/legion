@@ -7,7 +7,7 @@
 # the packages under gotestsum, through .github/scripts/go-test.sh, and counts the skips in the
 # jsonfile that run writes, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [--module-except PATTERN] [PACKAGE...]
 #   database-skips.sh --report FILE [--run PATTERN] [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
@@ -39,7 +39,13 @@
 # reading holds an EXPECTED_SKIPS line only where the share names its test, so a test the split
 # gave another leg is not looked for here. A leg's share can hold no test of a listed package, so
 # with --run the report must hold a test that passed or failed, but not one of each package.
-# `--report FILE` reads FILE instead and runs nothing, which the controls use; the five options
+# `--module-except PATTERN` adds to that one go test every other package of the module that
+# `go list ./... | grep -Ev PATTERN` keeps, in go list's order: envoy-go's unit step runs the
+# module so, and the broker's packages share that run's -p slots with the rest, where a second
+# go test after the first left them idle behind its longest package. Their skips are not counted,
+# since a package outside the patterns skips for reasons this table does not hold, and their
+# packages are not held to showing a run; a failure of theirs fails go test and so this script.
+# `--report FILE` reads FILE instead and runs nothing, which the controls use; the six options
 # that shape a run alone are refused beside it.
 #
 # It prints each skipped test of a package the patterns name (as `go list` names them under the
@@ -52,8 +58,8 @@
 # not hold, since that line then excuses nothing it can name. It exits 0 only when every listed
 # package with test files shows tests run, none of them skipped but those EXPECTED_SKIPS names
 # and none failed in its last attempt, and, for a run of its own, go-test.sh passed; 1 otherwise.
-# A run of its own also prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On
-# a failure it prints, on stderr, each test that failed in its last attempt, each test a failed
+# A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr. On a
+# failure it prints, on stderr, each test that failed in its last attempt, each test a failed
 # package never finished, the failed packages' output (a failed test's own lines, a timed-out
 # binary's goroutine dump, a data race, and any line test2json files under a test after that
 # test's own `--- PASS` or `--- SKIP`), go test's build output and, for a run of its own,
@@ -90,7 +96,7 @@ DEFAULT_EXCEPT='/internal/cipher/natscallout$'
 # (database-skips.test.sh's control 5 deletes one).
 EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
 github.com/sjawhar/envoy/internal/cipher/proxyrules TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
-github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
+github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelRefusesAHostlessEntry needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
 '
 
@@ -160,7 +166,7 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [PACKAGE...], or --report FILE [--run PATTERN] [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [--module-except PATTERN] [PACKAGE...], or --report FILE [--run PATTERN] [PACKAGE...])" >&2
   exit 1
 }
 
@@ -182,6 +188,7 @@ timeout=""
 run=()
 jsonfile="${GITHUB_JOB:-local}-database-skips.json"
 jsonfile_given=false
+module_except=""
 packages=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -215,6 +222,11 @@ while [ $# -gt 0 ]; do
       jsonfile_given=true
       shift 2
       ;;
+    --module-except)
+      [ -n "${2:-}" ] || usage "--module-except needs a grep -Ev pattern over the module's import paths"
+      module_except="$2"
+      shift 2
+      ;;
     --report)
       [ -n "${2:-}" ] || usage "--report needs the go test -json report to read"
       case "$2" in
@@ -227,8 +239,8 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ "$jsonfile_given" = true ]; }; then
-  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --jsonfile, which shape a run of its own, are refused beside it"
+if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ "$jsonfile_given" = true ] || [ -n "$module_except" ]; }; then
+  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip, --jsonfile and --module-except, which shape a run of its own, are refused beside it"
 fi
 # runs is what the go list and go test below are given: the patterns as written, or for the
 # default table the import paths go list prints for it under the run's own flags, less
@@ -269,11 +281,27 @@ under='def under($pkg): $listed[$pkg] == true;'
 
 if [ -z "$report" ]; then
   report="$("$scripts/go-test.sh" --path "$jsonfile")" || usage "the jsonfile is a file name ending in .json, not \"$jsonfile\""
+  # tested is what go test runs: the listed packages, or with --module-except the module's
+  # packages the pattern keeps, in go list's order, and then each listed package it took out.
+  tested=("${runs[@]}")
+  if [ -n "$module_except" ]; then
+    go list "${race[@]}" ./... >"$work/module" 2>"$work/list" || {
+      echo "database_skips=UNKNOWN"
+      echo "database-skips.sh: go list ./... failed, so no test ran and no skip was counted:" >&2
+      cat "$work/list" >&2
+      exit 1
+    }
+    # grep exits 1 when the pattern keeps nothing, which leaves the listed packages alone, and 2
+    # when it cannot read the pattern.
+    grep -Ev "$module_except" "$work/module" >"$work/kept" || [ $? -eq 1 ] ||
+      unknown "--module-except's pattern is not one grep -E reads, so no test ran"
+    mapfile -t tested < <(cut -d' ' -f1 "$work/listed" | cat "$work/kept" - | awk '!seen[$0]++')
+  fi
   go_test_exit=0
   # go-test.sh prints gotestsum's test log to stdout as the tests run and leaves the jsonfile at
   # $report for the step that uploads it; its stderr, go test's own among it, is printed with the
   # failures.
-  "$scripts/go-test.sh" --jsonfile "$jsonfile" --packages "${runs[*]}" -- \
+  "$scripts/go-test.sh" --jsonfile "$jsonfile" --packages "${tested[*]}" -- \
     -count=1 "${race[@]}" "${skip[@]}" "${run[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" 2>"$work/stderr" ||
     go_test_exit=$?
 fi
@@ -318,9 +346,10 @@ status=0
 awk '$1 == "fail"' "$work/ended" >"$work/failed"
 [ ! -s "$work/failed" ] || status=1
 if [ -n "$go_test_exit" ]; then
-  # Each listed package's time in its last attempt, which go test prints without -json and the CI
-  # steps' limits are set from, on stderr.
-  jq -n -r -L "$scripts" --argjson listed "$listed" 'include "go-test"; '"$under"' last_attempt_results(inputs) | select(.Test == null and (.Action == "pass" or .Action == "fail") and under(.Package // "")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
+  # Each package's time in its last attempt, which go test prints without -json and the CI steps'
+  # limits are set from, on stderr: the listed packages' and, with --module-except, the rest of the
+  # module's.
+  jq -n -r -L "$scripts" 'include "go-test"; last_attempt_results(inputs) | select(.Test == null and (.Action == "pass" or .Action == "fail")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
   echo "go_test_exit=$go_test_exit"
   [ "$go_test_exit" -eq 0 ] || status=1
 fi

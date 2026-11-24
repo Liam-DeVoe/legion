@@ -185,7 +185,7 @@ AUDITED_SCRIPTS = {
                 "go test -json -count=1 -race -run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 26m "
                 "./internal/dispatch/api/",
         },
-        sha256="8de239fb2624ed2464f8be90c2bafbd8e0e14fc973eb3abcbc4b4fad76acc496",
+        sha256="34f845c46ae79287194fa949af55512745aae2c2f96e37f70086592fbc228685",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one
     # .github/scripts/go-test.sh over the packages before its `--`, which runs gotestsum, whose
@@ -214,7 +214,7 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -json -count=1 -race",
         },
-        sha256="dfdc0e381fdc4b737010127fa1d115178b12e88bd5eb49e25ec0c7afdff21dc5",
+        sha256="12b041dd237b98f67f376deea73a5e6261f87abae38fec7757a1b1c33710d25a",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

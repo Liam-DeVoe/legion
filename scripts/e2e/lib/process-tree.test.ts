@@ -64,6 +64,17 @@ ended_pid() {
   { wait "$pid" || true; } 2>/dev/null
   printf '%s\\n' "$pid"
 }
+# laid_out PROGRAM PID… holds once each PID runs PROGRAM by the kernel's record and its environment
+# is laid out (environ_laid_out, lib/process-tree.sh): the kernel names PROGRAM in /proc/<pid>/exe
+# before it lays out PROGRAM's environment, and a row that reads the environment in between reads
+# none.
+laid_out() {
+  local want=$1 pid
+  shift
+  for pid; do
+    [ "$(readlink "/proc/$pid/exe" 2>/dev/null || :)" = "$want" ] && environ_laid_out "$pid" || return 1
+  done
+}
 program=$PROGRAM other=$OTHER
 ${body}`;
   const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
@@ -517,7 +528,7 @@ pad=$(printf '%0100000d' 0)
 env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 pid=$!
 started+=("$pid")
-until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+until_true 40 "the program's environment" laid_out "$program" "$pid"
 for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
 echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
 st=0; env_has "$(ended_pid)" HOME 2>/dev/null || st=$?; echo "unreadable $st"
@@ -698,7 +709,12 @@ empty=$!
 env -i NAME=value "$program" 600 </dev/null >/dev/null 2>&1 &
 full=$!
 started+=("$empty" "$full")
-until_true 10 "both to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$empty" "$full" "$program"
+until_true 20 "the full one's environment" laid_out "$program" "$full"
+# The empty one has no variable to wait for. Its command line reads once its exec has laid out its
+# arguments and set where its environment starts and ends (fs/proc/base.c reads neither before),
+# which for an empty environment is all of it.
+args_laid_out() { local -a words; [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$program" ] && process_args "$1" words; }
+until_true 20 "the empty one's arguments" args_laid_out "$empty"
 for pid in "$empty" "$full"; do
   st=0; v=$(env_of "$pid" NAME) || st=$?; printf 'env_of %s [%s]; ' "$st" "$v"
   st=0; env_has "$pid" OTHER || st=$?; printf 'env_has %s; ' "$st"
@@ -711,6 +727,28 @@ done
         "env_of 2 []; env_has 2; env_length 2 []; names_dir 2\n" +
           "env_of 0 [value]; env_has 1; env_length 0 [5]; names_dir 1\n"
       );
+    },
+    slow
+  );
+});
+
+// A row that fails in until_true (lib/rig.sh) exits inside it, through the harness's `fail`, so the
+// harness's EXIT trap runs where until_true's locals are in scope. One of them was named `started`,
+// and the trap then read that number in place of the row's `started` pids and stopped none of them.
+describe.skipIf(skip)("the row harness", () => {
+  test(
+    "an EXIT trap that runs when until_true fails reads the row's own started pids",
+    () => {
+      const r = run(`
+"$program" 600 </dev/null >/dev/null 2>&1 &
+started+=("$!")
+(trap 'echo "the trap reads [\${started[*]}]"' EXIT; until_true 1 "nothing" false) 2>/dev/null || :
+echo "the row started [\${started[*]}]"
+`);
+      expect(r.err).toBe("");
+      const lines = r.out.trim().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0].replace("the trap reads", "")).toBe(lines[1].replace("the row started", ""));
     },
     slow
   );

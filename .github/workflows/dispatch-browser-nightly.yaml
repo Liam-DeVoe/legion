@@ -54,10 +54,16 @@ jobs:
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
-  full:
+  #
+  # The job carries the id of ci.yaml's full-lane caller and passes it as `job`, so its jobs are
+  # named `dispatch-browser / <job>` and its artifacts carry the names that caller's do:
+  # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
+  # name `dispatch-browser-report-1`.
+  dispatch-browser:
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+      job: dispatch-browser

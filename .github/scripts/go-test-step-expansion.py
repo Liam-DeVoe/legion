@@ -249,7 +249,7 @@ EXCEPTIONS = (
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
             "shapes a rules file may hold through both the Go validation and the Lean model's, "
             "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
-            "step \"Count the database broker suites' skips\" runs every broker package but the "
+            "step \"Unit test envoy Go package\" runs every broker package but the "
             "race lane's through packages/envoy/scripts/database-skips.sh, so a listing counts "
             "the function run there too, but it skips there for want of AIRLOCK_MODEL, as that "
             "script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz "
@@ -262,14 +262,31 @@ EXCEPTIONS = (
             (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
-        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        functions=("TestTheModelRefusesAHostlessEntry",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
             "comparison runs a host-less entry carrying guidance, a field the generator never "
-            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
-            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
-            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
-            "the comparison runs only in airlock-lean."
+            "writes, through both the Go validation and the Lean model's, which each refuse it, "
+            "with AIRLOCK_MODEL set. envoy-go's step \"Unit test envoy Go package\" "
+            "lists it too, and it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
+            (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
+        functions=None,
+        requirement=(
+            "pmdoc's readers must read a table in every build, whatever its inlining. "
+            "envoy-go-build runs pmdoc's table tests and its display fixture test in a build made "
+            "with -gcflags=all=-l, a mode no other step builds pmdoc in: goldmark builds pmdoc's "
+            "readers through an interface Go's initialization order does not look through, so a "
+            "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
+            "table failed to read there while it passed in envoy-go's unit step. The two runs "
+            "answer different questions."
         ),
     ),
 )

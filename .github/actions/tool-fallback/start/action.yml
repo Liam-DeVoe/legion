@@ -56,7 +56,7 @@ runs:
       shell: bash
       run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
-    # why: .github/ci-notes/tool-fallback.md#case-5-of-16-and-why-it-runs-before-the-fault
+    # why: .github/ci-notes/tool-fallback.md#case-5-of-18-and-why-it-runs-before-the-fault
     - name: Corrupt nothing at the origin for the jj-primary case
       shell: bash
       run: .github/scripts/ci-tools-proof.sh corrupt

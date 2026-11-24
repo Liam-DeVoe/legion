@@ -42,8 +42,8 @@ Each item below names a script, then what it proves.
 - `stage1-skeleton.sh`
 
   `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
-  answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
-  `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, refuses a wrong Postgres password at once by the host and never by the password, and, as a second daemon behind a proxy that resets its first two connections to that Postgres, opens its store by trying again 1 s and then 2 s later, and serves
+  answers `legion state` with the 22-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
+  `pool-capacity` present, since tmux runs no probe pod; `repository-cache-room` present with `source` `caches`, since tmux runs no repository cache), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, refuses a wrong Postgres password at once by the host and never by the password, and, as a second daemon behind a proxy that resets its first two connections to that Postgres, opens its store by trying again 1 s and then 2 s later, and serves
 
 - `stage2-tmux-supervision.sh`
 
@@ -68,6 +68,26 @@ Each item below names a script, then what it proves.
   Its control is the same image with `/opt/legion/bin` taken off `PATH`, where the real `git` and `jj` let all five cases through.
   Each check prints one `CHECK <name>: PASS|FAIL` line.
   The `worker-image` job of `ci.yaml` runs it after its build
+
+- `pack-memory-job.sh`
+
+  git and jj stay within memory in a large workspace under gVisor, measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role", for the checks `c-git-rows`, `c-jj-snapshot-memory`, `c-handoff-head-read-memory`, `c-shim-adoption-memory` and `c-budget-under-gvisor`:
+  the image's own `legion workspace-init cache`, `fetch` and `provision` make the clone and the jj workspace on the Job's disk volume, as an issue pod's are made, with each jj command of provisioning measured through a measuring `jj` first on `PATH`;
+  for `c-pack-window-config` and `c-release-source`, the image's `git config --system --get` of the four pack settings, and its `jj --version` against `worker.Dockerfile`'s `ARG JJ_TOOL`;
+  under the role's own `GIT_CONFIG` block, which the harness builds from its checkout (`go run ./internal/runtime/sandbox/rolegitconfig` in `packages/daemon`), the four pack settings read at command scope, beside the clone's values;
+  `git log --first-parent -- <file>`, `git status`, a push of a new commit to a `git daemon` outside every measured process tree, and a fetch from GitHub of the default branch's newer commits (100 MiB or more) into a clone lacking them, each with the role's settings and with git's defaults forced;
+  on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made and pushed with git, `handoff-record.ts`'s `STANDING` read, unmeasured, `git fetch` of the feed's heads as refs the clone lacks (`refs/remotes/feed/*`) and `git commit` at fixed dates, then `describedArgs`, importing both, another commit, and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy;
+  and R10's rows: the seven role commands R10 names, with the same fetch and commits, and provisioning's jj commands replayed on a fresh clone, each on a copy of its own, with jj `0.46.0-sami.20261008-234600`, the control, and the image's jj at `JJ_PACK_MAPPED_LIMIT` `64m`, `256m`, `512m` and `1g`.
+  Copies hardlink the clone's packs and copy the rest with `cp -a`; a disk too small stops the run.
+  Each measured command runs under GNU time and `lib/pack-memory-peak.py`, which every 0.1 s stops its tree (lest jj's chunk churn be read twice) to read `smaps`, and prints its largest total, that sample's pack `Rss` and anonymous memory, each part's peak, each process's split, the time stopped and the pod's cgroup charge;
+  with the settings, a git row holds when the pod's charge, or the push's own tree, is under 2 GiB, and an image jj row when both figures are; a control under 2 GiB (git) or the pack (jj) is void.
+  An R10 row holds when its stdout equals the control row's, its pack figure (largest pack `Rss`) is within its budget plus 8 MiB per object store plus 32 MiB, and its derived figure (GNU time's peak less its largest anonymous and other-file memory) within that plus 128 MiB; a control under 90% of the pack fails.
+  The probe the Job runs is `pack-memory-probe.sh` beside the harness, which writes it and the sampler into the Job's command, since a Job holds no checkout to read them from, so the three files are one recipe and none is changed without the others;
+  the harness refuses to run when `packages/daemon/internal/shim/commands.go` or `packages/pi-shared/src/handoff-record.ts` no longer builds a command the probe copies.
+  Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `go` and a checkout of the head measured, the image to measure by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`), whose values are in that deployment's own declaration and in no file of this repository.
+  `--repo` and `--walk-file` name another public repository and file than firefox's;
+  `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), creates nothing, and exits.
+  Legion pod only
 
 - `controller-start-tmux.sh`
 
@@ -137,9 +157,9 @@ Each item below names a script, then what it proves.
 
 - `step-records-read.sh`
 
-  the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
-  It passes only when steps 1 to 5, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
-  a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
+  the read, after the merge, of the step records of one issue a deployed Legion ran to done, judged by its plan: `dispatch steps --issue <ISSUE>` and `dispatch plans --project <PROJECT>`, each run once in the operator's own shell with the operator's own credential.
+  It passes only when each step of the issue's plan, from 1 to its last, has a record in the role the plan names, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
+  a read that lists no record, or that fails, or a plan read that gives no plan of the issue, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
 - `plan-ratings-read.sh`
@@ -261,7 +281,7 @@ Everything the run takes is its own, so two runs on one machine neither collide 
   and, with no `LEGION_E2E_PG_DSN`, the container `legion-e2e-pg-<pid>`.
 
 After each of the main daemon's two healthy starts, the first and the restart, the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
-the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
+the socket's inode from the `LISTEN` row of `127.0.0.1:PORT` in `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
 After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
@@ -952,7 +972,7 @@ The setup line names the command the run uses.
 Each run gets `DISPATCH_HOST=omp`, the run's own session, `DISPATCH_URL` and token, and a scratch `HOME`, and the driver gives it a stdin and a working directory when a step needs them.
 The bases case reads two of its answers through the command, which is the surface a reviewer reads.
 The three cases of a bare `-` drive the command for every step, and judge each step by its exit code and what it printed.
-The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — maps each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
+The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — sets each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
 `commit_pulls` is empty on purpose:
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
@@ -990,14 +1010,14 @@ Each item below names a case and how it is driven, then what must hold for it to
 
   `400 RESULT_COMMIT_UNKNOWN`, naming the whole commit and `acme/verification-live`, and no result under that check afterwards
 
-- `an-unreadable-repository-answers-unknown` — a `default_branch` result and a `before_merge` result on an issue whose project maps to `acme/verification-hidden`
+- `an-unreadable-repository-answers-unknown` — a `default_branch` result and a `before_merge` result on an issue whose project's default repository is `acme/verification-hidden`
 
   both unknown, naming the unreadable repository, and whether a pass of either check stands unknown with them:
   Dispatch can reach no installation token for that repository, so it can say nothing about where either commit stands
 
 - `k-compared-commit-the-bases-each-check-names` — one issue holding a `before_merge`, an `after_merge` and a `default_branch` check, with two open pull requests at the heads A and A2, a merged pull request whose base branch `release/old` the fake holds no commits for, and five results: one at A, one at A2, one at a commit that heads no pull request, and one for each branch check at a commit `main` carries.
   The run reads them through `dispatch results` with no `--at`, with `--at A` and with `--at B` (a commit no result is at), and through `GET /api/v1/issues/{key}/results` and `?at=`, then publishes the `synchronize` envelope that moves A to A3 and reads the first check again.
-  Its last read is of an issue whose project maps to `acme/verification-hidden`
+  Its last read is of an issue whose project's default repository is `acme/verification-hidden`
 
   the before-merge check naming the head of every pull request of the issue, open and merged, each with its number and the time Dispatch learned it.
   Each result stands at its own pull request's head, which is this case's control:
@@ -1116,19 +1136,21 @@ git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 scripts/e2e/step-records-read.sh <ISSUE>     # → "PASS: <ISSUE>: <n> records; …", exit 0
 ```
 
-The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records.
-It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then one verdict.
+The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records and judges them by its plan.
+It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then `dispatch plans --project <PROJECT>` once (`<PROJECT>` is the key's part before its number) and prints the line of `<ISSUE>` alone, then one verdict.
+The steps it wants come from the plan of the issue's newest run, as Dispatch holds it, not from the records, so a record lost for the last step fails as one lost for any other.
+A record of a step counts whatever task it names: a run whose task was stopped and replaced keeps records of its own.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads an issue that is done, so every step of it has ended.
 
 | exit | printed | when |
 | :--- | :--- | :--- |
-| 0 | `PASS: <ISSUE>: <n> records; …` | the read lists a record of each of steps 1 to 5, of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
-| 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of the merge`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
-| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
+| 0 | `PASS: <ISSUE>: <n> records; steps 1 to <m> of its plan (<steps>), …` | the read lists a record of each step of the plan, 1 to its last, in the role the plan names for it (the step's role, before any `:key`), and of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
+| 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of step 5 (acceptance:owner)`, `no record of the merge`), a step whose records name another role than the plan's (`…: its records name tester`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), a command failed (its exit and what it printed), no `dispatch` is on PATH, an answer is no read of the issue or of its project (no header, a line that is no run, a header whose count differs from the lines below it), or the plan read gives no plan to judge by: it lists no line of the issue, which is then not done, Dispatch holds no plan of it, or the plan has more than one task, of which `dispatch plans` names the first's steps alone; a usage error is exit 2 too, with the usage on stderr |
 
-`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer of each command, the plan's as `dispatch plans` itself renders it: a whole answer passes, the merge record missing fails, the record of the plan's last step lost fails, an empty read is `UNKNOWN`, and each fault above has its row.
 
 ## plan-ratings-read.sh
 
@@ -1977,6 +1999,73 @@ the `tee` opens `FILE` in a process of its own, whose failure no caller sees, so
 `lib/transcript.test.ts` (`bun test scripts/e2e/lib`) sources the helper under `set -euo pipefail` and runs two lines after it, one on standard output and one on standard error:
 a file it can open takes both, which still reach the reader, and a file whose directory does not exist, or a directory in its place, ends the run before its line on standard output, naming the file.
 
+## lib/run-verdict.sh
+
+A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
+Sourced by each of them, never run.
+Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+
+```sh
+. "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
+cleanup() {
+  local status=$?
+  …                                          # the teardown
+  run_verdict "$status" "<label>: PASS in …" "<label>: FAIL at $check after …"
+}
+trap cleanup EXIT
+…                                            # the checks
+run_end                                      # the statement after the last check
+```
+
+bash runs the `EXIT` trap of a shell that a signal ends (a closed pane's `HUP`, a Ctrl-C's `INT` or `timeout`'s `TERM`, none of them trapped) with `$?` at the status of the last command it finished, which is often 0.
+A trap that reads the status alone then prints PASS for a run that never reached its last check.
+So a run passes only when it also reached its end:
+the script calls `run_end` as the statement after its last check, nothing else sets the mark, and nothing but the shell's end runs after it.
+Past each `fi` of an `if` around it and each `else` branch, which does not run after it, the next line of code is none, the `)` that ends the subshell it runs in, or an `exit 0`.
+Or it is the closing brace of a function, and then every call of that function, in the script and in each script that sources it, stands alone on its line and is held to the same rule in its own shell, as `live_daemon_proof` and `busy-relaunch-delivery.sh`'s `negative_control` are.
+A run a signal ends never reaches that statement, so the mark alone keeps it from passing.
+
+The lib sets no signal trap, and a script needs none for this rule.
+bash runs a trapped signal's handler only once the foreground command returns, and a proof runs its driver in the foreground for up to an hour, so a trap would make a killed proof wait for its driver:
+measured in a Legion pod, a `TERM` trap held a shell's exit for 6069 ms behind a 6 s `sleep`, against 1217 ms with no trap.
+`dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, `dispatch-session-settings.sh` and [`lib/two-builds.sh`](#libtwo-buildssh) trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`:
+`dispatch-session-settings.sh` traps each to an `exit` with that status, which its `EXIT` trap reads, and the other seven trap each to their teardown with it.
+A `HUP`, which none of them traps, reaches their `EXIT` trap as status 0 and reads FAIL by the mark.
+
+Each item below names a function, then what it does.
+
+- `run_end`
+
+  marks the run as having reached its end
+
+- `run_passed STATUS`
+
+  answers 0 when STATUS is 0 and the run reached its end: the one rule the two below read
+
+- `run_status STATUS`
+
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`, `share-volumes-kind.sh`'s `release_shares`), so a killed run keeps its evidence too
+
+- `run_verdict STATUS PASSED FAILED`
+
+  the `EXIT` trap's last command: prints PASSED on stdout and exits 0 for a run that passed;
+  prints `the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass`, then FAILED, on stderr and exits 1 for a status of 0 with no mark;
+  prints FAILED on stderr and exits with STATUS otherwise.
+  A shell a signal ended keeps that signal's status (129, 130, 143) whatever the trap exits with:
+  bash ends it with the signal once the trap returns
+
+The mark is the shell's own variable.
+A subshell starts with the value the shell had when it forked, so a run made in a subshell (`lib/live-daemon-proof.sh`'s, inside `approved-version-news.sh` and `busy-relaunch-delivery.sh`'s negative control) sets its own mark, and the script around it calls its own `run_end`.
+
+`lib/run-verdict.test.ts` drives the real lib with a fixture proof killed by `TERM`, `INT` and `HUP` between its checks, killed in its setup, ended by an `exit 0` of its own, and run to its end, and only the last prints PASS.
+It also holds every script here to the rule: no `EXIT` trap prints PASS but through `run_verdict`, a script whose trap does reaches a `run_end`, and each `run_end` stands where nothing but the shell's end follows it, read as above.
+A `run_end` put last in `controller-sweep-kind.sh`'s `left()`, which the script calls after the sweep's driver and again after the negative control's, fails that row at both calls, since more of the script runs after each.
+A call of `busy-relaunch-delivery.sh`'s `negative_control` with `&& note x` after it on its line fails it too, since `note x` runs after the call.
+A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` or not, closes its own `if`, and so does a `fi` before a comment, so the line after the outer `fi` is still read.
+`lib/live-daemon-proof.test.ts` and `lib/approved-version-news-runs.test.ts` drive the real `live_daemon_proof` and the real `approved-version-news.sh --part one` over stand-ins of `go`, the `nats-server`, `python3` and the driver (`lib/live-daemon-proof-fixture.ts`), killed in their setup and in their driver by a signal to the whole process group, and run to their end.
+`lib/approved-version-news-runs.test.ts` drives the script's run of both parts over the same stand-ins too, from a scratch checkout whose one commit is its base.
+
 ## lib/rig.sh
 
 The host-side helpers a script sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
@@ -2041,15 +2130,18 @@ Each item below names a function, then what it does.
 
 - `listening_holders PORT`
 
-  prints the pid of every process holding the one socket listening on PORT:
-  its inode from the `LISTEN` row of `/proc/net/tcp` and `/proc/net/tcp6`, its holders from `/proc/*/fd`.
+  prints the pid of every process holding the one socket listening on `127.0.0.1:PORT`, where every service of a rig listens (`held-port.py`'s default host, `port_answers`' address):
+  its inode from the `LISTEN` row of `/proc/net/tcp` whose local address is `127.0.0.1:PORT`, its holders from `/proc/*/fd`.
+  A socket on the same port of another address is none of it:
+  the kernel's bind of port 0 on `127.0.0.1` hands out a port that another process already listens on at another loopback address, as a Go test on a devbox did on `127.162.56.110`, and a count of every `LISTEN` row with that port read two sockets and failed.
+  The table writes an address in the host's byte order, so `127.0.0.1` is `0100007F` on a little-endian host, where `7F000001` is `1.0.0.127`, an address a socket can hold too (`IP_FREEBIND`): each call reads the byte order with `od` and takes the one spelling, and exits 2 when `od` does not tell it.
   The shell's glob hands every `/proc/<pid>/fd` to `find` on stdin, never as its arguments, which past ARG_MAX (about 80,000 processes) could not start, and the empty answer read as no holder.
   An fd directory this user may not read, or whose process ended during the walk, is none of the answer; any other complaint of the walk's prints and fails with 2.
-  It fails when no socket, or more than one, listens on PORT
+  It fails when no socket, or more than one, listens on `127.0.0.1:PORT`
 
 - `held_only_by PORT PID…`
 
-  succeeds when the holders of the socket listening on PORT are exactly the PIDs given; otherwise it prints each holder's pid and command line and fails.
+  succeeds when the holders of the socket listening on `127.0.0.1:PORT` are exactly the PIDs given; otherwise it prints each holder's pid and command line and fails.
   Stage 1 runs it after each daemon start with the daemon and its keeper
 
 - `await_start NAME PID SECONDS WHAT CMD…`
@@ -2081,7 +2173,11 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over its host's own `/proc`, under an `ERR` trap that prints, with a `readlink` on `PATH` that records every call and answers nothing and a `grep` that counts its calls:
 it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
-It names a marked process double-forked to pid 1, which no tree the run started holds.
+It names a marked process double-forked to pid 1, which no tree the run started holds, once the process's exec of `sleep` is done (`untilExecDone`): inside the exec its `/proc/<pid>/environ` reads empty while its exe link, and then its command line, already name `sleep`, so a walk then names nothing, and the sweep row waits on its escaped process the same way.
+Every row of the file has a bound of 60 s of its own (`setDefaultTimeout`), whatever the runner's command line, and its waits on the kernel run until 15 s before it, then fail naming what they waited for; no shorter span decides a wait, since a loaded devbox held an escaped process inside its exec for more than the 3 s a fixed wait gave it.
+`listening_holders` names only this test process, the holder of the socket on `127.0.0.1:PORT`, while another process listens on `127.0.0.2` with the same port, and while one listens on `1.0.0.127` with it, where `IP_FREEBIND` lets a socket bind there (a host that refuses it skips that row by name).
+Each of those two rows has the other process take a port the kernel chooses first and listens on `127.0.0.1` at that port after, so the collision it is about cannot stop its setup.
+A port the kernel gives the other address can already be listening on `127.0.0.1`, which no order removes, since the box's processes share one network namespace: the row then takes a fresh port until its waits end, and past that fails naming each port `127.0.0.1` refused (`no port free on both … by the end of the row's waits`), with `listening_holders` not run.
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
@@ -2196,6 +2292,13 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1, and `env_length` prints the length of NAME's value (0 when absent), so a check of a secret never holds its value in a variable.
   Each reader of an environment turns xtrace off for itself, so a run under `bash -x` writes no value of it into its transcript
+
+- `environ_laid_out PID`
+
+  succeeds once PID's environment holds a variable.
+  Linux names the program an exec starts in `/proc/<pid>/exe` before it lays out that program's arguments and environment: the command line reads empty until the environment's bounds are first set, and the environment until its end is, so `env_of`, `env_has` and `env_length` answer 2 there for a process that will run with a full environment.
+  A caller that found PID by the program it runs (`launched`, a wait on `/proc/<pid>/exe`) waits on this before it reads the environment, as the Stage 3 pane watchers do: an Oh My Pi found in that window is read again at the next poll, not counted as a violation.
+  It fails, too, for a process that has gone and for one started with an empty environment
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 
@@ -2402,7 +2505,7 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE...`
 
-  sends the cluster's pods to `ADDRESS:GITHUB_PORT` for `github.com` and `api.github.com`, and to `ADDRESS:SITES_PORT` for each `SITE`, the rig's TLS stand-ins (`TLSSites.Hosts()` of `packages/daemon/internal/kindtest`: the npm registry, the pods' web-search provider and the image probe's sites): for each, a Service on port 443 with no selector, whose one endpoint is that address (`kind_github_address`, `kind_sites_address`).
+  sends the cluster's pods to `ADDRESS:GITHUB_PORT` for `github.com` and `api.github.com`, and to `ADDRESS:SITES_PORT` for each `SITE`, the rig's TLS stand-ins (`TLSSites.Hosts()` of `packages/daemon/internal/kindtest`: the npm registry and the pods' web-search provider): for each, a Service on port 443 with no selector, whose one endpoint is that address (`kind_github_address`, `kind_sites_address`).
   CoreDNS answers those names with templates, answers `NXDOMAIN` for every other name outside `cluster.local` with no fall-through to public DNS, and logs each name it refused.
   The rule reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS
 
