@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/storetext"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // branchClient is the client a write of one of issue's branches is made with, and the repository
