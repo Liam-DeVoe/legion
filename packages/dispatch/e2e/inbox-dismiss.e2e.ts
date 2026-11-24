@@ -453,7 +453,14 @@ test("Select all dismisses every row of the group in one request that names each
 
     // The Dismissed view reads them a page at a time. The view's window draws only the rows near
     // sight, so the rows it has loaded are read from the count each drawn row states
-    // (`aria-setsize`), not counted.
+    // (`aria-setsize`), not counted. The window always draws the row in hand (R7), and the address
+    // still names the row the reading column showed before the press (`?item=`). One press
+    // dismisses every row at one instant, and the view orders that tie by thread id
+    // (`meInboxOrder`, `api/me_inbox.go`), so that row stands at a place no seed fixes: near the
+    // end of the first page, the window opens there and reads the next page at once, as R7 has it
+    // read whenever the window nears the end. So the view is chosen from the Inbox loaded afresh,
+    // whose address names no row, and the row in hand is the view's first.
+    await page.goto("/");
     await chooseShow(page, "Dismissed");
     await expect(page).toHaveURL(/show=dismissed/);
     await expect(rows.first()).toHaveAttribute("aria-setsize", String(INBOX_DISMISSED_PAGE));
