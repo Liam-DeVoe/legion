@@ -203,8 +203,9 @@ session of its own. A key keeps its name in every version of the plan, and while
 the key out no other agent takes that name, so the key's agent finds its session again when a later
 version names the key; the agent that would have taken the name takes a numbered one and a slot of
 its own, so its start can wait for the issue pod's update round. A name that only agents with no
-key held is given again to a later agent with no key, which starts in a session of its own. The
-architect writes the plan as the issue's `plan.md` document, with one
+key held is given again to a later agent of their role, which starts in a session of its own, and
+never to an agent of another role. The architect writes the plan as the issue's `plan.md`
+document, with one
 `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
