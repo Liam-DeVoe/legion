@@ -40,10 +40,17 @@
 -- keeps its session, and the start of any other agent that reaches the claim, one the rows name but
 -- that has not started among them, starts a session of its own.
 --
--- A start the release before queued names no agent. Where its claim stands, it takes the session
--- that claim records, which this file wrote, so the fill writes nothing into it. Where its claim is
--- not made yet, it makes the claim when it runs, recording no agent, so the fill names on it the
--- agent the rows give its claim's name last, and the claim it makes records that agent.
+-- The rule is the function claim_agent_from_steps(issue, token), which this file defines and fills
+-- the claims by, and which the daemon asks again for a start that names no agent and makes its
+-- claim (the outbox's start, store.ClaimAgentFromSteps): a start the release before queued names
+-- no agent, and where its claim is not made yet, it makes the claim when it runs, so the daemon
+-- records on that claim the agent the function gives then. The facts the function reads do not
+-- move under such a start while it can still act: its own start is the latest kept start of its
+-- claim's token, written when it was queued, and a later version that would replace its step's
+-- row is refused while its task runs, a new owner's run is a later generation, whose fence ends
+-- the start, and no step_starts row is ever deleted. Where its claim stands, the start takes the
+-- session that claim records, which this file wrote. So the file writes no queued row: a daemon of
+-- the release before, of any project on the database, reads each one as that release wrote it.
 --
 -- What the record leaves: where no start the release before kept names the agent that ran on a
 -- claim last (a run older than step_starts, or a place whose row a later version replaced), the
@@ -68,65 +75,48 @@
 -- every other key, and that release then starts the claim as it did, resuming the session it
 -- holds. The update is owed to that release, not to the roll-forward.
 --
--- The fill writes the claims and queued starts of every project the database holds: a migration is
--- one static file that each database runs once (store.Store.apply), and nothing in it names the
--- project of the daemon that runs it, so it cannot keep to one project, and no later run would fill
--- another project's rows. It writes the key `agent` only into a queued start whose claim is not
--- made yet, where it decides the session the claim it makes records. So until each other project's
--- pod restarts on this release, its daemon of the release before fails that decode on each such
--- start of its project, and on each read of that start's role's runs, which its every admission
--- pass makes (record.Store.RoleRuns), so that project applies no fact until its pod restarts on
--- this release, in the same change as every daemon of the database (docs/kubernetes.md); the start
--- is tried again on its backoff, so nothing is lost.
+-- The fill writes the claims of every project the database holds: a migration is one static file
+-- that each database runs once (store.Store.apply), and nothing in it names the project of the
+-- daemon that runs it, so it cannot keep to one project, and no later run would fill another
+-- project's claims. The release before reads no column it does not name, so that costs it
+-- nothing, and the file writes no queued row, which that release decodes strictly.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
 -- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the delete of
 -- this migration's row go together: the delete is what makes the version the store reports that
--- release's own again, and both are owed to the roll-forward, which then runs this file again and
--- adds the column at its default, and records on each claim, and on each queued start of a claim
--- not made, the agent the steps and the rows then give it. What the drop costs is the record of
--- each claim's agent: after the roll-forward a claim records only the agent its latest kept start
--- or the rows give it, or none, so a claim whose session was another agent's when the rollback
--- came is resumed once for the next start that reaches it of the agent it records, or of any agent
--- where it records none, as the release before resumed it. What the update costs is that same
--- record on each start it strips: the release before resumes the claim's session for it.
+-- release's own again, and both are owed to the roll-forward, which then runs this file again: it
+-- adds the column at its default and the function again, and records on each claim the agent the
+-- steps and the rows then give it. What the drop costs is the record of each claim's agent: after
+-- the roll-forward a claim records only the agent its latest kept start or the rows give it, or
+-- none, so a claim whose session was another agent's when the rollback came is resumed once for
+-- the next start that reaches it of the agent it records, or of any agent where it records none,
+-- as the release before resumed it. What the update costs is that same record on each start it
+-- strips: the release before resumes the claim's session for it.
 --
 -- begin;
 -- update outbox set payload = payload - 'agent' where kind = 'supervise' and payload ? 'agent';
+-- drop function if exists claim_agent_from_steps(text, text);
 -- alter table claims drop column if exists session_agent;
 -- delete from schema_version where version = 20261122120917;
 -- commit;
 alter table claims add column session_agent text not null default '';
-with named as (
-  select distinct on (issue, agent) issue, agent,
-    case when agent_key <> '' then 'key:' || agent_key else 'step:' || position || ':' || task end as agent_id
-  from plan_steps
-  where agent_key <> 'owner' and agent <> ''
-  order by issue, agent, generation desc, task desc, position desc
-), latest_start as (
-  select distinct on (agent) agent as token, issue, task, place, (record->>'generation')::bigint as generation
-  from step_starts
-  where kind = 'step' and record ? 'generation'
-  order by agent, started_at desc nulls last
-), ran as (
-  select s.token,
-    case when p.agent_key <> '' then 'key:' || p.agent_key else 'step:' || p.position || ':' || p.task end as agent_id
-  from latest_start s
-  join plan_steps p on p.issue = s.issue and p.generation = s.generation and p.task = s.task and p.position = s.place
-    and p.agent = substring(s.token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')
-  where p.agent_key <> 'owner'
-), recorded as (
-  update claims c set session_agent = coalesce(r.agent_id, n.agent_id)
-  from claims k
-  left join ran r on r.token = k.token
-  left join named n on n.issue = k.issue and n.agent = substring(k.token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')
-  where c.token = k.token and coalesce(r.agent_id, n.agent_id) is not null
-)
-update outbox o set payload = o.payload || jsonb_build_object('agent', n.agent_id)
-from named n
-where o.kind = 'supervise' and o.payload->>'op' = 'start' and not (o.payload ? 'agent')
-  and o.issue = n.issue
-  and substring(o.payload->>'claim' from '^legion-[^-]+-[^-]+-[^-]+-(.+)$') = n.agent
-  and not exists (select 1 from claims c where c.token = o.payload->>'claim');
+create function claim_agent_from_steps(claim_issue text, claim_token text) returns text language sql stable as $$
+  select coalesce(
+    (select case when p.agent_key <> '' then 'key:' || p.agent_key else 'step:' || p.position || ':' || p.task end
+      from (select task, place, (record->>'generation')::bigint as generation
+        from step_starts
+        where issue = claim_issue and agent = claim_token and kind = 'step' and record ? 'generation'
+        order by started_at desc nulls last limit 1) s
+      join plan_steps p on p.issue = claim_issue and p.generation = s.generation and p.task = s.task
+        and p.position = s.place and p.agent_key <> 'owner'
+        and p.agent = substring(claim_token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')),
+    (select case when agent_key <> '' then 'key:' || agent_key else 'step:' || position || ':' || task end
+      from plan_steps
+      where issue = claim_issue and agent_key <> 'owner' and agent <> ''
+        and agent = substring(claim_token from '^legion-[^-]+-[^-]+-[^-]+-(.+)$')
+      order by generation desc, task desc, position desc limit 1))
+$$;
+update claims set session_agent = claim_agent_from_steps(issue, token)
+where claim_agent_from_steps(issue, token) is not null;

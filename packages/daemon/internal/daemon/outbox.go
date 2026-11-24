@@ -2632,9 +2632,26 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
+		// The agent this start is a run of. A start that names none and makes its claim is one
+		// the release before the record of a claim's agent queued, or one no step names: the
+		// claim it makes records the agent the steps give its name (store.ClaimAgentFromSteps),
+		// the rule the migration that added the record filled every claim of that release by, so
+		// a later start of another agent leaves its session. The row itself is not written, so
+		// it reads as that release wrote it.
+		agent := payload.Agent
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
+			}
+			if agent == "" {
+				err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+					var err error
+					agent, err = store.ClaimAgentFromSteps(ctx, tx, issue.Key, token)
+					return err
+				})
+				if err != nil {
+					return fmt.Errorf("read the agent the steps give claim %s: %w", token, err)
+				}
 			}
 			machine, _, err = r.supervisor.Create(ctx, supervise.Claim{
 				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued,
@@ -2746,7 +2763,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// own, which the workflow's move of the issue does not wait on, so the machine judges the
 		// same rule again under its own lock before it starts a process, and a start the issue has
 		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, Agent: payload.Agent}
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, Agent: agent}
 		var brought error
 		switch state {
 		case supervise.StateQueued:
