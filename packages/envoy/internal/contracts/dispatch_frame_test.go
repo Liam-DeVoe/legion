@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/dispatch-frame-verdicts.json TestDispatchPayloadIsEventAgreesWithTheHostsReading os.ReadFile (../../../contracts/fixtures): DispatchPayloadIsEvent must agree with readDispatchPayload's verdict on every payload
+
 import (
 	"encoding/json"
 	"os"

@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/contracts/fixtures/dispatch-frame-property.json TestEdgeFrameVerdictOnGeneratedDispatchFrames os.ReadFile (dispatchPropertyFixture, ../../../contracts/fixtures): the generated frames the edge passes and withholds must be the ones the fixture records for the plugin's side of the property
+
 import (
 	"encoding/json"
 	"flag"
