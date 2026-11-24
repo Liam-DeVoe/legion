@@ -12,16 +12,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// The model totals: the shim counts the calls of its launch by the model that answered each one,
-// and answers the daemon's reads of those counts (shimwire.ModelTotals). The shim reads every
+// The model totals. The shim counts the calls of its launch by the model that answered each one.
+// It answers the daemon's reads of those counts (shimwire.ModelTotals). The shim reads every
 // frame of the harness before a connection to the daemon can lose one. So it counts what a daemon
 // that was away or restarted never saw.
 //
 // A call is one whole message_end of the harness, an rpc_chunk sequence joined first. Its message
 // is the assistant's, names a model that is not shimwire.SyntheticModel, and did not end in an
-// error. Oh My Pi writes one for each response of the agent's own conversation, and no
-// subagent's: those reach its RPC stream only after set_subagent_subscription, which Legion
-// never sends.
+// error. Oh My Pi writes one for each response of the agent's own conversation, and none for a
+// subagent's. A subagent's events reach its RPC stream only after set_subagent_subscription,
+// which Legion never sends.
 //
 // The set model is the model the launch's session started on. Oh My Pi names it in its answer
 // to get_state, which the shim asks for on the harness's ready frame. An extension can start a
@@ -60,7 +60,7 @@ type totals struct {
 	// read numbers the reads the shim answered, and the final frame.
 	read uint64
 	// setModel is the launch's set model, and setModelDecided whether the shim has taken its
-	// answer: an undecided set model may still be named, a decided "" never is.
+	// answer. An undecided set model may still be named. A decided "" never is.
 	setModel        string
 	setModelDecided bool
 	// readyID is the get_state the shim sent on the harness's ready frame, "" before it.
@@ -74,8 +74,8 @@ type totals struct {
 	sizeLogged bool
 }
 
-// modelName is the name of the model a frame names: the provider, a slash and the model, or the
-// model alone where the provider is empty (the daemon's superviseEvent, internal/daemon).
+// modelName is the name of the model a frame names. It is the provider, a slash and the model, or
+// the model alone where the provider is empty (superviseEvent, internal/daemon).
 func modelName(provider, model string) string {
 	if provider == "" {
 		return model

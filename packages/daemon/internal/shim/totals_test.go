@@ -21,8 +21,8 @@ const (
 // setModelA is a launch whose ready answer names model A before any call.
 var setModelA = []string{"ready", "await-get-state", "answer-held " + modelA}
 
-// callsOfA2B1 are the responses of a launch: two by A, one by B as bEnd writes it, and one by A
-// that ended in an error, which counts for no model.
+// callsOfA2B1 are the responses of a launch. Two are by A, and one is by B as bEnd writes it. One
+// more by A ended in an error, which counts for no model.
 func callsOfA2B1(bEnd string) []string {
 	return []string{"end acme model-a", "end acme model-a", bEnd, "end acme model-a error"}
 }
@@ -214,8 +214,8 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 			},
 		},
 		{
-			// The half of the sequence is 16 chunks, about 5.6 MB of lines: more than a pipe holds,
-			// so the shim has read its first chunk once the fake has written the half.
+			// The half of the sequence is 16 chunks, about 5.6 MB of lines. That is more than a
+			// pipe holds. So the shim has read its first chunk once the fake has written the half.
 			name: "7_a_refusal_while_half_a_sequence_is_held_follows_the_whole_sequence",
 			script: slices.Concat(
 				[]string{"end-chunked-half acme model-b 8388608"},
@@ -283,6 +283,9 @@ func TestTheShimKeepsTheAnswersToItsOwnGetState(t *testing.T) {
 	path := socketPath(t)
 	daemon := listen(t, path)
 	child := scripted(t, modelA, slices.Concat(setModelA, []string{"end acme model-a"})...)
+	// Oh My Pi's state answer holds its system prompt and tool schemas, so it can be chunked. Each
+	// read's answer here is: the shim must keep every chunk of it from the daemon.
+	child.env = append(child.env, "FAKE_OMP_STATE_BYTES=2097152")
 	run(t, config(t, path, child), newClock())
 	p := daemon.accept(t)
 	p.open(t)
@@ -362,4 +365,31 @@ func TestAChunkedAnswerDoesNotEndTheTurnForTheDedupe(t *testing.T) {
 func isAnswerTo(frame shimwire.Frame, id string) bool {
 	answer, ok := frame.(shimwire.Response)
 	return ok && answer.ID == id
+}
+
+// An agent_end too large for one line still ends the turn for the dedupe. The pump joins its
+// sequence and shows the dedupe the whole agent_end. So a repeated delivery after it gets its end
+// replayed, and the daemon does not wait for an end that already came.
+func TestAChunkedAgentEndEndsTheTurnForTheDedupe(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	run(t, config(t, path, newOMP(t)), newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	ack := func(id string) shimwire.Response {
+		return shimwire.Response{ID: id, Command: shimwire.TypePrompt, Success: true}
+	}
+
+	p.send(t, shimwire.Prompt{ID: "r1", DeliveryID: "d1", Message: "hold"})
+	p.expect(t, ack("r1"))
+	p.expect(t, shimwire.AgentStart{})
+	p.sendLine(t, `{"type":"fake_end_turn_chunked"}`)
+	if frame := p.nextWhole(t); typeOf(frame) != shimwire.TypeAgentEnd {
+		t.Fatalf("the shim sent %#v, want the whole agent_end", frame)
+	}
+
+	p.send(t, shimwire.Prompt{ID: "r2", DeliveryID: "d1", Message: "hold"})
+	p.expect(t, ack("r2"))
+	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
+	p.expect(t, shimwire.AgentEnd{})
 }

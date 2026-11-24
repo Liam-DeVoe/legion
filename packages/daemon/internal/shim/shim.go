@@ -2,10 +2,9 @@
 // and the daemon's worker stream. The shim always dials the daemon — the stream is the daemon's
 // listener, never the shim's — authenticates with the pane's boot token, and spawns OMP only
 // once the daemon has acked it. From then on it carries OMP's stdio NDJSON to the stream and
-// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`, a repeated
-// delivery, a read of the model totals its launch's calls make), and outlives any one
-// connection: a dropped stream is redialled, and what OMP says meanwhile waits in a bounded
-// backlog.
+// back. It answers the frames that are its own: `shutdown`, `adopt-working-copy`, a repeated
+// delivery, and a read of its launch's model totals. It outlives any one connection. A dropped
+// stream is redialled, and what OMP says meanwhile waits in a bounded backlog.
 //
 // The behaviour was ported from the TypeScript shim's `--connect` mode, which LEGION-223 removed; a
 // `worker-shim.ts:N` citation at a rule names its source in this repository's history. The wire
@@ -603,8 +602,8 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	}
 }
 
-// harnessFrames is the pump's join of the harness's rpc_chunk sequences: the sequence in hand,
-// and its lines read so far, which the pump holds until the sequence is whole.
+// harnessFrames is the pump's join of the harness's rpc_chunk sequences. It keeps the sequence in
+// hand, and the lines of it read so far, which the pump holds until the sequence is whole.
 type harnessFrames struct {
 	chunks shimwire.Reassembler
 	held   [][]byte
@@ -618,7 +617,7 @@ func (h *harnessFrames) take() [][]byte {
 }
 
 // harnessLine takes one line of the harness's stdout. A sequence the harness broke or abandoned
-// goes on as it came, as every line did before the pump joined them: the daemon's reader drops it
+// goes on as it came, as every line did before the pump joined them. The daemon's reader drops it
 // too.
 func (s *shim) harnessLine(h *harnessFrames, line []byte) {
 	frame, err := shimwire.Decode(line)
@@ -1026,7 +1025,7 @@ func (o *outbox) write(frame [][]byte) {
 		o.backlog = o.backlog[1:]
 		if !o.dropped {
 			o.dropped = true
-			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d", backlogLimit)
+			o.log.Printf("[worker-shim] no daemon client is connected, so the oldest frames beyond the newest %d lines are dropped", backlogLimit)
 		}
 	}
 }

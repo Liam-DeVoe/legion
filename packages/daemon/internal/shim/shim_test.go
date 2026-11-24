@@ -156,6 +156,10 @@ func fakeOMP() int {
 			}
 		case "fake_end_turn":
 			emit(`{"type":"agent_end"}`)
+		case "fake_end_turn_chunked":
+			// An agent_end carries the whole transcript, so Oh My Pi chunks a long one.
+			end := `{"type":"agent_end","messages":[{"pad":"` + strings.Repeat("x", 2<<20) + `"}]}`
+			emit(chunkLines([]byte(end))...)
 		case "fake_go":
 			holds.wentOn()
 		case "get_state":
@@ -326,8 +330,8 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 	return nil
 }
 
-// messageEnd is an assistant message_end as Oh My Pi writes one, of size bytes where size is not
-// 0: its text fills the frame to that size.
+// messageEnd is an assistant message_end as Oh My Pi writes one. Where size is not 0, its text
+// fills the frame to size bytes.
 func messageEnd(provider, model, stopReason string, size int) []byte {
 	head := fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":%q,"model":%q,"stopReason":%q,"content":[{"type":"text","text":"`, provider, model, stopReason)
 	const tail = `"}]}}`
@@ -338,8 +342,8 @@ func messageEnd(provider, model, stopReason string, size int) []byte {
 	return []byte(head + text + tail)
 }
 
-// stateAnswer is Oh My Pi's answer to get_state id: the session's model where model names a
-// provider and an id, and none where it does not. Where size is more than the answer's own, a pad
+// stateAnswer is Oh My Pi's answer to get_state id. It names the session's model where model names
+// a provider and an id, and none where it does not. Where size is more than the answer's own, a pad
 // fills it to size bytes. An answer over the line limit is an rpc_chunk sequence.
 func stateAnswer(id, model string, size int) []string {
 	data := map[string]any{"isStreaming": false}
@@ -1396,7 +1400,7 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 		}
 		p.expect(t, shimwire.AgentEnd{})
 	}
-	if got := sh.log.count("dropping oldest frames beyond the last 1000"); got != 1 {
+	if got := sh.log.count("the oldest frames beyond the newest 1000 lines are dropped"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
 	clock.idle(t)
