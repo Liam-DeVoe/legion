@@ -151,21 +151,39 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 // row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
 // merged. The conflict clause writes every column either caller means to write, so a second
 // row for the same pull request leaves none of them as the first write left it.
+//
+// A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
+// pull requests the one of the higher number merged later, as every caller means, and the rule
+// this build judges by (delivery.AttributionRuleVersion), so a read that orders merged rows has
+// no row to ask GitHub about. A row that is not merged holds no time of merge, and its rule is
+// the column's default or the one it held.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
 	if issueKey != "" {
 		attributed = &issueKey
 	}
+	var mergedAt *time.Time
+	rule := 0
+	if state == "merged" {
+		at := mergedHeadsAt.Add(time.Duration(number) * time.Second)
+		mergedAt, rule = &at, delivery.AttributionRuleVersion
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now())
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at,
+			merged_at, attribution_rule)
+		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now(), $7, $8)
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, baseRef, state, attributed); err != nil {
+			state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
+			attribution_rule = case when excluded.state = 'merged'
+				then excluded.attribution_rule else pull_request_heads.attribution_rule end
+	`, repo, number, sha, baseRef, state, attributed, mergedAt, rule); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
+
+// mergedHeadsAt is the time writeHeadOnBase's merged rows count their merge from.
+var mergedHeadsAt = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // recordMerge records one issue's merged pull request as production records a merge, through
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
@@ -677,17 +695,26 @@ func resultsGitHubAnswering(
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
 // checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
-// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404. routes are further
+// routes the stand-in answers (gitHubRoute), such as a pull request's own read.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns, routes...))
 	return handler, database, served
+}
+
+// gitHubRoute is one more route a results stand-in answers (resultsGitHubOptions): a
+// http.ServeMux pattern and its handler.
+type gitHubRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
@@ -699,6 +726,7 @@ func resultsGitHubOptions(
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -755,6 +783,9 @@ func resultsGitHubOptions(
 	})
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
+	}
+	for _, route := range routes {
+		mux.HandleFunc(route.pattern, route.handler)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
@@ -3413,13 +3444,13 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up.
+// or a hold that keeps every read waiting until its caller gives up (ciHeldRead).
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
-	hold      bool
+	hold      *ciHeldRead
 	asked     map[string]int
 }
 
@@ -3447,11 +3478,15 @@ func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.fault, f.faultBody = status, body
 }
 
-// holdEveryRead makes every read wait until its caller gives up.
-func (f *checkRunsFake) holdEveryRead() {
+// holdEveryRead makes every read wait until its caller gives up, or until t ends, and answers the
+// hold, which says when a read reached GitHub and when its caller gave up.
+func (f *checkRunsFake) holdEveryRead(t *testing.T) *ciHeldRead {
+	t.Helper()
+	held := newCIHeldRead(t)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hold = true
+	f.hold = held
+	return held
 }
 
 // reads is how many pages of sha's check runs GitHub has been asked for.
@@ -3484,11 +3519,8 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.asked[sha]++
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
-	if hold {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
+	if hold != nil {
+		hold.wait(r)
 		return
 	}
 	if fault != 0 {
@@ -3555,14 +3587,6 @@ func issueOfProject(t *testing.T, handler http.Handler, project, title, verifica
 	key := decodeBody[model.Issue](t, response).Key
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
 	return key
-}
-
-// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
-func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
-	t.Helper()
-	before := ciReadDeadline
-	ciReadDeadline = deadline
-	t.Cleanup(func() { ciReadDeadline = before })
 }
 
 // ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
@@ -3717,13 +3741,22 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		"status 500", "Server Error at the check runs of "+headCommit)
 
 	fake.failWith(0)
-	fake.holdEveryRead()
-	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
-	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	// A read held until its caller gives up: the test ends the read's bound as ciReadDeadline would,
+	// once the read has reached GitHub, so no clock decides whether the read ended in time.
+	bounds := holdCIReadBounds(t)
+	held := fake.holdEveryRead(t)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+	}()
+	ciAwait(t, "the read to reach GitHub", held.entered)
+	bounds.expire(t)
+	ciAwait(t, "the held read to see its context end", held.cancelled)
+	response := ciAwait(t, "the results read to answer", answered)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
 	}
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, response), "c1"), "no answer within "+ciReadDeadline.String())
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {

@@ -16569,6 +16569,9 @@
           "learned_at": {
             "$ref": "#/components/schemas/BasisLearnedAt"
           },
+          "merged": {
+            "type": "boolean"
+          },
           "pull_request": {
             "type": "integer"
           },
@@ -16688,10 +16691,19 @@
           "case": {
             "type": "string"
           },
+          "commit": {
+            "type": "string"
+          },
           "detail": {
             "type": "string"
           },
           "line": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "result": {
             "type": "string"
           },
           "run": {
@@ -16726,9 +16738,28 @@
             ],
             "type": "string"
           },
+          "reason": {
+            "enum": [
+              "pass_and_fail",
+              "read_failed"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "roles": {
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "subjects": {
+            "items": {
+              "$ref": "#/components/schemas/PassStandsSubject"
             },
             "type": "array"
           }
@@ -16795,6 +16826,9 @@
             "type": "string"
           },
           "negative_control": {
+            "type": "string"
+          },
+          "not_counted": {
             "type": "string"
           },
           "observed": {
@@ -26189,6 +26223,50 @@
           "state",
           "counts",
           "cursor"
+        ],
+        "type": "object"
+      },
+      "PassStandsSubject": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "yes",
+              "no",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/CheckBasis"
+          },
+          "ci": {
+            "$ref": "#/components/schemas/CheckCI"
+          },
+          "reason": {
+            "enum": [
+              "fail",
+              "no_result",
+              "pass_and_fail",
+              "read_failed"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "basis",
+          "answer"
         ],
         "type": "object"
       },
