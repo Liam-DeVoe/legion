@@ -332,8 +332,11 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// role's start waiting on that one restore. Its jj and git start through the guard: they are
 	// this process's children, and the reaper would otherwise take an exit before the restore's
 	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
-	// `wait: no child processes` or `waitid: no such process`) and puts nothing back.
-	restore := newBundleRestore(guard.starter(), cfg.Workspace)
+	// `wait: no child processes` or `waitid: no such process`) and puts nothing back. A reviewer's
+	// clone maps back to its issue's workspace (workspace.IssueWorkspace), which every other role
+	// works in, so the restore and its in-use record are the issue workspace's whichever role's
+	// workspace the launcher was given.
+	restore := newBundleRestore(guard.starter(), workspace.IssueWorkspace(cfg.Workspace))
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through
