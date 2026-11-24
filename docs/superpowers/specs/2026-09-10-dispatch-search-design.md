@@ -20,8 +20,8 @@ None. Closed and done issues are included in results (dimmed by status) and in t
 
 | Requirement | Provenance |
 | --- | --- |
-| Keyword search across every issue and document, fast, from anywhere in the app | requested 2026-09-10: a fast global keyword search across all documents and issues, to find a word used somewhere in an issue |
-| Agents get the same search as a tool, and creation is gated on it | requested 2026-09-10: search for agents too, so they file fewer duplicate issues |
+| Keyword search across every issue and document, fast, from anywhere in the app | Sami requested fast global search for humans and agents on 2026-09-10 (https://github.com/cybermonklabs/legion/pull/888#pullrequestreview-5172563196) |
+| Agents get the same search as a tool, and creation is gated on it | The same record covers agent search and the duplicate-creation gate |
 | Corpus = issues (key, title), latest version of every `kind='doc'` artifact, comments, asks (question + answer text), messages | inferred: these are the places a word is written in Dispatch; refs/events restate them |
 | Postgres full-text search in the existing database; no second service | inferred: ~100 documents, one Postgres already backed up; Sami's CLAUDE.md rule: "Agents have hand-rolled every one of those here while the boring standard mechanism sat unused" (https://github.com/sjawhar/dotfiles/blob/f52de18367896bee15b5b23248e8b5a86d90fc17/.claude/CLAUDE.md#L34) |
 | Results carry `href` deep links so a hit is one click from the text | inferred: not knowing where a word was written is a navigation problem |

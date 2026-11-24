@@ -29,9 +29,11 @@ runbook prescribing it for the LEGION deployment — move the two App keys to th
 relaunch the daemon from a terminal pane, rotate. The store choice (human tier now / wait for
 Kubernetes / second Unix user) needed Sami's risk appetite and his dotfiles, so it was an open
 "Decisions needed" item while the tree ran. PR #1017 merged with the runbook stating the human
-tier as this deployment's instructions. The answer was then **Wait for Kubernetes** (2026-09-13
-13:46 UTC, after a round of clarification), and a second, docs-only PR (#1033) had to correct the
-runbook. Three things a future architect and implementer should take from it.
+tier as this deployment's instructions. On 2026-09-13 Sami decided that the GitHub App keys would
+stay agent-tier until the daemon ran in its own Kubernetes pod
+(https://github.com/cybermonklabs/legion/pull/1033#pullrequestreview-5191338654), and a second,
+docs-only PR (#1033) corrected the runbook. Three things a future architect and implementer should
+take from it.
 
 ## 1. With `gates.design: off`, the design gate is not a human channel
 
