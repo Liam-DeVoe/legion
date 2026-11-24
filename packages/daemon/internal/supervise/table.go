@@ -424,6 +424,15 @@ type RequestSpawn struct {
 	// Start is the work a workflow start spawns the claim for, which the spawn judges again under
 	// the machine's lock before it launches (StartWork); the zero value is judged by nothing.
 	Start StartWork
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
+	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
+	// the zero time for every caller but one: the boot's relaunch of the launches the previous
+	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
+	// one in the order their claims' work was owed before it posts them all at once, so the queue
+	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
+	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	Turn time.Time
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -2558,12 +2567,14 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
+// spawn launches a queued claim, at the turn its caller reserved when it carries one
+// (RequestSpawn.Turn), and otherwise at the turn the gate reserves.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	start := ev.(RequestSpawn).Start
-	if err := m.startHolds(ctx, start); err != nil {
+	spawn := ev.(RequestSpawn)
+	if err := m.startHolds(ctx, spawn.Start); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), start, nil)
+	return m.revive(ctx, exemptWake(ev), spawn.Turn, spawn.Start, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2696,7 +2707,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), StartWork{}, nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, StartWork{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2754,7 +2765,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, resume.Start, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2812,7 +2823,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), start, func() {
+	return m.revive(ctx, exemptWake(ev), time.Time{}, start, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -3038,7 +3049,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", StartWork{}, nil)
+	return m.revive(ctx, d.ID == "", time.Time{}, StartWork{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
