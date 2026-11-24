@@ -210,9 +210,11 @@
 #            check, runs; release.yaml's publish job, which names the
 #            archives it checks after them; and go-release-notices.sh, which
 #            writes each target's notices in lint and in ci-caches.yaml. The
-#            one other reader is .github/scripts/ci_job_reads.py, the model
-#            of which go commands CI runs, which reads the list's legion key
-#            itself to name the go commands of those scripts. Each entry must
+#            one other reader is .github/scripts/legion_targets.py, which
+#            .github/scripts/ci_job_reads.py, the model of which go commands
+#            CI runs, reads the list through; it refuses what this refuses, by
+#            the same rule, and release-push.test.sh gives both readers each
+#            file it gives this. Each entry must
 #            be two names of lower-case letters and digits on each side of
 #            one /, as every GOOS and GOARCH go knows is: go builds an empty
 #            GOOS or GOARCH for the host's own and refuses a padded one only
