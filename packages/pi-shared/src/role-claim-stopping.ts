@@ -6,8 +6,10 @@
  * Why a role claim is refused once its session's stop has begun (R24 of dispatch://INFRA-3589):
  * the Envoy entry's claim throws it, for the bridge and for `envoy_role_set`, and so does the
  * bridge's notice subscription that lasts while the session holds a role (`whileHolding`), and
- * claude-envoy's `envoy_role_set`. The stop hands back every role the process holds and deletes
- * the session's record next.
+ * claude-envoy's `envoy_role_set`. The two hosts stop differently. The Envoy entry's stop hands
+ * back every role the process holds, then deletes the session's record. claude-envoy's stop hands
+ * back no role: it deletes the session's record, and a role claim it held stands until the
+ * listener's live window passes with no renewal.
  */
 export class RoleClaimStoppingError extends Error {
   override readonly name = "RoleClaimStoppingError";

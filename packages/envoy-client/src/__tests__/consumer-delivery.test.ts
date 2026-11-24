@@ -10,12 +10,6 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
-  type InboundOutage,
-  type InboundOutageKind,
-  type InboundUnavailable,
-  inboundRestoredNoticeText,
-  inboundUnavailable,
-  inboundUnavailableNoticeText,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
@@ -27,6 +21,14 @@ import {
   envoyNoticeText,
   type LedgerSnapshot,
 } from "../delivery-ledger";
+import {
+  type InboundOutage,
+  type InboundOutageKind,
+  type InboundUnavailable,
+  inboundRestoredNoticeText,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+} from "../inbound-outage";
 import { registerWithRelay } from "../relay-registration";
 import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 

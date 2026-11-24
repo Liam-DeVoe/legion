@@ -9,7 +9,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 
 - `extensions/envoy.ts`: the plugin's one entry.
 
-- `src/registration-state.ts`: the session's registration and role state, and its two queues; `src/task-queue.ts`: the queues themselves, each task's deadline, and the handle a queued task acts through.
+- `src/registration-state.ts`: the session's queues, deadlines, and registration and role state.
 
 - `src/envoy-session.ts`: the sessions each top-level instance publishes, through which a `task` subagent finds its parent's reply address.
 
@@ -22,7 +22,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 - Build every tool schema field through the injected `pi.zod`:
   Oh My Pi's converter reads internals only its own Zod produces, and one field from another Zod fails the whole extension load.
 
-- Registration and role state change only through the two serial queues of `src/registration-state.ts` (built in `src/task-queue.ts`), the reconcile pass (`passes`) and role moves (`roleMoves`), and after each await a pass, and any branch that spends a person's delivery attempt, reads `sessionOpen` again: the session can change at any await.
+- Registration and role state change only through the two serial queues of `src/registration-state.ts`, the reconcile pass (`passes`) and role moves (`roleMoves`), and after each await a pass, and any branch that spends a person's delivery attempt, reads `sessionOpen` again: the session can change at any await.
 
 - Read role lookups and role records through `roleHeldBy` and `mayActOnRoleRecord` (`@legion/envoy-client/transport`), shared with claude-envoy.
 

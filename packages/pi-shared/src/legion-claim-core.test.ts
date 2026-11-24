@@ -438,6 +438,42 @@ test("a regain whose claims/ready fails after the host's signal aborted writes n
   expect(lines).toEqual([]);
 });
 
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
+// the next regain, which starts after the stop, sends no ready. The control is the same two
+// regains with no stop: each sends its ready and writes its line.
+test("a regain whose claims/ready answers after the host's signal aborted writes nothing, and a regain after the abort sends no ready; the control with no abort writes both lines", async () => {
+  const twoRegains = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        // The boot's ready is the first; the first regain's ready is the second.
+        if (stops && readies === 2) stopping.abort();
+        return new Response(null, { status: 204 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    await regain()?.(claimToken, "reregistered");
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), steps, lines };
+  };
+
+  const stopped = await twoRegains(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.steps).not.toContain("stop");
+  expect(stopped.lines).toEqual([]);
+
+  const control = await twoRegains(false);
+  expect(control.readies).toHaveLength(3);
+  expect(control.lines).toEqual([
+    `re-ran claims/ready after role ${claimToken} was reclaimed`,
+    `re-ran claims/ready after role ${claimToken} was reregistered`,
+  ]);
+});
+
 test("the name is taken at the host's first-turn callback and not before it", async () => {
   const { host, steps, firstTurn, regain } = claimHost({});
 

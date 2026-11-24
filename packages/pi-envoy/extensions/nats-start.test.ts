@@ -8,11 +8,9 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  deliverSubject,
-  INBOUND_FIRST_OPEN_BOUND_MS,
-} from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { natsFailureReason } from "@legion/envoy-client/errors";
+import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
 import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { logger } from "@oh-my-pi/pi-utils";

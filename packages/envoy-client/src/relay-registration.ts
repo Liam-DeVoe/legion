@@ -2,12 +2,13 @@
 //
 // One registration of a session that holds a relay, as every host makes it: the topics the
 // listener will store for the session, the relay's delivery request, the outage told once
-// (`inboundUnavailable`, `./consumer-delivery`), and, where an edge listener refuses topics of no
+// (`inboundUnavailable`, `./inbound-outage`), and, where an edge listener refuses topics of no
 // project of the session's token, exactly those topics dropped, the session told which, and the
 // rest registered again.
 
-import type { ConsumerDelivery, InboundUnavailable } from "./consumer-delivery";
+import type { ConsumerDelivery } from "./consumer-delivery";
 import { envoyNoticeText } from "./delivery-ledger";
+import type { InboundUnavailable } from "./inbound-outage";
 import { registrationTopics } from "./stream-topics";
 import { type DeliveryRequest, EnvoyApiError, expandSubscriptionTopics } from "./transport";
 

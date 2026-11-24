@@ -61,9 +61,10 @@ export interface LegionClaimHost {
   readonly roleClaimRetryFirstDelayMs?: number;
   /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
    *  from then on, a claim the listener answered 503 is not made again after it, a refused
-   *  `claims/register` is not said, and a failed `claims/ready`, at the boot or after a role
-   *  regain, is neither said nor sent again (`callReadyWithRetry`, and the regain hook's own
-   *  line). */
+   *  `claims/register` is not said, and a failed `claims/ready` at the boot is neither said nor
+   *  sent again (`callReadyWithRetry`). A role regain from then on writes nothing: a regain that
+   *  starts after the abort sends no `claims/ready`, and a regain whose `claims/ready` answers
+   *  after it writes no line, whether that ready passed or failed. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
@@ -164,12 +165,16 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     await callReadyWithRetry("claims/ready", () => daemon.ready(ready), host);
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
+      // Once the host's stop began, a regain asks the daemon nothing and says nothing: the stop
+      // ends the agent itself. The stop is read again after the ready, which can answer after it.
+      const stopped = (): boolean => host.signal?.aborted === true;
+      if (stopped()) return;
       try {
         await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready), host);
+        if (stopped()) return;
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
-        // A ready the host's stop overtook says nothing: the stop ends the agent itself.
-        if (host.signal?.aborted === true) return;
+        if (stopped()) return;
         host.log(
           `claims/ready after role ${role} was ${reason} failed; the daemon's queued task stays undelivered until the next regain or boot: ${messageFor(error)}`
         );

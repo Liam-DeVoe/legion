@@ -1,4 +1,4 @@
-import type { InboundOutageKind } from "@legion/envoy-client/consumer-delivery";
+import type { InboundOutageKind } from "@legion/envoy-client/inbound-outage";
 
 /** The log line and the pane note of an outage of one kind, each with the failure's message. */
 interface OutageLines {

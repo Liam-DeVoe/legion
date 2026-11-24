@@ -1,4 +1,4 @@
-import type { InboundOutageKind } from "@legion/envoy-client/consumer-delivery"
+import type { InboundOutageKind } from "@legion/envoy-client/inbound-outage"
 
 /** The stderr line of an outage of one kind, with the failure's message, and what the session is
  *  told of it, as the line of a notice that could not be shown names it. */

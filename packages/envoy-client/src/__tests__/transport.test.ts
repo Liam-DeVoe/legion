@@ -14,17 +14,15 @@ import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-int
 import { delivered } from "../../test/delivered";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
-import {
-  createConsumerDelivery,
-  type InboundOutageKind,
-  inboundUnavailable,
-  inboundUnavailableNoticeText,
-  RelayHeader,
-  type RelayReply,
-} from "../consumer-delivery";
+import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
 import { DedupeIdentitySchema, renderInbound } from "../delivery";
 import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
+import {
+  type InboundOutageKind,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+} from "../inbound-outage";
 import { machineID } from "../machine";
 import { registerWithRelay } from "../relay-registration";
 import type { TmuxPlace } from "../tmux-place";

@@ -2,7 +2,8 @@ import { expect, setSystemTime, spyOn, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { BUS_UNANSWERED_PREFIX, legacyAgentSubject } from "@legion/contracts"
-import { deliverSubject, INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/consumer-delivery"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
+import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,

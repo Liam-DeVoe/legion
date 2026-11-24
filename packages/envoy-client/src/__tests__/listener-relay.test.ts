@@ -27,8 +27,9 @@ import {
   until,
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
-import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
+import { createConsumerDelivery } from "../consumer-delivery";
 import { messageFor } from "../errors";
+import { inboundUnavailable } from "../inbound-outage";
 import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
 import { registerWithRelay } from "../relay-registration";
 

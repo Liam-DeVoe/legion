@@ -4,8 +4,8 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { BUS_UNANSWERED_PREFIX, legacyDispatchIssueSubject } from "@legion/contracts";
-import * as consumerDeliveryModule from "@legion/envoy-client/consumer-delivery";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -740,9 +740,7 @@ describe("consumer delivery", () => {
     natsState.failConnects = 99;
     const session = await bootConsumer("consumer-start-outage", { withoutRelay: true });
     const start = Date.now();
-    // A namespace read, so this file still loads at a commit whose module lacks the export.
-    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
-    const pastBound = start + FIRST_OPEN_BOUND_MS + 1_000;
+    const pastBound = start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000;
     try {
       setSystemTime(new Date(pastBound));
       await session.tickWithoutNats();
@@ -796,7 +794,6 @@ describe("consumer delivery", () => {
     natsState.failConnects = 99;
     const session = await bootConsumer("consumer-start-race-logged", { withoutRelay: true });
     const start = Date.now();
-    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
     const found = () => logged.filter((line) => line.includes("holds no relay subject"));
     const told = () => ({
       cards: session.cards("Envoy inbound unavailable").length,
@@ -823,7 +820,7 @@ describe("consumer delivery", () => {
 
       // Past the bound the session is told once: the notice's card, its pane note, and its own
       // log line.
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await session.tickWithoutNats();
       expect(told()).toEqual({ cards: 1, notes: 1 });
       expect(
@@ -971,14 +968,12 @@ describe("consumer delivery", () => {
       refuse: { status: 503, error: UNRECORDED },
     });
     const start = Date.now();
-    // A namespace read, so this file still loads at a commit whose module lacks the export.
-    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
     try {
       await until(() => session.registrations.length >= 2, "the first registration's retry");
       await settle();
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 16_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 16_000));
       await refusedTick(session);
       const told = session.cards("Envoy inbound unavailable");
       expect(told).toHaveLength(1);
@@ -988,7 +983,7 @@ describe("consumer delivery", () => {
       expect(told[0]?.content).not.toContain("receives none");
 
       session.accept();
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 31_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 31_000));
       await session.tick();
       expect(session.cards("Envoy inbound restored")).toHaveLength(1);
     } finally {
@@ -1009,12 +1004,11 @@ describe("consumer delivery", () => {
       refuse: { status: 503, error: UNRECORDED },
     });
     const start = Date.now();
-    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
     const claims = /receive[sd]? (nothing|again)|inbound messages are/;
     try {
       await until(() => session.registrations.length >= 2, "the first registration's retry");
       await settle();
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
       expect(session.notifications).toContain(
         `envoy: this session's registration is not recorded for certain (${UNRECORDED}), and the session registers again at every heartbeat`
@@ -1024,7 +1018,7 @@ describe("consumer delivery", () => {
       );
 
       session.accept();
-      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 16_000));
+      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 16_000));
       await session.tick();
       const restored = session.cards("Envoy inbound restored");
       expect(restored).toHaveLength(1);

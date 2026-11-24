@@ -1,9 +1,10 @@
 package main
 
 // relay_socket_fixture_test.go is the relay socket's test plumbing, shared by its in-process rows
-// (relay_socket_test.go) and its live rows (relay_socket_live_test.go): the in-process rig of two
-// edge replicas, the session's socket client and the frames it decodes, and the helpers that
-// publish a relay frame and read what a replica holds.
+// (relay_socket_test.go, relay_socket_reconnect_test.go) and its live rows
+// (relay_socket_live_test.go): the in-process rig of two edge replicas, the session's socket
+// client and the frames it decodes, and the helpers that publish a relay frame and read what a
+// replica holds.
 
 import (
 	"bytes"

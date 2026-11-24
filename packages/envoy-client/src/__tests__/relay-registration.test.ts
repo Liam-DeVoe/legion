@@ -18,12 +18,12 @@ import {
 import { startRelaySocketStandIn } from "../../test/relay-socket-stand-in";
 import { consumerDelivery, projectRefusal } from "../../test/subscribe-answer";
 import { brokerCredential } from "../broker-credential";
+import { createConsumerDelivery } from "../consumer-delivery";
 import {
-  createConsumerDelivery,
   type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
-} from "../consumer-delivery";
+} from "../inbound-outage";
 import {
   NoRelaySubjectError,
   type RegisteringRelay,

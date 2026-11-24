@@ -58,7 +58,7 @@
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
-import { deliverSubject, type InboundUnavailable, type RelayHeaders } from "./consumer-delivery";
+import { deliverSubject, type RelayHeaders } from "./consumer-delivery";
 import { LoggableError, messageFor } from "./errors";
 import type {
   InboundConnection,
@@ -66,6 +66,7 @@ import type {
   InboundStatus,
   InboundSubscription,
 } from "./inbound-connection";
+import type { InboundUnavailable } from "./inbound-outage";
 import { NATS_MAX_PINGS_OUT, NATS_PING_INTERVAL_MS } from "./nats-connection";
 import { FOLLOW_DEADLINE_MS, TRADE_DEADLINE_MS } from "./nats-credential";
 
