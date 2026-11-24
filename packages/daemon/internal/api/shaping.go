@@ -578,6 +578,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: storeFailureContract, issue: withoutStoreFailure, dropped: "the claim views' storeFailure"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1064,7 +1065,7 @@ const intakeGiveUpsContract = 228
 // no key of the state), so a caller from that contract to 245 is served 228's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
-// is, and it is the last number of answers.go's SupportedContracts, which names the constant.
+// is, and answers.go's SupportedContracts names the constant.
 const podHoldContract = 246
 
 // withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
@@ -1075,6 +1076,21 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 	issue.PodHold = nil
 	return issue, moved
 }
+
+// storeFailureContract is the daemon contract that added each claim view's `storeFailure`, the
+// session store failure the claim's session last reported (version.go's 249,
+// dispatch://INFRA-5660), and the request field it is read from, `activity.storeFailure` on
+// `POST /legion/v1/claims/activity`. A plugin before it is served every claim view without the
+// key (withoutStoreFailure, its row of stateNarrowings): its reader's claim view is a strict
+// object, which would refuse the whole state for a key it does not name. podHoldContract stands
+// below it with no row of stateNarrowings between the two, so a caller from 246 to 248 is served
+// 246's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason; it is that list's last number.
+const storeFailureContract = 249
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1830,6 +1846,16 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 func withoutLeakCheckCause(issue Issue) (Issue, bool) {
 	return withEachClaimView(issue, func(view ClaimView) ClaimView {
 		view.LeakCheckCause = ""
+		return view
+	})
+}
+
+// withoutStoreFailure is the issue with no claim view carrying `storeFailure`, the one key
+// storeFailureContract added to this route; the rest of that contract is a request field, which no
+// older plugin sends.
+func withoutStoreFailure(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.StoreFailure = nil
 		return view
 	})
 }

@@ -2803,13 +2803,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
+  // Five bands stand above 199: the repositories block's at 202, contract 220's, which takes
   // `plan` off each assignment, so the golden's rows are compared without it, the intake's
-  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the pod hold's at 246,
-  // which leaves `podHold` off every issue (`withoutPodHold`). One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
-  // row is served here without its `source`, every other field of it and every other row as the
-  // state golden holds them.
+  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, the pod hold's at 246, which
+  // leaves `podHold` off every issue (`withoutPodHold`), and the session store failure's at 249,
+  // which takes `storeFailure` off each claim view (`withoutStoreFailure`). One value strip stands
+  // above 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract
+  // 213, so that row is served here without its `source`, every other field of it and every other
+  // row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2833,19 +2834,42 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
+  const withoutStoreFailure = (view: unknown): unknown => {
+    if (typeof view !== "object" || view === null) return view;
+    const { storeFailure: _storeFailure, ...kept } = view as Record<string, unknown>;
+    return kept;
+  };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       const { podHold: _podHold, ...kept } = issue;
+      const workers = kept.workers as
+        | Record<string, { readonly claim?: unknown } & Record<string, unknown>>
+        | undefined;
       return [
         key,
-        kept.assignments === undefined
-          ? kept
-          : {
-              ...kept,
-              assignments: (kept.assignments as Record<string, unknown>[]).map(
-                ({ plan: _plan, ...row }) => row
-              ),
-            },
+        {
+          ...kept,
+          ...(kept.architect === undefined ? {} : { architect: withoutStoreFailure(kept.architect) }),
+          ...(workers === undefined
+            ? {}
+            : {
+                workers: Object.fromEntries(
+                  Object.entries(workers).map(([role, worker]) => [
+                    role,
+                    worker.claim === undefined
+                      ? worker
+                      : { ...worker, claim: withoutStoreFailure(worker.claim) },
+                  ])
+                ),
+              }),
+          ...(kept.assignments === undefined
+            ? {}
+            : {
+                assignments: (kept.assignments as Record<string, unknown>[]).map(
+                  ({ plan: _plan, ...row }) => row
+                ),
+              }),
+        },
       ];
     })
   );
