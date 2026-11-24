@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"slices"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -383,22 +382,28 @@ func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 }
 
 // TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused: a code that lapses no later than its first
-// poll, the broker's interval on, could never be polled, so Login refuses it at once, naming the
-// time left of the code and the interval, starts no poll and records no login, rather than wait the
-// code out and record it expired. The interval named is the broker's where it is past the bounds,
-// and the bounds' default where the broker names none.
+// poll, the broker's interval on, could never be polled, so Login refuses it at once, before any
+// code is returned, starts no poll and records no login, rather than wait the code out and record
+// it expired; one that had already lapsed is refused so too. The line names the interval the
+// broker named, or none, with the one used where the bounds raised it, and what ends the code
+// first: the time left of the broker's lifetime, or the hour this machine polls a code at most
+// where the broker names a longer lifetime or none. It names what must change at the broker, not
+// asking again, which would meet the same answer.
 func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
-	lapse := regexp.MustCompile(`^the broker's code lapses in (\d+) s, and its interval puts the first poll (\d+) s on, so no poll could reach it$`)
+	const fix = `, so the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than both its codes' lifetime and an hour$`
 	for _, c := range []struct {
-		name                string
-		fields              map[string]any
-		leastLeft, mostLeft int // the seconds of the code the line may name as left
-		interval            string
+		name   string
+		fields map[string]any
+		answer string // what the line says the broker answered, a regular expression
 	}{
-		{"an interval as long as the code", map[string]any{"interval": 900}, 890, 900, "900"},
-		{"an interval of a day", map[string]any{"interval": 86400}, 890, 900, "86400"},
-		{"an interval past what a time.Duration holds", map[string]any{"interval": int64(1e12)}, 890, 900, "1000000000000"},
-		{"no interval and a code of 3 s", map[string]any{"interval": nil, "expires_in": 3}, 1, 3, "5"},
+		{"an interval as long as the code", map[string]any{"interval": 900}, `a device code that lapses in (89\d|900) s, with a poll interval of 900 s`},
+		{"an interval of a day", map[string]any{"interval": 86400}, `a device code that lapses in (89\d|900) s, with a poll interval of 86400 s`},
+		{"an interval past what a time.Duration holds", map[string]any{"interval": int64(1e12)}, `a device code that lapses in (89\d|900) s, with a poll interval of 1000000000000 s`},
+		{"no interval and a code of 5 s", map[string]any{"interval": nil, "expires_in": 5}, `a device code that lapses in [1-5] s, with no poll interval, so one of 5 s`},
+		{"a negative interval and a code of 1 s", map[string]any{"interval": -3, "expires_in": 1}, `a device code that lapses in 1 s, with a poll interval of -3 s, so one of 1 s`},
+		{"a code of two hours and an interval past the hour", map[string]any{"interval": 5000, "expires_in": 7200}, `a poll interval of 5000 s, and this machine polls a device code for an hour at most`},
+		{"no lifetime and an interval of an hour", map[string]any{"interval": 3600, "expires_in": nil}, `a poll interval of 3600 s, and this machine polls a device code for an hour at most`},
+		{"a code that had already lapsed", map[string]any{"expires_in": -5}, `a device code that had lapsed by the time its answer arrived, with a poll interval of 1 s`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeBroker(t)
@@ -411,12 +416,8 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Login answered the code %q, want a refusal", code)
 			}
-			said := lapse.FindStringSubmatch(err.Error())
-			if said == nil {
-				t.Fatalf("Login refused with %q, want the code's time left and the interval named", err)
-			}
-			if left, _ := strconv.Atoi(said[1]); left < c.leastLeft || left > c.mostLeft || said[2] != c.interval {
-				t.Fatalf("Login named %s s left and an interval of %s s, want %d to %d s and %s s", said[1], said[2], c.leastLeft, c.mostLeft, c.interval)
+			if want := regexp.MustCompile(`^the broker answered ` + c.answer + fix); !want.MatchString(err.Error()) {
+				t.Fatalf("Login refused with %q, want it to match %s", err, want)
 			}
 			// Login records the login's state before it starts a poll, so no state is no poll.
 			if state := b.LoginStatus().State; state != "" {

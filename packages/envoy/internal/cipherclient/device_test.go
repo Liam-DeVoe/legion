@@ -269,23 +269,26 @@ func TestASignInWhoseCodeLapsesBeforeItsFirstPollTimesOut(t *testing.T) {
 // included, as the TypeScript device login holds them. An interval past a minute is kept, as RFC
 // 8628 section 3.5 has a client wait at least the interval named, up to the hour, past which no
 // code could be polled before it lapses. A lifetime inside the hour, or one already past, is kept.
+// It reports the hour as what ends the code where the server named a longer lifetime or none, so
+// a refusal names that limit and not the server's.
 func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 	now := time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		interval, wantInterval int64
 		expiry, wantExpiry     time.Time
+		hourEnds               bool
 	}{
-		{-3, 1, now.Add(10 * time.Minute), now.Add(10 * time.Minute)},
-		{0, 5, time.Time{}, now.Add(time.Hour)},
-		{30, 30, now.Add(2 * time.Hour), now.Add(time.Hour)},
-		{90, 90, now.Add(time.Hour), now.Add(time.Hour)},
-		{86400, 3600, now.Add(-time.Minute), now.Add(-time.Minute)},
-		{1e12, 3600, now.Add(time.Hour), now.Add(time.Hour)},
+		{-3, 1, now.Add(10 * time.Minute), now.Add(10 * time.Minute), false},
+		{0, 5, time.Time{}, now.Add(time.Hour), true},
+		{30, 30, now.Add(2 * time.Hour), now.Add(time.Hour), true},
+		{90, 90, now.Add(time.Hour), now.Add(time.Hour), false},
+		{86400, 3600, now.Add(-time.Minute), now.Add(-time.Minute), false},
+		{1e12, 3600, now.Add(time.Hour), now.Add(time.Hour), false},
 	} {
 		da := &oauth2.DeviceAuthResponse{Interval: c.interval, Expiry: c.expiry}
-		BoundDeviceAuth(da, now)
-		if da.Interval != c.wantInterval || !da.Expiry.Equal(c.wantExpiry) {
-			t.Errorf("an interval of %d and an end %v held to %d and %v, want %d and %v", c.interval, c.expiry, da.Interval, da.Expiry, c.wantInterval, c.wantExpiry)
+		hourEnds := BoundDeviceAuth(da, now)
+		if da.Interval != c.wantInterval || !da.Expiry.Equal(c.wantExpiry) || hourEnds != c.hourEnds {
+			t.Errorf("an interval of %d and an end %v held to %d and %v, the hour ending it %v, want %d and %v, %v", c.interval, c.expiry, da.Interval, da.Expiry, hourEnds, c.wantInterval, c.wantExpiry, c.hourEnds)
 		}
 	}
 	// The end is one reading of the monotonic clock, though x/oauth2 dates it from the wall clock

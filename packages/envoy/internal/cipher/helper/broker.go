@@ -474,9 +474,9 @@ func machineFileFrom(key *ecdsa.PrivateKey, tok *oauth2.Token) (*MachineFile, er
 // user_code is a 2xx the helper could not read, so it is unknown too. Its interval and lifetime
 // are held to the device grant's bounds (cipherclient.BoundDeviceAuth) before the poll starts. A
 // code that lapses no later than its first poll, the broker's interval on, could never be polled,
-// so Login refuses it at once, naming both, rather than wait the code out and record it expired;
-// a code that has already lapsed is polled no more and records "expired". The poll keeps the
-// client it always had, with no bound: it runs after the op has answered.
+// so Login refuses it at once, before any code is returned (unpollableCode), rather than wait the
+// code out and record it expired; a code that has already lapsed is refused so too. The poll
+// keeps the client it always had, with no bound: it runs after the op has answered.
 func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	b.loginMu.Lock()
 	defer b.loginMu.Unlock()
@@ -511,16 +511,43 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", reach.settle(errors.New("broker returned no device_code/user_code"))
 	}
 	named := da.Interval
-	cipherclient.BoundDeviceAuth(da, time.Now())
-	if left := time.Until(da.Expiry); left > 0 && time.Duration(da.Interval)*time.Second >= left {
-		// The broker's own interval where it names one past the bounds, so the line names what it
-		// sent; the bounds' floor or default where it names less.
-		return "", fmt.Errorf("the broker's code lapses in %d s, and its interval puts the first poll %d s on, so no poll could reach it",
-			int64((left+time.Second-1)/time.Second), max(named, da.Interval))
+	hourEnds := cipherclient.BoundDeviceAuth(da, time.Now())
+	if left := time.Until(da.Expiry); time.Duration(da.Interval)*time.Second >= left {
+		return "", unpollableCode(left, named, da.Interval, hourEnds)
 	}
 	b.recordLogin(&loginState{Code: da.UserCode, State: "pending", VerificationURI: da.VerificationURI})
 	go b.pollLogin(key, cfg, da, operator)
 	return da.UserCode, nil
+}
+
+// unpollableCode is Login's refusal of a device code that lapses, left from now, no later than
+// its first poll, used seconds on (a poll waits the interval first, RFC 8628 section 3.5): no poll
+// could reach it, and an approval of it would mint a launcher credential no poll collects. It
+// names what ends the code first, the time left of it or, where hourEnds, the hour this machine
+// polls a code at most (cipherclient.BoundDeviceAuth), and the interval the broker named, with the
+// one used where the bounds raised it, so the broker's operator knows what to change: asking again
+// meets the same answer. The time left is the broker's lifetime less the request's round trip, as
+// x/oauth2 dates the end, so the line says when the code lapses, not how long the broker gave it.
+func unpollableCode(left time.Duration, named, used int64, hourEnds bool) error {
+	var poll string
+	switch {
+	case named == 0:
+		poll = fmt.Sprintf("no poll interval, so one of %d s", used)
+	case named < used:
+		poll = fmt.Sprintf("a poll interval of %d s, so one of %d s", named, used)
+	default:
+		poll = fmt.Sprintf("a poll interval of %d s", named)
+	}
+	var answer string
+	switch {
+	case left <= 0:
+		answer = "a device code that had lapsed by the time its answer arrived, with " + poll
+	case hourEnds:
+		answer = poll + ", and this machine polls a device code for an hour at most"
+	default:
+		answer = fmt.Sprintf("a device code that lapses in %d s, with %s", int64((left+time.Second-1)/time.Second), poll)
+	}
+	return fmt.Errorf("the broker answered %s, so the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than both its codes' lifetime and an hour", answer)
 }
 
 // LoginStatus reports the most recent machine login, current or settled, whether the helper holds
@@ -633,8 +660,8 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // held to the device grant's bounds, which Login applied (cipherclient.BoundDeviceAuth), and Login
 // starts no poll that could not come before the code lapses. Each poll waits the interval first,
 // and RFC 8628 section 3.5 grows it by 5 s for that poll and every later one on a slow_down, at
-// whatever status the body names it, and on a poll the broker did not answer
-// or answered with an outage, once for an answer that is both. The Retry-After of an outage the
+// whatever status the body names it, and on a poll the broker did not answer or answered with an
+// outage, once for an answer that is both. The Retry-After of an outage the
 // broker answered, a 408, a 429 or a 5xx, in seconds or as an HTTP date (serverwait.Read), is
 // waited where it asks longer, though never past the code's lifetime, which ends any wait (the
 // poll's context). authorization_pending keeps the interval. A lapse after polls the broker did not
@@ -664,9 +691,12 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 //     wait, and a Retry-After date counts in any form Date.parse reads.
 //   - The device authorization's edge values: here they read as cipherclient.BoundDeviceAuth's doc
 //     says; there oauth4webapi 3.8.8 (build/index.js:2185-2197) fails the login on an interval
-//     that is null, 0 or negative and on a lifetime that is missing or negative, lapses a code
-//     whose lifetime is 0 at once, and keeps a fraction of either, a count past an int64 or a
-//     lifetime sent as a string, held to the bounds.
+//     that is null, 0 or negative and on a lifetime that is missing or negative, and keeps a
+//     fraction of either, a count past an int64 or a lifetime sent as a string; the login holds
+//     the interval to 1 s at least, with no most, and the lifetime to an hour. Each client refuses
+//     a code no poll could reach before its code is shown, one whose lifetime is 0 or less
+//     included, so an interval past what a time.Duration holds, kept there and held to an hour
+//     here, is refused in both.
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	client := b.tokenClient(key)
 	ctx, cancel := context.WithDeadline(context.Background(), da.Expiry)

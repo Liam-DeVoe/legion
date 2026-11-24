@@ -184,14 +184,15 @@ const (
 )
 
 // BoundDeviceAuth holds da's interval and lifetime to the device grant's bounds, its lifetime read
-// from now. The end it writes is now plus what is left, one reading of now's monotonic clock where
-// now carries one (time.Now does): x/oauth2 dates the end from time.Now().UTC(), which drops that
-// reading, so a comparison with it reads the wall clock while a context's deadline and its timer
-// run on the monotonic one, and a step of the wall clock would set the two apart. Time.Add drops
-// the reading for an end before the year 1885 too; such a code has lapsed on either clock. The
-// monotonic clock does not count a time the machine is suspended (CLOCK_MONOTONIC on Linux), so a
-// machine that sleeps past the code's end polls on after it resumes, and the server answers
-// expired_token, an expiry too.
+// from now, and reports whether the hour, not the server's own lifetime, ends the code: the server
+// named none, or one past the hour. The end it writes is now plus what is left, one reading of
+// now's monotonic clock where now carries one (time.Now does): x/oauth2 dates the end from
+// time.Now().UTC(), which drops that reading, so a comparison with it reads the wall clock while
+// a context's deadline and its timer run on the monotonic one, and a step of the wall clock would
+// set the two apart. Time.Add drops the reading for an end before the year 1885 too; such a code
+// has lapsed on either clock. The monotonic clock does not count a time the machine is suspended
+// (CLOCK_MONOTONIC on Linux), so a machine that sleeps past the code's end polls on after it
+// resumes, and the server answers expired_token, an expiry too.
 //
 // The edge values of a device authorization, as x/oauth2 reads them (oauth2.DeviceAuthResponse,
 // whole seconds, 0 or null as none) and then the bounds: an interval of 0, none or null is 5 s,
@@ -199,13 +200,15 @@ const (
 // before its first poll, and one past what a time.Duration holds (292 years) but inside an int64
 // wraps, to a time that has passed or that the hour bounds; a fraction of either, a count past an
 // int64, or a value sent as a string fails the device authorization.
-func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) {
+func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) (hourEnds bool) {
 	da.Interval = min(max(cmp.Or(da.Interval, defaultDeviceInterval), leastDeviceInterval), mostDeviceInterval)
+	hourEnds = da.Expiry.IsZero() || da.Expiry.Sub(now) > mostDeviceLifetime
 	left := mostDeviceLifetime
-	if !da.Expiry.IsZero() {
-		left = min(da.Expiry.Sub(now), left)
+	if !hourEnds {
+		left = da.Expiry.Sub(now)
 	}
 	da.Expiry = now.Add(left)
+	return hourEnds
 }
 
 // ErrSignInEnded is a kept refresh token the issuer no longer honours: the person revoked the
