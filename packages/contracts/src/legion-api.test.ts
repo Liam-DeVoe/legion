@@ -190,7 +190,7 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
-  // Contract 248 adds the two refusals between the pause and the project release: a pause while a
+  // Contract 253 adds the two refusals between the pause and the project release: a pause while a
   // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
   // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
@@ -2846,14 +2846,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // at, 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
-  // fixture does not hold. Five bands stand above 199: the repositories block's at 202, contract
-  // 220's, which takes `plan` off each assignment, so the golden's rows are compared without it,
-  // the intake's give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, the pod hold's at
-  // 246, which leaves `podHold` off every issue (`withoutPodHold`), and the project release's at
-  // 248, which takes the state's `projectRelease` off for every caller below it
-  // (`withoutProjectRelease`). One value strip stands above 199 as well: `caches`, the source of
-  // the repository-cache-room row, arrived at contract 213, so that row is served here without its
-  // `source`, every other field of it and every other row as the state golden holds them.
+  // fixture does not hold. Six bands stand above 199: the repositories block's at 202, contract
+  // 220's, which takes `plan` off each assignment, the intake's give-ups' at 228, so the narrowing
+  // leaves `intakeGiveUps` off, the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`), contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`, so the golden's issues are compared without `plan`, `podHold` and `priority`,
+  // and the project release's at 253, which takes the state's `projectRelease` off for every caller
+  // below it (`withoutProjectRelease`). One value strip stands above 199 as well: `caches`, the
+  // source of the repository-cache-room row, arrived at contract 213, so that row is served here
+  // without its `source`, every other field of it and every other row as the state golden holds
+  // them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2881,18 +2883,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   } = fixtureBody("state.json");
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, ...kept } = issue;
-      return [
-        key,
-        kept.assignments === undefined
-          ? kept
-          : {
-              ...kept,
-              assignments: (kept.assignments as Record<string, unknown>[]).map(
-                ({ plan: _plan, ...row }) => row
-              ),
-            },
-      ];
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        kept.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        kept.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      return [key, kept];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
@@ -3247,7 +3249,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // session the read set names at every path that reaches it. Each refusal names what its code
 // names beside its sentence, and nothing else: the setting that turns the pause off, the pause
 // that stands, or the last pause. The daemon client reads a refusal through the plain refusal
-// shape, which keeps the code and the sentence of every one of them. Contract 248's two refusals
+// shape, which keeps the code and the sentence of every one of them. Contract 253's two refusals
 // between the pause and the project release are among them: a pause while a release runs names
 // nothing beside its sentence, and a release while a pause holds the project names the pause that
 // stands and each pod a pause still holds, with the claims of it stored suspended by `released`;

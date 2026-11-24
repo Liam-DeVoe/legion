@@ -3585,7 +3585,33 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 248: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 253: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `merged`, `sessions`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`, `workingCopyChanged`,
 // `error`): how many commits of the issue's work the issue's workspace holds that no remote branch
@@ -3615,16 +3641,16 @@ package api
 // in `packages/contracts/src/legion-api.ts`, which refuses a word it does not name, so a word added
 // later bumps this number. `GET /legion/v1/state` gains `projectRelease`, that same body for the
 // project's newest release, absent while none was recorded; a caller that states a contract below
-// 248, or that states none from a pod whose claims record one below 193 (podContracts reads no
+// 253, or that states none from a pod whose claims record one below 193 (podContracts reads no
 // claim at or above shapedAnswersContract, since every build from 193 states its contract), is
 // served the state without it (the band of shaping.go's stateNarrowings at projectReleaseContract,
 // withoutProjectRelease), as a caller below 178 is served it without `paused` and `lastPause` and a
 // caller below 202 with the `repositories` block in 152's shape (202's entry above), and the bands
-// compose: a caller at 202 to 247 is served the `live` block and no `projectRelease`. The release's
+// compose: a caller at 202 to 252 is served the `live` block and no `projectRelease`. The release's
 // six enumerated fields on the state, `projectRelease.endedBy`,
 // `projectRelease.result.sandboxes.*.kind`, `….outcome` and `….asked.*.role`, and
 // `projectRelease.result.claims.*.role` and `….ended`, are rows of answers.go's EnumeratedFields,
-// each value arriving with its key at 248 and riding the band, so no value strip is owed. A claim's
+// each value arriving with its key at 253 and riding the band, so no value strip is owed. A claim's
 // `suspendedBy` on the operator routes takes `project_release`, a claim the release stopped, which
 // the daemon's next boot starts again. The release's ask to a role rides the role's own topic as an
 // update round's ask does, under the round `release:<id>`, and `POST
@@ -3638,13 +3664,13 @@ package api
 // dry run's included, answers 409 `PROJECT_PAUSED` with api.PauseFailure, which gains `heldPods`,
 // each such pod's `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the
 // `pause` that stands where one does, and records, stops and deletes nothing; the refusal's row of
-// shapeAnswer serves a caller below 248 a PauseFailure without `heldPods`. A process that has run
+// shapeAnswer serves a caller below 253 a PauseFailure without `heldPods`. A process that has run
 // one answers it, 200, whatever the pause, as above. While a release runs (its record neither
 // finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
 // `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
-// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 248's, which are 246's with
+// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 253's, which are 250's with
 // the key paths of `projectRelease` on the state's and of `heldPods` on the refusal's, and every
-// record below 248 gains the empty domain of each of the six fields, which no contract below 248
+// record below 253 gains the empty domain of each of the six fields, which no contract below 253
 // admits a value of. This change took 209 at the forward merge that brought in 3c59c0cc, the lowest
 // number above main's 202 that no other open pull request declared then: main reached 202 with
 // #4493 (dispatch://INFRA-4401, its entry above), and a reading of `const DaemonAPIVersion` at the
@@ -3699,12 +3725,16 @@ package api
 // brought main's 246 (#4960, the pod hold's entry above), and a reading of every open pull
 // request's head, made between 2026-11-24T15:41:05Z and 15:46:25Z, found 247 declared by #4580 and
 // #5384 and 248 by none, so this entry moved to 248, the lowest number above main's 246 that no
-// other open pull request declares. A pod at main's 246, or at a number another open pull request
-// declares below 248, runs a plugin that does not know this release's shapes, so it is served the
-// state without `projectRelease`. Read the base's own number and every open head again at the next
-// merge rather than from this entry, as
+// other open pull request declares. The forward merge of 2026-11-24 that brought in 5df00e2f
+// brought main's 250 (#5365, the waiting line's priority, the entry above), and a reading of every
+// open pull request's head, made between 2026-11-24T18:01:44Z and 18:05:16Z, found 251 declared by
+// #5307, 252 by #4540 and 253 by none, so this entry moved to 253, the lowest number above main's
+// 250 that no other open pull request declares. A pod at main's 250, or at a number another open
+// pull request declares below 253, runs a plugin that does not know this release's shapes, so it is
+// served the state without `projectRelease`. Read the base's own number and every open head again
+// at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves projectReleaseContract in shaping.go with it: it is the number the state's
 // `projectRelease` and the refusal's `heldPods` are served down below, the arrival of the six
 // fields' values, and the last number of answers.go's SupportedContracts.
-const DaemonAPIVersion = 248
+const DaemonAPIVersion = 253

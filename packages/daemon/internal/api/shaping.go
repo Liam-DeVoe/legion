@@ -583,6 +583,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
@@ -1083,7 +1084,28 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's 248,
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and its
+// waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A plugin
+// before it is served every issue without either key (withoutPriority). It is a literal of its own
+// and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
+// SupportedContracts names the constant.
+const priorityContract = 250
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
+}
+
+// projectReleaseContract is the daemon contract that added the project release (version.go's 253,
 // dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
 // project's newest project release and its result, to the state, and `heldPods`, each pod a pause
 // still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
@@ -1093,22 +1115,23 @@ func withoutPodHold(issue Issue) (Issue, bool) {
 // reads the state with a strict schema and would refuse the whole body for a key it does not name,
 // and one built after strips the key instead, so the strip is what keeps the release from a caller
 // that did not ask for it. The roles a running release asks are such callers, and they are asked to
-// push and end their turn on that same body. repositoriesLiveContract stands below it, and the
-// three rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
+// push and end their turn on that same body. repositoriesLiveContract stands below it, and the four
+// rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
 // assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
-// 228, and podHoldContract's, which takes each issue's `podHold` off below 246, so a caller at or
-// above repositoriesLiveContract and below this contract, 202 to 247, is served the `live` block
-// and not `projectRelease`. The release's six enumerated fields (answers.go's releaseOutcomes and
-// the rows beside it) arrived with the key at this contract and ride its band, so no value strip is
-// owed. The release's own two routes answer the `legion` command, which is built from the daemon's
-// own commit, so their bodies are no row of answers.go's Answers.
+// 228, podHoldContract's, which takes each issue's `podHold` off below 246, and priorityContract's,
+// which takes each issue's `priority` and its waiting line's `priority` off below 250, so a caller
+// at or above repositoriesLiveContract and below this contract, 202 to 252, is served the `live`
+// block and not `projectRelease`. The release's six enumerated fields (answers.go's releaseOutcomes
+// and the rows beside it) arrived with the key at this contract and ride its band, so no value
+// strip is owed. The release's own two routes answer the `legion` command, which is built from the
+// daemon's own commit, so their bodies are no row of answers.go's Answers.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
 // the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason, as it names cachesSourceContract.
-const projectReleaseContract = 248
+const projectReleaseContract = 253
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
