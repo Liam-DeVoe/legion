@@ -1,8 +1,9 @@
 # Notes for the cache fills
 
-The derivations and the history of `.github/workflows/ci-caches.yaml`, which points into this
-file. Each `# why:` line of that workflow names the section below that holds the derivation or the
-record its job or step rests on. A value's own arithmetic stays beside the value.
+The derivations and the history of `.github/workflows/ci-caches.yaml` that this file holds. A
+`# why:` line of that workflow that names this file names the section below that holds the
+derivation or the record its job or step rests on; its other `# why:` lines name sections of
+`.github/ci-notes/ci.md`. A value's own arithmetic stays beside the value.
 
 ## What the refill-superseded job deletes, and why it is a job of its own
 

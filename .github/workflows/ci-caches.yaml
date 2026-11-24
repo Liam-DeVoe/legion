@@ -86,11 +86,9 @@ name: CI caches
 # or go.work.sum), so a hash taken after the build need not be the lookup's. go-envoy-infra's save
 # hashed its files again, and its key drifted: in run 45088325195 the lookup asked for
 # ...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the lookup and built
-# for seven to ten minutes a leg. Where a job fills two families it fills the smaller one first,
-# so the entry that carries the other's objects too is the one that was large already. A leg of
-# a matrix that fails leaves
-# the other running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's
-# fill has no reason to cost the other's.
+# for seven to ten minutes a leg. A leg of a matrix that fails leaves the other running
+# (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no reason
+# to cost the other's.
 #
 # Beside those six, the architecture-check job fills
 # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
@@ -341,8 +339,9 @@ jobs:
 
   # go-envoy. It keys on packages/envoy/go.mod's Go, the module every job that restores it sets Go
   # up from. Each push fills it again from its newest entry (the header says why). One leg per
-  # runner: the envoy lanes that restore it run on ubuntu-24.04-arm, and envoy-go-build and the
-  # browser lane's embedder restore it on ubuntu-24.04.
+  # runner: the envoy lanes that restore it run on ubuntu-24.04-arm, and envoy-go-build,
+  # envoy-go-checks, the browser lane's embedder, the nightly browser re-record and this
+  # workflow's darwin vet restore it on ubuntu-24.04.
   envoy:
     if: inputs.only != 'dispatch-builds'
     strategy:
@@ -350,8 +349,9 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # The limit the job had while it filled go-envoy-test too, whose test build is the long one.
-    timeout-minutes: 60
+    # 37 s a leg on its newest entry (jobs 138290290861 and 138290290676); from nothing it also
+    # downloads the module's dependencies and compiles both commands, so 15 leaves that room.
+    timeout-minutes: 15
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
       go-envoy-x64: ${{ steps.go-envoy-saved.outputs.go-envoy-x64 }}
