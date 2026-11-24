@@ -471,3 +471,155 @@ func TestACarriedOrphansLeaveOpensNoSecondCheckOfItsMerge(t *testing.T) {
 		t.Fatalf("the checks of %s after its done = %+v, want the one of a's merge, closed at generation 3, and no other", orphan.Key, checks)
 	}
 }
+
+// claimRows is each supervise row of key of op that names token as its claim, oldest first.
+func claimRows(t *testing.T, pool *pgxpool.Pool, key, op string, token claim.Token) []record.SuperviseRequest {
+	t.Helper()
+	var rows []record.SuperviseRequest
+	for _, row := range superviseRowsOf(t, pool, key, op) {
+		if row.Claim == token {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// seedAWithATesterAndB is LEGION-209, a child of the running LEGION-208, whose plan is a
+// (`implementer tester`, its agents named implementer and tester) and b (`implementer`, its agent
+// implementer-b), each merging by itself: a at its merge with the child's pull request #43 open on
+// the issue's own branch, and b at bAt with its pull request #45 open on its own branch.
+func seedAWithATesterAndB(t *testing.T, pool *pgxpool.Pool, engine *Engine, bAt record.TaskPlace) record.Issue {
+	t.Helper()
+	stepRoot(t, pool, phase.Implementing)
+	child := stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	seedTasks(t, pool, child.Key, child.Generation,
+		planTask{id: "a", steps: []string{"implementer", "tester"}, agents: []claim.Agent{"implementer", "tester"}, state: record.TaskRunning, place: atMerge},
+		planTask{id: "b", steps: []string{"implementer"}, agents: []claim.Agent{"implementer-b"}, state: record.TaskRunning, place: bAt})
+	markMerges(t, pool, child.Key, "a")
+	markMerges(t, pool, child.Key, "b")
+	seedTaskBranch(t, pool, child.Key, "a", claim.IssueBranch(child.Key))
+	seedTaskBranch(t, pool, child.Key, "b", claim.IssueBranch(child.Key)+".b")
+	seedTaskPR(t, pool, engine, child.Key, "b", 45)
+	return child
+}
+
+// Each row of a check that names a claim names the claim of the check's agent. Of LEGION-209's a
+// (`implementer tester`) and b (`implementer`), a merges: its check's agent is a's tester, and its
+// first look's start row names the tester's claim. b reaches its merge and merges, which ends the
+// issue: its check's agent is the fresh check-b, since b has no tester step, and its first look's
+// start row names check-b's claim; that check's pending report queues the suspend of check-b's
+// claim, and its pass queues the issue_close of check-b's claim. a's check's pass queues the
+// issue_close of the tester's claim.
+//
+// The fault it catches is a row of a check reaching another agent of the checking role (its
+// control: startLook with no claim on its row, which the runner then reads as the claim of the
+// worker on the tester's step, so check-b's start row names no claim of check-b's).
+func TestEachRowOfACheckNamesItsAgentsClaim(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	clock := &checkClock{now: stepClock}
+	engine.cfg.Clock, engine.cfg.ProductionCheckBound = clock.Now, checkBound
+	child := seedAWithATesterAndB(t, pool, engine, atStep(1))
+	apply := applyFacts(t, pool, engine)
+	tester, err := claim.AgentToken("legion", child.Key, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := claim.AgentToken("legion", child.Key, "check-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustSpend(t, "the merge of a's pull request", apply("merged-a", mergedFact(43, "a")))
+	first := productionCheck(t, pool, child.Key)
+	if first == nil || first.Task != "a" {
+		t.Fatalf("the check of %s after a's merge = %+v, want one, of task a", child.Key, first)
+	}
+	if starts := lookStarts(t, pool, child.Key); len(starts) != 1 || starts[0].Claim != tester {
+		t.Fatalf("the look starts of %s after a's merge = %+v, want one naming the tester's claim %s", child.Key, starts, tester)
+	}
+
+	taskMoves(t, pool, engine, child.Key, "b", TriggerImplementationReady, "")
+	taskMoves(t, pool, engine, child.Key, "b", TriggerRetroCompleted, "")
+	mustSpend(t, "the merge of b's pull request", apply("merged-b", mergedFact(45, "b")))
+	if got := issueAt(t, pool, child.Key); got != phase.Done {
+		t.Fatalf("%s after b's merge stands in %s, want done: b's merge was its last", child.Key, got)
+	}
+	second := productionCheck(t, pool, child.Key)
+	if second == nil || second.Task != "b" || second.OpenedAt.Equal(first.OpenedAt) {
+		t.Fatalf("the newest check of %s after b's merge = %+v, want one of task b", child.Key, second)
+	}
+	starts := lookStarts(t, pool, child.Key)
+	if len(starts) != 2 || !starts[1].CheckOpenedAt.Equal(second.OpenedAt) || starts[1].Claim != fresh {
+		t.Fatalf("the look starts of %s after b's merge = %+v, want b's check's naming check-b's claim %s", child.Key, starts, fresh)
+	}
+
+	if result := apply("pending-b", intake.CheckReport{Issue: child.Key, Look: 1, Verdict: "pending", Summary: "the deploy has not carried merge-b",
+		OpenedAt: second.OpenedAt}); result.Refusal != nil {
+		t.Fatalf("b's check's pending = %+v, want it recorded", result.Refusal)
+	}
+	if rows := claimRows(t, pool, child.Key, "suspend", fresh); len(rows) != 1 {
+		t.Fatalf("the suspend rows of %s naming check-b's claim after its pending = %+v, want one", child.Key, rows)
+	}
+	if rows := claimRows(t, pool, child.Key, "suspend", tester); len(rows) != 0 {
+		t.Fatalf("the suspend rows of %s naming the tester's claim after b's check's pending = %+v, want none", child.Key, rows)
+	}
+	if result := apply("pass-b", intake.CheckReport{Issue: child.Key, Look: 1, Verdict: "pass", Summary: "driven in production",
+		OpenedAt: second.OpenedAt}); result.Refusal != nil {
+		t.Fatalf("b's check's pass = %+v, want it recorded", result.Refusal)
+	}
+	if rows := claimRows(t, pool, child.Key, "issue_close", fresh); len(rows) != 1 {
+		t.Fatalf("the issue_close rows of %s naming check-b's claim after its pass = %+v, want one", child.Key, rows)
+	}
+
+	if result := apply("pass-a", intake.CheckReport{Issue: child.Key, Look: 1, Verdict: "pass", Summary: "driven in production",
+		OpenedAt: first.OpenedAt}); result.Refusal != nil {
+		t.Fatalf("a's check's pass = %+v, want it recorded", result.Refusal)
+	}
+	if rows := claimRows(t, pool, child.Key, "issue_close", tester); len(rows) != 1 {
+		t.Fatalf("the issue_close rows of %s naming the tester's claim after a's check's pass = %+v, want one", child.Key, rows)
+	}
+}
+
+// A look of a merge's check and a step of another task go to one claim where one agent works both.
+// Of LEGION-209's a and b, each `implementer tester:k`, so one agent, tester, works the tester step
+// of each: a merges, and its check's first look starts on the tester's claim (its task's last agent
+// of the checking role); b passes its implementer step, and its tester step starts on that same
+// claim. One claim runs one turn at a time (supervise's TestALookAndAStepOfOneAgentAreSentOneTurnAtATime),
+// so the look and the step take that agent in turn, and no task of the workflow waits for the look.
+func TestALookAndAnotherTasksStepOfOneAgentGoToOneClaim(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	stepRoot(t, pool, phase.Implementing)
+	child := stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	seedTasks(t, pool, child.Key, child.Generation,
+		planTask{id: "a", steps: []string{"implementer", "tester:k"}, agents: []claim.Agent{"implementer", "tester"}, state: record.TaskRunning, place: atMerge},
+		planTask{id: "b", steps: []string{"implementer", "tester:k"}, agents: []claim.Agent{"implementer-b", "tester"}, state: record.TaskRunning, place: atStep(1)})
+	markMerges(t, pool, child.Key, "a")
+	markMerges(t, pool, child.Key, "b")
+	seedTaskBranch(t, pool, child.Key, "a", claim.IssueBranch(child.Key))
+	seedTaskBranch(t, pool, child.Key, "b", claim.IssueBranch(child.Key)+".b")
+	seedTaskPR(t, pool, engine, child.Key, "b", 45)
+	tester, err := claim.AgentToken("legion", child.Key, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustSpend(t, "the merge of a's pull request", applyFacts(t, pool, engine)("merged-a", mergedFact(43, "a")))
+	if starts := lookStarts(t, pool, child.Key); len(starts) != 1 || starts[0].Claim != tester {
+		t.Fatalf("the look starts of %s after a's merge = %+v, want one naming the tester's claim %s", child.Key, starts, tester)
+	}
+	taskMoves(t, pool, engine, child.Key, "b", TriggerImplementationReady, "")
+	assertTask(t, tasksOf(t, pool, engine, child.Key), "b", record.TaskRunning, atStep(2))
+	var steps []record.SuperviseRequest
+	for _, start := range superviseRowsOf(t, pool, child.Key, "start") {
+		if start.CheckLook == 0 && start.Role == claim.RoleTester {
+			steps = append(steps, start)
+		}
+	}
+	if len(steps) != 1 || steps[0].Claim != tester {
+		t.Fatalf("the tester's step starts of %s after b's implementer step = %+v, want one naming the tester's claim %s, the look's", child.Key, steps, tester)
+	}
+}
