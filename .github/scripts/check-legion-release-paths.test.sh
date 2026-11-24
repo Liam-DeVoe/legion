@@ -88,6 +88,19 @@ version_job='jobs:
           .github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"
 '
 
+# step_job <run line>...: the job of version_job with its version step's `run:` holding <run
+# line>s in its place, so a case can change the step's commands and nothing else.
+step_job() {
+  local line body=''
+  for line in "$@"; do
+    body+="          $line"$'\n'
+  done
+  printf 'jobs:\n  legion_build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Determine next version\n        id: version\n        run: |\n%s' "$body"
+}
+# The version step's one command, as the real step runs it.
+# shellcheck disable=SC2016 # the step's text, which bash expands in the step and not here
+step_command='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"'
+
 # gowork <root>: a go.work at the root that binds the two modules, as the real one does, and an
 # empty go.work.sum beside it.
 gowork() {
@@ -111,7 +124,7 @@ root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it compared" \
-  "$(contains "$out" "covers every tracked file that the 4 packages of this repository go list -deps ./cmd/legion prints for the 2 legion targets of .github/go-release-targets.json compile or embed, and the go.mod and go.sum of their 2 modules")"
+  "$(contains "$out" "covers every tracked file that the 4 packages of this repository go list -deps ./cmd/legion prints for the 2 legion targets of .github/go-release-targets.json compile or embed, and the go.mod and go.sum of the 2 modules the build uses")"
 
 echo "case: a package the binary links that the list does not name"
 root=$(fixture planted)
@@ -119,7 +132,7 @@ release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/go.mod pac
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the package and the fix" \
-  "$(contains "$out" "LEGION_VERSION_ARGS names no path that covers 1 of what the legion binary links (go list -deps ./cmd/legion in packages/daemon), so a change to it alone would release no legion: packages/envoy/deep/. Add each after the")"
+  "$(contains "$out" "LEGION_VERSION_ARGS names no path that covers 1 of what the legion binary is built from, so a change to it alone would release no legion: packages/envoy/deep/. Add each after the")"
 check "names no package the binary does not link" "$(is "$(contains "$out" 'packages/envoy/unused')" false)"
 
 echo "case: a package the binary comes to link through a new import"
@@ -172,7 +185,7 @@ gowork "$root"
 release "$root" "$covering go.work"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the go.work.sum alone" "$(contains "$out" 'covers 1 of what the legion binary links .*: go.work.sum\.')"
+check "names the go.work.sum alone" "$(contains "$out" 'covers 1 of what the legion binary is built from, so a change to it alone would release no legion: go.work.sum\.')"
 
 echo "case: a go.work outside the repository"
 # GOWORK may name one anywhere; a change to a file outside the repository is no commit the list
@@ -199,23 +212,118 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names its go.mod and go.sum" "$(contains "$out" 'would release no legion: packages/other/go.mod, packages/other/go.sum\.')"
 
+echo "case: a module the workspace uses that is outside the repository"
+# go.work may use a module anywhere; a change to its go.mod is no commit the list can name, so the
+# check cannot hold it to the list and refuses it.
+root=$(fixture gowork-module-outside)
+gowork "$root"
+mkdir -p "$work/gowork-module-outside-parent/other"
+printf 'module github.com/example/other\n\ngo 1.22\n' > "$work/gowork-module-outside-parent/other/go.mod"
+printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n\t%s\n)\n' "$work/gowork-module-outside-parent/other" > "$root/go.work"
+release "$root" "$covering go.work go.work.sum"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the module is outside the repository" "$(contains "$out" "gowork-module-outside-parent/other/go.mod the legion build's go.work uses is outside the repository")"
+
 echo "case: the version step reads the list as the check does not"
 # The check expands LEGION_VERSION_ARGS as the step that runs release-push.sh version legion-v
-# does: from the workflow's env, unquoted in bash, at the root. A job or step env that sets the
-# variable, a working directory, or no such step makes the release read another list.
-root=$(fixture step-env)
+# does: from the workflow's env, unquoted in bash, at the root, with the command alone in its
+# run:. A job or step env that sets the variable, a working directory or a shell other than bash
+# at the step, its job's defaults or the workflow's, another command in the step, an earlier step
+# that writes $GITHUB_ENV, and no such step or two make the release read another list.
+root=$(fixture job-env)
 version_job="${version_job/    runs-on: ubuntu-latest/    runs-on: ubuntu-latest
     env:
       LEGION_VERSION_ARGS: -- packages/}" release "$root" "$covering"
 run_check "$root"
 check "a job env that sets it: exits 1" "$(is "$status" 1)"
 check "says so" "$(contains "$out" "legion version step (job legion_build) sets LEGION_VERSION_ARGS in its job's env")"
+root=$(fixture step-env)
+version_job="${version_job/        id: version/        id: version
+        env:
+          LEGION_VERSION_ARGS: -- packages/}" release "$root" "$covering"
+run_check "$root"
+check "a step env that sets it: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) sets LEGION_VERSION_ARGS in its env")"
 root=$(fixture step-directory)
 version_job="${version_job/        id: version/        id: version
         working-directory: packages}" release "$root" "$covering"
 run_check "$root"
 check "a working directory: exits 1" "$(is "$status" 1)"
 check "says so" "$(contains "$out" "legion version step (job legion_build) sets its working-directory (packages)")"
+root=$(fixture job-default-directory)
+version_job="${version_job/    runs-on: ubuntu-latest/    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages}" release "$root" "$covering"
+run_check "$root"
+check "a job's default working directory: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) sets its job's default working-directory (packages)")"
+root=$(fixture workflow-default-directory)
+version_job="defaults:
+  run:
+    working-directory: packages
+$version_job" release "$root" "$covering"
+run_check "$root"
+check "the workflow's default working directory: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) sets the workflow's default working-directory (packages)")"
+root=$(fixture step-shell)
+version_job="${version_job/        id: version/        id: version
+        shell: sh}" release "$root" "$covering"
+run_check "$root"
+check "a step shell other than bash: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) runs in sh")"
+root=$(fixture job-default-shell)
+version_job="${version_job/    runs-on: ubuntu-latest/    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: sh}" release "$root" "$covering"
+run_check "$root"
+check "a job's default shell other than bash: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) runs in sh")"
+root=$(fixture workflow-default-shell)
+version_job="defaults:
+  run:
+    shell: sh
+$version_job" release "$root" "$covering"
+run_check "$root"
+check "the workflow's default shell other than bash: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) runs in sh")"
+root=$(fixture step-cd)
+version_job=$(step_job "cd packages; ../$step_command") release "$root" "$covering"
+run_check "$root"
+check "a cd before the command: exits 1" "$(is "$status" 1)"
+check "names the command" "$(contains "$out" 'legion version step (job legion_build) runs `cd packages; \.\./\.github/scripts/release-push\.sh version legion-v \$LEGION_VERSION_ARGS >> "\$GITHUB_OUTPUT"`')"
+root=$(fixture step-assignment)
+version_job=$(step_job 'LEGION_VERSION_ARGS="-- packages/other/"' "$step_command") release "$root" "$covering"
+run_check "$root"
+check "an assignment before the command: exits 1" "$(is "$status" 1)"
+check "names the assignment" "$(contains "$out" 'legion version step (job legion_build) runs `LEGION_VERSION_ARGS="-- packages/other/"`')"
+root=$(fixture step-noglob)
+version_job=$(step_job 'set -f' "$step_command") release "$root" "$covering"
+run_check "$root"
+check "a set -f before the command: exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" 'legion version step (job legion_build) runs `set -f`')"
+root=$(fixture step-comment)
+version_job=$(step_job '# a comment and a blank line are no commands' '' "$step_command") release "$root" "$covering"
+run_check "$root"
+check "a comment and a blank line beside the command: exits 0" "$(is "$status" 0)"
+root=$(fixture step-after-env-write)
+version_job="${version_job/    steps:/    steps:
+      - name: Set the list
+        run: echo 'LEGION_VERSION_ARGS=-- packages/' >> \"\$GITHUB_ENV\"}" release "$root" "$covering"
+run_check "$root"
+check "an earlier step that writes \$GITHUB_ENV: exits 1" "$(is "$status" 1)"
+check "names the step" "$(contains "$out" 'legion version step (job legion_build) comes after the step "Set the list", which writes \$GITHUB_ENV')"
+root=$(fixture step-two)
+version_job="$version_job  legion_again:
+    runs-on: ubuntu-latest
+    steps:
+      - run: $step_command
+" release "$root" "$covering"
+run_check "$root"
+check "two such steps: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" 'has 2 steps that run `.github/scripts/release-push.sh version legion-v \$LEGION_VERSION_ARGS`, want one')"
 root=$(fixture step-none)
 version_job='jobs: {}
 ' release "$root" "$covering"
@@ -355,6 +463,21 @@ rm "$root/.github/go-release-targets.json"
 run_check "$root"
 check "exits 1 with no target list" "$(is "$status" 1)"
 check "says it could not read it" "$(contains "$out" 'could not read the legion targets of .github/go-release-targets.json')"
+
+echo "case: a target that is not <os>/<arch>"
+# go builds an empty GOOS or GOARCH for the host's own and refuses a padded one only when it
+# builds, so the list's one read, which the build and the release's publish job share, refuses
+# both, and lint with it, by name.
+root=$(fixture target-empty)
+printf '{\n  "legion": ["linux/amd64", ""],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_check "$root"
+check "an empty target: exits 1" "$(is "$status" 1)"
+check "an empty target: names it" "$(contains "$out" 'release-push.sh legion-targets: the legion target "" is not <os>/<arch>')"
+root=$(fixture target-padded)
+printf '{\n  "legion": ["linux/amd64", " darwin/arm64"],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_check "$root"
+check "a padded target: exits 1" "$(is "$status" 1)"
+check "a padded target: names it" "$(contains "$out" 'release-push.sh legion-targets: the legion target " darwin/arm64" is not <os>/<arch>')"
 
 echo "case: a listing longer than one environment variable can hold"
 # 500 packages with 245-character directory names make a go list output of about 180 KiB, more
