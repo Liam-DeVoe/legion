@@ -41,9 +41,10 @@ import (
 // issue the daemon has not recorded — an operator's spawn of an issue no record of the project
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
-// issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
-// differently: it is given its phase's task again when it holds that phase with nothing pending
-// (readyWorkerTask).
+// or of a child that has left the workflow or is done. A phase worker's ready is answered
+// differently: a merge forward still owed to its role is asked again at a launch later than the one
+// the ask was last sent at (askAgainAtLaunch), and it is given its phase's task again when it holds
+// that phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -61,7 +62,14 @@ import (
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
-		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
+		issue, err := e.store.Issue(ctx, tx, fact.Issue)
+		if err != nil || issue == nil {
+			return intake.Result{}, err
+		}
+		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
 	}
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -235,10 +243,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // is work the claim does not have, and its start waits until the issue holds a slot again, as the
 // slot repair's does (admit's resumeSlottedWorkers). The rule is "Admission and the `legion`
 // label" in docs/site/src/content/docs/legion/concepts.md.
-func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
-		return err
+func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+	if record.OutOfWorkflow(issue.Status) {
+		return nil
 	}
 	role := RoleFor(issue.Phase)
 	if role == "" || role == claim.RoleArchitect || role != fact.Role {
@@ -248,7 +255,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || root == nil || root.Lingers() {
 		return err
 	}
-	finished, err := e.phaseFinished(ctx, tx, *issue)
+	finished, err := e.phaseFinished(ctx, tx, issue)
 	if err != nil || finished {
 		return err
 	}
@@ -277,14 +284,14 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.SendOwedEntry(ctx, tx, issue, role, row); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
-	resume, err := e.ResumeTask(ctx, tx, *issue)
+	resume, err := e.ResumeTask(ctx, tx, issue)
 	if err != nil {
 		return err
 	}

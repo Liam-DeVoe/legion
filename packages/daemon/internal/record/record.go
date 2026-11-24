@@ -1076,13 +1076,15 @@ type ConflictRead struct {
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
 // Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
 // MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
-// again. Waits is whether the asked role's claim ended while the merge of the head is still owed
-// to it: the workers held for it stay held, and the ask is sent again at that role's next start
-// (workflow's sendWaitingAsk). SentLaunch is the launch of the asked role's claim
-// (intake.ClaimReady.Launch) at whose ready the ask was last sent, 0 while no ready has sent it. It
-// is stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil;
-// the jsonb takes Earlier, Role, Withdrawn, Waits and SentLaunch with no migration of their own,
-// and leaves each out while it is empty, and a release before them reads the jsonb without them.
+// again. SentLaunch is the launch of the asked role's claim (intake.ClaimReady.Launch) at whose
+// ready the ask was last sent, 0 while no ready has sent it: the ask the act writes goes to
+// whichever launch then holds the role, and the ready of a later launch of that role, while the
+// merge of the head is still owed to it, sends the ask again and records that launch here
+// (workflow's askAgainAtLaunch), since a claim that failed, that an operator stopped or whose agent
+// reported its own exit takes no row of the ask queued after it ended. It is stored as the jsonb of
+// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
+// Role, Withdrawn and SentLaunch with no migration of their own, and leaves each out while it is
+// empty, and a release before them reads the jsonb without them.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -1094,7 +1096,6 @@ type MergeForward struct {
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
 	Withdrawn   bool                 `json:"withdrawn,omitempty"`
-	Waits       bool                 `json:"waits,omitempty"`
 	SentLaunch  uint64               `json:"sentLaunch,omitempty"`
 }
 
