@@ -122,7 +122,10 @@ const (
 
 // The phases the daemon reports, which is what a FieldPhase observation holds
 // (packages/daemon/internal/phase). A reader of the board or of the metrics names them from
-// here, so the two never spell one of them differently.
+// here, so the two never spell one of them differently. A daemon below API contract 86 serves
+// `awaiting_merge` and one at 86 or later never does (packages/daemon/internal/api/version.go,
+// 86), so the board and the metrics read PhaseAwaitingMerge in what the sampler observed of such
+// an earlier daemon.
 const (
 	PhaseAdmitted       = "admitted"
 	PhaseAwaitingPerson = "awaiting_person"
