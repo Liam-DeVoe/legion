@@ -1,5 +1,7 @@
 package replay
 
+//ci:reads docs/site/src/content/docs/legion/replay.md TestTheDocsPageGivesEveryAssumption reads replayPage, the tool's page under ../../../..
+
 import (
 	"context"
 	"encoding/json"

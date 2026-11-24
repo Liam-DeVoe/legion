@@ -1,5 +1,9 @@
 package textcheck
 
+// This test reads the slots reading's migration through migrations.WayBack, as the plan
+// ratings' does, so the guide is its one read.
+//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheSlotsReadingWayBackIsOneTextInTheHeaderAndTheGuide (assertIsTheGuidesBlock, way_back_doc_test.go:172, through wayBackBlockOfTheGuide, :188) and TestTheSlotsReadingMigrationsEntryLinksItsWayBack (entryLinkIn of shippedText)
+
 import "testing"
 
 // The way back of the release that reads the slots stands in two files: the header of store
