@@ -231,3 +231,55 @@ func TestANewGenerationEndsTheOldFixAndJudgesTheHeadAgain(t *testing.T) {
 	assertStrings(t, "the failures of the new generation", outboxStrings(t, r.pool, `select check_id || '@' || head from ci_failures
 		where issue = $1 and generation > 1`, "LEGION-208"), nil)
 }
+
+// A stop while the fix runs at its task's end ends the fix and counts no return: the review's
+// approval of the task's last step held the task at its end for the fix, from the retro; the stop
+// ends the fix stopped, taking no way, so no return is counted and no hook fires, and the task
+// is held from the retro for its stop.
+func TestAStopAtAnEndHoldForAFixCountsNoReturn(t *testing.T) {
+	r := newFixRig(t, hookEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.move(TriggerReviewApproved, "", reviewReport("approved"))
+	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForFix}) {
+		t.Fatalf("LEGION-208 after the approval stands in %s with hold %+v, want held at its end for its fix", issue.Phase, issue.Hold)
+	}
+
+	r.stop()
+
+	r.assertWayDropped("stopped", fixHead)
+	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldTaskStopped}) {
+		t.Fatalf("LEGION-208 after the stop stands in %s with hold %+v, want held from the retro for the stopped task", issue.Phase, issue.Hold)
+	}
+	if counts := r.counts(); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
+		t.Fatalf("the task counts %+v, want no return", counts)
+	}
+	assertStrings(t, "the hook's firings", r.firings(everyReturn.Name), nil)
+}
+
+// After the fix's claim failed and the fix ended with no commit, the review's approval takes the
+// task to its end, where the check still fails at the head: no second fix starts for it, the task
+// is held for its CI, and the owner's move back starts the implementer again, one return.
+func TestAFailedFixClaimLeavesTheEndToTheOwnersMoveBack(t *testing.T) {
+	r := besideTheFix(t)
+	r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+
+	r.move(TriggerReviewApproved, "", reviewReport("approved"))
+
+	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForCI}) {
+		t.Fatalf("LEGION-208 after the approval stands in %s with hold %+v, want held at its end for its CI", issue.Phase, issue.Hold)
+	}
+	if fix := r.latestFix(); fix.Fix != 1 {
+		t.Fatalf("the latest fix = %+v, want fix 1 alone: no second fix for the check at this head", fix)
+	}
+
+	if result := r.apply("owner-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
+		Reason: "the check still fails"}); result.Refusal != nil {
+		t.Fatalf("the owner's move back was refused: %+v", result.Refusal)
+	}
+
+	assertPhase(t, r.pool, phase.Implementing)
+	if counts := r.counts(); counts.Pass != 1 {
+		t.Fatalf("the task counts %+v, want one return", counts)
+	}
+}
