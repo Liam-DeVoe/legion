@@ -20,7 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, Ask, AuthenticatedUser, Version } from "../../api/types";
+import type { Artifact, AskWithTrees, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -120,7 +120,8 @@ export const liveTextQueryOptions = (artifactId: string) =>
  * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
  * the document's own, as a project document's are. A rendered ask block reads who asked from
  * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
- * carry more than an ask, so the options take either read's key and fetch and read both as asks. */
+ * carry more than an ask, so the options take either read's key and fetch and read both as asks
+ * with their trees, whose question tree the Open-decisions navigator draws. */
 export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | null) => {
   const { queryKey, queryFn } =
     issueKey === null
@@ -129,7 +130,7 @@ export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | nul
           queryFn: () => api.listArtifactAsks(artifactId),
         }
       : issueAsksQuery(issueKey);
-  return queryOptions<Ask[], Error, Ask[], string[]>({ queryKey, queryFn });
+  return queryOptions<AskWithTrees[], Error, AskWithTrees[], string[]>({ queryKey, queryFn });
 };
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the

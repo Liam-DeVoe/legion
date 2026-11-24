@@ -1,86 +1,121 @@
 # Notes for the CI router and its filters
 
-The derivations and the history of two files that point into this one:
-`.github/ci-filters.yaml`, the path-filter data `.github/workflows/ci.yaml`'s `changes` job
-selects jobs by, whose sections come first, and `.github/workflows/ci.yaml` itself, the router,
-whose sections follow them. Each `# why:` line of either file names the section that holds the
-derivation or the record its filter, its pattern, its step, its job or its key rests on, and
-within each of the two the sections stand in the order their comment blocks stood. In ci.yaml a
-comment block of at most two lines stays where it is, beside the pattern or the step it is
-about; so does a value's own arithmetic, and a comment inside a `run:` body, which is shell and
-stays with its command. `.github/ci-filters.yaml` holds patterns and names: beside its `# why:`
-lines, its only comments are the lines of the blocks .github/scripts/check-ci-filters.sh and
-.github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
-was deleted, since the filter beneath it is that record.
+The derivations and the history of the CI router, `.github/workflows/ci.yaml`, and of the
+path filters its `changes` job selects jobs by. The filters were a file of the repository,
+`.github/ci-filters.yaml`, until the changes job began to compute them when it runs (the next two
+sections say how); the sections after them stood beside that file's filters, in the order its
+comment blocks stood, and each says why a job reads what its gate in `.github/ci-gates` declares.
+The router's sections follow them. Each `# why:` line of ci.yaml names the section that holds the
+derivation or the record its step, its job or its key rests on. In ci.yaml a comment block of at
+most two lines stays where it is, beside the pattern or the step it is about; so does a value's
+own arithmetic, and a comment inside a `run:` body, which is shell and stays with its command.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
-where every one of these comments first stood, the filters' comments among them.
+where every one of these comments first stood, the filters' comments among them, and a section
+that names a pattern of `.github/ci-filters.yaml` names what the filter selected then.
 
-## How a filter of the filters file is written
+## The changes job computes its filters when it runs
 
-Each filter names every file its job reads: the package and what its tests, typecheck
-and build read outside it; the composite actions the job installs its tools through;
-for Go, the closure of the packages the job compiles (`go list -deps -test`), the
-targets of the go commands its tests start, and the module files of the workspace the
-build runs in, whose go.mod files move the versions it compiles; and this file, since a
-job reads its own definition. The ci-filters job (.github/scripts/check-ci-filters.sh)
-recomputes those sets and fails naming each file a filter misses.
+No file of the repository holds a filter. The changes job checks out the tree the run tests (a
+pull request's merge with its base, a merge group's head), installs Go and the Bun workspace, and
+runs `.github/scripts/ci-filters-generate.sh`, which runs `.github/scripts/check-ci-filters.sh
+generate` and writes every filter into the runner's temporary directory; its one
+dorny/paths-filter step reads that path (an expression with no colon, which the action reads as
+the path of a file, `isPathInput` in its src/main.ts, and opens with `fs.readFileSync` from the
+workspace). The job uploads the filters as computed (`ci-filters.computed.yaml`) as the run's
+`ci-filters` artifact: the lint job holds them to the tsc programs and the image builds
+(check-ts-filters.sh, check-image-trigger-paths.sh), and the test job's filter-check and
+router-outputs harnesses read them. A script run by hand computes them with
+`.github/scripts/check-ci-filters.sh generate <file>`. Each output of the job but ref_is_main
+reads its one paths-filter step, and rule 19 of .github/scripts/check-ci-filters.sh refuses an
+output naming a filter no gate declares. On pull_request
+dorny/paths-filter reads the file list from the API, a rename read as the delete of the old name
+and the add of the new one; on a merge group it diffs base_sha..head_sha with git. A dispatched run
+computes the file too and filters nothing.
 
-dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
-when one of its patterns without `!` matches and none of its `!` patterns does.
-worker_image's drop what the .dockerignore keeps out of the
-worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
-step of either job reads a Markdown file, so a guide written under a directory pattern
-of theirs (patches/**, packages/cipher-client/**, .github/actions/install-crane/**)
-starts neither. No Markdown file of the repository matches either filter today, so the
-pattern holds no run back now; it keeps the next guide from riding in, which is what a
-week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
-Every other filter of this file was tried with that pattern
-and refused by rule 1 of .github/scripts/check-ci-filters.sh, which fails a filter that
-stops matching a file its gate reads: those jobs read an embedded prompt, a README
-packed into a plugin or an image, or a guide a test compares with code - go_notices
-among them, whose own Markdown pattern in `.github/ci-filters.yaml` (`'!packages/envoy/internal/**/*.md'`) therefore names packages/envoy/internal
-alone, the tree whose Markdown no release target's package directory holds.
+A change to the computation itself - the engine or the shared read table under .github/scripts,
+the two scripts that run them, or a file they read such as package.json (the generate mode lists
+them) - can make many filters select less while no filter selects the change: a read dropped from
+a helper every Bun gate shares narrows two dozen filters, and the committed file used to show that
+drop because every filter named the file. So when the run's base commit is known (the pull
+request's base, the merge group's base, which the generation step hands the script as
+`CI_FILTERS_BASE`) and the change touches one of those files, the script
+computes the base tree's filters too, with the base tree's own engine, and each filter whose
+patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
+could have moved runs. Each such filter is printed in the step's log and summary with the patterns
+only one side has. A base tree whose filters cannot be computed makes every filter `'**'`. A
+change that touches none of those files is not compared, and costs no second computation.
 
-The '*_test.go' patterns of the filters in `.github/ci-filters.yaml` are written by a command rather than by
-hand: rule 17 of .github/scripts/check-ci-filters.sh computes, per gate filter, the
-`!` patterns that keep it off every Go test file the job it gates does not compile,
-and `.github/scripts/check-ci-filters.sh write` puts them in that filter's own block
-between a BEGIN and an END comment. The ordinary run of that check refuses a block
-that is not what it computes, naming the first pattern that differs, so an edit by
-hand is lost. The check prints how many it wrote on every run, so no count is kept
-here. That is dispatch://INFRA-1413's R18, the selection half of the rule whose
-coverage half is rule 1: a job must not run for a change to a test file of a package
-whose tests it never runs, and the pattern that selects such a file (packages/envoy/**
-and its kin) matches the job's own sources too, so nothing but an exclusion can say it.
-Which test files a job reads is `go list`'s answer for the packages its steps name in
-test mode, under the tags and the -race each run carries, so a test it never compiles -
-another module's, another package's, a tagged live one, a `//go:build race` one - is
-excluded, and a filter whose job compiles every test file its patterns reach carries no
-block at all (text_checks, and every filter naming no Go file). A block
-belongs to the filter whose list holds it and never to a group an anchor shares, since
-two filters that share an anchor need not run the same tests. worker_image is the one
-filter keeping such a pattern by hand, because this check computes no read set for it:
-its judge is the image check, .github/scripts/check-image-trigger-paths.sh, and the worker image's context holds
-packages/daemon's test files while the .dockerignore drops packages/envoy's. A filter
-without a `!` pattern means what it would under the default, `some` (any pattern
-matches), where a `!` pattern would match every file outside it.
-.github/scripts/check-image-trigger-paths.sh reads the filters
-that gate an image build (worker_image, envoy_smoke) under this quantifier, and only as
-flat lists of globs, so those two name no anchor standing for a list. The one anchor
-they do name, ci_router, is on the glob itself, which leaves their lists flat.
+When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
+and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
+read, a run past five minutes - the script writes instead a file in which every filter the changes
+job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
+runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
+red all the same: the lint job's two readers of the filters refuse a fail-open file, whatever the
+cause. The ci-filters job, which every filter then selects, fails as well when the cause is the
+engine's own (a go command, a gate file, a `//ci:` line), but not when it is the Bun install or the
+TypeScript listing, which only the changes job runs. The `full-ci` term still holds the slow
+suites back on a pull request that has no label, as it does when their filters match; the merge
+group runs them.
 
-The first keys are no job's gate: each is a group many filters share, written once and named by
-every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
-that names it. The gate filters follow, one per `changes` output. ci_router carries two
-anchors, one on each scalar, because the image check, .github/scripts/check-image-trigger-paths.sh, reads the two filters that gate an image
-build as flat lists of globs: every filter that names ci.yaml names .github/ci-filters.yaml beside it.
+The job's setup-go keeps no Go cache: its key is exact, so each pull request's first run and
+every merge group missed it, and each miss saved 895 MB.
 
-A comment block of three lines or more that stood beside a filter is in
-.github/ci-notes/ci.md, under the heading the `# why:` line in its place names.
-A block that only listed which files a job reads was deleted, since the filter beneath it is
-that record.
+Why computed. The filters were one file every job's filter was in, and every pull request that
+added a read, a test file or a package a job compiles edited it, most of them at the same lines:
+of 433 open pull requests counted when this changed, 215 edited that file or the read table, and
+most forward merges of main into one conflicted. Yet the lists it held were the read sets this
+repository's check already computed: rules 1, 9 and 17 of the check held the file equal to them.
+The hand-kept facts the sets are computed from are each in a file of their owner now: one file of
+`.github/ci-gates` per gate, and a `//ci:` line beside each read a test makes outside its
+package (.github/scripts/ci_filter_sources.py). Two pull requests that each add a read of a
+different test, or a gate of a different job, edit different files.
 
-## Why the filters are one file, and the steps they stood in
+## How a filter is computed
+
+Each filter is every file its job reads: the package and what its tests, typecheck and build read
+outside it; the composite actions the job installs its tools through; for Go, the closure of the
+packages the job compiles (`go list -deps -test`), the targets of the go commands its tests start,
+and the module files of the workspace the build runs in, whose go.mod files move the versions it
+compiles; ci.yaml, since a job reads its own definition; and the job's own file of
+`.github/ci-gates`, which its filter is computed from. A gate on a job's own `if:` reads what each
+gate on one of that job's steps reads too, since the step runs only in a run the job's filter
+selected: the test job's filter holds every harness its steps test.
+
+The files become patterns in three forms (ci_filter_coverage.compressed): `<dir>/**` for a
+directory whose every file but its Go test files is read, `<dir>/*` for such a directory's own
+files, and the path itself otherwise. The directory forms select a file a change deletes there,
+which a filter must: the change that deletes a source of a package a job compiles starts that
+job. Then `!` patterns keep the filter off every Go test file those forms select and the job does
+not compile - another module's, another package's, a tagged live one, a `//go:build race` one -
+in two forms, `!<tree>/**/*_test.go` where no test file the job reads is under <tree> and
+`!<path>` where one is. dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a
+change to a filter when one of its patterns without `!` matches and none of its `!` patterns does.
+Each generated filter is checked against its own read set before it is written: what its patterns
+select among the repository's files must be exactly those files.
+
+Three kinds of file join a filter beside its job's reads. A PUSH_WORKFLOWS workflow joins the
+filter rule 8 pairs it with, since a workflow that does not name itself never runs on a change to
+itself (docs-pages.yaml in docs). Every file a TAG_RUNS tag step reads joins the filter of the job
+that runs that package's untagged tests (rule 15). And a filter that ci_ts_programs.py's LISTED
+names holds, in a block between a `# BEGIN listed` and a `# END listed` line, the files of its
+tree that its sources' tsc programs compile or bundles load, which the changes job lists with Bun
+(.github/scripts/ci_ts_listing.py).
+
+worker_image and browser_image are the two filters kept by hand, each in its own file of
+`.github/ci-gates` (`EXCLUDED = excluded(...)`): their judge is the image check,
+.github/scripts/check-image-trigger-paths.sh, which proves each covers every file its image build
+reads, and the worker image's context holds packages/daemon's test files while the .dockerignore
+drops packages/envoy's. Their `!` patterns drop what the .dockerignore keeps out of the build
+context.
+
+A sentence below that says a filter "names" a path, or holds an anchor, describes the committed
+file this computation replaced; what a job reads is its gate's, and the filter follows from it.
+
+## Why the filters were one file, and the steps they stood in
+
+History: what the filters file was before the changes job computed its filters. The path the
+step hands the action is still a plain scalar for the reason below, and the environment-variable
+cap it records is why no filter goes back into a workflow's own text.
 
 Every path filter .github/workflows/ci.yaml's `changes` job selects jobs by, in one file.
 
@@ -179,10 +214,10 @@ written again because a YAML anchor reaches no further than the string it is in.
 
 ## ci_router: ci.yaml, which every gate filter but ci_filters names through
 
-ci.yaml, which every gate filter of `.github/ci-filters.yaml` but ci_filters names through this anchor (ci_filters names it through `'.github/workflows/**'`): every job's `if:`
+ci.yaml, which every gate filter but ci_filters names (ci_filters names it through `'.github/workflows/**'`): every job's `if:`
 is in this file, so every job reads it - which is why ci_job_reads.py declares
 CI_SELF on every gate. Each gate filter also names the `ci-job-<job id>.yaml` file
-holding its own job's steps, so a change to one of those files selects that job
+holding its own job's steps, and the gate's own file of `.github/ci-gates`, so a change to one of those files selects that job
 alone. This entry stays beside them because a change to ci.yaml does reach every
 job: dropping it would make each job's `if:` test a second output of changes, which
 .github/scripts/ci_filter_coverage.py refuses (a job's `if:` tests exactly one), and
@@ -234,15 +269,15 @@ tests every package of packages/daemon but the five concurrent ones, and the rac
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
+for internal/daemon/outbox_scratch_dispatch_test.go:356, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
-agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
-roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
+(internal/api/state_golden_test.go:1393, internal/intake/intake_test.go:858,962), the
+agents internal/prompts/roles_test.go:264 stats, the tools skill its :692 holds
+roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:434
 holds the reviewer's prompt to, the GitHub App helper
-internal/api/real_github_test.go:115 sources, and the examples and
-docs its tests hold to the code (cmd/legion/config_example_test.go:164,
-internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+internal/api/real_github_test.go:117 sources, and the examples and
+docs its tests hold to the code (cmd/legion/config_example_test.go:166,
+internal/config/controller_test.go:216, internal/config/kubernetes_test.go:1476).
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
@@ -392,9 +427,8 @@ private-names-port job's now, with the private_names_port filter.
 ## test: Each harness step's own gate, named here so the job runs
 
 Each harness step's own gate, named here so the job runs for the change that
-makes one of those gates true. Each of those lists names ci.yaml, .github/ci-filters.yaml and
-ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
-three patterns the `test` filter already names, `*ci_router`, `*ci_filters_data` and `'.github/workflows/ci-job-test.yaml'`; a repeated pattern selects what it selected.
+makes one of those gates true. The engine adds each step gate's reads to its job's filter
+(ci_filter_coverage.gate_read_sets), so the test job's filter holds every harness its steps test.
 
 ## tooling_checks: The tooling-checks job: the Claude Code plugin build, the changelog
 
@@ -425,7 +459,8 @@ generators and its screenshot harness read. docs-site.yaml holds those steps, an
 both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
 builds and publishes main's site on the pushes this same list selects: its
 on.push.paths, which check-ci-filters.sh holds equal to this filter, so the list
-names all three workflow files.
+names all three workflow files. The docs job is selected like any other job: no run of ci.yaml
+is a push to main.
 
 ## go_notices: lint's notices step: the Go packages it loads for every
 
@@ -478,6 +513,13 @@ The dashboard's and the proof editor's fast checks (dispatch-ui): what their lin
 typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
 Dispatch server: the job runs neither.
 
+## dispatch_ui: The script whose `references)` arm lists the references lane's spec files
+
+The script whose `references)` arm lists the references lane's spec files,
+.github/scripts/dispatch-browser-shard-suite.sh: packages/dispatch/e2e/__tests__/reading-walk.test.ts
+reads that list out of it and fails on a reading spec the lane does not name, so a change to
+that list runs the job that runs the test.
+
 ## dispatch_ui: The one markdown fixture table, read through `web/src/__tests__/pmdoc-fixtures.ts`
 
 The one markdown fixture table, read through `web/src/__tests__/pmdoc-fixtures.ts`'s
@@ -507,11 +549,10 @@ filter also held three fixture sets whose only readers are the dashboard's and t
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
 three, and with the dispatch_browser_pr output ungated on a pull request they would
 start four shard machines and the merge job for a fixture-only change. The
-dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite reads,
-and check-ci-filters.sh holds this filter to that gate - it refuses a filter that
-misses a read, never one that is too wide, so a path is in this list because a
-browser row reads it and for no other reason. The list is the dispatch_browser_suite
-group, which dispatch_browser and dispatch_browser_pr both name.
+dispatch_browser gate (browser_gate in .github/scripts/ci_job_reads.py) says what this
+suite reads, and the changes job computes this filter from it: a path is in this filter
+because a browser row reads it and for no other reason. The dispatch_browser_pr gate is
+the same helper, so both filters hold the same patterns.
 
 ## dispatch_browser: dispatch_ui's set, which the SPA and the e2e helpers load,
 
@@ -524,7 +565,9 @@ set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 
 The workflow that holds every browser step, which these jobs read as their own
 definition - the place every other job of this file gives to its own
-`ci-job-<id>.yaml`, so a change to it selects these two jobs alone. ci.yaml's
+`ci-job-<id>.yaml`, so a change to it selects these two jobs and no other gate's: the
+reference rows' preview, dispatch-references, which gates nothing, names it in a filter of its
+own, whose patterns .github/ci-gates/dispatch-references.py keeps by hand. ci.yaml's
 dispatch-browser-pr job runs its pull-request lane on a pull request, the two
 projects a change is held to; its dispatch-browser job runs the full lane, every
 project and the two-process job, in the merge group, on a dispatched run and on a
@@ -602,12 +645,9 @@ Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
 The dispatch-browser-pr job calls the same workflow as dispatch-browser, with the
 `pull-request` lane: its legs are the same jobs of that file over fewer projects and
-rows, so they read what the full lane's read, and the two filters name the one
-dispatch_browser_suite group. Neither the generated `!**/*_test.go` block nor the
-listed block of packages/contracts/src can sit in that group: rule 17 of
-check-ci-filters.sh and check-ts-filters.sh each want a block in the list of the
-filter it is for, so each filter carries its own pair, which those checks write and
-hold. This output carries no hold term: the pull-request lane is the rule's one named
+rows, so they read what the full lane's read: both gates are browser_gate of
+.github/scripts/ci_job_reads.py, so the two computed filters hold the same patterns, each
+with its own generated `!` patterns and listed block. This output carries no hold term: the pull-request lane is the rule's one named
 exception (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 
 ## envoy_go: Its natslive step runs cmd/listener's natslive tests
@@ -689,8 +729,8 @@ TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
 The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
+backs' (way_back_doc_test.go:137) and the troubleshooting page's refusal table's
+(troubleshooting_refusals_doc_test.go:48), each committed beside the package whose
 own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
 not match.
 
@@ -961,8 +1001,8 @@ The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
 the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
 packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
-search_text_test.go:104-120 walks (the RULES row for
-that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
+search_text_test.go:106-122 walks (its //ci:reads line declares
+packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
 listener_server_change's tagged soak test, which rule 15 holds this filter to, is
@@ -1055,6 +1095,59 @@ fixture (its four `ln -s "$frozen_script"` lines). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 
+## dispatch_references: The reference rows' preview (dispatch-references): the eleven spec files
+
+The reference rows' preview (dispatch-references): the eleven spec files
+the reference framework's Verification document names and the nine of the reading
+list's walk, which dispatch-browser.yaml's `references` lane runs on Chromium, and
+what they test. Narrow on purpose: unlike every gate's filter, which the changes job computes
+from its job's reads, it names less than its job reads (the Bun
+install, the Dispatch server's whole closure, the rest of the dashboard, the e2e harness every
+spec shares, ci.yaml). That job gates nothing, so a change this list misses loses
+a preview and no check, and the full lane the merge queue runs through the
+dispatch_browser filter, which holds every read, runs every
+one of these rows. It names the reference framework, the shared field, and the one
+file of each covered box of the writing list, whose change can take a box's picker
+away, and no more: over the 200 newest pull-request runs of 2026-11-13, a list that
+also named the six feature directories mounting the field and the shared harness
+selected about half of them (about 300 runs and 6,000 runner-minutes a day), so the
+four shard machines start for a pull request that changes the references or a box
+that holds the picker, and not for every dashboard change.
+For the same reason its file of .github/ci-gates, dispatch-references.py, declares it EXCLUDED
+(`EXCLUDED = excluded(...)`, its patterns written by hand) rather than as a gate, so the changes
+job computes neither `!` patterns nor a listed block for it, as it does for a gate's filter. It
+names neither ci.yaml nor its own file either, which every gate's filter reads, for the same
+reason.
+
+## dispatch_references: The workflow that holds the lane's jobs, and the script that holds its spec files
+
+The workflow that holds the lane's jobs, and the script that holds its spec files:
+.github/scripts/dispatch-browser-shard-suite.sh, the shard job's browser step, whose
+`references)` arm lists them, so a change to that arm changes what the lane runs. Beside them
+are the two scripts the merge job hands its caller's id, dispatch-references for this lane:
+.github/scripts/dispatch-browser-reading-rows.sh keeps the reading to that caller's jobs, and
+.github/scripts/dispatch-browser-latest-blobs.sh reads that caller's uploads by its prefix, so a
+change to either changes what the lane reports.
+
+## dispatch_references: The eleven spec files, and the helpers only they share
+
+The eleven spec files, and the helpers only they share: the reference surfaces'
+own helpers, the search helpers and the writing list's walk. check-ci-filters.sh
+(rule 23) fails on a spec file the `lane_files` of the `references)` arm of
+.github/scripts/dispatch-browser-shard-suite.sh runs that this list misses.
+
+## dispatch_references: The server side of references
+
+The server side of references: the text and reference resolution, the document
+model, and the API files that answer search, references, comments, replies and
+which sessions Dispatch holds a record of.
+
+## dispatch_references: No browser row compiles a Go test file
+
+No browser row compiles a Go test file, so a change to one of the packages above
+that touches only its tests starts no preview. The changes job's some-with-excludes
+quantifier reads a `!` pattern per changed file.
+
 The sections from here on are `.github/workflows/ci.yaml`'s own, the router's, in the order
 their comment blocks stood in it.
 
@@ -1093,16 +1186,16 @@ so it posts nothing. pr-title.yaml carries that same check when the pull request
 event this workflow does not run on, as its own job's check run too; its header says why it runs
 on nothing else.
 The docs site's build on a push to main, and its GitHub Pages
-deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
-to the docs filter of .github/ci-filters.yaml.
+deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are the
+docs filter the changes job computes, which `check-ci-filters.sh write` writes and rule 8 holds.
 
 What a workflow file of this repository holds, and where its filter data, its longer shell
 bodies and its prose go instead, is the rule .github/ci-notes/README.md writes down. Each
 `changes` output that hands on a filter's verdict reads `steps.filter.outputs.<name>`, and
-rule 19 of `check-ci-filters.sh` holds `<name>` to a filter of .github/ci-filters.yaml.
+rule 19 of `check-ci-filters.sh` holds `<name>` to a filter a file of `.github/ci-gates` declares.
 
-A new job joins the router in eight places: a filter in .github/ci-filters.yaml that names every
-file the job reads, with the `*ci_filters_data` line beside its `*ci_router`, an output of
+A new job joins the router in eight places: a gate in `.github/ci-gates/<job id>.py` that names
+the go commands the job runs and every other file it reads, from which its filter is computed, an output of
 `changes` for that filter, the job's `needs: changes` and an `if:` on that
 output carrying the term that skips it on a re-run attempt of a merge-group run
 (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
@@ -1116,8 +1209,8 @@ CI_OK_PULL_REQUEST_ONLY when its `if:` admits only pull_request), the ci-ok-repo
 job's last step (a job that calls a workflow passes `ci-ok-changes` to it, and that workflow's
 job ends with the step, as docs-site.yaml's and worker-image.yaml's do), the job's id in the
 ci-ok job's `needs:`, without which the verdict is reached before that job ends and says
-nothing about it, and a gate in
-.github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
+nothing about it, and `//ci:` lines at the top of each test file the job compiles that reads a
+file outside its package. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
 event must hold back, as a slow suite's pull-request case is
 (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
@@ -1131,11 +1224,11 @@ A job split off another keeps its steps in that job's file instead: its caller p
 (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
-Caches: two steps of the jobs this workflow calls save an Actions cache entry themselves,
-dispatch-two-builds' `Cache the previous build` and `Cache the first-rollout build`
-(ci-job-dispatch-two-builds.yaml), which keep the builds that job compares against; three
-actions its jobs call can save one too, and only in a dispatched run (setup-bun, and
-architecture-check and spec-check at this paragraph's end).
+Caches: no step of the jobs this workflow calls saves an Actions cache entry itself; three
+actions its jobs call can save one, and only in a dispatched run (setup-bun, and
+architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the two
+earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
+ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of seven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -1232,9 +1325,9 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
     daemon-go, plugin-pack, pi-envoy and pi-legion (pi-legion-build installs none, and runs on
     arm64);
-  * a browser: dispatch-browser and dispatch-browser-pr (the container of their shard and alone
-    legs is an image built for linux/amd64 alone), dispatch-two-builds and docs (Playwright's
-    Chromium on the runner's own libraries);
+  * a browser: dispatch-browser, dispatch-browser-pr and dispatch-references (the container of
+    their shard and alone legs is an image built for linux/amd64 alone), dispatch-two-builds and
+    docs (Playwright's Chromium on the runner's own libraries);
   * an image of this repository built for linux/amd64: worker-image, browser-image, and
     envoy-smoke;
   * envoy-go-build, whose pack step builds the release's listener archives with no
@@ -1326,10 +1419,15 @@ only to stop a merge-group run the queue has already thrown away, so it runs onl
 `merge_group`, holds `actions: write`, runs no dependency code, reports no result to ci-ok
 and is no job any verdict waits for. `ci-ok` is the verdict: it reports nothing to itself,
 and the jobs it judges are its `needs:`, which check-ci-filters.sh holds to every job of this
-file but these three. `pr-title` is the other check main's ruleset requires, carried by that
+file but these four. `pr-title` is the other check main's ruleset requires, carried by that
 job's own check run: its result is nothing the verdict waits for, it carries no report step,
 and the queue reads it as a check of its own, so a verdict that needed it would only make one
-required check wait for the other.
+required check wait for the other. `dispatch-references` runs a slice of the browser suite on
+a pull request for feedback alone: the merge queue's full lane gates every row of it already,
+and a required check is the repository owner's to change, so it carries no report step and
+the verdict waits for nothing of it
+(.github/ci-notes/ci.md#the-reference-rows-preview-job
+says the rest).
 That check asks none of the ci-ok rules of a job named here, and refuses
 one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_SELECTED_BY
 cannot map. The list is a JSON array written over lines rather than one long one, as ci.yaml's
@@ -1420,16 +1518,19 @@ ci-images job then refuses.
 
 ## The browser suite's two outputs, one per lane
 
-Two outputs over one list of patterns (the dispatch_browser_suite group of
-.github/ci-filters.yaml), one for each of ci.yaml's two callers of
-.github/workflows/dispatch-browser.yaml. dispatch_browser_pr selects the dispatch-browser-pr job,
+Two outputs over one set of reads (browser_gate in .github/scripts/ci_job_reads.py, which
+both gates are), one for each of the two callers of
+.github/workflows/dispatch-browser.yaml that ci-ok needs. dispatch_browser_pr selects the dispatch-browser-pr job,
 which runs the `pull-request` lane, the two projects and the `@pr` rows a change to the dashboard
 is held to: no hold term, so it comes back on every push of a pull request its paths select.
 dispatch_browser selects the dispatch-browser job, which runs the full lane, a slow suite held
 back as the others are, with its own label `lane:dispatch_browser`. A job runs whole or not at
 all, so the two lanes are two jobs, and their checks carry the caller's id:
 `dispatch-browser-pr / shard (1)` on a pull request, `dispatch-browser / shard (1)` in the merge
-queue. .github/ci-notes/ci.md#what-the-lane-input-reads says what each lane runs.
+queue. .github/ci-notes/ci.md#what-the-lane-input-reads says what each lane runs. The third
+caller, dispatch-references, runs the `references` lane behind an output and a narrower filter
+of its own, and gates nothing
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 ## Which lane a job runs in: the pull request or the merge queue
 
@@ -1468,7 +1569,10 @@ What that gives, with each job's 90th percentile in minutes:
 dispatch-browser-pr is the one exception the rule names: at 14.2 minutes it is above the line,
 and it stays on the pull request, since its rows tagged `@pr` are the ones a change to the
 dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane).
-A job whose numbers cross the line moves class by the same rule.
+A job whose numbers cross the line moves class by the same rule. dispatch-references is in
+neither class: it is outside ci-ok, runs on a pull request alone and never in the queue, whose
+full lane already runs every row of it
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
@@ -1570,19 +1674,6 @@ it. The same lines go to the ci-ok job's summary, apart from the jobs that ran a
 green ci-ok on a pull request without the label is not read as those jobs passing. No job runs
 in part, so a job that ran and passed ran all its steps. A run that held nothing back writes no
 summary.
-
-## On pull_request dorny/paths-filter reads the file list from the API and reads
-
-On pull_request dorny/paths-filter reads the file list from the API and reads only the
-filters from the tree; merge_group diffs with git and needs the clone (a merge group diffs its
-base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
-filters nothing.
-
-## On a pull request this job reads the changed files from the
-
-On a pull request this job reads the changed files from the API and the filters from
-.github/ci-filters.yaml, which dorny/paths-filter reads off the disk: so a pull
-request checks out that one file, and nothing else.
 
 ## Why the filter step is skipped on a dispatched run
 
@@ -1804,10 +1895,10 @@ under a second caller would read files that caller's filter is never held to, an
 no job of its own there runs nothing its filter is held to.
 .github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
 gates find their steps there. Each half keeps a filter of its own, and both name the shared
-file, so a change to it selects both. dispatch-browser.yaml has two callers too,
-dispatch-browser and dispatch-browser-pr, but every job of it runs under either: it takes the
-caller's id as `job` for its artifact names, its read of its own jobs and its report, never to
-pick a job
+file, so a change to it selects both. dispatch-browser.yaml has three callers,
+dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
+any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
+and its report, never to pick a job
 (.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
 
 ## What the tooling-checks job runs
@@ -1918,9 +2009,10 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-`-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts its caller's ci-ok report. Two jobs of this file call it.
+`-alone` projects a machine each, the two-process job, the fake-embedder job that runs on the
+pull-request and full lanes, the containerised visual review, and the merge job that joins the
+shard and alone reports into one and posts its caller's ci-ok report. Three jobs of this file
+call it.
 
 Two lanes, and which run pays for which. dispatch-browser-pr runs `pull-request` on a pull
 request: the two projects a change is held to (chromium and iphone) over the `@pr` rows, so such
@@ -1930,7 +2022,10 @@ the visual review - in the merge group, on a workflow_dispatch and on a pull req
 `full-ci` or `lane:dispatch_browser`, where both jobs run. So the merge group is where a change
 meets the whole suite before it lands, and the nightly
 (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
-lane, from main, under the job id dispatch-browser) runs it again on main's tip.
+lane, from main, under the job id dispatch-browser) runs it again on main's tip. A third lane,
+`references`, is dispatch-references', a preview of the reference rows on a pull request that
+gates nothing
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 Two inputs, each a literal of its caller's. `lane` decides the projects each job of the called
 workflow runs, so nothing here chooses them a second time; it picks no browser to install any
@@ -1941,7 +2036,7 @@ pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like
 `ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
 without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
-caller, every artifact name starts with the id so the two callers of one run share none, and
+caller, every artifact name starts with the id so callers that share a run share none, and
 the merge job's ci-ok report names it.
 
 The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
@@ -1959,25 +2054,88 @@ Each job of dispatch-browser.yaml carries its own limit.
 
 The same rule as the docs job's: a caller that declares no `permissions:` hands the
 called workflow the default GITHUB_TOKEN permissions rather than this file's block, so
-dispatch-browser and dispatch-browser-pr each declare the same three.
+dispatch-browser and dispatch-browser-pr each declare the same three, and dispatch-references
+two of them
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
 merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
 that job's last step, the ci-ok report.
 
 ## What the lane input reads
 
-dispatch-browser.yaml's `lane`, which each of its two callers here passes as a literal:
+dispatch-browser.yaml's `lane`, which each of its three callers here passes as a literal:
 dispatch-browser-pr `pull-request`, which runs the two projects a pull request is held to over
-the `@pr` rows, and dispatch-browser `full`, which runs every project, the three `-alone` ones,
-the two-process job and the visual review over every row. Which lane a run gets is which caller
-runs: dispatch-browser-pr on a pull request alone, and dispatch-browser wherever its
-`dispatch_browser` output is true, which a pull request gets only under `full-ci` or
-`lane:dispatch_browser` (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane).
-On the pull-request lane the alone, multiprocess and visual jobs of the called file are skipped
-by their own `if:`, as jobs of a lane it does not run. No other job of this file passes a lane:
-a job runs all its steps wherever it runs, and a job that held a slow suite beside steps a pull
-request runs is two jobs now
+the `@pr` rows, dispatch-browser `full`, which runs every project, the three `-alone` ones,
+the two-process job and the visual review over every row, and dispatch-references
+`references`, which runs Chromium over the reference rows' spec files
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
+Which lane a run gets is which caller runs: dispatch-browser-pr and dispatch-references on a
+pull request alone, and dispatch-browser wherever its `dispatch_browser` output is true, which
+a pull request gets only under `full-ci` or `lane:dispatch_browser`
+(.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane). On the pull-request lane
+the alone, multiprocess and visual jobs of the called file are skipped by their own `if:`, as
+jobs of a lane it does not run, and on the references lane those three and the embedder job.
+No other job of this file passes a lane: a job runs all its steps wherever it runs, and a job
+that held a slow suite beside steps a pull request runs is two jobs now
 (.github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push).
+
+## The reference rows' preview job
+
+What it runs, and why it gates nothing.
+
+The reference rows' preview: every Chromium row of the eleven spec files
+the reference framework's Verification document names and the nine of the reading list's
+walk, through dispatch-browser.yaml's `references` lane - its binaries job, its four shard
+legs and its merge job, and none of its
+alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr job,
+runs only the few of those rows that carry `@pr`, so without this job a change to the
+reference framework got the rest from a run by hand.
+
+Outside ci-ok on purpose: CI_OK_EXEMPT names it, ci-ok does not need it, and it passes no
+`ci-ok-changes`, so its merge job posts no ci-ok report. What a required check runs is the
+repository owner's decision, and the `@pr` budget the pull-request lane is held to
+(packages/dispatch/e2e/__tests__/pull-request-lane.test.ts) stays as it is, so this job adds
+rows to no check that gates. A red here does not block a merge: it is a reading for the
+author and the reviewer of the pull request. What gates these rows is the merge queue: every
+merge group runs the dispatch-browser job on the full lane, which holds every one of
+them, and ci-ok needs that job.
+
+So it joins the router in fewer places than the eight
+.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs names for a
+new job: an EXCLUDED file in .github/ci-gates, dispatch-references.py, where a gate would be,
+which holds its filter's patterns by hand, an output in `changes` for that filter, its `needs:
+changes` and an `if:` on that output with the re-run term, and its name in CI_OK_EXEMPT. It has
+no CI_OK_SELECTED_BY or
+CI_OK_PULL_REQUEST_ONLY entry, no report step and no place in the ci-ok job's `needs:`,
+each of which check-ci-filters.sh refuses for a job CI_OK_EXEMPT names. Its steps are
+dispatch-browser.yaml's, as the dispatch-browser and dispatch-browser-pr jobs' are, rather than
+a ci-job-dispatch-references.yaml of its own: they are the jobs of the one suite under another
+lane, and a second copy of them would drift from the first. It passes its own id as that file's
+`job`, as they do, so its checks read `dispatch-references / shard (1)` and the like, every
+artifact it uploads starts with `dispatch-references-`, and its merge job reads only its own
+legs when dispatch-browser-pr shares its run
+(.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
+
+Pull requests alone: the merge queue's full lane already runs these rows, so a merge group
+would pay for them twice. The merge-group attempt term is the one every job of ci.yaml but
+ci-ok and pr-title carries; with the pull_request term it holds nothing back, and it is there
+because check-ci-filters.sh's rule 12 holds every job to it. Its `changes` output,
+dispatch_references, carries no `full-ci` or `lane:` term either: the job is no slow suite held
+back on a pull request, and the merge queue's full lane runs the same rows whatever the labels.
+The `dispatch_references` filter selects it;
+.github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
+says why that filter is narrower than what the job reads.
+
+No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
+Each job of dispatch-browser.yaml carries its own limit.
+
+Its `permissions:` block is its own, for the reason the dispatch-browser job's
+(.github/ci-notes/ci.md#why-the-dispatch-browser-job-declares-the-scopes-the-called-workflow-needs)
+gives: a caller that declares no `permissions:` hands the called workflow the default
+GITHUB_TOKEN permissions rather than ci.yaml's block. `contents: read` is every job's checkout
+and `actions: read` the merge job's read of this run's jobs. No `checks: write`, which only that
+job's ci-ok report needs: this call passes no `ci-ok-changes`, so the report step skips, as it
+does in dispatch-browser-nightly.yaml's call, which declares these same two.
 
 ## envoy-go-build: envoy's Go build, vet, format, generated-code and migration checks
 
@@ -2192,14 +2350,28 @@ build only under the `twobuild` tag and are a job of their own for the reason
 dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
 each, and the earlier builds are built here first. Most rows run the previous build, the newest
 legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
-which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
+which needs main's history and the release tags, and builds it from `git archive`. The job checks
+out its own commit alone and then fetches main and the release tags with their history but none
+of their files (`--filter=blob:none`), which `git archive` fetches for a commit when it builds it:
+the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the checkout to its
+2-minute budget in three merge groups that day (the workflow's comment has the numbers).
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
 it the same way.
-Each build is cached by its commit and the script that built it, so a pull request builds each
-release once; its src/ is left out of the cache, since the test reads only the parts the script
-copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job
+Each build is cached by its commit and the hash of the script that built it, with its src/ left
+out, since the test reads only the parts the script copies out of it. The job restores each and
+saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
+main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
+ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
+request and merge group reads; its dispatch-builds-superseded job then deletes main's older
+entries of each build and every entry of it on any other ref. The job saved them itself before,
+in the scope of its run's own ref, where a merge group's entry is read by no later run and a pull
+request's by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
+repository's 25 GB cache and main held none, and on 2026-11-22 308 of 351 successful jobs built
+the previous release again (107 s at the median, against 11 s to restore it). A run that resolves
+a release main holds no entry of (one tagged minutes ago, or an older one a pull request's merge
+base still names) builds it. Each row's NATS runs in its own test process (internal/testnats), so the job
 needs no container runtime of its own. Then the browser half
 (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
 two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
@@ -2309,12 +2481,17 @@ packages/envoy-client/**, so the suite brings no new path into this job's closur
 
 ## What the ci-filters job holds every filter and every workflow file to
 
-Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
-with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-module cache, so the job needs Go but downloads no module and restores no cache. It also holds
-every workflow file to 64,000 bytes and to what GitHub's own parser reads
-(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
-second time, in a file small enough to start when this one is too large to.
+Holds the table every filter is computed from to ci.yaml - every gate a filter the changes job
+hands on to a real job, every go command a job runs claimed, every pin and citation still found -
+and computes every filter the way the changes job does, recomputing each Go job's closure with go
+list (.github/scripts/check-ci-filters.sh). When the changes job's computation fell open for a
+cause of the engine's own (a go command, a gate file, a //ci: line), every filter selects this job
+and it fails for the same cause; a fall-open from the Bun install or the TypeScript listing, which
+this job does not run, leaves it green, and the lint job's readers are what turn the run red. go
+list runs with GOPROXY=off over an empty module cache, so the job needs Go but downloads no module
+and restores no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own
+parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
+runs a second time, in a file small enough to start when this one is too large to.
 
 ## What the proof editor's offline proof shows
 
