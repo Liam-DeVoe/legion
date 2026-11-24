@@ -2778,7 +2778,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if agent == "" {
-				err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+				err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					agent, err = store.ClaimAgentFromSteps(ctx, tx, issue.Key, token)
 					return err

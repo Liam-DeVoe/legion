@@ -120,7 +120,7 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			ran := lastStartOf(t, pool, key, claim.RoleImplementer)
 			if tc.ranStep2 {
-				completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 1)
+				completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 1, "head")
 				ran = lastStartOf(t, pool, key, claim.RoleTester)
 			}
 			if ran.Agent != tc.ran {

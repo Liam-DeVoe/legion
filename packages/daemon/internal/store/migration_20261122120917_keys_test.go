@@ -53,7 +53,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 	put := func(issue string, version int, withSessions bool, words ...string) []claim.Agent {
 		t.Helper()
 		var names []claim.Agent
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			steps := make([]record.PlanStep, len(words))
 			for i, word := range words {
 				role, key, _ := strings.Cut(word, ":")
@@ -280,7 +280,7 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 			role, key, _ := strings.Cut(word, ":")
 			steps[i] = record.PlanStep{Issue: issue, Generation: 3, Task: "t", Position: i + 1, Role: role, AgentKey: key}
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			earlier, err := records.PlanStepsOf(ctx, tx, issue)
 			if err != nil {
 				return err
@@ -353,7 +353,7 @@ func TestANewAgentGivenTheNameOfAClaimFromBeforeTheUpgradeStartsASessionOfItsOwn
 
 	records := record.NewStore()
 	var named []record.PlanStep
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, generation := range []uint64{1, 2} {
 			if err := records.DeletePlan(ctx, tx, "LEGION-208", generation); err != nil {
 				return err
