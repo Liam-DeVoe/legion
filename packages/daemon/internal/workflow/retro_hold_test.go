@@ -104,22 +104,25 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 // written retro, and the implementer starts the retro once, at a raised entry, with the task the
 // approval would have started it with. The control is the same parent with no child, which moves
 // into its retro at the approval with no hold. The twin is an issue with no plan rows, which walks
-// today's line: its approval takes it to accepting, and the child's leave changes nothing of it.
+// today's line: its approval takes it to accepting, and the leave of the issue beneath changes
+// nothing of it.
 func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 	// parent is LEGION-208 walking `implementer reviewer`, standing in reviewing at step 2, with
-	// heldParentChild in implementing beneath it where child is true.
+	// heldParentChild in implementing beneath it where child is true. The child enters once the
+	// parent stands in reviewing: an open Dispatch child holds each start of planning through
+	// accepting in awaiting_children (R9 of dispatch://INFRA-3320), and the retro's is none of them.
 	parent := func(t *testing.T, child bool) (*pgxpool.Pool, *Engine, *bytes.Buffer) {
 		t.Helper()
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		if child {
-			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
-		}
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+		if child {
+			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+		}
 		return pool, engine, logged
 	}
 
@@ -235,24 +238,34 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 	})
 
 	// An issue with no plan rows walks today's line, whose review approval goes to accepting
-	// with an issue beneath it in the workflow, as today; the child's leave starts nothing of it.
-	t.Run("an issue with no plan rows goes to accepting, and the child's leave starts nothing", func(t *testing.T) {
+	// with an issue beneath it in the workflow, as today; that issue's leave starts nothing of it.
+	// The issue beneath is a grandchild, under heldParentChild done: an open Dispatch child would
+	// hold the start of accepting in awaiting_children (R9 of dispatch://INFRA-3320), a wait of its own.
+	t.Run("an issue with no plan rows goes to accepting, and the leave of the issue beneath starts nothing", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		stepRoot(t, pool, phase.Reviewing)
-		stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+		parent, child, beneath := "LEGION-208", heldParentChild, "LEGION-210"
+		seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: parent,
+			Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "V", LastDispatchSeq: 1})
+		seedIssue(t, pool, record.Issue{Key: beneath, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: parent,
+			Project: "LEGION", Title: beneath, Parent: &child, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "W", LastDispatchSeq: 1})
 
 		approveReview(t, pool, engine)
 
 		if got := issueOf(t, pool, engine, "LEGION-208"); got.Phase != phase.Accepting || got.Hold != nil {
 			t.Fatalf("LEGION-208 after the approval stands in %s with hold %+v, want accepting with none", got.Phase, got.Hold)
 		}
-		childLeavesDone(t, pool, engine)
+		done := intake.DispatchIssue{Key: beneath, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "done",
+			Title: beneath, Parent: child, Rank: "W"}
+		if result := applyFacts(t, pool, engine)("beneath-done", done); result.Refusal != nil {
+			t.Fatalf("the done of %s was refused: %+v", beneath, result.Refusal)
+		}
 		if got := issueOf(t, pool, engine, "LEGION-208"); got.Phase != phase.Accepting || got.Hold != nil {
-			t.Fatalf("LEGION-208 after the child's leave stands in %s with hold %+v, want accepting still", got.Phase, got.Hold)
+			t.Fatalf("LEGION-208 after the leave of %s stands in %s with hold %+v, want accepting still", beneath, got.Phase, got.Hold)
 		}
 		if got := startsIn(t, pool, "LEGION-208", claim.RoleImplementer, phase.Retro); len(got) != 0 {
-			t.Fatalf("the child's leave wrote the retro's starts %+v, want none", got)
+			t.Fatalf("the leave of %s wrote the retro's starts %+v, want none", beneath, got)
 		}
 		if notices := noticesOf(t, pool, "LEGION-208", "retro-held"); len(notices) != 0 {
 			t.Fatalf("an issue with no plan rows was told %+v, want no retro-held notice", notices)
@@ -364,9 +377,10 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	// The child enters once the parent stands in reviewing, as TestAParentWithNoAcceptanceIsHeldBeforeItsRetro's does.
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
 	// The review event approves the round before the reviewer reports: its row has no report yet.
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))

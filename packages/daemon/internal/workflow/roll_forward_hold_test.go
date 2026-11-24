@@ -181,9 +181,10 @@ func TestAHoldWhosePlanRowsTheWayBackDroppedIsAPlainHold(t *testing.T) {
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+			// The child enters once the parent stands in reviewing, as TestAParentWithNoAcceptanceIsHeldBeforeItsRetro's does.
+			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 			approveReview(t, pool, engine)
 			if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
 				t.Fatalf("premise: %s stands in %s hold %+v, want held for children", root.Key, held.Phase, held.Hold)

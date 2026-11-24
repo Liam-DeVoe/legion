@@ -26,10 +26,12 @@ import (
 // person reads why and is given none of the architect's rules for ending a child; or an outside
 // session's status on the root, which the daemon re-asserts its own status over; the control has
 // no move, so the same check is seen to pass where the board was never moved, and nothing posts
-// the sentence. The root's status rows then run through the outbox's own status executor against
-// the board, oldest first, as the outbox runs an issue's status writes one at a time in the order
-// they were made: each row queued before the release is still waiting when the release queues
-// its own.
+// the sentence. The root's status rows run through the outbox's own status executor against the
+// board, oldest first, as the outbox runs an issue's status writes one at a time in the order they
+// were made: those of the board's move before the last issue leaves, and those of the release after
+// it. The release starts the retro at a new phase entry, where a status row of the entry before
+// finishes unwritten (record.LateAt), so the move's rows run at their own entry, as the outbox's
+// status lane runs them once they are due.
 func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	t.Parallel()
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
@@ -61,6 +63,9 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
 				Title: "child", Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 				Rank: "B", LastDispatchSeq: 1, HandedOver: true}
+			// The copy of Dispatch's issues holds both, the child under the root, so the root's
+			// chain is known: the release of the hold reads what stands beneath the root and its
+			// gate root there (workflow's startHeldRetro).
 			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				version := record.PlanVersion{Issue: rootKey, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, rootKey, claim.RoleArchitect), GivenAt: now.Add(-time.Hour)}
@@ -79,10 +84,11 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 						return put
 					}
 				}
-				_, err := records.OpenTreeLifecycle(ctx, tx, "legion", rootKey, treelifecycle.AuthorityWorkflow)
-				return err
+				seedCopyRow(t, tx, rootKey, "", root.DispatchStatus, 1)
+				seedCopyRow(t, tx, childKey, rootKey, child.DispatchStatus, 1)
+				return openIssueTx(ctx, tx, "legion", rootKey, treelifecycle.AuthorityWorkflow)
 			}); err != nil {
-				t.Fatalf("seed the held root, the child beneath it and the root's plan: %v", err)
+				t.Fatalf("seed the held root, the child beneath it, their copy rows and the root's plan: %v", err)
 			}
 			board := &boardDispatch{status: "needs_review"}
 			runner := &outbox{pool: pool, records: records, dispatch: board, dispatchProject: "LEGION",
@@ -129,6 +135,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 				if got := stored(rootKey); !record.HeldForChildren(got) {
 					t.Fatalf("%s after the board moved to %s stands in %s with hold %+v, want it still held for its children", rootKey, tc.moved, got.Phase, got.Hold)
 				}
+				writeRootStatuses()
 			}
 			apply("child-done", intake.DispatchIssue{Key: childKey, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed",
 				Status: "done", Title: "child", Parent: rootKey, Rank: "B", HandedOver: true})

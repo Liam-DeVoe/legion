@@ -690,8 +690,9 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 }
 
 // The walk of the version an owner gave holds to its end, and holds the same across a boot. The
-// issue walks the line of version 1, implementing, reviewing, retro, merging and done, and its
-// run's plan holds version 1 alone at each move. With the daemon booted in the middle of the walk,
+// issue walks the line of version 1, implementing, reviewing, retro, merging and done, the last at
+// the landing of the close its merge queued (closeLanded), and its run's plan holds version 1
+// alone at each move. With the daemon booted in the middle of the walk,
 // the engine built again on the same store, the walk is the same. The control: version 2 given
 // while the task waits, before its first step, is taken, and the walk starts planning. The twin:
 // an issue that started its work before Legion took plans walks today's line, and its walk writes
@@ -726,6 +727,7 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 				if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: merged}); result.Refusal != nil {
 					t.Fatalf("the merge was refused: %+v", result.Refusal)
 				}
+				landClose(t, pool, engine, key)
 			},
 		}
 		var walked []walkStanding
@@ -894,6 +896,8 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	t.Run("the earlier owner's plan at the issue's own generation is not walked either", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
+		// LEGION-208 is recorded too: who acts on LEGION-209 is read from its Dispatch chain.
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
 		recordedAt(t, pool, "LEGION-209", "LEGION-208")
 		give(t, pool, engine, "LEGION-209", 1, 1, earlier, "implementer", "reviewer")
 		recordedAt(t, pool, "LEGION-209", "LEGION-209")

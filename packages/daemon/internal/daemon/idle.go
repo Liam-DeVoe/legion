@@ -118,11 +118,12 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	var quiet, holding bool
 	// The release's line and the wake of its lane are hooks of the mark's commit, so a mark whose
 	// reply is lost and that the store says committed still says so and still wakes its lane. The
-	// kept pod's record stays after the transaction: it is a write of its own.
+	// kept pod's record stays after the transaction: it is a write of its own. The store decides in
+	// a savepoint of this body's transaction, so the rows are fenced through the body's own ctx and tx.
 	var marked bool
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(ctx context.Context, tx pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
+		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
@@ -256,11 +257,12 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	var quiet, holding bool
 	// The mark's line and the wake of its lane are hooks of its commit, as the idle pass's are. The
 	// pass counts the release from what Transact answers, never from a hook, so a hook the watcher
-	// runs later changes no count of a pass.
+	// runs later changes no count of a pass. Its row is fenced through the body's own ctx and tx, as
+	// the idle pass's are.
 	var marked bool
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(ctx context.Context, tx pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
+		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 			// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
 			// rather than reading the runtime again under the transaction's lock.
 			decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)

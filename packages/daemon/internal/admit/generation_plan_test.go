@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -241,7 +242,8 @@ func rerunChild(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 
 // ownTodoOnChild is the daemon's own todo on pathsChild, which rerun_child and release_children
 // make: the route writes todo on the child in Dispatch and applies the event its own write makes
-// in the request (api's recordOwnStatusWrite).
+// in the request (api's recordOwnStatusWrite), through the daemon's handlers, the copy of
+// Dispatch's issues first (blockers.Mirror): an unrecorded child's chain is read from its row there.
 func ownTodoOnChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, route string) {
 	t.Helper()
 	parent := pathsRoot
@@ -250,7 +252,8 @@ func ownTodoOnChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, rout
 	event := intake.OwnStatusWrite(written)
 	fact := intake.ObservedIssue(written)
 	fact.Delivered = &event
-	if _, err := intake.ApplyFact(context.Background(), pool, "api", "status/own-write/"+route, fact, admission.engine, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "api", "status/own-write/"+route, fact,
+		blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
 		t.Fatalf("apply the %s of %s: %v", route, pathsChild, err)
 	}
 }
@@ -262,11 +265,11 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 		Status: "todo", Title: "child", Parent: pathsRoot, Rank: "B"}, admission.engine)
 }
 
-// assertChildStarted fails unless the tree's architect was told the child runs again and that it
-// starts its first step, first.
+// assertChildStarted fails unless the tree's architect was told the child opens a new run, its
+// second, and that it starts its first step, first.
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
-	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
+	want := []string{pathsChild + " is todo; it opens a new run, generation 2, from its first phase",
 		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
 	if got := childStatusReasons(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
@@ -415,8 +418,10 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 // its giver's run: the root closes, and a person's todo opens its next run (NewRun). The rows at
 // generation 0 are still there, because the token of the root's architect comes from the root's
 // key, which the new run keeps, and the root's release of the issue starts it at implementing, the
-// first step of that plan, with no notice of a plan not taken. The control: the same release of an
-// issue its owner gave no plan starts planning on the default steps.
+// first step of that plan, with no notice of a plan not taken. The released issue runs at its own
+// first generation, 1, whatever run its root is in (R17 of dispatch://INFRA-3320: an issue's own
+// facts). The control: the same release of an issue its owner gave no plan starts planning on the
+// default steps.
 func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsNextRun(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -443,10 +448,10 @@ func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsNextRun(t *testin
 			ownTodoOnChild(t, pool, admission, "release")
 
 			if !tc.given {
-				assertTakesDefaultSteps(t, pool, pathsChild, 2)
+				assertTakesDefaultSteps(t, pool, pathsChild, 1)
 				return
 			}
-			assertTakesOwnersPlan(t, pool, pathsChild, pathsRoot, 2)
+			assertTakesOwnersPlan(t, pool, pathsChild, pathsRoot, 1)
 			assertPlanUnchanged(t, pool, pathsChild, 0, waiting)
 			for _, got := range effects(t, pool) {
 				if notice, ok := got.payload.(record.Notice); ok && notice.Kind == "plan-not-taken" {

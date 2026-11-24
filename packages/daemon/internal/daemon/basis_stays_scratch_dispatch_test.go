@@ -811,11 +811,12 @@ func (r *personHandoverRig) applyAsTheDaemon(source, id string, fact intake.Fact
 
 // moveRecord writes key's record in phase to, as close_scratch_dispatch_test.go writes a record in
 // merging, once every write the daemon queued on key has run: a phase the rig runs no agent to
-// reach. A run whose first step has started holds plan rows, and its task is moved to the step
-// that runs as to, as the workflow's own move does (workflow's moveTask): issues.phase and the
-// task's place are two records of where the issue stands, and every later write of the issue
-// (workflow.Engine.WriteIssue) refuses a record in which they disagree. A run with no plan rows has
-// only its phase.
+// reach. A run whose first step has started holds plan rows, and its task is moved to where it
+// stands while its issue stands in to, as the workflow's own move does (workflow's moveTask and
+// Walk.PlaceOf): the step that runs as to, or the retro or the merge at a place of their own.
+// issues.phase and the task's place are two records of where the issue stands, and every later
+// write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. A run
+// with no plan rows has only its phase.
 func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 	t := r.t
 	t.Helper()
@@ -844,13 +845,21 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 		if err != nil {
 			return err
 		}
-		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
-		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == to })
-		if at < 0 {
-			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, key, to)
+		var place record.TaskPlace
+		switch to {
+		case phase.Retro:
+			place = record.TaskPlace{Kind: record.PlaceRetro}
+		case phase.Merging:
+			place = record.TaskPlace{Kind: record.PlaceMerge}
+		default:
+			roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
+			at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == to })
+			if at < 0 {
+				return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, key, to)
+			}
+			place = record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}
 		}
-		return records.MoveTask(ctx, tx, key, issue.Generation, task.Task,
-			record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}, record.TaskRunning)
+		return records.MoveTask(ctx, tx, key, issue.Generation, task.Task, place, record.TaskRunning)
 	}); err != nil {
 		t.Fatalf("record %s in %s: %v", key, to, err)
 	}

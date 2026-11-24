@@ -693,11 +693,11 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 // Each sentence that the acceptance of these words showed false says what the daemon does. The
 // daemon takes a move back only from the role that works the issue's phase (workflow's
 // backwardRefusal), so the architect asks that role for one outside `accepting`; the merger's own
-// move back is the other way out of `merging`, and a merged child waits there for the issues
-// beneath it; the implementer resolves the threads the reviewer accepted; and the sentence for a
-// step with no planner step before it stands outside the paragraph that is for the steps working
-// from a planner's plan. Each part is read alone, by its name. This shows the text is loaded, never
-// that an agent follows it.
+// move back is the other way out of `merging`, and a merged issue waits there until each of its
+// Dispatch children is done (workflow's closeMerged); the implementer resolves the threads the
+// reviewer accepted; and the sentence for a step with no planner step before it stands outside the
+// paragraph that is for the steps working from a planner's plan. Each part is read alone, by its
+// name. This shows the text is loaded, never that an agent follows it.
 func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -721,7 +721,7 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 			"merger.md",
 			[]string{
 				"That is the one move forward out of `merging`, beside your own `request_backward_move` back",
-				"a child with an issue beneath it still in the workflow stays there until the last of them is done or parked",
+				"An issue with a child that is not `done` stays in `merging` on its merged pull request until each child is `done`",
 			},
 			[]string{"That is the one move out of `merging`", "and closes then; a child closes at once"},
 		},

@@ -111,7 +111,10 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 
 		// The stranded report passes over the tester's claim the stop suspended: the daemon
 		// suspended it, and no rule resumes a held issue's step. The same claim an operator
-		// suspended is listed, since only the operator's resume runs it again.
+		// suspended is listed, since only the operator's resume runs it again. The root holds the
+		// slot its hold keeps, as admission gave it, so its tree runs (record.TreeRuns, R4 of
+		// dispatch://INFRA-3320): a root that waits for a slot it does not hold runs nothing.
+		seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: stepClock})
 		for _, tc := range []struct {
 			by       supervise.SuspendSource
 			stranded int

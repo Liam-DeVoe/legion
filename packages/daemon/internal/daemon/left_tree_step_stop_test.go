@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -70,6 +71,8 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesWork(t *testing.T) {
 	putCopyRow(t, pool, rootKey, "", "in_progress")
 	putCopyRow(t, pool, childKey, rootKey, "in_progress")
 	trees := outboxTreeStore(t, pool, rootKey)
+	// Each claim binds its issue's own lifecycle, which admission opens for every issue it starts.
+	openIssue(t, trees, "legion", childKey, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = trees
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())

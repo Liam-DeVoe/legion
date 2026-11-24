@@ -139,10 +139,11 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 	}
 }
 
-// A root that leaves the workflow while the operator runs a tree under its key ends its task as
-// every other leave does (leaveState): left where the status is not done, at the place it stood,
-// so the phase done its record takes is the phase its task stands in.
-func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
+// A root that leaves the workflow while the operator runs a tree under its key keeps its run as
+// every other leave does (leave): its phase and its task stand where they stood, so the phase its
+// record keeps is still the phase its task stands in, and the leave is taken. A task waiting for
+// its first step keeps waiting: a leave stops a running task alone (stopTaskAtLeave).
+func TestARootLeavingUnderTheOperatorsTreeKeepsItsTask(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -161,10 +162,10 @@ func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
 		t.Fatalf("the leave under the operator's tree: %v", err)
 	}
 
-	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done {
-		t.Fatalf("%s stands in %s after its leave, want done", root.Key, issue.Phase)
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Admitted {
+		t.Fatalf("%s stands in %s after its leave, want admitted, its run kept", root.Key, issue.Phase)
 	}
-	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft || task.Place != (record.TaskPlace{}) {
-		t.Fatalf("task a is %s at %+v after its issue left, want left at no act", task.State, task.Place)
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskWaiting || task.Place != (record.TaskPlace{}) {
+		t.Fatalf("task a is %s at %+v after its issue left, want waiting at no act", task.State, task.Place)
 	}
 }

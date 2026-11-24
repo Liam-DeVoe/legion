@@ -228,9 +228,14 @@ func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 				pool := migratedPool(t)
 				engine := returnEngine()
 				root := stepRoot(t, pool, h.from)
-				parent := root.Key
-				seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
-					Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+				// beneath stands under a hold from retro, which names it, and under its twin, which
+				// resumes all the same. A hold from testing has none: an open Dispatch child holds the
+				// start of testing in awaiting_children (R9 of dispatch://INFRA-3320), a wait of its own.
+				if !record.OpenChildHolds(h.from) {
+					parent := root.Key
+					seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
+						Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+				}
 				want := record.Hold{From: h.from}
 				if h.held() {
 					h.stand(t, pool, root)

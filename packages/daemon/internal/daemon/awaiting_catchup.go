@@ -220,7 +220,7 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		chains, err := record.ReadChains(listing, tx, w.records, w.dispatchProject, nil)
+		chains, err := record.ReadChains(ctx, tx, w.records, w.dispatchProject, nil)
 		if err != nil {
 			return err
 		}

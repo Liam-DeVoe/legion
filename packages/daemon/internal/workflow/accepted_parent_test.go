@@ -227,7 +227,8 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
 				})
 			}
-
+			// The daemon's copy takes the event before the engine reads it (the daemon's handler order).
+			mirrorChild(t, pool, "LEGION-300", "LEGION-208", "todo", 3)
 			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
 				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})

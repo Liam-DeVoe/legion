@@ -23,7 +23,8 @@ func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 		{Hook: "work-back", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1,
 			Counts: map[string]int{"reviewing-implementing": 1}, Prompt: "Say what is in your way."},
 	} {
-		row, err := NewOutboxRow("LEGION-208", prompt, now)
+		// A writer of this release names the run and the phase entry it queues the row for (Fenced).
+		row, err := NewOutboxRow("LEGION-208", Fenced(prompt, Fence{Generation: 1, Entry: 1}), now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%s to %s): %v", prompt.From, prompt.To, err)
 		}
