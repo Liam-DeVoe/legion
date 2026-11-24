@@ -18,16 +18,17 @@ body: |-
   never ran an agent, and no end names it. The first launch of a role an idle release suspended,
   an agent of which had run, puts the pod it goes into, or the pod it is refused for, in that
   set, so such a role woken into the round's pod is named before its agent registers there. A
-  project pause's stop, which keeps the pod and saves no bundle, adds no pod, and neither does the
-  first launch of a role that never ran an agent, whatever woke it. A pause's stop of that first
-  launch before it reached any pod is the exception: the bundle is still unrestored, so the first
-  launch after the pause adds its pod. That addition is in
-  memory as well: after a daemon restart between the wake and the end, the role's set is unknown,
-  and the end names it where it had not answered. And after a daemon restart, a role whose stored
-  claim shows a session it held, now or abandoned, is named for every pod, so the daemon errs
-  towards naming a role. The one case in which an end names fewer roles than an earlier release,
-  which named every member that had not answered: a role whose session came from another pod, that
-  has not registered in the round's pod and that the round does not pass over, is not named for it,
-  since its work is on another pod's disk. When no role is left to name, the daemon writes no
-  message. The line of a pod that went with no such role logs the members that had not answered
-  under `ranNoWorkerInPod`.
+  project pause's stop that followed no idle release, which keeps the pod and saves no bundle, adds
+  no pod, and neither does the first launch of a role that never ran an agent, whatever woke it.
+  The role stays the release's until a launch of it comes up in a pod or is refused for one, since
+  the issue's next pod restores the bundle once: a later suspension before then, a pause's stop,
+  the daemon's or the operator's, keeps it the release's, so the launch that resumes it adds its
+  pod. That addition is in memory as well: after a daemon restart between the wake and the end,
+  the role's set is unknown, and the end names it where it had not answered. And after a daemon
+  restart, a role whose stored claim shows a session it held, now or abandoned, is named for every
+  pod, so the daemon errs towards naming a role. The one case in which an end names fewer roles
+  than an earlier release, which named every member that had not answered: a role whose session
+  came from another pod, that has not registered in the round's pod and that the round does not
+  pass over, is not named for it, since its work is on another pod's disk. When no role is left to
+  name, the daemon writes no message. The line of a pod that went with no such role logs the
+  members that had not answered under `ranNoWorkerInPod`.

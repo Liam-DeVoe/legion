@@ -2892,10 +2892,10 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
+	reasons := roundReasons(group, round)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound)}
 	}
 	written, err := s.enqueue(ctx, issue, rows...)
 	if err != nil {
@@ -3593,9 +3593,11 @@ func unansweredMembers(group []supervise.Claim, round string) []supervise.Claim 
 //     launch of a role an idle release suspended, an agent of which had run, went into or was
 //     refused for (supervise's Machine.addRestoringPod): that pod restored the release's bundle
 //     before any role started, or mounts the kept volume that holds the work, so c's work is on
-//     its disk before an agent of c registers there. A project pause's stop, which keeps the pod
-//     and saves no bundle, puts no pod in the set, unless it stopped that first launch before it
-//     reached any pod, and neither does a claim that never ran an agent.
+//     its disk before an agent of c registers there. A later suspension of c before that launch,
+//     a pause's stop, the daemon's or the operator's, keeps c the release's, so the launch that
+//     resumes c still adds its pod. A project pause's stop that followed no idle release, which
+//     keeps the pod and saves no bundle, puts no pod in the set, and neither does a claim that
+//     never ran an agent.
 //   - The round passes over c (supervise's Claim.PassedOverByRound), and an agent of c ran
 //     somewhere: c has a session, or its set holds a pod. An idle release saved the unpushed work
 //     of the workspace every role shares as a bundle, and the issue's next pod restored it before

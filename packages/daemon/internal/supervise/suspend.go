@@ -179,6 +179,13 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
 // wait leaves them (dropWakeFor, reparkWake).
 //
+// A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
+// the launch has let its process go and parked on the machine with no process started, waiting
+// only for another role's session load, and a suspension, a release or a deletion of the pod
+// never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
+// suspension takes its start out of the pod's gate as a suspension at the end of its decision
+// (suspended, endPodPark), where the launch writes that it was cut short.
+//
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
 // launch that did start a process reaches the hold here as it always did, since that process is
@@ -218,8 +225,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
-		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		if m.wake.park == nil {
+			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {
@@ -247,7 +256,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // suspended, so the rule resumes it no more until the operator does, and a daemon's or an
 // operator's suspend of a claim whose idle pod was released, so the linger, park, close or
 // hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
-// nothing, and an operator's suspension is never taken over.
+// nothing, and an operator's suspension is never taken over. A takeover changes the source alone
+// and leaves the release's mark as it stands (Machine.releaseUnrestored): it restores no bundle,
+// so a claim whose release's bundle is still unrestored stays the release's, and the launch that
+// resumes it, whoever resumes it, still puts its pod in the claim's set (markRestoringLaunch).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -259,9 +271,6 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)
 	m.claim.SuspendedBy = request.By
-	// The source that took the claim over outranks a release's, so the suspension that stands is
-	// no idle release's any more (Machine.idleReleased).
-	m.idleReleased = false
 	return m.persist(ctx)
 }
 
@@ -418,16 +427,23 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
 //
-// The suspension that stands is this one, so it writes whether it is an idle release's: by
-// released with no pause's stop (Machine.idleReleased). A mark an earlier resume left for a launch
-// this suspension stopped goes with it (Machine.restoringLaunch), with one exception: a pause's
-// stop of the first launch after an idle release, which went into no pod, keeps the claim the
-// release's, since the release's bundle is still unrestored and the claim's next launch, after the
-// pause, goes into the pod that restores it.
+// The suspension that stands is this one. An idle release's, by released with no pause's stop,
+// sets the release's mark (Machine.releaseUnrestored), and no suspension clears it: the mark
+// follows the release's bundle, not the source of a later suspension, so a pause's stop, a
+// daemon's suspension or an operator's of a claim whose bundle is still unrestored keeps the claim
+// the release's. A mark an earlier resume left for a launch this suspension stopped goes with it
+// (Machine.restoringLaunch): that launch is not the claim's next one any more, and the resume
+// after this suspension marks its own launch from the release's mark (markRestoringLaunch).
+//
+// A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
+// decision, so the start the gate grants next names a suspension as what ended its wait
+// (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	m.idleReleased = (by == SuspendedByReleased && stop == nil) || (stop != nil && m.restoringLaunch)
+	if by == SuspendedByReleased && stop == nil {
+		m.releaseUnrestored = true
+	}
 	m.restoringLaunch = false
 	if stop != nil {
 		return m.persistStop(ctx, *stop)
