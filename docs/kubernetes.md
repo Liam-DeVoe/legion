@@ -7906,6 +7906,8 @@ The runtime answers a `Suspended` kept Sandbox that carries the release's record
 A `Suspended` kept Sandbox that carries no such record can still own its Secrets: a launch that failed after it wrote them leaves it so.
 The rule releases such a Sandbox once.
 That release deletes its Secrets, keeps the Sandbox with its uid and writes the record, and the next pass holds the issue under `unowned_sandbox_gone`.
+The runtime also answers absent a Sandbox that is going, or that its own release has just kept: one whose stored object carries a `deletionTimestamp`, one its own delete has taken, and a kept Sandbox its own release has just written `legion.dev/secrets-released` on, each from the moment the API server answered that write until the runtime's store of Sandboxes shows it (`IssueSandbox`, `podimage.go`).
+The release learns from the API server that its write is done, and the store learns it only when the watch delivers it, so without that answer the pass after a release can read the Sandbox as it was and release the pod a second time.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
@@ -7933,6 +7935,9 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the seven Secrets it owns, the provisioning Secret and the six role Secrets ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
+  A teardown that finds no Sandbox of the issue to release, one another hand deleted after the release was marked or a kept Sandbox an earlier release already released, takes nothing and says so (`ReleaseIssue` answers false).
+  The release of a pod no claim owns then logs `outbox: the release found no Sandbox of the issue to release and released nothing` in place of its release line and records no release; it still ends the pod's hold under a pause, runs the end of the pod and clears the release's mark.
+  The idle release logs its release line and records its release either way, because its stops suspended the roles that a wake brings back, and that wake is measured against the release's record.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
 A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod and no Secret.

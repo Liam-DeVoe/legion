@@ -161,26 +161,29 @@ func (r *pauseRuntime) BundleWorkspace(_ context.Context, issue string, _ claim.
 	return runtime.WorkspaceBundle{}, nil
 }
 
-func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
+func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) (bool, error) {
 	return r.teardown(ctx, issue, authorize)
 }
 
 func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+	_, err := r.teardown(ctx, issue, authorize)
+	return err
 }
 
 // teardown is both teardowns: once the store authorizes it, the issue's pod is deleted and its
-// Sandbox is gone.
-func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) error {
+// Sandbox is gone. It answers that it released a Sandbox whenever the store authorizes it: a
+// launch of this rig stands its pod up again without marking it (holdPod is the seed's), so an
+// authorized teardown always has a pod to take.
+func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) (bool, error) {
 	act, err := authorize(ctx)
 	if err != nil || !act {
-		return err
+		return false, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, issue)
 	r.sandboxes[issue] = false
-	return nil
+	return true, nil
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown

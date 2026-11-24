@@ -54,7 +54,8 @@ type releaseRuntime struct {
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
 	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
 	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
-	// before the pass it wants to read that answer.
+	// before the pass it wants to read that answer, or before the drain whose teardown should
+	// find no Sandbox to release (ReleaseIssue's false).
 	sandboxName string
 	sandboxGone bool
 	// beforeAuthorize runs inside each teardown, before it asks the store: the pod lock is held
@@ -100,16 +101,19 @@ func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, "SuspendIssue", authorize)
+	_, err := r.teardown(ctx, "SuspendIssue", authorize)
+	return err
 }
 
-func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
+func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) (bool, error) {
 	return r.teardown(ctx, "ReleaseIssue", authorize)
 }
 
 // teardown is both teardowns, method naming which: it records the call, runs beforeAuthorize,
-// asks the store and counts the pod it took down, or the store's refusal.
-func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) error {
+// asks the store and counts the pod it took down, or the store's refusal. It answers whether it
+// took a Sandbox down: an authorized teardown of a runtime that still holds one (sandboxGone
+// false).
+func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) (bool, error) {
 	r.mu.Lock()
 	r.teardowns = append(r.teardowns, method)
 	hook := r.beforeAuthorize
@@ -119,7 +123,7 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 	}
 	act, err := authorize(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -128,7 +132,7 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 	} else {
 		r.refused++
 	}
-	return nil
+	return act && !r.sandboxGone, nil
 }
 
 // teardownsAsked is every issue-level teardown the daemon asked for, by method and in order.

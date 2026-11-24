@@ -29,7 +29,8 @@ var (
 // launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
 // Sandbox is another issue's and is never touched.
 func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.endIssuePod(ctx, issue, tree, authorize, false)
+	_, err := r.endIssuePod(ctx, issue, tree, authorize, false)
+	return err
 }
 
 // ReleaseIssue is the teardown of a release, which leaves the issue in the workflow: the idle
@@ -52,7 +53,16 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // Sandbox carries that mark already (suspendOver). The issue's next launch reads no pod, and it
 // resets the volume on the mark (volumeReset). A close (SuspendIssue) writes no mark, because it
 // deletes the Sandbox and the volume with it.
-func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+//
+// It answers whether it released a Sandbox: true once it has ended the pod of the Sandbox it found
+// and deleted that Sandbox or kept it, and false where it acted on nothing — authorize said no, the
+// API held no Sandbox of the issue, or the Sandbox is one an earlier release already kept:
+// Suspended, owning the kept volume and carrying that release's record with its own uid, so it
+// holds no pod and owns no Secret and nothing of it is this release's to take. The release of a
+// pod no claim owns records a release only on true (internal/daemon's outbox.releaseIssue); the
+// idle release records its own either way, since its stops suspended the roles a wake pairs with
+// that record.
+func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (bool, error) {
 	return r.endIssuePod(ctx, issue, tree, authorize, true)
 }
 
@@ -67,37 +77,47 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // reset mark in its place, or of the mark alone for a Sandbox already Suspended that does not
 // carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
-func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
+// It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
+// nothing: authorize's no, a Sandbox already gone, or a release's Sandbox an earlier release
+// already kept (its secretsReleasedAnnotation), which it leaves as it is. A release that keeps
+// the Sandbox records its record's write (noteReleased) for IssueSandbox, as deleteSandbox records
+// a delete.
+func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) (bool, error) {
 	act := "suspend"
 	if keep {
 		act = "release"
 	}
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
-		return fmt.Errorf("%s issue %s: %w", act, issue, err)
+		return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	endTurn, err := r.lockPod(ctx, name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer endTurn()
 	authorized, err := authorize(ctx)
 	if err != nil || !authorized {
-		return err
+		return false, err
 	}
 	object, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("%s issue %s: read Sandbox: %w", act, issue, err)
+		return false, fmt.Errorf("%s issue %s: read Sandbox: %w", act, issue, err)
 	}
 	s, err := decodeSandbox(object)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
-		return fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
+		return false, fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
+	}
+	// A Sandbox an earlier release already kept carries that release's record and holds nothing
+	// this release could take; a second patch would only write the same record again.
+	if keep && s.mode() == modeSuspended && ownsKeptVolume(s) && s.Annotations[secretsReleasedAnnotation] == string(s.UID) {
+		return false, nil
 	}
 	// The pod as it stands before the suspension takes it down: the issue's next launch reads no
 	// pod, so a release marks a kept volume that the pod shows failed for the launch to reset. A
@@ -107,34 +127,35 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		pod = r.storedPod(name)
 	}
 	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
-		return fmt.Errorf("%s issue %s: %w", act, issue, err)
+		return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
-		return err
+		return false, err
 	}
 	if keep && ownsKeptVolume(s) {
 		if err := r.deleteIssueSecrets(ctx, name); err != nil {
-			return fmt.Errorf("%s issue %s: %w", act, issue, err)
+			return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
 		// The record goes on only after every delete has succeeded, so it is never on a Sandbox
 		// that still owns a Secret (secretsReleasedAnnotation).
 		uid := string(s.UID)
 		if _, err := r.annotate(ctx, s, map[string]*string{secretsReleasedAnnotation: &uid}); err != nil {
-			return fmt.Errorf("%s issue %s: record that its Secrets are deleted: %w", act, issue, err)
+			return false, fmt.Errorf("%s issue %s: record that its Secrets are deleted: %w", act, issue, err)
 		}
+		r.noteReleased(name, s.UID)
 		r.log.Info("sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again",
 			"issue", issue, "sandbox", name, "uid", s.UID, "claim", issueClaimName(name))
-		return nil
+		return true, nil
 	}
 	if err := r.deleteStoredSandbox(ctx, name); err != nil {
-		return fmt.Errorf("%s issue %s: %w", act, issue, err)
+		return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if keep {
 		r.log.Info("sandbox runtime: deleted the released issue's Sandbox and the role Secrets it owned", "issue", issue, "sandbox", name, "uid", s.UID)
-		return nil
+		return true, nil
 	}
 	r.log.Info("sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned", "issue", issue, "sandbox", name, "uid", s.UID)
-	return nil
+	return true, nil
 }
 
 // deleteIssueSecrets deletes the seven Secrets that the issue Sandbox name owns, the provisioning

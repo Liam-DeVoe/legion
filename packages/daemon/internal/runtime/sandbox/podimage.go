@@ -66,6 +66,17 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 // it. The release writes the record only after its deletes succeed, so the record is never on a
 // Sandbox that still owns a Secret.
 //
+// A Sandbox that is going, or that a release of this runtime's has just kept, answers absent as
+// well: a stored object that carries a deletionTimestamp, which the API server sets at a delete and
+// keeps until the Sandbox's finalizers have run (a foreground delete's among them), and an object
+// this runtime's own write took (takenHere) — its delete, or its release's record on a kept
+// Sandbox — which the store holds as it was until the watch delivers the write. A write is answered
+// by the API (awaitSandboxDeleted, annotate), not by the store, so a release's teardown can finish
+// and clear its mark while the store still holds the Sandbox as it was. Answered present then, the
+// release of a pod no claim owns released the same pod again, and that second teardown logged and
+// recorded a second release (INFRA-3149). The record names the object by uid: a Sandbox made again
+// under the same name answers present.
+//
 // It is the informer's store and never an API call: the idle pass asks this of every pod of the
 // project on every tick, and a read per pod against the API server would cost the apiserver a
 // request a pod a minute to answer what the runtime already watches. Anything that leaves the
@@ -80,6 +91,9 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 	}
 	u, err := r.storedObject(name)
 	if err != nil || u == nil {
+		return "", false
+	}
+	if _, deleting, _ := unstructured.NestedFieldNoCopy(u.Object, "metadata", "deletionTimestamp"); deleting || r.takenHere(name, u.GetUID()) {
 		return "", false
 	}
 	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")

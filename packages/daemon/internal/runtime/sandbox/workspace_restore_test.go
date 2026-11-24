@@ -565,7 +565,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 			t.Fatalf("the kept Sandbox was made %s, want it before the save at %s", s.CreationTimestamp, saved.At)
 		}
 		g.advance(11 * time.Minute)
-		if err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
+		if _, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
 			t.Fatalf("ReleaseIssue: %v", err)
 		}
 		if kept := g.sandbox(loc.Sandbox.Name); kept == nil || kept.UID != s.UID {

@@ -32,7 +32,7 @@ func (w *idleRigSaveWatch) BundleWorkspace(ctx context.Context, issue string, ro
 	return w.bundler.BundleWorkspace(ctx, issue, role)
 }
 
-func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (bool, error) {
 	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize)
 }
 

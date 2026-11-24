@@ -276,8 +276,15 @@ type IssueSuspender interface {
 // writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
 // already gone is success, so a retried release finishes. Process-only runtimes have no pod to
 // release.
+//
+// It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
+// Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
+// Sandbox already gone (deleted by hand or by an earlier teardown), or a kept Sandbox an earlier
+// release already released. The release of a pod no claim owns records a pod release only for
+// true, so its teardown that found nothing is never counted as one; the idle release records its
+// own either way, since its stops suspended the roles a wake pairs with that record.
 type IssueReleaser interface {
-	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) (released bool, err error)
 }
 
 // IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at

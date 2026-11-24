@@ -8,6 +8,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // CleanupTree deletes every issue Sandbox of tree, and with each the role Secrets it owns and the
@@ -69,14 +70,15 @@ func (r *Runtime) treeSandboxes(ctx context.Context, tree string) ([]*unstructur
 }
 
 // deleteSandbox deletes object with foreground propagation, fenced to its UID and resourceVersion,
-// forgets its launchers' credentials once the API has accepted the delete, and waits until the API
-// no longer has it. Every delete is foreground: the Sandbox owns its role Secrets by owner
-// reference — and an issue Sandbox that owns an `issue` claim template also the PVC that the
-// template made: a kept volume (keptVolume), or the disk of the release before the pod-owned disk
-// — and foreground propagation has garbage collection remove them before the Sandbox is gone, so
-// the Sandbox's absence is the API's confirmation that what it owned is gone — the restricted
-// daemon identity has no PVC verb to confirm it with. An issue's ephemeral disk is not among them:
-// it is its pod's own, and goes when the delete takes the pod. A conflict is returned as it is.
+// forgets its launchers' credentials once the API has accepted the delete, records that this
+// runtime's delete took it (noteDeleted), and waits until the API no longer has it. Every delete is
+// foreground: the Sandbox owns its role Secrets by owner reference — and an issue Sandbox that owns
+// an `issue` claim template also the PVC that the template made: a kept volume (keptVolume), or the
+// disk of the release before the pod-owned disk — and foreground propagation has garbage collection
+// remove them before the Sandbox is gone, so the Sandbox's absence is the API's confirmation that
+// what it owned is gone — the restricted daemon identity has no PVC verb to confirm it with. An
+// issue's ephemeral disk is not among them: it is its pod's own, and goes when the delete takes the
+// pod. A conflict is returned as it is.
 func (r *Runtime) deleteSandbox(ctx context.Context, object *unstructured.Unstructured) error {
 	s, err := decodeSandbox(object)
 	if err != nil {
@@ -99,7 +101,69 @@ func (r *Runtime) deleteSandbox(ctx context.Context, object *unstructured.Unstru
 		return fmt.Errorf("delete Sandbox %s: %w", name, err)
 	}
 	r.forgetLauncherCredentials(name)
+	r.noteDeleted(name, uid)
 	return r.awaitSandboxDeleted(ctx, name)
+}
+
+// sandboxTaken is what one of this runtime's own writes took from the Sandbox of uid before the
+// informer's store shows it (Runtime.taken): its delete, or, where released is true, a release's
+// record on a Sandbox it kept that its Secrets are deleted (secretsReleasedAnnotation).
+type sandboxTaken struct {
+	uid      types.UID
+	released bool
+}
+
+// noteDeleted records that this runtime's delete took the Sandbox name of uid (taken), once the
+// API has accepted the delete or answered the object already gone. It records nothing where the
+// informer's store no longer holds that object: the store has caught up, and the event that told
+// it has already run, or is about to run, the notify that would drop the record, so a record
+// written then would outlive it. Both reads are under mu, which notify holds for its own.
+func (r *Runtime) noteDeleted(name string, uid types.UID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u, err := r.storedObject(name); err == nil && u != nil && u.GetUID() == uid {
+		r.taken[name] = sandboxTaken{uid: uid}
+	}
+}
+
+// noteReleased records that this runtime's release wrote its record that the Secrets are deleted
+// on the Sandbox name of uid, which it kept (taken), once the API has answered that patch. It
+// records nothing where the store no longer holds that object, or already shows the record, for
+// the reason noteDeleted gives: IssueSandbox reads such a stored Sandbox absent of itself.
+func (r *Runtime) noteReleased(name string, uid types.UID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u, err := r.storedObject(name); err == nil && u != nil && u.GetUID() == uid && !recordsRelease(u, uid) {
+		r.taken[name] = sandboxTaken{uid: uid, released: true}
+	}
+}
+
+// forgetTaken drops what is kept of this runtime's write to the Sandbox name (taken): a launch
+// that takes a release's record off a kept Sandbox makes it the issue's Sandbox again, whatever
+// version of it the store holds.
+func (r *Runtime) forgetTaken(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.taken, name)
+}
+
+// takenHere is whether the Sandbox name of uid is one this runtime's own write took and the store
+// does not show yet (taken).
+func (r *Runtime) takenHere(name string, uid types.UID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	took, held := r.taken[name]
+	return held && took.uid == uid
+}
+
+// recordsRelease is whether u is the object of uid and carries a release's record, with its own
+// uid, that its Secrets are deleted (secretsReleasedAnnotation), read in place.
+func recordsRelease(u *unstructured.Unstructured, uid types.UID) bool {
+	if u == nil || u.GetUID() != uid {
+		return false
+	}
+	record, _, _ := unstructured.NestedString(u.Object, "metadata", "annotations", secretsReleasedAnnotation)
+	return record != "" && record == string(uid)
 }
 
 // deleteStoredSandbox deletes the Sandbox name as the API holds it now, in the foreground, and
