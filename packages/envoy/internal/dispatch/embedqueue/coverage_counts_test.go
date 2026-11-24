@@ -7,9 +7,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -203,4 +205,129 @@ func TestEveryCountedTableCarriesItsCountingTrigger(t *testing.T) {
 		t.Fatalf("after withTableTriggersOff on %s the counting triggers differ from the %d listed:\n%s",
 			strings.Join(tables, ", "), len(countingTriggers), strings.Join(differences, "\n"))
 	}
+}
+
+// keptReport is the report the kept counts give for the identity $1, by kind: items, current and
+// failed, summed over the base rows and the delta rows not yet folded (plan D7, "What the read
+// answers"), for each kind holding an item.
+const keptReport = `
+	select kind, sum(items)::bigint,
+	       coalesce(sum(items) filter (where matched and $1::text <> '' and model = $1::text), 0)::bigint,
+	       (coalesce(sum(items) filter (where dead), 0)
+	        - coalesce(sum(items) filter (where dead and matched and $1::text <> '' and model = $1::text), 0))::bigint
+	from (select kind, model, matched, dead, items from search_coverage_counts
+	      union all
+	      select kind, model, matched, dead, items from search_coverage_deltas) kept
+	group by kind
+	having sum(items) <> 0
+	order by kind`
+
+// mainsReport is what mainCoverageQuery answers for the identity $1, by kind, in keptReport's
+// shape: every kind but session, which route_roster's one row gives and no count keeps, holding an
+// item.
+const mainsReport = `
+	select kind, items, current, failed
+	from (` + mainCoverageQuery + `) main (kind, covered, items, current, failed, waited)
+	where kind <> 'session' and items <> 0
+	order by kind`
+
+// requireKeptCountsAreMains fails the test unless the kept counts (keptReport) answer what
+// mainCoverageQuery answers, for the configured identity, for none and for another, all in one
+// REPEATABLE READ snapshot, printing both answers where they differ.
+func requireKeptCountsAreMains(t *testing.T, database *store.Store, stage string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("%s: begin the snapshot both reports read: %v", stage, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	report := func(statement, identity string) []string {
+		t.Helper()
+		rows, err := tx.Query(ctx, statement, identity)
+		if err != nil {
+			t.Fatalf("%s: read a report for %q: %v", stage, identity, err)
+		}
+		lines, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+			var kind string
+			var items, current, failed int64
+			err := row.Scan(&kind, &items, &current, &failed)
+			return fmt.Sprintf("%s: items %d, current %d, failed %d", kind, items, current, failed), err
+		})
+		if err != nil {
+			t.Fatalf("%s: read a report for %q: %v", stage, identity, err)
+		}
+		return lines
+	}
+	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
+		kept, mains := report(keptReport, identity), report(mainsReport, identity)
+		if !slices.Equal(kept, mains) {
+			t.Errorf("%s, identity %q: the kept counts answer\n  %s\nwhere main's statement answers\n  %s",
+				stage, identity, strings.Join(kept, "\n  "), strings.Join(mains, "\n  "))
+		}
+	}
+}
+
+// TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent holds R7's "after every write that fires
+// the triggers" where two transactions change two inputs of one issue at once: A edits its title
+// and B rewrites its spec's latest version in place, B's statement starting while A, which has
+// refreshed the issue, is still open. The issue's vector is of the text both writes make
+// together, so it is current only once the issue's state row is computed from both. B's refresh
+// waits for the issue's state row until A commits and only then computes the row, so it reads A's
+// title; a refresh that computed before it waited would read the title A had not committed yet
+// and write, after A's commit, a class with no vector of the issue's text.
+func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	const key, title, spec = "TWO-1", "The title A writes", "## Summary\n\nThe spec B writes."
+	seedIssue(t, database, "TWO", key, " ")
+	document := seedSpec(t, database.Pool, "TWO", key, "\t")
+	var version string
+	if err := database.Pool.QueryRow(ctx, `select id::text from artifact_versions where artifact_id = $1`, document).Scan(&version); err != nil {
+		t.Fatalf("read the spec's version: %v", err)
+	}
+	updateRow(t, database.Pool, "issue", key,
+		`embedding = $3::vector, model = $4, embedded_at = now(),
+		 embedded_hash = encode(sha256(convert_to(issue_embedding_text($5, $6), 'UTF8')), 'hex')`,
+		embed.Literal(oneVector()), configuredIdentity, title, spec)
+	requireKeptCountsAreMains(t, database, "before the writes")
+
+	a, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin A: %v", err)
+	}
+	defer func() { _ = a.Rollback(ctx) }()
+	b, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin B: %v", err)
+	}
+	defer func() { _ = b.Rollback(ctx) }()
+	var bPID uint32
+	if err := b.QueryRow(ctx, `select pg_backend_pid()`).Scan(&bPID); err != nil {
+		t.Fatalf("read B's backend: %v", err)
+	}
+	mustExec(t, a, `update issues set title = $2 where key = $1`, key, title)
+	rewritten := make(chan error, 1)
+	go func() {
+		_, err := b.Exec(ctx, `update artifact_versions set markdown = $2 where id = $1`, version, spec)
+		rewritten <- err
+	}()
+	if err, early := storetest.WaitForQueuedBehind(t, a, bPID, rewritten, 10*time.Second); early {
+		t.Fatalf("B's rewrite of the spec ended (%v) before A committed: it never waited on A", err)
+	}
+	if err := a.Commit(ctx); err != nil {
+		t.Fatalf("commit A: %v", err)
+	}
+	select {
+	case err := <-rewritten:
+		if err != nil {
+			t.Fatalf("B's rewrite of the spec: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("B's rewrite of the spec did not end within 10s of A's commit")
+	}
+	if err := b.Commit(ctx); err != nil {
+		t.Fatalf("commit B: %v", err)
+	}
+	requireKeptCountsAreMains(t, database, "after A and B committed")
 }
