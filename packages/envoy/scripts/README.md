@@ -1581,6 +1581,60 @@ edits for every run, which is what A9 measures: run it after the statement timin
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
 
+### The split of search's buffer reads
+
+`TestSearchReadSplitScript` and `TestSearchReadSplitReport` (`internal/dispatch/api/search_split_test.go`)
+split the shared buffer reads of search's keyword statement and meaning statement (INFRA-4864's R4).
+For the rare, the medium and the common word, in the every-project form and the one-project form,
+they compare `main`'s statements at df18d9be (`search_oracle_test.go`) with the head's. Each run is
+split into the keyword arms' ranking, the keyword arms' reads of their matches, each meaning arm,
+the page and `CTE q`. The ranking is the keyword arms' reads less those of the same statement with
+a constant rank in place of `ts_rank_cd`. Unlike the measurements above, this one also runs against
+production: psql runs every statement, so the production run needs only a psql session on the read
+login. The tests skip unless their variable is set, so CI runs neither.
+
+The pipeline has five steps. `$OUT` is an empty directory under `$TMPDIR`, and `$URL` is the
+database measured.
+
+```bash
+cd packages/envoy
+# 1. Write subjects.sql: benchtime's rules for the project, its issue's vector and the three words.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT go test -count=1 -run '^TestSearchReadSplitScript$' ./internal/dispatch/api
+# 2. Read the subjects of the database measured.
+psql "$URL" -X -q -At -v ON_ERROR_STOP=1 -f "$OUT/subjects.sql" -o "$OUT/subjects.json"
+# 3. Write split.sql and split.json. The test prepares each statement on a migrated database of its own
+#    to learn its parameter types; on the seeded database it also holds subjects.json to benchtime's rules.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" DISPATCH_BENCH_DATABASE_URL="$URL" \
+  go test -count=1 -run '^TestSearchReadSplitScript$' -v ./internal/dispatch/api
+# 4. Explain every run; psql writes each plan under $OUT/plans.
+psql "$URL" -X -q -v ON_ERROR_STOP=1 -f "$OUT/split.sql"
+# 5. Print each part's medians, spreads and match counts, and apply the rule.
+DISPATCH_SEARCH_SPLIT_IN=$OUT go test -count=1 -run '^TestSearchReadSplitReport$' -v ./internal/dispatch/api
+```
+
+Each run is `explain (analyze, buffers, verbose, format json) execute` of a statement prepared once,
+in a read-only transaction that is rolled back, under `plan_cache_mode = force_custom_plan` and the
+meaning scan's settings without the server's 15 s bound. The meaning statement is the one the
+server picks for the form, from whether the embeddings `project_key` fill is done (`filled` in
+`subjects.json`). Each side takes 5 runs of each statement unless `DISPATCH_SEARCH_SPLIT_RUNS`
+says otherwise, alternating `main`'s side and the head's, and each run is followed by its run with
+the constant rank. The 240 plans of 5 runs at `--scale 0.01` took one minute in the pod.
+
+On production, run steps 2 and 4 through the read login's command (dispatch://INFRA-4863), and
+leave `DISPATCH_BENCH_DATABASE_URL` out of step 3. Set `DISPATCH_SEARCH_SPLIT_RUNS=3` and
+`DISPATCH_SEARCH_SPLIT_STATEMENT_TIMEOUT=120s` for step 3. A word that this public repository may
+not name (a person, a customer, a company, a repository or a host) is passed over for the next
+word by the same rule: give step 2 `-v pass_over='{word,...}'`. split.sql writes each plan to the
+absolute path of `$OUT` where step 3 ran, so run psql where that path is writable.
+
+The report prints each run's parts with their shared hit and read blocks, and their sum beside
+the run's total. Then it prints each part's median and spread (the largest run less the smallest)
+on each side. The meaning document arm passes when the head's median is below `main`'s; every
+other part but `CTE q` passes when the head's median is within `main`'s spread of `main`'s
+median. It also prints the matches of each of the head's keyword arms, and fails when the common
+word matches 1,000 or fewer items of every kind. The plans the parser was written from are in
+`internal/dispatch/api/testdata/search_split`, and its `README.md` says how they were captured.
+
 ## coverage-scale.sh
 
 Times the coverage counts' fill and recount (`FillCoverage` and `RecountCoverage`, the statements of the counts that read every row they count) at production's size and a larger scale,
