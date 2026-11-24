@@ -16,6 +16,7 @@ import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   createConsumerDelivery,
+  type InboundOutageKind,
   inboundUnavailable,
   inboundUnavailableNoticeText,
   RelayHeader,
@@ -1695,6 +1696,7 @@ describe("EnvoyClient", () => {
       let calls = 0;
       let clock = 0;
       const told: string[] = [];
+      const kinds: InboundOutageKind[] = [];
       const client = createEnvoyClient({
         baseUrl: "http://listener",
         fetch: async () => {
@@ -1703,12 +1705,16 @@ describe("EnvoyClient", () => {
           return retry();
         },
       });
-      const outage = inboundUnavailable((why) => told.push(why), {
-        now: () => clock,
-        firstOpenBoundMs: BOUND,
-      });
+      const outage = inboundUnavailable(
+        ({ kind, why }) => {
+          told.push(why);
+          kinds.push(kind);
+        },
+        { now: () => clock, firstOpenBoundMs: BOUND }
+      );
       return {
         told,
+        kinds,
         calls: () => calls,
         at: (ms: number) => {
           clock = ms;
@@ -1760,7 +1766,8 @@ describe("EnvoyClient", () => {
       await expect(session.register()).rejects.toThrow(UNRECORDED);
       expect(session.calls()).toBe(6);
       expect(session.told).toEqual([UNRECORDED]);
-      const notice = inboundUnavailableNoticeText(session.told[0] ?? "", undefined);
+      expect(session.kinds).toEqual(["unrecorded"]);
+      const notice = inboundUnavailableNoticeText({ kind: "unrecorded", why: UNRECORDED });
       expect(notice).toContain("This session's registration is not recorded for certain");
       expect(notice).not.toContain("no durable consumer");
       expect(notice).not.toContain("receives none");
@@ -1787,9 +1794,10 @@ describe("EnvoyClient", () => {
       expect(isBusUnanswered(failure)).toBe(false);
       expect(failure).toMatchObject({ reason, details: { status: 503 } });
       expect(session.told).toEqual([`${error} (reason: ${reason})`]);
-      expect(inboundUnavailableNoticeText(session.told[0] ?? "", reason)).toContain(
-        "receives none"
-      );
+      expect(session.kinds).toEqual(["refused"]);
+      expect(
+        inboundUnavailableNoticeText({ kind: "refused", why: session.told[0] ?? "" })
+      ).toContain("receives none");
     });
 
     test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {

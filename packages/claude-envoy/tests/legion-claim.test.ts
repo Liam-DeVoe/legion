@@ -20,7 +20,6 @@ import {
   stopPane,
   waitForTranscript,
 } from "../src/legion-claim"
-import { createStopGates } from "../src/stop-gates"
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
@@ -808,14 +807,13 @@ test("the pane's daemon client states this build's own daemon API contract on ev
  *  the server's stderr takes, is recorded, and neither reaches the process. */
 function paneServer() {
   let stopping = false
-  const gates = createStopGates(() => stopping)
   const kills = spyOn(process, "kill").mockImplementation(() => true)
   const written = spyOn(process.stderr, "write").mockImplementation(() => true)
   return {
     server: {
       stopping: () => stopping,
       log: (line: string) => {
-        if (gates.tells(line)) logLegion(line)
+        if (!stopping) logLegion(line)
       },
     },
     stop: () => {

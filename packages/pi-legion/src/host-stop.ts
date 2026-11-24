@@ -1,11 +1,12 @@
 import { postmortem } from "@oh-my-pi/pi-utils";
 
 /**
- * The longest an exit waits for the host's stop to end (`exitAfterHostStop`). It is the grace the
- * worker shim gives Oh My Pi between its SIGTERM and its SIGKILL (`DefaultGrace`,
- * `packages/daemon/internal/shim/shim.go`). The shim gives the agent this grace whatever its own
+ * The longest an exit waits for the host's stop to end (`exitAfterHostStop`). It copies the grace
+ * the worker shim gives Oh My Pi between its SIGTERM and its SIGKILL, the Go constant
+ * `shim.DefaultGrace` (`packages/daemon/internal/shim/shim.go`), whose comment names this one:
+ * a change of either is made to both. The shim gives the agent this grace whatever its own
  * `--stop-grace` is: `legion worker-shim` sets `Grace: shim.DefaultGrace`. Nothing in the pane's
- * environment carries it, so it is named here. pi-envoy's stop ends well inside it: its release,
+ * environment carries it, so it is copied here. pi-envoy's stop ends well inside it: its release,
  * its DELETE and its drain race `SHUTDOWN_DEADLINE_MS`, one second
  * (`packages/pi-envoy/extensions/envoy.ts`).
  */

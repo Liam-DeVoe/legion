@@ -13,15 +13,14 @@ import {
   type SubscribeResult,
   type UnsubscribeInput,
 } from "@legion/envoy-client/transport";
-import { STOP_HAND_BACK_LINES } from "./hand-back-ledger";
 import {
   createRegistrationState,
   type DialLimit,
   type RegistrationInput,
   type RegistrationState,
-  taskWasAbandoned,
 } from "./registration-state";
 import type { SessionInbound } from "./session-inbound";
+import { taskWasAbandoned } from "./task-queue";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -871,6 +870,20 @@ describe("deregister", () => {
 });
 
 describe("handBackAllHolds", () => {
+  // The stop's own lines for a hand-back that failed (`HandBackLedger.handBackAll`).
+  const STOP_NOT_HANDED_BACK = "envoy: the stop did not hand back a role this process held";
+  const STOP_HAND_BACK_UNANSWERED =
+    "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic.";
+  /** The stop's own writer, which the host hands the hand-back: the host's logger, with no
+   *  tell gate. */
+  const stopLog = () => {
+    const lines: { readonly message: string; readonly context: unknown }[] = [];
+    return {
+      lines,
+      log: { warn: (message: string, context?: unknown) => void lines.push({ message, context }) },
+    };
+  };
+
   test("hands back the role held and every hold given up, each naming this process, and changes no state", async () => {
     const harness = createHarness();
     const { state, control, releases } = harness;
@@ -887,7 +900,7 @@ describe("handBackAllHolds", () => {
     control.unsubscribe = async () => {};
     releases.length = 0;
 
-    await state.handBackAllHolds();
+    await state.handBackAllHolds(stopLog().log);
 
     expect(
       releases.map(({ sessionID, topics, clientInstanceID }) => ({
@@ -919,21 +932,23 @@ describe("handBackAllHolds", () => {
       await held.promise;
     };
 
-    const handingBack = state.handBackAllHolds();
+    const stop = stopLog();
+    const handingBack = state.handBackAllHolds(stop.log);
     // Both are on the wire while the second is still unanswered.
     await Promise.resolve();
     expect(releases.map((release) => release.sessionID).sort()).toEqual(["ses_a", "ses_b"]);
     held.resolve();
     await handingBack;
 
-    // The stop's own words (`STOP_HAND_BACK_LINES`), which the host's tell gate lets through once
-    // the stop has begun.
-    expect(warnings).toEqual([
+    // The stop's own words, on the stop's own writer: none goes to the module's log, which the
+    // host's tell gate drops once the stop has begun.
+    expect(stop.lines).toEqual([
       {
-        message: STOP_HAND_BACK_LINES.failed,
+        message: STOP_NOT_HANDED_BACK,
         context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
       },
     ]);
+    expect(warnings).toEqual([]);
   });
 
   // Before it answers, the listener frees the claim and takes the role's topic out of the
@@ -959,15 +974,17 @@ describe("handBackAllHolds", () => {
       throw failures[input.sessionID];
     };
 
-    await state.handBackAllHolds();
+    const stop = stopLog();
+    await state.handBackAllHolds(stop.log);
 
     // The hand-backs go side by side, so the warnings come in no set order.
-    const notHandedBack = STOP_HAND_BACK_LINES.failed;
-    expect(warnings).toHaveLength(4);
-    expect(warnings).toEqual(
+    const notHandedBack = STOP_NOT_HANDED_BACK;
+    expect(warnings).toEqual([]);
+    expect(stop.lines).toHaveLength(4);
+    expect(stop.lines).toEqual(
       expect.arrayContaining([
         {
-          message: STOP_HAND_BACK_LINES.busUnanswered,
+          message: STOP_HAND_BACK_UNANSWERED,
           context: { topic: ALPHA, sessionID: "ses_a", error: messageFor(failures.ses_a) },
         },
         {
@@ -988,7 +1005,7 @@ describe("handBackAllHolds", () => {
 
   test("sends nothing for a process that holds no role and owes no hand-back", async () => {
     const { state, releases } = createHarness();
-    await state.handBackAllHolds();
+    await state.handBackAllHolds(stopLog().log);
     expect(releases).toEqual([]);
   });
 });

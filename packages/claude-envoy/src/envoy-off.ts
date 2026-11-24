@@ -3,7 +3,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import type { ChannelSession } from "./envoy-channel-server"
 import { roleStateFile, type SessionIdentity, writePersistedRole } from "./session-identity"
-import { createStopGates } from "./stop-gates"
 
 /**
  * The session of a channel server whose Envoy takes no inbound messages, for `why`: no NATS
@@ -24,7 +23,6 @@ export function inboundOffChannelSession(options: {
   const { identity, stateDirectory, why } = options
   let shutDown = false
   const stopping = (): boolean => shutDown || options.stopping()
-  const gates = createStopGates(stopping)
   return {
     delivery: { enqueue: async () => false, inbox: () => [] },
     topics: () => [],
@@ -42,7 +40,7 @@ export function inboundOffChannelSession(options: {
     async rememberRole(role) {
       // A stopping session keeps no role: a claim the listener granted after the stop began is
       // not held here and leaves no record.
-      if (!gates.writes()) return
+      if (stopping()) return
       await writePersistedRole(roleStateFile(stateDirectory, identity.id), {
         session_id: identity.id,
         role,

@@ -520,9 +520,10 @@ read the repositories of the session's projects: it withholds the messages of th
 GitHub topics. Where the edge already held the session's registration, it keeps that registration
 and the session's consumer, so the session's other messages still reach it; where it held none,
 it creates none, and the session receives nothing until a registration is accepted. The client
-cannot tell which. So `inboundUnavailable` hands the host that reason beside the message, and
+cannot tell which. So `inboundUnavailable` sorts it once into the kind `github_withheld`
+(`InboundOutageKind`) and hands the host that kind beside the message (`InboundOutage`), and
 `inboundUnavailableNoticeText` words it as "Envoy GitHub topics withheld", which says both cases,
-not as a session that receives nothing (`isGitHubWithheld`).
+not as a session that receives nothing. Each host looks up the words of its own lines by the kind.
 
 ## envoy.json
 

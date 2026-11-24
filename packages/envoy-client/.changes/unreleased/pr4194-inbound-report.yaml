@@ -11,9 +11,10 @@ body: |-
   refusal with a reason is told at once, as before (the bus-outage 503 is held, as
   `pr4194-unrecorded-registration.yaml` says), and so is a lost relay subject after the first
   accepted registration. The first registration accepted after a told outage calls the
-  `restored` option once, which is now a field of the options object and takes the `why` that
-  was told; `inboundRestoredNoticeText(why)` words it, so after a bus-outage 503 the notice says
-  that the listener recorded the registration. Once the new `stopping` option answers true, the
+  `restored` option once, which is now a field of the options object and takes the outage that
+  was told (`InboundOutage`: its `kind` and its `why`); `inboundRestoredNoticeText(kind)` words
+  it, so after a bus-outage 503 the notice says that the listener recorded the registration. Once
+  the new `stopping` option answers true, the
   report tells the session nothing and calls no `held`, since a stopping session closes its own
   relay and its record is deleted next. `inboundUnavailable` takes
   `{ now, firstOpenBoundMs, restored, held, stopping }` as its second argument.

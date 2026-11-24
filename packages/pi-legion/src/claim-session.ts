@@ -9,11 +9,8 @@ import {
 import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
-import {
-  claimEnvoyRole,
-  claimRefusedForStop,
-  onEnvoyRoleRegained,
-} from "@legion/pi-shared/role-claim-bridge";
+import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";

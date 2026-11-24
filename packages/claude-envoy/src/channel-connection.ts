@@ -301,14 +301,14 @@ export async function dialChannelInbound(
       // (`inboundUnavailable`), however many trades fail. The socket tries the trade again on its
       // own, 1 s doubling to a minute; once one succeeds the socket opens and the session starts,
       // and nothing tells the session of the refusals before.
-      outage: inboundUnavailable((why) =>
+      outage: inboundUnavailable(({ why }) =>
         warn(
           `this session's relay socket has no token: ${why}; the session starts once a trade succeeds`,
         ),
       ),
       log: (line) => warn(line),
-      // A socket that closes once the stop has begun is not opened again: the stop drains the
-      // connection only after its hand-back.
+      // A socket that closes once the stop has begun is not opened again: the stop closes the
+      // session's relay and drains its connection itself, and deregisters the session after that.
       ...(stopping === undefined ? {} : { stopping }),
     },
     signal,

@@ -55,9 +55,6 @@ export interface ChannelTopics {
 export interface ChannelTopicsOptions {
   /** How long close waits for a broker drain before closing outright. */
   readonly drainTimeoutMs?: number
-  /** Writes one stderr line: the session's tell gate (`StopGates.stderr`). A failed drain or
-   *  close is said by the stop's own close, so the gate lets it through (`STOP_LINES`). */
-  readonly stderr: (line: string) => void
 }
 
 // A delivery's identity fields parse independently: a field the shared rule refuses identifies
@@ -85,10 +82,9 @@ export function deliveryIdentity(raw: string): z.infer<typeof DeliveryIdentity> 
   return identity.success ? identity.data : undefined
 }
 
-/** A failed drain or close of the NATS connection, as a log may print it (`natsFailureReason`):
- *  one of the stop's own lines (`STOP_LINES`). */
-function report(stderr: (line: string) => void, what: string, error: unknown): void {
-  stderr(`envoy-channel: ${what} — ${natsFailureReason(error)}\n`)
+/** A failed drain or close of the NATS connection, as a log may print it (`natsFailureReason`). */
+function report(what: string, error: unknown): void {
+  process.stderr.write(`envoy-channel: ${what} — ${natsFailureReason(error)}\n`)
 }
 
 /**
@@ -101,7 +97,7 @@ function report(stderr: (line: string) => void, what: string, error: unknown): v
  */
 export function createChannelTopics(
   connection: () => ChannelConnection,
-  options: ChannelTopicsOptions,
+  options: ChannelTopicsOptions = {},
 ): ChannelTopics {
   const following = new Set<string>()
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS
@@ -133,14 +129,14 @@ export function createChannelTopics(
       try {
         await Promise.race([held.drain(), timeout.promise])
       } catch (error) {
-        report(options.stderr, "draining the broker connection failed", error)
+        report("draining the broker connection failed", error)
       }
       clearTimeout(timer)
       if (held.isClosed()) return
       try {
         await held.close()
       } catch (error) {
-        report(options.stderr, "closing the broker connection failed", error)
+        report("closing the broker connection failed", error)
       }
     },
   }

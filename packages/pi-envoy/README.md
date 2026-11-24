@@ -65,10 +65,11 @@ which fails the route rather than reporting a release it did not make — is sen
 next heartbeat, so the role is not left standing while this process's registrations renew its
 claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
 too: a release another process wrote on the same transcript ends no role here, and a claim
-another process wrote is pressed only while this process holds none. The queues, deadlines and
-shared role state behind all of this are `src/registration-state.ts`, beside the extension's
-other `src/` modules: a queued task acts through a handle that refuses every step past the
-task's deadline, or once its session is no longer the open session.
+another process wrote is pressed only while this process holds none. The shared role state
+behind all of this is `src/registration-state.ts`, and its queues and deadlines are
+`src/task-queue.ts`, beside the extension's other `src/` modules: a queued task acts through a
+handle that refuses every step past the task's deadline, or once its session is no longer the
+open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp

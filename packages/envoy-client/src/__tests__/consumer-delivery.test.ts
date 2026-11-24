@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
-import * as consumerDeliveryModule from "../consumer-delivery";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -11,6 +10,8 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  type InboundOutage,
+  type InboundOutageKind,
   type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
@@ -1170,27 +1171,36 @@ describe("one registration", () => {
     "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing";
 
   /**
-   * One session's outage report on a clock the row moves (`at`), with what it told, the clock at
-   * each time it said the session receives again, each reason it handed `held`, and the two
-   * registrations a row makes: one with no relay subject, naming `relayMissing` when a row passes
-   * one, and one whose send answers `answer`. `stop` begins the session's stop.
+   * One session's outage report on a clock the row moves (`at`), with what it told (each why, and
+   * each outage whole), the clock at each time it said the session receives again, each reason it
+   * handed `held`, and the two registrations a row makes: one with no relay subject, naming
+   * `relayMissing` when a row passes one, and one whose send answers `answer`. `stop` begins the
+   * session's stop.
    */
   function reportOnClock() {
     let clock = 0;
     let stopping = false;
     const told: string[] = [];
+    const outages: InboundOutage[] = [];
     const restored: number[] = [];
     const held: (string | undefined)[] = [];
     const sent: unknown[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
-      now: () => clock,
-      firstOpenBoundMs: BOUND,
-      restored: () => restored.push(clock),
-      held: (relayMissing) => held.push(relayMissing),
-      stopping: () => stopping,
-    });
+    const outage = inboundUnavailable(
+      (toldOutage) => {
+        told.push(toldOutage.why);
+        outages.push(toldOutage);
+      },
+      {
+        now: () => clock,
+        firstOpenBoundMs: BOUND,
+        restored: () => restored.push(clock),
+        held: (relayMissing) => held.push(relayMissing),
+        stopping: () => stopping,
+      }
+    );
     return {
       told,
+      outages,
       restored,
       held,
       sent,
@@ -1293,7 +1303,7 @@ describe("one registration", () => {
         relay: undefined,
         ownAgentSubject: AGENT,
         followed: () => [TEAM],
-        outage: inboundUnavailable((why) => told.push(why), {
+        outage: inboundUnavailable(({ why }) => told.push(why), {
           firstOpenBoundMs: 0,
           held: (relayMissing) => held.push(relayMissing),
         }),
@@ -1465,7 +1475,8 @@ describe("one registration", () => {
     expect(report.told).toEqual([UNRECORDED]);
 
     // Every host words what it was told with this one text.
-    const notice = inboundUnavailableNoticeText(report.told[0] ?? "", undefined);
+    expect(report.outages).toEqual([{ kind: "unrecorded", why: UNRECORDED }]);
+    const notice = inboundUnavailableNoticeText({ kind: "unrecorded", why: UNRECORDED });
     expect(notice).toMatch(/not record/i);
     expect(notice).not.toContain("no durable consumer");
     expect(notice).not.toContain("receives none");
@@ -1475,21 +1486,21 @@ describe("one registration", () => {
     expect(report.restored).toEqual([BOUND + 30_000]);
   });
 
-  // The accepted registration that ends a told episode is worded for the `why` that episode told.
+  // The accepted registration that ends a told episode is worded for the kind that episode told.
   // After a bus-outage 503 the consumer may have delivered all along, so that notice says the
   // listener recorded a registration, and never that the session received nothing.
-  // `restored` builds the notice as every host does, from the `why` it is handed.
+  // `restored` builds the notice as every host does, from the outage it is handed.
   function reportRestoring() {
     let clock = 0;
     const told: string[] = [];
     const restored: string[] = [];
     const notices: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       now: () => clock,
       firstOpenBoundMs: BOUND,
-      restored: (why, reason) => {
+      restored: ({ kind, why }) => {
         restored.push(why);
-        notices.push(inboundRestoredNoticeText(why, reason));
+        notices.push(inboundRestoredNoticeText(kind));
       },
     });
     return {
@@ -1554,14 +1565,66 @@ describe("one registration", () => {
     ]);
   });
 
-  test("isUnrecordedRegistration is true only of a why that begins with the bus-outage prefix", () => {
-    // A namespace read, so this file still loads where the module lacks the export.
-    const { isUnrecordedRegistration } = consumerDeliveryModule;
+  // Every kind words its notice and its restored notice in words of its own, and a refusal and a
+  // lost relay subject in the same words: the session receives nothing, then receives again.
+  test("each kind of outage is told, and its end told, in exactly its own words", () => {
+    const unavailable = (kind: InboundOutageKind) =>
+      inboundUnavailableNoticeText({ kind, why: `the why of ${kind}` });
+    const noConsumer =
+      "The listener gave this session no durable consumer, which is the only path an Envoy message reaches it by, so it receives none. Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.";
+    const receivesAgain = envoyNoticeText({
+      notice: "Envoy inbound restored",
+      detail:
+        "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now.",
+    });
 
-    expect(isUnrecordedRegistration(UNRECORDED)).toBe(true);
-    expect(isUnrecordedRegistration("no_grant")).toBe(false);
-    expect(isUnrecordedRegistration(NO_RELAY)).toBe(false);
-    expect(isUnrecordedRegistration(`listener: ${BUS_UNANSWERED_PREFIX}`)).toBe(false);
+    expect(unavailable("unrecorded")).toBe(
+      envoyNoticeText({
+        notice: "Envoy inbound unavailable",
+        error: "the why of unrecorded",
+        detail:
+          "This session's registration is not recorded for certain: the listener's message bus did not answer in time, so the listener may or may not have recorded it. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+      })
+    );
+    expect(unavailable("github_withheld")).toBe(
+      envoyNoticeText({
+        notice: "Envoy GitHub topics withheld",
+        error: "the why of github_withheld",
+        detail:
+          "The listener could not read the repositories of this session's projects. So it follows none of this session's GitHub topics now, and it withholds their messages. It refused this registration. If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it; a topic the session began to follow after its last accepted registration is followed only once a registration is accepted. If the listener held no registration of this session, the session receives nothing until a registration is accepted. The session registers again at every heartbeat.",
+      })
+    );
+    expect(unavailable("refused")).toBe(
+      envoyNoticeText({
+        notice: "Envoy inbound unavailable",
+        error: "the why of refused",
+        detail: noConsumer,
+      })
+    );
+    expect(unavailable("no_relay")).toBe(
+      envoyNoticeText({
+        notice: "Envoy inbound unavailable",
+        error: "the why of no_relay",
+        detail: noConsumer,
+      })
+    );
+
+    expect(inboundRestoredNoticeText("unrecorded")).toBe(
+      envoyNoticeText({
+        notice: "Envoy inbound restored",
+        detail:
+          "The listener recorded a registration of this session. A message the stream stored that has not reached the session arrives now.",
+      })
+    );
+    expect(inboundRestoredNoticeText("github_withheld")).toBe(
+      envoyNoticeText({
+        notice: "Envoy GitHub topics followed again",
+        detail:
+          "The listener accepted a registration of this session, so it follows this session's GitHub topics again, and their messages reach the session again. A GitHub message the listener withheld meanwhile may be missing.",
+      })
+    );
+    expect(inboundRestoredNoticeText("refused")).toBe(receivesAgain);
+    expect(inboundRestoredNoticeText("no_relay")).toBe(receivesAgain);
   });
 
   // Finding 9 of the read-ahead at 73c124fe (dispatch://INFRA-3589): a told bus-outage 503 says
@@ -1651,31 +1714,31 @@ describe("one registration", () => {
   /**
    * One session's outage report on a clock the row moves (`at`), whose `tell` and `restored`
    * word what they are handed as every host does (`inboundUnavailableNoticeText`,
-   * `inboundRestoredNoticeText`), with each reason it handed them; and one registration whose
-   * send answers what `answer` returns.
+   * `inboundRestoredNoticeText`), with the kind of each outage it handed them; and one
+   * registration whose send answers what `answer` returns.
    */
   function reportWording() {
     let clock = 0;
     const notices: string[] = [];
-    const reasons: (string | undefined)[] = [];
+    const kinds: InboundOutageKind[] = [];
     const outage = inboundUnavailable(
-      (why, reason) => {
-        reasons.push(reason);
-        notices.push(inboundUnavailableNoticeText(why, reason));
+      (told) => {
+        kinds.push(told.kind);
+        notices.push(inboundUnavailableNoticeText(told));
       },
       {
         now: () => clock,
         firstOpenBoundMs: BOUND,
-        restored: (why, reason) => {
-          reasons.push(reason);
-          notices.push(inboundRestoredNoticeText(why, reason));
+        restored: ({ kind }) => {
+          kinds.push(kind);
+          notices.push(inboundRestoredNoticeText(kind));
         },
       }
     );
     return {
       outage,
       notices,
-      reasons,
+      kinds,
       at: (ms: number) => {
         clock = ms;
       },
@@ -1714,7 +1777,7 @@ describe("one registration", () => {
     expect(notice).not.toContain("Envoy inbound unavailable");
     expect(notice).not.toContain("no durable consumer");
     expect(notice).not.toContain("receives none");
-    expect(report.reasons).toEqual(["repositories_unknown"]);
+    expect(report.kinds).toEqual(["github_withheld"]);
   });
 
   test("the accepted registration after a told 503 repositories_unknown says that the listener follows the session's GitHub topics again, and never that the session receives again", async () => {
@@ -1736,10 +1799,10 @@ describe("one registration", () => {
     expect(restored).not.toContain("Envoy inbound restored");
     expect(restored).not.toContain("receives Envoy messages again");
     expect(restored).not.toMatch(/received? nothing/);
-    expect(report.reasons).toEqual(["repositories_unknown", "repositories_unknown"]);
+    expect(report.kinds).toEqual(["github_withheld", "github_withheld"]);
   });
 
-  test("a bus-outage 503 and a 503 no_grant are handed to the host with the reason each carries, and keep their texts", async () => {
+  test("a bus-outage 503 and a 503 no_grant are handed to the host with the kind each is, and keep their texts", async () => {
     const report = reportWording();
 
     await report.register(() => Promise.reject(unrecorded()));
@@ -1752,8 +1815,9 @@ describe("one registration", () => {
     report.at(BOUND + 45_000);
     await report.register(() => Promise.resolve("registered"));
 
-    // The bus-outage 503 names no reason, and the refusal names its own.
-    expect(report.reasons).toEqual([undefined, undefined, "no_grant", "no_grant"]);
+    // The bus-outage 503 is a registration not recorded for certain, and the 503 no_grant a
+    // refusal.
+    expect(report.kinds).toEqual(["unrecorded", "unrecorded", "refused", "refused"]);
     expect(report.notices).toEqual([
       envoyNoticeText({
         notice: "Envoy inbound unavailable",
@@ -1785,9 +1849,9 @@ describe("one registration", () => {
   // a lost relay subject, says that it receives nothing, so it is told once more, and the accepted
   // registration after it is worded for it.
   test("a 503 no_grant or a lost relay subject after a told 503 repositories_unknown is told once more, as a session that receives nothing, and the restore after it says the session receives again", () => {
-    for (const [failure, reason] of [
-      [(outage: InboundUnavailable) => outage.refused(noGrant()), "no_grant"],
-      [(outage: InboundUnavailable) => outage.noRelay(new Error(NO_RELAY)), undefined],
+    for (const [failure, kind] of [
+      [(outage: InboundUnavailable) => outage.refused(noGrant()), "refused"],
+      [(outage: InboundUnavailable) => outage.noRelay(new Error(NO_RELAY)), "no_relay"],
     ] as const) {
       const report = reportWording();
 
@@ -1809,10 +1873,10 @@ describe("one registration", () => {
         "Envoy inbound unavailable",
         "Envoy inbound restored",
       ]);
-      expect(report.notices[1]).toContain(reason === undefined ? NO_RELAY : NO_GRANT);
+      expect(report.notices[1]).toContain(kind === "no_relay" ? NO_RELAY : NO_GRANT);
       expect(report.notices[1]).toContain("so it receives none");
       expect(report.notices[2]).toContain("so the session receives Envoy messages again");
-      expect(report.reasons).toEqual(["repositories_unknown", reason, reason]);
+      expect(report.kinds).toEqual(["github_withheld", kind, kind]);
     }
   });
 
@@ -1835,11 +1899,7 @@ describe("one registration", () => {
       "Envoy GitHub topics withheld",
       "Envoy GitHub topics followed again",
     ]);
-    expect(afterUnrecorded.reasons).toEqual([
-      undefined,
-      "repositories_unknown",
-      "repositories_unknown",
-    ]);
+    expect(afterUnrecorded.kinds).toEqual(["unrecorded", "github_withheld", "github_withheld"]);
 
     const afterWithheld = reportWording();
     afterWithheld.outage.refused(repositoriesUnknown());
@@ -1854,23 +1914,72 @@ describe("one registration", () => {
       "Envoy GitHub topics withheld",
       "Envoy GitHub topics followed again",
     ]);
-    expect(afterWithheld.reasons).toEqual(["repositories_unknown", "repositories_unknown"]);
+    expect(afterWithheld.kinds).toEqual(["github_withheld", "github_withheld"]);
   });
 
-  test("isGitHubWithheld is true only of the reason repositories_unknown", () => {
-    // A namespace read, so this file still loads where the module lacks the export.
-    const { isGitHubWithheld } = consumerDeliveryModule;
+  // The kind of a refusal is read from its typed error once: the bus-outage 503 is a 503 whose
+  // error begins with the prefix (`isBusUnanswered`), a 503 `repositories_unknown` withholds the
+  // GitHub topics, and every other failure is a refusal. A registration with no relay subject is
+  // a kind of its own.
+  test("each refusal is sorted into its kind by its error, and a registration with no relay subject into its own", () => {
+    const answer = (status: number, body: Record<string, string>) =>
+      new EnvoyApiError({
+        method: "POST",
+        url: "http://listener/v1/interests/subscribe",
+        status,
+        responseBody: JSON.stringify(body),
+      });
+    const rows: [unknown, InboundOutageKind][] = [
+      [unrecorded(), "unrecorded"],
+      [repositoriesUnknown(), "github_withheld"],
+      [answer(403, { error: WITHHELD_ERROR, reason: "repositories_unknown" }), "github_withheld"],
+      [noGrant(), "refused"],
+      [answer(503, { error: "the consumer failed", reason: "consumer_error" }), "refused"],
+      [answer(403, { error: "not admitted", reason: "token_not_admitted" }), "refused"],
+      [answer(503, { error: `listener: ${BUS_UNANSWERED_PREFIX}` }), "refused"],
+      [new Error("no_grant"), "refused"],
+    ];
+    for (const [error, kind] of rows) {
+      const report = reportWording();
+      report.outage.refused(error);
+      // A bus-outage 503 is held for the bound, and told past it.
+      report.at(BOUND);
+      report.outage.refused(error);
+      // The row's error is named beside its kinds, so a failure says which row it is.
+      expect({ error: String(error), kinds: report.kinds }).toEqual({
+        error: String(error),
+        kinds: [kind],
+      });
+    }
 
-    expect(isGitHubWithheld("repositories_unknown")).toBe(true);
-    for (const reason of [
-      undefined,
-      "no_grant",
-      "consumer_error",
-      "repository_not_in_project",
-      "topic_not_in_project",
-      "token_not_admitted",
+    const lost = reportWording();
+    lost.outage.accepted();
+    lost.outage.noRelay(new Error(NO_RELAY));
+    expect(lost.kinds).toEqual(["no_relay"]);
+  });
+
+  // The kind is read from the typed error (`isBusUnanswered`), not from the message: an error
+  // whose message begins with the bus-outage prefix but is no 503 of the listener's is a refusal,
+  // told at once, worded as a session that receives nothing. The listener writes that prefix only
+  // in a 503, so a session meets this only from an error the listener did not send.
+  test("an error whose message begins with the bus-outage prefix but is no 503 is a refusal, told at once", () => {
+    for (const error of [
+      new EnvoyApiError({
+        method: "POST",
+        url: "http://listener/v1/interests/subscribe",
+        status: 500,
+        responseBody: JSON.stringify({ error: UNRECORDED }),
+      }),
+      new Error(UNRECORDED),
     ]) {
-      expect(isGitHubWithheld(reason)).toBe(false);
+      const report = reportWording();
+      report.outage.refused(error);
+
+      expect({ error: String(error), kinds: report.kinds }).toEqual({
+        error: String(error),
+        kinds: ["refused"],
+      });
+      expect(report.notices[0]).toContain("so it receives none");
     }
   });
 });

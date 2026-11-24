@@ -172,6 +172,26 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.lines).toEqual([]);
 });
 
+// The host stops while its boot's `claims/register` is on the wire, and the daemon refuses it (R24
+// of dispatch://INFRA-3589): the refusal writes nothing on the host's log, a 4xx as a 5xx. The
+// host's stop ends the agent itself.
+for (const status of [403, 503]) {
+  test(`a ${status} at claims/register after the host's signal aborted writes nothing on the host's log`, async () => {
+    const stopping = new AbortController();
+    const { host, lines } = claimHost({
+      register: () => {
+        stopping.abort();
+        return Response.json({ error: "Invalid boot token" }, { status });
+      },
+      overrides: { signal: stopping.signal },
+    });
+
+    await bootLegionClaim(host).catch(() => undefined);
+
+    expect(lines).toEqual([]);
+  });
+}
+
 test("a claim the listener refuses is logged naming the claim token and what stop does, then stops the agent — after the daemon has been told ready", async () => {
   const { host, steps, lines, firstTurn } = claimHost({
     overrides: {

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import {
   claimEnvoyRole,
-  claimRefusedForStop,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
+import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
+import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import {
   createPi,
@@ -104,6 +105,54 @@ test("a session_start registration that fails after the stop began tells the pan
 
     expect(notifications.slice(notified)).toEqual([]);
     expect(intervals.length).toBe(armed);
+  } finally {
+    for (const answer of heldReads.splice(0)) answer();
+    await starting;
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
+});
+
+// The control of the row above: the same start, whose role move's read is answered with no stop
+// begun. The pass throws the refusal, and the pane is told that the session is not registered, with
+// a retry interval armed.
+test("control: a session_start registration that fails with no stop begun tells the pane and arms a retry", async () => {
+  const session = "ses_start_failed_no_stop";
+  const heldReads: (() => void)[] = [];
+  let reads = 0;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (path === "/v1/interests/subscribe") return refusedRegistration();
+    if (path === `/v1/interests/${session}`) {
+      reads += 1;
+      if (reads === 2) await heldOn(heldReads);
+      return Response.json({ error: "no interest" }, { status: 404 });
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?start-failed-no-stop");
+  const fixture = createPi();
+  const intervals: (() => void)[] = [];
+  const notifications: string[] = [];
+  const context = host(session, [HISTORY], intervals, notifications);
+  envoyExtension(fixture.pi);
+
+  const starting = fixture.handlers.get("session_start")?.({}, context);
+  try {
+    await until(() => heldReads.length === 1, "the role move's read on the wire", 10_000);
+    const notified = notifications.length;
+    const armed = intervals.length;
+
+    for (const answer of heldReads.splice(0)) answer();
+    await starting;
+    await settle();
+
+    expect(
+      notifications
+        .slice(notified)
+        .filter((message) => message.startsWith("envoy: this session is not registered ("))
+    ).toHaveLength(1);
+    expect(intervals.length).toBe(armed + 1);
   } finally {
     for (const answer of heldReads.splice(0)) answer();
     await starting;
@@ -217,6 +266,57 @@ test("a notice a switch raises after the stop began is dropped by the tell gate"
     await settle();
 
     expect(notifications.slice(notified)).toEqual([]);
+  } finally {
+    for (const answer of heldReads.splice(0)) answer();
+    await switching;
+    await fixture.handlers.get("session_shutdown")?.({}, after);
+  }
+});
+
+// The control of the row above: the same switch, whose role move's read is answered with no stop
+// begun. The pass throws the refusal into the switch, which tells the pane that it failed.
+test("control: a switch whose pass fails with no stop begun tells the pane", async () => {
+  const first = "ses_before_switch_no_stop";
+  const switched = "ses_switched_no_stop";
+  const heldReads: (() => void)[] = [];
+  let reads = 0;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+    if (path === "/v1/interests/subscribe" && body?.session_id === switched) {
+      return refusedRegistration();
+    }
+    if (path === `/v1/interests/${switched}`) {
+      reads += 1;
+      if (reads === 2) await heldOn(heldReads);
+      return Response.json({ error: "no interest" }, { status: 404 });
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?switched-no-stop");
+  const fixture = createPi();
+  const notifications: string[] = [];
+  const intervals: (() => void)[] = [];
+  const before = host(first, [], intervals, notifications);
+  const after = host(switched, [HISTORY], intervals, notifications);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, before);
+
+  const switching = fixture.handlers.get("session_switch")?.({ reason: "new" }, after);
+  try {
+    await until(() => heldReads.length === 1, "the switch's role move read on the wire", 10_000);
+    const notified = notifications.length;
+
+    for (const answer of heldReads.splice(0)) answer();
+    await switching;
+    await settle();
+
+    expect(
+      notifications
+        .slice(notified)
+        .filter((message) => message.startsWith("envoy: rebind failed ("))
+    ).toHaveLength(1);
   } finally {
     for (const answer of heldReads.splice(0)) answer();
     await switching;
@@ -370,4 +470,102 @@ test("a claim for a session whose stop ended is refused naming the stop, and no 
   const elsewhere = await failure(claimEnvoyRole("ses_unserved", role));
   expect(elsewhere).toBeInstanceOf(Error);
   expect(claimRefusedForStop(elsewhere)).toBe(false);
+});
+
+/**
+ * Each line the host's logger is handed while `logging()` reads true, debug lines apart, as
+ * `<level> <message>`; `stop` ends the recording.
+ */
+function logLines(logging: () => boolean): { readonly lines: string[]; readonly stop: () => void } {
+  const lines: string[] = [];
+  const stop = logger.registerLogSink((entry) => {
+    if (logging() && entry.level !== "debug") lines.push(`${entry.level} ${entry.message}`);
+  });
+  return { lines, stop };
+}
+
+/** A session that holds `role`, whose fetch answers the stop's hand-back of it with `handBack`
+ *  once `stopBegan` reads true. */
+async function sessionHoldingRole(
+  query: string,
+  session: string,
+  role: string,
+  stopBegan: () => boolean,
+  handBack: () => Promise<Response>
+) {
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (path === "/v1/roles/set") {
+      return response({
+        session_id: session,
+        machine_id: "test",
+        dir: "/tmp/envoy-omp-test",
+        topics: [`notifications.role.${role}`],
+      });
+    }
+    if (stopBegan() && path === "/v1/interests/unsubscribe") return handBack();
+    return responseWithRegistration(input, init, {});
+  };
+  // A fresh instance of the entry, as the first row loads: no static import gives one.
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const fixture = createPi();
+  const context = host(session, [], [], []);
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  await claimEnvoyRole(session, role, context);
+  return { fixture, context };
+}
+
+// The stop's own lines are written while the stop runs (R24 of dispatch://INFRA-3589): the stop
+// writes them to the host's logger, which no tell gate holds (`releaseRoleClaims`,
+// `HandBackLedger.handBackAll`), and every line of the extension's own goes through the gate,
+// which drops it then. So a stop whose hand-back the listener refuses logs that line and no other.
+test("a stop whose hand-back the listener refuses logs the stop's own line, and no other line", async () => {
+  let stopBegan = false;
+  const log = logLines(() => stopBegan);
+  const { fixture, context } = await sessionHoldingRole(
+    "stop-hand-back-refused",
+    "ses_stop_hand_back_refused",
+    "reviewer",
+    () => stopBegan,
+    async () => Response.json({ error: "the listener refused the release" }, { status: 400 })
+  );
+  try {
+    stopBegan = true;
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+
+    expect(log.lines).toEqual(["warn envoy: the stop did not hand back a role this process held"]);
+  } finally {
+    log.stop();
+  }
+});
+
+// The release that has not answered in its share of the stop is left, and the stop says so on the
+// host's logger, which no tell gate holds.
+test("a stop whose release does not answer in its share of the stop logs the stop's own line, and no other line", async () => {
+  let stopBegan = false;
+  const heldReleases: (() => void)[] = [];
+  const log = logLines(() => stopBegan);
+  const { fixture, context } = await sessionHoldingRole(
+    "stop-release-unanswered",
+    "ses_stop_release_unanswered",
+    "reviewer",
+    () => stopBegan,
+    async () => {
+      await heldOn(heldReleases);
+      return response({});
+    }
+  );
+  try {
+    stopBegan = true;
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+
+    expect(log.lines).toEqual([
+      "warn envoy: the listener did not answer the release of the role claims in time",
+    ]);
+  } finally {
+    for (const answer of heldReleases.splice(0)) answer();
+    await settle();
+    log.stop();
+  }
 });

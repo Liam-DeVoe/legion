@@ -125,7 +125,7 @@ describe("one registration", () => {
       // The bare base a stored row or a transcript brings back: the listener stores it for no
       // session and warns about it, so it never goes out.
       followed: () => [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         restored: () => told.push("restored"),
       }),
       send: (topics, delivery) => {
@@ -149,7 +149,7 @@ describe("one registration", () => {
       ownAgentSubject: AGENT,
       followed: () => [TEAM],
       // With no bound the start race is told at once, so this row reads the one notice it tells.
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         firstOpenBoundMs: 0,
         restored: () => told.push("restored"),
       }),
@@ -176,7 +176,7 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: () => [TEAM],
-        outage: inboundUnavailable((why) => told.push(why), {
+        outage: inboundUnavailable(({ why }) => told.push(why), {
           restored: () => told.push("restored"),
         }),
         send: () => Promise.reject(new Error("no_grant")),
@@ -191,7 +191,7 @@ describe("one registration", () => {
 
   test("a registration accepted after an outage tells the session once that it receives again", async () => {
     const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       restored: () => told.push("restored"),
     });
     let refuse = true;
@@ -220,7 +220,7 @@ describe("one registration", () => {
     refuse = false;
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText("no_grant", undefined)).toContain("Envoy inbound restored");
+    expect(inboundRestoredNoticeText("refused")).toContain("Envoy inbound restored");
   });
 
   test("any other refusal is a refusal as before: nothing dropped, nothing sent again", async () => {
@@ -247,7 +247,7 @@ describe("one registration", () => {
         relay: fakeRelay(),
         ownAgentSubject: AGENT,
         followed: () => [TEAM],
-        outage: inboundUnavailable((why) => told.push(why), {
+        outage: inboundUnavailable(({ why }) => told.push(why), {
           restored: () => told.push("restored"),
         }),
         send: (topics) => {
@@ -286,7 +286,7 @@ describe("one registration", () => {
       relay: fakeRelay(),
       ownAgentSubject: AGENT,
       followed: () => [TEAM],
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         restored: () => told.push("restored"),
       }),
       send: (topics) => {
@@ -318,7 +318,7 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       followed: () => [ISSUE_TOPIC, SLACK],
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         restored: () => told.push("restored"),
       }),
       send: (topics) => {
@@ -440,7 +440,7 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       followed: () => [ISSUE_TOPIC, SLACK],
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         restored: () => told.push("restored"),
         stopping: () => stopping,
       }),
@@ -508,7 +508,7 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       followed: () => [TEAM],
-      outage: inboundUnavailable((why) => told.push(why), {
+      outage: inboundUnavailable(({ why }) => told.push(why), {
         restored: () => told.push("restored"),
       }),
       send: (topics) => {
@@ -537,7 +537,7 @@ describe("a relay socket", () => {
   /** The host's outage report, shared by the socket and the registrations, and what it told. */
   const sharedOutage = () => {
     const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       restored: () => told.push("restored"),
     });
     return { told, outage };
@@ -669,7 +669,7 @@ describe("a relay socket", () => {
     const followed = new Set(expandSubscriptionTopics([kept, `${refusedRoot}.>`]));
     const logs: string[] = [];
     const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       restored: () => told.push("restored"),
     });
     const heartbeat = () =>

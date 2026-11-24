@@ -9,6 +9,7 @@
 // module scope instead.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -831,6 +832,22 @@ export function sessionContext(
       getEditorText: () => "",
     },
   };
+}
+
+// The role arbiter forwards an envelope under its original key behind the forward mark, and a
+// publish the daemon makes carries a key the listener minted, 32 hex digits: `label` stands for it.
+export function forwardedRoleEnvelope(role: string, summary: string, label: string) {
+  const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "envoy",
+    source_event_id: `source-${label}`,
+    topic: `notifications.role.${role}`,
+    dedupe_key: `envoy.role.forward.publish.${minted}`,
+    issued_at: 1,
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+  });
 }
 
 /** A Dispatch delivery frame addressed to ses_delivery, on issue CORE-1. `bodyTruncated` says

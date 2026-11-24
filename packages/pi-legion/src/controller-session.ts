@@ -13,11 +13,8 @@ import {
   listenerAskedToClaimAgain,
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import {
-  claimEnvoyRole,
-  claimRefusedForStop,
-  subscribeLegionNotice,
-} from "@legion/pi-shared/role-claim-bridge";
+import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
+import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import {
   clearStartupTurn,
   markStartupTurnPending,

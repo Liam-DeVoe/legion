@@ -19,8 +19,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  isGitHubWithheld,
-  isUnrecordedRegistration,
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
@@ -90,6 +88,7 @@ import {
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
+import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -119,6 +118,7 @@ import {
 } from "./channel-topics"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
+import { INBOUND_RESTORED_LINES, INBOUND_UNAVAILABLE_LINES } from "./inbound-outage-lines"
 import { channelConnectionName, installedPluginVersion } from "./installed-build"
 import {
   endPane,
@@ -535,6 +535,10 @@ export async function postDispatchReply(
   await postDeliveryReply(config, identity.id, delivery, result)
 }
 
+/** How the delivery queue's stderr line for a frame whose delivery failed begins; the failure's
+ *  message follows it (`createChannelDelivery`). */
+export const DELIVERY_FAILED_LINE = "envoy-channel: a delivery failed — "
+
 /**
  * Render inbound Envoy envelopes through the shared renderer and hand each one to the session,
  * one at a time, in the order they were queued.
@@ -569,7 +573,7 @@ export function createChannelDelivery(input: {
     tail = run.then(
       () => undefined,
       (error: unknown) => {
-        input.stderr(`envoy-channel: a delivery failed — ${messageFor(error)}\n`)
+        input.stderr(`${DELIVERY_FAILED_LINE}${messageFor(error)}\n`)
       },
     )
     return run
@@ -850,9 +854,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // Whether `shutdown()` has run, which it does once, also where the abort above came first.
   let shutdownStarted = false
   // The stop gates (`./stop-gates`): once the stop has begun, the tell gate drops every notice
-  // card (`notice`) and stderr line (`gates.stderr`) of this session's own, the stop's own lines
-  // apart, and the write gate refuses every role record and ledger entry. A relay frame already
-  // past `deliverRelayed`'s read is a delivered message, not a notice: it passes no gate.
+  // card (`notice`) and stderr line (`gates.stderr`) of this session's own, and the write gate
+  // refuses every role record and ledger entry. Each reads `shuttingDown`. The stop's own lines
+  // are written to stderr with no gate (`shutdown`). A relay frame already past
+  // `deliverRelayed`'s read is a delivered message, not a notice: it passes no gate.
   const gates = createStopGates(() => shuttingDown)
   const delivery = createChannelDelivery({
     identity,
@@ -864,7 +869,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** A notice card of Envoy's own (`ChannelDeliveryPath.notice`), through the tell gate: one the
    *  gate drops resolves at once, shown to nobody. */
   const showNotice = (content: string, addressed?: string): Promise<void> =>
-    gates.tells(content) ? delivery.notice(content, addressed) : Promise.resolve()
+    shuttingDown ? Promise.resolve() : delivery.notice(content, addressed)
   const handoffFile =
     options.handoffPid === undefined
       ? undefined
@@ -959,7 +964,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    */
   const ledger: DeliveryLedger = createDeliveryLedger({
     host: {
-      sessionID: () => (!gates.writes() || ledgerBound !== identity.id ? undefined : identity.id),
+      sessionID: () => (shuttingDown || ledgerBound !== identity.id ? undefined : identity.id),
       // What the ledger persists, so a restart follows it again (`replayFollowedSubjects`).
       followedSubjects: () => replayFollowedSubjects(directSubject, userTopics),
       // The notice goes to the session the ledger addresses it to. This process serves one
@@ -1302,9 +1307,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
   // the one NATS subscription this process makes is the relay's (`openRelay`).
-  const followedTopics: ChannelTopics = createChannelTopics(() => connection, {
-    stderr: gates.stderr,
-  })
+  const followedTopics: ChannelTopics = createChannelTopics(() => connection)
 
   /**
    * Drops removed topics from the followed set and the registry entry, its failure reported
@@ -1365,54 +1368,29 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /**
    * Said once per outage: the listener refused this session's registration or may not have
    * recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
-   * registers again every tick until one is accepted. `why` is the error's message: for a refusal,
-   * the listener's own, with a reason `ErrorWireSchema.reason` lists. `reason` is that reason
-   * alone. `inboundUnavailableNoticeText` words them for every host. A refusal leaves the session
-   * no consumer, with one exception: an edge listener's 503 `repositories_unknown`
-   * (`isGitHubWithheld`) withholds the messages of the session's GitHub topics. Where the listener
-   * already held the session's registration, it kept that registration and the consumer, which
-   * goes on delivering the rest; where it held none, the session receives nothing until a
-   * registration is accepted. The client cannot tell which, so the stderr line says both. After a
-   * bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver, and a retry after
-   * it may have landed, so the stderr lines say only that the registration is not recorded for
-   * certain. A failure that lets less reach the session than the told one is said once more.
-   * An accepted registration after a told outage tells the session once, by the same path,
-   * worded for the last `why` and `reason` it was told. A session whose shutdown has begun is
-   * told neither (`stopping`): the shutdown closed the relay on purpose, and the record is
-   * deleted next.
+   * registers again every tick until one is accepted. The outage's kind (`InboundOutageKind`,
+   * which says what each kind means for what reaches the session) picks the stderr line
+   * (`INBOUND_UNAVAILABLE_LINES`), and `inboundUnavailableNoticeText` words the notice card for
+   * every host. An accepted registration after a told outage tells the session once, by the same
+   * path, worded for the kind of the last outage it was told (`INBOUND_RESTORED_LINES`). A session
+   * whose shutdown has begun is told neither (`stopping`): the shutdown closed the relay on
+   * purpose, and the record is deleted next.
    */
   const inboundOutage = inboundUnavailable(
-    (why, reason) => {
-      let line = `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`
-      let told = "that it receives nothing"
-      if (isUnrecordedRegistration(why)) {
-        line = `envoy-channel: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat\n`
-        told = "that its registration is not recorded for certain"
-      } else if (isGitHubWithheld(reason)) {
-        line = `envoy-channel: the listener follows none of this session's GitHub topics now (${why}); the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none; registering again every heartbeat\n`
-        told = "that its GitHub messages are withheld"
-      }
-      gates.stderr(line)
-      showNotice(inboundUnavailableNoticeText(why, reason)).catch((noticeError: unknown) => {
+    (outage) => {
+      const { line, told } = INBOUND_UNAVAILABLE_LINES[outage.kind]
+      gates.stderr(line(outage.why))
+      showNotice(inboundUnavailableNoticeText(outage)).catch((noticeError: unknown) => {
         gates.stderr(
           `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
         )
       })
     },
     {
-      restored: (toldWhy, toldReason) => {
-        let line = "envoy-channel: this session receives again: a registration was accepted\n"
-        let told = "that it receives again"
-        if (isUnrecordedRegistration(toldWhy)) {
-          line = "envoy-channel: the listener recorded a registration of this session\n"
-          told = "that the listener recorded its registration"
-        } else if (isGitHubWithheld(toldReason)) {
-          line =
-            "envoy-channel: the listener follows this session's GitHub topics again: a registration was accepted\n"
-          told = "that the listener follows its GitHub topics again"
-        }
+      restored: ({ kind }) => {
+        const { line, told } = INBOUND_RESTORED_LINES[kind]
         gates.stderr(line)
-        showNotice(inboundRestoredNoticeText(toldWhy, toldReason)).catch((noticeError: unknown) => {
+        showNotice(inboundRestoredNoticeText(kind)).catch((noticeError: unknown) => {
           gates.stderr(
             `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
           )
@@ -1585,7 +1563,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * where the stop began during a removal just before.
    */
   const writeRoleRecord = async (file: string, role: string): Promise<void> => {
-    if (!gates.writes()) return
+    if (shuttingDown) return
     await writePersistedRole(file, {
       session_id: identity.id,
       role,
@@ -1595,7 +1573,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   /** Removes the role record `file`, through the write gate (`writeRoleRecord`). */
   const removeRoleRecord = async (file: string): Promise<void> => {
-    if (!gates.writes()) return
+    if (shuttingDown) return
     await rm(file, { force: true })
   }
 
@@ -1709,7 +1687,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    */
   const refreshRoleRecord = async (): Promise<void> => {
     // Through the write gate (`writeRoleRecord`): a stopping session touches no record.
-    if (!gates.writes()) return
+    if (shuttingDown) return
     const roleFile = roleStateFile(options.stateDirectory, identity.id)
     try {
       await touchStateFile(roleFile)
@@ -2187,7 +2165,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // The role sweep is told whose session this is: see `pruneStaleSessionRoles`.
     () => pruneStaleSessionRoles(options.stateDirectory, identity.id),
   ]) {
-    if (!gates.writes()) break
+    if (shuttingDown) break
     await prune().catch((error: unknown) => {
       gates.stderr(`envoy-channel: could not prune stale session state (${messageFor(error)})\n`)
     })
@@ -2413,7 +2391,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       await serialized(async () => {
         // A stopping session keeps no role (the write gate): a claim the listener granted after
         // the stop began is not held here and leaves no record, as `envoy_role_set` keeps none.
-        if (!gates.writes()) return
+        if (shuttingDown) return
         heldRole = role
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
@@ -2446,8 +2424,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // two full waits before it is killed.
       const settleBy = Date.now() + shutdownSettleMs
       await settledOrGivenUp(registryWrites, shutdownSettleMs)
+      // The stop's own line: written with no tell gate, which drops every other line from here.
       await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
-        gates.stderr(`envoy-channel: session deregistration failed — ${messageFor(error)}\n`)
+        process.stderr.write(
+          `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
+        )
       })
       // What was written meanwhile (a resume point, a ledger record, a message taken) lands
       // before the process goes.
@@ -2599,12 +2580,10 @@ export async function executeEnvoyTool(
   }
 }
 
-/** Refuses a role claim once `session`'s shutdown has begun, in the words the Oh My Pi plugin's
- *  `envoy_role_set` uses for the same refusal. */
+/** Refuses a role claim once `session`'s shutdown has begun, with the error the Oh My Pi plugin's
+ *  `envoy_role_set` throws for the same refusal. */
 function refuseClaimWhileStopping(session: ChannelSession, role: string): void {
-  if (session.stopping()) {
-    throw new Error(`this session is stopping, so it claims no role: role ${role} is not held here`)
-  }
+  if (session.stopping()) throw new RoleClaimStoppingError(role)
 }
 
 function pluginStateDirectory(): string {
@@ -2633,13 +2612,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const pane = legionPane(process.env)
   // Whether this server's stop has begun (`stop`, R24 of dispatch://INFRA-3589). The client's stop
   // gate reads it at every call, and the server's own stderr lines and Legion log lines go
-  // through a tell gate over it (`serverGates`). The session reads its own from the same moment
-  // (`startSignal`).
+  // through a tell gate over it (`serverGates`, `logLegionLine`). The session reads its own from
+  // the same moment (`startSignal`).
   let stopping = false
   const serverGates = createStopGates(() => stopping)
   /** One line of the pane's Legion log (`logLegion`), through the server's tell gate. */
   const logLegionLine = (line: string): void => {
-    if (serverGates.tells(line)) logLegion(line)
+    if (!stopping) logLegion(line)
   }
   /** What ends the pane (`stopPane`) reads: the server's stop, and its gated Legion log. */
   const paneServer = { stopping: () => stopping, log: logLegionLine }

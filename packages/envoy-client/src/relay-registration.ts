@@ -123,6 +123,20 @@ export class NoRelaySubjectError extends Error {
 }
 
 /**
+ * Why a registration is refused once its session's stop has begun (R24 of
+ * dispatch://INFRA-3589): the stop closes the relay on purpose and deletes the session's record
+ * next, so the registration has nothing to ask for. `registerWithRelay` throws it, and so does a
+ * host that refuses a registration before it builds one.
+ */
+export class RegistrationStoppingError extends Error {
+  override readonly name = "RegistrationStoppingError";
+
+  constructor() {
+    super("this session is stopping, so it registers nothing");
+  }
+}
+
+/**
  * One registration, as every host that holds a relay makes it: the topics the listener will
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
@@ -147,7 +161,7 @@ export class NoRelaySubjectError extends Error {
  * began fails the registration as any other refusal does: no topic is dropped, nothing is
  * logged, nothing is sent again, and the outage report gets the refusal, which it tells to no
  * stopping session (`InboundUnavailableOptions.stopping`). A registration whose host began
- * stopping while it was built sends nothing, and fails with an error that says why.
+ * stopping while it was built sends nothing, and fails with `RegistrationStoppingError`.
  */
 export async function registerWithRelay<Result>({
   relay,
@@ -170,7 +184,7 @@ export async function registerWithRelay<Result>({
     outage.noRelay(refused);
     throw refused;
   }
-  if (stopping()) throw new Error("this session is stopping, so it registers nothing");
+  if (stopping()) throw new RegistrationStoppingError();
   let topics = registrationTopics(ownAgentSubject, followed(), roles);
   relay.setFollowed(topics);
   for (;;) {

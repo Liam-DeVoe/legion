@@ -2,18 +2,6 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { type EnvoyClient, isBusUnanswered, stopCallsOf } from "@legion/envoy-client/transport";
 
 /**
- * The lines the stop's own hand-back writes for a release that failed (`handBackAll`): the stop's
- * own lines, which the host's tell gate lets through once the stop has begun (R24 of
- * dispatch://INFRA-3589). Every other hand-back warns in words of its own (`warnRefused`), which
- * the gate drops then.
- */
-export const STOP_HAND_BACK_LINES = {
-  busUnanswered:
-    "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic.",
-  failed: "envoy: the stop did not hand back a role this process held",
-} as const;
-
-/**
  * The ledger of the role holds this process gave up: what it still owes the listener, and what
  * the listener refused to take back. One hold is one role topic under the session id it was held
  * as, and a hold is in at most one of the two books:
@@ -81,10 +69,13 @@ export interface HandBackLedger {
    * books, each once, for a process whose session is stopping: the stop's own call, which the
    * client's stop gate lets through (`stopCallsOf`). Each release names this process, as every
    * release here does, so the listener frees only a claim this process made. A release that
-   * fails is warned about in the stop's own words (`STOP_HAND_BACK_LINES`) and let go, and
-   * neither book changes: no pass runs after a stop, so nothing is left to send one again.
+   * fails is warned about on `warn`, the stop's own writer, which no tell gate holds, and let
+   * go, and neither book changes: no pass runs after a stop, so nothing is left to send one again.
    */
-  readonly handBackAll: (held: Hold | undefined) => Promise<void>;
+  readonly handBackAll: (
+    held: Hold | undefined,
+    warn: (message: string, context: Record<string, unknown>) => void
+  ) => Promise<void>;
 }
 
 /** One role hold this process gave up: the role topic, and the session id it was held as. */
@@ -203,7 +194,7 @@ export function createHandBackLedger(deps: HandBackLedgerDeps): HandBackLedger {
       return true;
     },
 
-    handBackAll: async (held) => {
+    handBackAll: async (held, warn) => {
       const owed = new Map<string, Hold>();
       if (held !== undefined) owed.set(keyOf(held.topic, held.id), held);
       for (const [key, hold] of pending) owed.set(key, hold);
@@ -218,10 +209,10 @@ export function createHandBackLedger(deps: HandBackLedgerDeps): HandBackLedger {
               clientInstanceID: deps.clientInstanceID,
             })
             .catch((error: unknown) =>
-              deps.warn(
+              warn(
                 isBusUnanswered(error)
-                  ? STOP_HAND_BACK_LINES.busUnanswered
-                  : STOP_HAND_BACK_LINES.failed,
+                  ? "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic."
+                  : "envoy: the stop did not hand back a role this process held",
                 { topic: hold.topic, sessionID: hold.id, error: messageFor(error) }
               )
             )

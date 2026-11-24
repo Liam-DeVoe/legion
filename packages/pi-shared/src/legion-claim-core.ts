@@ -60,9 +60,10 @@ export interface LegionClaimHost {
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
   /** Aborts when the host stops: the deferred claim's bound is cleared and no claim is made
-   *  from then on, a claim the listener answered 503 is not made again after it, and a failed
-   *  `claims/ready`, at the boot or after a role regain, is neither said nor sent again
-   *  (`callReadyWithRetry`, and the regain hook's own line). */
+   *  from then on, a claim the listener answered 503 is not made again after it, a refused
+   *  `claims/register` is not said, and a failed `claims/ready`, at the boot or after a role
+   *  regain, is neither said nor sent again (`callReadyWithRetry`, and the regain hook's own
+   *  line). */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
@@ -117,9 +118,10 @@ export interface LegionClaimBoot {
  * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
  * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
  * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes. A failure after a registration once the host's
- * `signal` aborted - the host stopping - is neither logged nor stopped on: the host's stop ends
- * the agent itself.
+ * the path a death inside a turn already takes. A refusal of the registration, and a failure
+ * after a registration, once the host's `signal` aborted - the host stopping - is not logged,
+ * and a failure after a registration is not stopped on either: the host's stop ends the agent
+ * itself.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -128,7 +130,10 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     claim = await daemon.register(host.registration);
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
-    host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    // A refusal the host's stop overtook says nothing: the stop ends the agent itself.
+    if (host.signal?.aborted !== true) {
+      host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    }
     if (error.status < 400 || error.status >= 500) throw error;
     host.stop();
     return { claimed: Promise.resolve() };

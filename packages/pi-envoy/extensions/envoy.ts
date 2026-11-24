@@ -43,8 +43,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  isGitHubWithheld,
-  isUnrecordedRegistration,
 } from "@legion/envoy-client/consumer-delivery";
 import {
   createDeliveryDedupe,
@@ -114,13 +112,10 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
+  RegistrationStoppingError,
   refusedTopicsNoticeText,
   registerWithRelay,
 } from "@legion/envoy-client/relay-registration";
@@ -203,8 +198,8 @@ import {
   type LegionRoleClaim,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
-  RoleClaimStoppingError,
 } from "@legion/pi-shared/role-claim-bridge";
+import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { dispatchCommandHead } from "@legion/pi-shared/shell-command";
 import {
   type SessionIdentityContext,
@@ -215,7 +210,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, postmortem, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -224,7 +219,7 @@ import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
-import { STOP_HAND_BACK_LINES } from "../src/hand-back-ledger";
+import { INBOUND_RESTORED_LINES, INBOUND_UNAVAILABLE_LINES } from "../src/inbound-outage-lines";
 import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
@@ -241,9 +236,6 @@ import {
   type DialLimit,
   type RegistrationInput,
   type RoleSnapshot,
-  stepWasRefused,
-  type TaskHandle,
-  taskWasAbandoned,
 } from "../src/registration-state";
 import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
@@ -257,6 +249,7 @@ import { type SessionInbound, sessionInbound } from "../src/session-inbound";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { createStopGates } from "../src/stop-gates";
+import { stepWasRefused, type TaskHandle, taskWasAbandoned } from "../src/task-queue";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -797,22 +790,9 @@ const timedDispatchClient = (ms: number, session: () => string = currentSessionI
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). Each extension instance writes through its own tell
- *  gate over it (`logger`, below). */
+ *  gate over it (`logger`, below), and only the stop's own lines are written to it directly
+ *  (`releaseRoleClaims`). */
 const scrubbedHostLogger = scrubbedLogger(hostLogger);
-
-/** The line the stop writes when the release of the session's role claims did not answer in its
- *  share of the stop (`releaseRoleClaims`). */
-const STOP_RELEASE_UNANSWERED =
-  "envoy: the listener did not answer the release of the role claims in time";
-
-/** The stop's own lines, the only lines the tell gate lets through once the stop has begun (R24
- *  of dispatch://INFRA-3589): the release that did not answer in time, and a hand-back of the
- *  release that failed (`STOP_HAND_BACK_LINES`). */
-const STOP_LINES: ReadonlySet<string> = new Set([
-  STOP_RELEASE_UNANSWERED,
-  STOP_HAND_BACK_LINES.busUnanswered,
-  STOP_HAND_BACK_LINES.failed,
-]);
 
 /** What `envoy_unsubscribe` answers once the session's stop has begun: it drops no topic. */
 const STOPPING_UNSUBSCRIBES_NOTHING = "this session is stopping, so it unsubscribes nothing";
@@ -840,13 +820,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   let shuttingDown = false;
   // The stop gates (R24 of dispatch://INFRA-3589, `../src/stop-gates`). Once the stop has begun,
   // the tell gate drops every pane notice (`notify`), held notice (`sendNotice`), notice to the
-  // model and log line (`logger`) of this extension's own, the stop's own lines apart
-  // (`STOP_LINES`); the write gate refuses every ledger entry and role record; and the client
-  // sends no call of the session's registration or role state (`createEnvoyClient`'s `stopping`).
-  // A relay frame already past `deliverRelayed`'s read is a delivered message, not a notice: its
-  // card, its records and its answer pass no gate.
-  const stopGates = createStopGates(() => shuttingDown, STOP_LINES);
-  const logger = stopGates.gatedLogger(scrubbedHostLogger);
+  // model and log line (`logger`) of this extension's own; the write gate refuses every ledger
+  // entry and role record; and the client sends no call of the session's registration or role
+  // state (`createEnvoyClient`'s `stopping`). Each reads `shuttingDown`. The stop's own lines go to
+  // `scrubbedHostLogger`, which no gate holds. A relay frame already past `deliverRelayed`'s read
+  // is a delivered message, not a notice: its card, its records and its answer pass no gate.
+  const logger = createStopGates(() => shuttingDown).gatedLogger(scrubbedHostLogger);
   // A pane notice of the extension's own, through the tell gate: every `ui.notify` here goes
   // through this.
   const notify = (
@@ -854,7 +833,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     message: string,
     level: "info" | "warning"
   ): void => {
-    if (stopGates.tells(message)) context?.ui.notify(message, level);
+    if (!shuttingDown) context?.ui.notify(message, level);
   };
   logger.debug("extension instance loaded", { extension: import.meta.url });
   // The interface the Legion plugin reads (`@legion/pi-shared/interface`). `undefined` when an
@@ -1144,7 +1123,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // a stopping session writes none (R24 of dispatch://INFRA-3589).
   const markLegionManagedSession = (targetSessionID: string): void => {
     legionRoleClaimBridge().managedSessions.add(targetSessionID);
-    if (legionManagedTranscript || !stopGates.writes()) return;
+    if (legionManagedTranscript || shuttingDown) return;
     legionManagedTranscript = true;
     pi.appendEntry(LEGION_MANAGED_ENTRY, { session_id: targetSessionID });
   };
@@ -1692,7 +1671,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A held notice of the extension's own (`UnwrittenFrames.sendNotice`), through the tell gate:
   // every replay, outage and refusal notice goes through this.
   const sendNotice = (content: string): void => {
-    if (stopGates.tells(content)) unwritten.sendNotice(content);
+    if (!shuttingDown) unwritten.sendNotice(content);
   };
 
   // Shows `session` a card the delivery ledger asked for (a failure notice naming a frame the
@@ -2752,7 +2731,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // that, a topic restored from the transcript is not followed again yet, and the write would
   // drop it. A stopping session writes none (the write gate).
   const ledgerOpen = (): boolean =>
-    stopGates.writes() && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
+    !shuttingDown && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
   const ledgerFollowedChanged = async (): Promise<void> => {
     if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged();
   };
@@ -3478,11 +3457,11 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
-  // `../src/registration-state`. A queued task writes none of it by hand: `run` hands it a handle
-  // whose every step — a state write, a listener request, a NATS connection, a subscribe —
-  // refuses once that task was abandoned at its deadline or the session it acts for stopped being
-  // the open one, and a role move's once this session's stop has begun (`shuttingDown`). The
-  // first refusal latches. Nothing here re-checks a fence before a step.
+  // `../src/registration-state` and `../src/task-queue`. A queued task writes none of it by hand:
+  // `run` hands it a handle whose every step — a state write, a listener request, a NATS
+  // connection, a subscribe — refuses once that task was abandoned at its deadline or the session
+  // it acts for stopped being the open one, and a role move's once this session's stop has begun
+  // (`shuttingDown`). The first refusal latches. Nothing here re-checks a fence before a step.
   // `handle.check()` is left at the two places that are not steps: where a catch-all would
   // otherwise swallow the refusal, and before an action outside the handle (a replay trigger, a
   // throw this pass reports) that a refused task must not take.
@@ -3505,7 +3484,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       // from this one's. The launch's role is claimed again at every pass, so a claim of it that
       // the newest record on the branch already names — that role, for that session, by this
       // process — writes nothing. A stopping session writes no record at all (the write gate).
-      if (!stopGates.writes()) return;
+      if (shuttingDown) return;
       const newest =
         role === sessionRole
           ? transcriptRoleRecord(activeSessionContext?.sessionManager.getBranch?.() ?? [])
@@ -3633,82 +3612,33 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // Said once per outage: the listener refused this session's registration or may not have
   // recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
-  // registers again every tick until one is accepted. `why` is the error's message: for a
-  // refusal, the listener's own, with a reason `ErrorWireSchema.reason` lists. `reason` is that
-  // reason alone. `inboundUnavailableNoticeText` words them for every host. A refusal leaves the
-  // session no consumer, with one exception: an edge listener's 503 `repositories_unknown`
-  // (`isGitHubWithheld`) withholds the messages of the session's GitHub topics. Where the
-  // listener already held the session's registration, it kept that registration and the
-  // consumer, which goes on delivering the rest; where it held none, the session receives
-  // nothing until a registration is accepted. The client cannot tell which, so the log line and
-  // the pane note say both.
-  // After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
-  // and a retry after it may have landed, so the log line and the pane note say only that the
-  // registration is not recorded for certain. A first relay open still being tried at the start,
-  // or a run of bus-outage 503s, is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. The
-  // log does not wait for the start race: the first registration that found no relay subject is
-  // logged at once, at warn (`held`). That line says only what the registration found, and why,
-  // and makes no claim about what the session receives. The notice, its card, its pane note and
-  // the warning that the session receives nothing wait for the bound. A failure that lets less
-  // reach the session than the told one is said once more: a refusal or a lost relay subject
-  // after a told bus-outage 503 or a told `repositories_unknown`, and a `repositories_unknown`
-  // after a told bus-outage 503.
+  // registers again every tick until one is accepted. The outage's kind (`InboundOutageKind`,
+  // which says what each kind means for what reaches the session) picks the log line and the pane
+  // note (`INBOUND_UNAVAILABLE_LINES`), and `inboundUnavailableNoticeText` words the notice for
+  // every host. A first relay open still being tried at the start, or a run of bus-outage 503s,
+  // is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. The log does not wait for the
+  // start race: the first registration that found no relay subject is logged at once, at warn
+  // (`held`). That line says only what the registration found, and why, and makes no claim about
+  // what the session receives. The notice, its card, its pane note and the warning that the
+  // session receives nothing wait for the bound.
   // An accepted registration after a told outage tells the session once, by the same path, worded
-  // for the last `why` and `reason` it was told. A session whose stop has begun is told neither
-  // (`stopping`): the stop closed the relay on purpose, and the record is deleted next. This
-  // report is the one choke point of those notices, and each of its tells goes through the tell
-  // gate as well.
+  // for the kind of the last outage it was told (`INBOUND_RESTORED_LINES`). A session whose stop
+  // has begun is told neither (`stopping`): the stop closed the relay on purpose, and the record
+  // is deleted next. This report is the one choke point of those notices, and each of its tells
+  // goes through the tell gate as well.
   const inboundOutage = inboundUnavailable(
-    (why, reason) => {
-      if (isUnrecordedRegistration(why)) {
-        logger.warn(`envoy: this session's registration is not recorded for certain: ${why}`);
-        notify(
-          activeSessionContext,
-          `envoy: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat`,
-          "warning"
-        );
-      } else if (isGitHubWithheld(reason)) {
-        logger.warn(
-          `envoy: the listener follows none of this session's GitHub topics now; the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none: ${why}`
-        );
-        notify(
-          activeSessionContext,
-          `envoy: GitHub messages are withheld (${why}); other messages still arrive if the listener already held this session's registration, and none arrive until a registration is accepted if it held none; registering again every heartbeat`,
-          "warning"
-        );
-      } else {
-        logger.warn(`envoy: this session receives nothing: ${why}`);
-        notify(
-          activeSessionContext,
-          `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-          "warning"
-        );
-      }
-      sendNotice(inboundUnavailableNoticeText(why, reason));
+    (outage) => {
+      const lines = INBOUND_UNAVAILABLE_LINES[outage.kind];
+      logger.warn(lines.log(outage.why));
+      notify(activeSessionContext, lines.pane(outage.why), "warning");
+      sendNotice(inboundUnavailableNoticeText(outage));
     },
     {
-      restored: (toldWhy, toldReason) => {
-        if (isUnrecordedRegistration(toldWhy)) {
-          logger.info("envoy: the listener recorded a registration of this session");
-          notify(
-            activeSessionContext,
-            "envoy: the listener recorded a registration of this session",
-            "info"
-          );
-        } else if (isGitHubWithheld(toldReason)) {
-          logger.info(
-            "envoy: the listener follows this session's GitHub topics again: a registration was accepted"
-          );
-          notify(
-            activeSessionContext,
-            "envoy: the listener follows this session's GitHub topics again",
-            "info"
-          );
-        } else {
-          logger.info("envoy: this session receives again: a registration was accepted");
-          notify(activeSessionContext, "envoy: inbound messages are back", "info");
-        }
-        sendNotice(inboundRestoredNoticeText(toldWhy, toldReason));
+      restored: ({ kind }) => {
+        const lines = INBOUND_RESTORED_LINES[kind];
+        logger.info(lines.log);
+        notify(activeSessionContext, lines.pane, "info");
+        sendNotice(inboundRestoredNoticeText(kind));
       },
       held: (relayMissing) => {
         logger.warn(
@@ -3755,19 +3685,18 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A stopping session registers nothing (R24 of dispatch://INFRA-3589). Its stop closes the
   // relay on purpose and deletes the record next, so a registration that a queued pass or a timer
   // makes once the stop began has nothing to ask for. It is refused here, before
-  // `registerWithRelay`, with an error that says why: a pass reads it as a pass that decided
-  // nothing (`reconcileNow`), and every other caller that reports it reports the truth. A
-  // registration already on the wire when the stop begins is not sent again (`stopping`): a
-  // project refusal answered after that drops no topic, and the session is not told of it. The
-  // pass that sent it ends once it settles, accepted or not, with no role move (`reconcileNow`).
+  // `registerWithRelay`, with the error that function throws for it (`RegistrationStoppingError`):
+  // a pass reads it as a pass that decided nothing (`reconcileNow`), and every other caller that
+  // reports it reports the truth. A registration already on the wire when the stop begins is not
+  // sent again (`stopping`): a project refusal answered after that drops no topic, and the
+  // session is not told of it. The pass that sent it ends once it settles, accepted or not, with
+  // no role move (`reconcileNow`).
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>,
     relayMissing?: string,
     dropped?: string[]
   ): Promise<SubscribeResult> => {
-    if (shuttingDown) {
-      return Promise.reject(new Error("this session is stopping, so it registers nothing"));
-    }
+    if (shuttingDown) return Promise.reject(new RegistrationStoppingError());
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
     // waits out is the one that reaches the wire, and no registration can resume behind the
@@ -4215,7 +4144,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       },
     });
     // A notice to the model, through the tell gate.
-    if (!stopGates.tells(content)) return;
+    if (shuttingDown) return;
     pi.sendMessage(
       {
         customType: "envoy-message",
@@ -4918,20 +4847,21 @@ export default function envoyExtension(hostApi: PiApi): void {
   // longer renewed inside the live window. The release names this process
   // (`handBackAllHolds`), so it frees no claim another process made. It gets its share of the
   // stop (`SHUTDOWN_RELEASE_MS`); one that has not answered by then is left, and the stop goes
-  // on to the DELETE. The claim then waits out the live window.
+  // on to the DELETE. The claim then waits out the live window. Its lines are the stop's own, so
+  // they go to the host's logger with no tell gate (`scrubbedHostLogger`), as the hand-back's do.
   const releaseRoleClaims = async (): Promise<void> => {
     if (active === undefined) return;
     try {
       await within(
-        registrationState.handBackAllHolds(),
+        registrationState.handBackAllHolds(scrubbedHostLogger),
         SHUTDOWN_RELEASE_MS,
         "the release of this session's role claims"
       );
     } catch (error) {
-      logger.warn(STOP_RELEASE_UNANSWERED, {
-        sessionID,
-        error: messageFor(error),
-      });
+      scrubbedHostLogger.warn(
+        "envoy: the listener did not answer the release of the role claims in time",
+        { sessionID, error: messageFor(error) }
+      );
     }
   };
 

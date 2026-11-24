@@ -9,6 +9,7 @@ import { modSocketPath } from "../hooks/mod-protocol"
 import { legion } from "../package.json" with { type: "json" }
 import {
   type ChannelNotifier,
+  DELIVERY_FAILED_LINE,
   executeEnvoyTool,
   startChannelSession,
 } from "../src/envoy-channel-server"
@@ -25,6 +26,7 @@ import {
 import {
   deliveryRaw,
   directSubject,
+  FakeNats,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -248,9 +250,9 @@ test("a stop that begins after the start's flush registers nothing, claims nothi
   }
 })
 
-// A frame queued before the stop whose write fails after the stop began: the queue's failure line
-// is a stderr line of the session's own, so its tell gate drops it.
-test("a delivery queued before the stop that fails after the stop began says nothing on stderr", async () => {
+/** A session whose one queued delivery's write fails once the row lets it (`failing`), after the
+ *  notifier was handed it (`writing`); `booting` is the server's stop reading. */
+async function failingDelivery() {
   const booting = new AbortController()
   const writing = held()
   const failing = held()
@@ -267,11 +269,24 @@ test("a delivery queued before the stop that fails after the stop began says not
       startSignal: booting.signal,
     }),
   )
+  return { booting, writing, failing, channel }
+}
+
+/** Every byte written to stderr from now until `restore`, which nothing else then sees. */
+function stderrWrites(): { readonly written: string[]; readonly restore: () => void } {
   const written: string[] = []
   const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
     written.push(String(chunk))
     return true
   })
+  return { written, restore: () => stderr.mockRestore() }
+}
+
+// A frame queued before the stop whose write fails after the stop began: the queue's failure line
+// is a stderr line of the session's own, so its tell gate drops it.
+test("a delivery queued before the stop that fails after the stop began says nothing on stderr", async () => {
+  const { booting, writing, failing, channel } = await failingDelivery()
+  const stderr = stderrWrites()
   try {
     const delivered = channel.delivery
       .enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -283,10 +298,75 @@ test("a delivery queued before the stop that fails after the stop began says not
     expect(await delivered).toBe(false)
     await settled()
 
-    expect(written.filter((line) => line.includes("a delivery failed"))).toEqual([])
+    expect(stderr.written.filter((line) => line.startsWith(DELIVERY_FAILED_LINE))).toEqual([])
   } finally {
-    stderr.mockRestore()
+    stderr.restore()
     await channel.shutdown()
+  }
+})
+
+// The control of the row above: the same failed write with no stop begun says so on stderr.
+test("control: a delivery that fails with no stop begun says so on stderr", async () => {
+  const { writing, failing, channel } = await failingDelivery()
+  const stderr = stderrWrites()
+  try {
+    const delivered = channel.delivery
+      .enqueue({ subject: directSubject, raw: deliveryRaw })
+      .catch(() => false)
+    await writing.promise
+    failing.resolve()
+    expect(await delivered).toBe(false)
+    await settled()
+
+    expect(stderr.written.filter((line) => line.startsWith(DELIVERY_FAILED_LINE))).toEqual([
+      `${DELIVERY_FAILED_LINE}the bridge did not take the message\n`,
+    ])
+  } finally {
+    stderr.restore()
+    await channel.shutdown()
+  }
+})
+
+/** A connection whose drain and close fail, and stay open, as a stalled link's can. */
+class UnclosableNats extends FakeNats {
+  override drain(): Promise<void> {
+    return Promise.reject(new Error("the drain failed"))
+  }
+
+  override close(): Promise<void> {
+    return Promise.reject(new Error("the close failed"))
+  }
+}
+
+// The stop's own lines are written while the stop runs (R24 of dispatch://INFRA-3589): the
+// shutdown writes its failed DELETE, and the drain and the close of its connection that failed
+// (`ChannelTopics.close`), to stderr with no tell gate, which drops every other line of the
+// session's own from the moment the stop begins.
+test("a shutdown whose DELETE, drain and close fail writes those three lines on stderr, and no other line", async () => {
+  const connection = new UnclosableNats()
+  const channel = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection,
+      client: recordingClient([], {
+        unregisterSession: async () => {
+          throw new Error("the listener did not answer")
+        },
+      }),
+    }),
+  )
+  const stderr = stderrWrites()
+  try {
+    await channel.shutdown()
+
+    // `natsFailureReason` names an error nats.js did not raise by its class alone.
+    expect(stderr.written).toEqual([
+      "envoy-channel: draining the broker connection failed — Error (message withheld)\n",
+      "envoy-channel: closing the broker connection failed — Error (message withheld)\n",
+      "envoy-channel: session deregistration failed — the listener did not answer\n",
+    ])
+  } finally {
+    stderr.restore()
+    await connection.closeForGood()
   }
 })
 

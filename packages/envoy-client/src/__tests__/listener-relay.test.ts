@@ -182,8 +182,8 @@ describe("a relay socket", () => {
     const server = standIn();
     const told: string[] = [];
     const restored: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
-      restored: (why) => restored.push(why),
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: ({ why }) => restored.push(why),
     });
     const relay = await opened(server, "ses_a", { outage });
     // A running session: a registration was accepted before the closes, so the start race's hold
@@ -217,7 +217,7 @@ describe("a relay socket", () => {
     let clock = 0;
     const told: string[] = [];
     const held: (string | undefined)[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       now: () => clock,
       firstOpenBoundMs: 60_000,
       held: (relayMissing) => held.push(relayMissing),
@@ -675,7 +675,7 @@ describe("a relay socket", () => {
     const told: string[] = [];
     const asks = { count: 0 };
     const restored = { count: 0 };
-    const outage = inboundUnavailable((why) => told.push(why), {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
       restored: () => {
         restored.count += 1;
       },
