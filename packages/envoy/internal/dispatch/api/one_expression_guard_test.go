@@ -68,29 +68,120 @@ func namesTheExpression(node ast.Node) bool {
 	return named
 }
 
-// sqlCommentOrString matches a SQL comment, a `--` line or a `/* */` block, or a quoted string,
-// which it matches only so that a `--` inside one is not read as the start of a comment.
-var sqlCommentOrString = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
-
-// sqlCode is a SQL text with its comments blanked: the statements Postgres runs, a function's
-// body and a string's contents kept.
+// sqlCode is a SQL text with its comments blanked, read by PostgreSQL's lexical rules, so that no
+// text a statement runs is blanked with them:
+//   - a quoted string ('…', with '' a quote in it) and a quoted identifier ("…", with "" a quote in
+//     it) are kept whole, so a `--` or a `/*` in one starts no comment; in an escape string (E'…')
+//     a backslash escapes the character after it, a quote among them;
+//   - a block comment nests, and ends at the `*/` that closes its outermost `/*`;
+//   - a dollar-quoted string ($$…$$ or $tag$…$tag$) has no escapes and ends at its first closing
+//     tag. It is the body of a function or of a DO block, which PostgreSQL runs as SQL or as
+//     PL/pgSQL, so it is read as SQL of its own: its comments are blanked and each ends at the
+//     body's end at the latest, and its code and its strings are kept.
+//
+// Each comment becomes one space, so that two tokens it stood between stay apart.
 func sqlCode(text string) string {
-	return sqlCommentOrString.ReplaceAllStringFunc(text, func(match string) string {
-		if strings.HasPrefix(match, "'") {
-			return match
+	var code strings.Builder
+	code.Grow(len(text))
+	for at := 0; at < len(text); {
+		rest := text[at:]
+		switch {
+		case strings.HasPrefix(rest, "--"):
+			end := strings.IndexByte(rest, '\n')
+			if end < 0 {
+				end = len(rest)
+			}
+			code.WriteByte(' ')
+			at += end
+		case strings.HasPrefix(rest, "/*"):
+			depth, end := 1, 2
+			for end < len(rest) && depth > 0 {
+				switch {
+				case strings.HasPrefix(rest[end:], "/*"):
+					depth, end = depth+1, end+2
+				case strings.HasPrefix(rest[end:], "*/"):
+					depth, end = depth-1, end+2
+				default:
+					end++
+				}
+			}
+			code.WriteByte(' ')
+			at += end
+		case rest[0] == '\'' || rest[0] == '"':
+			escapes := rest[0] == '\'' && at > 0 && (text[at-1] == 'E' || text[at-1] == 'e') &&
+				(at < 2 || !sqlIdentifierByte(text[at-2]))
+			end := quotedEnd(rest, escapes)
+			code.WriteString(rest[:end])
+			at += end
+		case rest[0] == '$' && (at == 0 || !sqlIdentifierByte(text[at-1])) && dollarTag(rest) != "":
+			tag := dollarTag(rest)
+			body := rest[len(tag):]
+			end := strings.Index(body, tag)
+			closed := end >= 0
+			if !closed {
+				end = len(body)
+			}
+			code.WriteString(tag)
+			code.WriteString(sqlCode(body[:end]))
+			at += len(tag) + end
+			if closed {
+				code.WriteString(tag)
+				at += len(tag)
+			}
+		default:
+			code.WriteByte(rest[0])
+			at++
 		}
-		return " "
-	})
+	}
+	return code.String()
+}
+
+// quotedEnd is the length of the quoted string or identifier rest starts with, its closing quote
+// included, or all of rest when it never closes. A doubled quote is a quote in it; with escapes, a
+// backslash escapes the byte after it.
+func quotedEnd(rest string, escapes bool) int {
+	quote := rest[0]
+	for end := 1; end < len(rest); end++ {
+		switch {
+		case escapes && rest[end] == '\\':
+			end++
+		case rest[end] == quote && end+1 < len(rest) && rest[end+1] == quote:
+			end++
+		case rest[end] == quote:
+			return end + 1
+		}
+	}
+	return len(rest)
+}
+
+// dollarTag is the opening tag of the dollar-quoted string rest starts with ($$ or $tag$, a tag
+// being an identifier with no `$`), or "" when rest starts none, as `$1`, a parameter, does not.
+func dollarTag(rest string) string {
+	for end := 1; end < len(rest); end++ {
+		switch c := rest[end]; {
+		case c == '$':
+			return rest[:end+1]
+		case end == 1 && c >= '0' && c <= '9', !sqlIdentifierByte(c):
+			return ""
+		}
+	}
+	return ""
+}
+
+// sqlIdentifierByte is whether c may stand in an unquoted SQL identifier: a letter, a digit, `_`,
+// `$`, or a byte of a character past ASCII.
+func sqlIdentifierByte(c byte) bool {
+	return c == '_' || c == '$' || c >= 0x80 || (c >= '0' && c <= '9') || (c|0x20 >= 'a' && c|0x20 <= 'z')
 }
 
 // ruleNeedle is the rule's needle, `coalesce(a.asked_of`, in every spelling SQL takes for it: any
-// alias or none, any case, any space. The count of the module's Go and the count of its .sql files
-// both read it.
-var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:\w+\.)?asked_of\b`)
+// qualifier or none (an alias, a table, a schema, a quoted name), a quoted column, any case, any
+// space. The count of the module's Go and the count of its .sql files both read it.
+var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:(?:\w+|"[^"]*")\s*\.\s*)*(?:asked_of\b|"asked_of")`)
 
 // goRuleCopies is the number of copies of the rule in the text of a Go source.
 func goRuleCopies(text string) int {
-	return strings.Count(text, "coalesce(a.asked_of")
+	return len(ruleNeedle.FindAllStringIndex(text, -1))
 }
 
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
