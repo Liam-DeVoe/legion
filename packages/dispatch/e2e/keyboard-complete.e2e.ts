@@ -827,7 +827,6 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
 // k-status-menu
 // ---------------------------------------------------------------------------
 
-// SLOW(>=2s): the issue page loaded, its status menu opened twice and one write read back.
 test("k-status-menu: s opens the status menu on the issue page, where the arrows and Escape write nothing", async ({
   page,
 }) => {
@@ -3586,7 +3585,6 @@ test("k-new-tab: Shift+O on the Priorities page and on a priority's page opens t
   await opensWhereOOpens(context, page, work.locator("[data-issue-link]"), "on a priority's page");
 });
 
-// SLOW(>=2s): the Documents list with two pages opened from it and two loads of it.
 test("k-new-tab: on the project's Documents list j and k walk the documents, Shift+O opens the focused one in a new page, and o and Enter open it in this page", async ({
   context,
   page,
@@ -4675,14 +4673,12 @@ async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"):
   expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
 }
 
-// SLOW(>=2s): an approval request seeded at version 2, then picked twice and answered.
 test("k-approval-keys: in card mode a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
   page,
 }) => {
   await approvalCardSteps(page, "card mode");
 });
 
-// SLOW(>=2s): an approval request seeded at version 2, then picked twice and answered.
 test("k-approval-keys: in the drawer a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
   page,
 }) => {
@@ -4762,8 +4758,6 @@ test("k-approval-keys: on today's issue page a approves the spec from the header
   await expect(dialog, step("a opens no dialog")).toHaveCount(0);
 });
 
-// SLOW(>=2s): an approved spec, a Verification document and its approval request seeded, the
-// issue page loaded and the help opened.
 test("k-approval-keys: on today's issue page a and Shift+R send nothing while only the Verification document's request waits on the reader, and ? shows both not available", async ({
   page,
 }) => {
@@ -5275,8 +5269,6 @@ function requestsBeforeDismissalOf(
   );
 }
 
-// SLOW(>=2s): four threads seeded, two dismissed by their row's own Dismiss beside the reading
-// pane, and Enter pressed between the two.
 test("k-next-item: beside the reading pane a Dismiss on a row that is not in hand leaves the focus on no other row, so Enter after it dismisses nothing", async ({
   page,
 }) => {
@@ -5341,9 +5333,6 @@ test("k-next-item: beside the reading pane a Dismiss on a row that is not in han
 // nothing keeps a thread past its row, so a search that hides a selected thread moves the
 // selection to a row it leaves. With no row of the item in hand to take the focus, the pane's
 // scroller takes it, and Enter from there carries the reader into the question's answer box.
-// SLOW(>=2s): a question and three threads seeded, two threads dismissed by their rows' own
-// Dismiss beside the reading pane while a search hides the question in hand, and Enter pressed
-// between the two.
 test("k-next-item: beside the reading pane a Dismiss on a row that is not in hand, while a search hides the item in hand, leaves the focus on the pane and on no row, so Enter after it dismisses nothing", async ({
   page,
 }) => {
@@ -6401,7 +6390,6 @@ async function headButtonsNamedByChromium(page: Page, name: string): Promise<num
 // assistive tech gets it, by Playwright's name and by Chromium's own accessibility tree. Approve
 // and Request changes are named by their content, so a key that reached either name would show
 // in it; the priority is named for its menu and then the priority it shows, not for its key.
-// SLOW(>=2s): an approval request on an issue at P2 seeded, and its head read in the pane.
 test("k-pane-head: a control of the head is named without the key it shows, Approve and Request changes by their labels alone and the priority by its menu and then its priority", async ({
   page,
 }) => {
@@ -6441,8 +6429,6 @@ test("k-pane-head: a control of the head is named without the key it shows, Appr
   }
 });
 
-// SLOW(>=2s): an approval request seeded, its document's read held while the head is read and
-// then let through.
 test("k-pane-head: no control of the head moves when the document's read of an approval request returns", async ({
   page,
 }) => {
@@ -6482,8 +6468,6 @@ test("k-pane-head: no control of the head moves when the document's read of an a
   expectSamePlaces(before, await readHead(page, APPROVAL_CONTROLS), APPROVAL_CONTROLS, step);
 });
 
-// SLOW(>=2s): a request of a document approved before seeded, its document's read held while the
-// head is read and then answered as approved at its latest version.
 test("k-pane-head: on a request of a document approved at its latest version, the place at the row's end keeps its box and no other control moves when the read returns", async ({
   page,
 }) => {
@@ -7205,8 +7189,6 @@ function caretOf(page: Page): Promise<Caret | null> {
   });
 }
 
-// SLOW(>=2s): the spec opened and connected, two tabs left and come back to twice, and Tab walked
-// back into the document.
 test("k-issue-tabs: Escape in the spec the reader edits takes the focus out of the editor so ] works, changes no text, and Tab back in puts the caret where it was", async ({
   page,
 }) => {
@@ -7793,8 +7775,6 @@ test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin
   );
 });
 
-// SLOW(>=2s): the spec opened and connected, and one comment started on it and sent with every
-// frame of the page late.
 test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the commented word while every frame of the page comes late", async ({
   page,
 }) => {
@@ -7813,8 +7793,6 @@ test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the com
   await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
 });
 
-// SLOW(>=2s): the spec opened and connected at a sheet's width, and one comment started on it and
-// sent with every frame of the page late.
 test("k-comment-focus: at 1024x768 a sent comment closes the sheet and puts the caret back in the commented word while every frame of the page comes late", async ({
   page,
 }) => {
@@ -8937,8 +8915,6 @@ test("k-default-keys: with no key changed, ? lists the Inbox keys of the spec's 
   }
 });
 
-// SLOW(>=2s): a question seeded, CORE's project page loaded and the drawer opened over it with
-// `i`, and the help opened and closed in it twice.
 test("k-default-keys: in the Inbox drawer ? opens the help over it, with the Inbox's keys under Inbox and the dialog's Escape under Dialog, Escape closes only the help, gives the focus back and leaves a ticked row ticked, and the drawer's search box types ?", async ({
   page,
 }) => {
