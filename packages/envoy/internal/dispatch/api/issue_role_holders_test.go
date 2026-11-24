@@ -252,6 +252,37 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 	}
 }
 
+// A session holds one role of an issue, so a publication that names one session twice is refused
+// whole, whether the two entries name one role or two: two claims of one role name two sessions.
+// The refusal names the session, and nothing is stored. Without it the write meets the session key
+// twice in one statement, which the database refuses, and the route answers 500.
+func TestASessionNamedTwiceIsRefusedNamingTheSession(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	claimOf := func(agent string) string {
+		project, number, _ := strings.Cut(strings.ToLower(issue), "-")
+		return "legion-acme-" + project + "-" + number + "-" + agent
+	}
+	const twice = "ses-twice"
+	for name, holders := range map[string][]issueRoleHolder{
+		"for one role": {{Role: "tester", Session: twice}, {Role: "tester", Session: twice}},
+		"for one role by two claims": {
+			{Role: "tester", Session: twice, Claim: claimOf("tester")}, {Role: "tester", Session: twice, Claim: claimOf("implementer")},
+		},
+		"for two roles": {{Role: "tester", Session: twice}, {Role: "implementer", Session: twice}},
+	} {
+		response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": holders, "actor": daemonSessionOf("ACME")})
+		code, message := refusalOf(t, response)
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, twice) {
+			t.Errorf("a session named twice %s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming %s", name, response.Code, response.Body.String(), twice)
+		}
+	}
+	if count := countRoleHolders(t, database); count != 0 {
+		t.Fatalf("issue_role_holders holds %d rows after the refusals, want 0", count)
+	}
+}
+
 // The tester's production check comes after the close, so a closed issue takes its role holders.
 func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 	t.Parallel()
