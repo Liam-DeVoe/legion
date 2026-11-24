@@ -242,7 +242,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the older client's state read of %s, which stands on plan rows in testing, %s", older, state)
 		}
 		l.note("contract %d client's methods: %v", l.oldContract, state.Methods)
-		planRoutes := l.oldContract >= api.OwnerPlanContract
+		planRoutes := l.oldContract < api.OwnerPlanContract
 		for _, route := range []string{"planRegister", "taskStop"} {
 			if has := slices.Contains(state.Methods, route); has != planRoutes {
 				t.Fatalf("the contract %d client has %s: %t, want %t, since the routes arrived at contract %d",
