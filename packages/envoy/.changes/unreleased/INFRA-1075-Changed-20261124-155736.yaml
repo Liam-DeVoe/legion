@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  Each Dispatch route is now a file of its own in `internal/dispatch/api`,
+  `route_<path>+<method>.go`, whose one `declareRoute(routeDecl{...})` states every fact of the
+  route: method, pattern, auth, description, handler, write class, id kind, OAuth scopes, read
+  scope, test-hook flag and shape. The rows of `routes()`, the maps `writeClasses`, `idRoutes`,
+  `routeScopes`, `readScopeRoutes` and `routeShapes`, and the committed `testdata/routes.txt` are
+  gone, so two branches that add different routes touch no file in common. `envoy-dispatch routes`
+  and `envoy-dispatch openapi` print the same bytes as before. A test refuses two declarations of
+  one method and pattern. A branch made before this change adopts it with
+  `go run ./cmd/dispatch-route-adopt` (from `packages/envoy`) once its merge of main holds
+  conflicts, with git or jj; `testdata/routes.txt`'s lines are `envoy-dispatch routes | jq -r
+  '.routes[] | "\(.method) \(.path) \(.auth)"'`.
+time: 2026-11-24T15:57:36Z
+custom:
+    Issue: INFRA-1075
