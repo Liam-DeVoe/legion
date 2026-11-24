@@ -14,7 +14,7 @@
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
 # no pair list at all - so the rule answered nothing about any pair while
 # `RACE_MEM_LIMIT_KB=… race_memory.py go test …` stood in ci-job-envoy-go-race-docs.yaml and
-# `GODEBUG=checkfinalizers=1 go test …` in ci-job-envoy-go-docs-finalizers.yaml.
+# ci-job-envoy-go-docs-finalizers.yaml held `GODEBUG=checkfinalizers=1 go test …`.
 #
 # The module is imported from the directory it lives in, the way check-ci-filters.sh imports its
 # own (PYTHONPATH, no bytecode), so the code under test is the file a person runs. It needs a

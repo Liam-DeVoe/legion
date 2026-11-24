@@ -1,13 +1,13 @@
 """The engine of check-ci-filters.sh, whose header says what it proves and why. ci_job_reads.py,
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
-read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
+read none of that - what no `.github/workflows/ci.yaml#if:` may say, what every job's `if:` must say, what
 ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
 of this repository running on a merge group - and main() runs them.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
-`import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
-import ...` gets these very classes.
+`import ci_filter_coverage` rather than as a script, so ci_job_reads.py gets these very classes
+through its `from ci_filter_coverage import ...`.
 
 A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
 what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
@@ -289,7 +289,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
 
 # ---------------------------------------------------------------- the workflow documents
 # The prefix of a `uses:` that names a reusable workflow of this repository. A job of ci.yaml
-# that carries one keeps its id, its `needs: changes` and its whole `if:` in ci.yaml and holds
+# that carries one keeps its id, its `needs: changes` and its whole `.github/workflows/ci.yaml#if:` and holds
 # its steps in the called file, which runs them inside the caller's own run. So the rules that
 # read a job's steps, its go commands or its cache restores read a set of documents - ci.yaml
 # and every file its jobs call - rather than ci.yaml alone, and each of them names the file it
@@ -1029,8 +1029,8 @@ INPUT_REF = re.compile(r"\binputs\.([A-Za-z0-9_-]+)")
 # The `with:` values a condition may be resolved through, and the expression each stands for.
 # An output of the changes job carries the one filter it names; `needs.changes.result` carries
 # none, so `inputs.changes-result != 'success' || inputs.go_notices == 'true'` reads as exactly
-# what ci.yaml's `needs.changes.result != 'success' || needs.changes.outputs.go_notices ==
-# 'true'` reads as today - one gate, on go_notices. The third is ci.yaml's ci-ok payload, the
+# what the same test of `.github/workflows/ci.yaml#needs.changes.result` and `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`
+# would read as - one gate, on go_notices. The third is ci.yaml's ci-ok payload, the
 # whole changes job as JSON: docs-site.yaml's report step reads it (`if: always() &&
 # inputs.ci-ok-changes != ''`, which asks whether ci.yaml is the caller rather than what
 # changed), and since it names no output it can carry no filter into a condition and hide none.
@@ -1038,7 +1038,7 @@ WITH_CHANGES = re.compile(r"^\$\{\{\s*(needs\.changes\.outputs\.[A-Za-z0-9_-]+|n
                           r"|toJSON\(needs\.changes\))\s*\}\}$")
 # A value that names the changes job at all, in any shape: what the refusal below is about. One
 # that does not cannot carry a filter, so the condition reading it gates on something other than
-# the paths filter and this rule leaves it alone - dispatch-browser.yaml's `lane`, which each of
+# the paths filter and this rule leaves it alone - `.github/workflows/dispatch-browser.yaml#lane`, which each of
 # its two callers in ci.yaml passes as a literal and three of whose jobs run only when it reads
 # `full`, chooses which projects the browser suite runs, never whether it runs; the
 # `dispatch_browser` and `dispatch_browser_pr` outputs decide that, on the caller jobs' own `if:`.
@@ -1658,7 +1658,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
-    # `needs: changes` and its whole `if:` in ci.yaml and holds its steps in the called file,
+    # `needs: changes` and its whole `.github/workflows/ci.yaml#if:` and holds its steps in the called file,
     # whose own job ids are its to choose. The caller job has no run: step of its own, so the
     # two never answer for each other.
     skipped = {key for key, names in gated.items() if names and names <= set(excluded)}

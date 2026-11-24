@@ -1,6 +1,6 @@
 name: CI job lint
 
-# The steps of ci.yaml's `lint` job, in a file of its own, and the private-name check of the
+# The steps of `.github/workflows/ci.yaml#lint` job, in a file of its own, and the private-name check of the
 # repository in a job beside it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
@@ -10,25 +10,25 @@ name: CI job lint
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
 # it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       changes-result:
         description: >-
-          ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
+          `.github/workflows/ci.yaml#needs.changes.result`: the two notices steps below run when `changes` did
           not succeed, as they do in ci.yaml.
         type: string
         required: true
       go_notices:
         description: >-
-          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
+          `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`: the two notices steps below run when
           that filter matched.
         type: string
         required: true
@@ -137,6 +137,16 @@ jobs:
         run: |
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
+
+      # A citation under .github is one token, a path and a name, never a line: a line number
+      # drifts with every edit of the cited file, and a rename anywhere in the repository can
+      # break a name, so this job, which every change runs, holds them
+      # (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). Its test runs first.
+      - name: Test the citation check
+        run: .github/scripts/ci-citations.test.sh
+
+      - name: Check every citation under .github is a token whose file holds its name
+        run: .github/scripts/ci_citations.py
 
       # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
       # keyed on the Go version this step installs.

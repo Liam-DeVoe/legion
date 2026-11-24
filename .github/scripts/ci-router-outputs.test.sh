@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the label terms of ci.yaml's `changes` outputs, through ci_router_outputs.py, which
+# Tests for the label terms of `.github/workflows/ci.yaml#changes` outputs, through ci_router_outputs.py, which
 # evaluates this repository's own ci.yaml as GitHub would: on a pull request the slow suites'
 # outputs are false whatever their paths say, `full-ci` turns every one of them on, a
 # `lane:<output>` label turns on that one output and no other, still only where its paths

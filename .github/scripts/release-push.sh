@@ -20,8 +20,7 @@
 #            every --patch-path passed through. Without such a tag the release
 #            line has not started, which is an error, unless --first-npm names
 #            the npm package whose published version (0.0.0 when npm has none)
-#            stands in for the tag, over the whole history. release-bump.sh's
-#            `empty` (no commit in the paths) and `none` (no version-bumping
+#            stands in for the tag, over the whole history. `.github/scripts/release-bump.sh#empty` (no commit in the paths) and `none` (no version-bumping
 #            commit: a ::notice and a job-summary line) both give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
