@@ -1227,14 +1227,15 @@ func (g *rig) launcher(token claim.Token) {
 	}
 	g.wanted[token] = true
 	g.commandsMu.Unlock()
-	if launcherOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
+	if launcherSessionOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
 		return
 	}
 	g.connect(token)
 }
 
-// launcherOf is the session the runtime holds for token's launcher, or nil.
-func launcherOf(g *rig, token claim.Token) *launcherSession {
+// launcherSessionOf is the session the runtime holds for token's launcher, or nil. (launcherOf is
+// the runtime's own: the role of the pod's launcher that serves a slot.)
+func launcherSessionOf(g *rig, token claim.Token) *launcherSession {
 	g.r.launchers.mu.Lock()
 	defer g.r.launchers.mu.Unlock()
 	return g.r.launchers.sessions[token]

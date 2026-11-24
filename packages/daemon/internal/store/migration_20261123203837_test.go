@@ -42,16 +42,6 @@ func keyNamesOf(t *testing.T, store *Store) []string {
 	return names
 }
 
-// tableExists is whether the store holds a table of that name in its schema.
-func tableExists(t *testing.T, store *Store, table string) bool {
-	t.Helper()
-	var exists bool
-	if err := store.Pool().QueryRow(context.Background(), `select to_regclass('public.' || $1) is not null`, table).Scan(&exists); err != nil {
-		t.Fatalf("ask whether %s exists: %v", table, err)
-	}
-	return exists
-}
-
 // seedPlanSteps writes the plan of issue at generation, one task `a`, with steps, each a role and
 // its agent key: the rows a plan_steps read finds, without the name of any agent.
 func seedPlanSteps(t *testing.T, store *Store, issue string, generation int, steps ...[2]string) {

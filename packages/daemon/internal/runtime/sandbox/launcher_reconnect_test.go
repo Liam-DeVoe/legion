@@ -102,7 +102,7 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 		o.WorkspaceBundleRestored = func(context.Context, string, int64) error { return nil }
 		o.SavedWorkspaceBundle = func(ctx context.Context, _, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 			if armed.CompareAndSwap(true, false) {
-				if session := launcherOf(g, workerToken); session != nil {
+				if session := launcherSessionOf(g, workerToken); session != nil {
 					session.close()
 				}
 				close(dropped)
@@ -236,7 +236,7 @@ func awaitLaunch(t *testing.T, result <-chan launched) launched {
 // says hello again.
 func dropLauncher(t *testing.T, g *rig, token claim.Token) {
 	t.Helper()
-	session := launcherOf(g, token)
+	session := launcherSessionOf(g, token)
 	if session == nil {
 		t.Fatalf("no launcher of %s is connected to drop", token)
 	}

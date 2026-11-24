@@ -555,23 +555,23 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	}
 	stranded := func() []claim.Token {
 		t.Helper()
-		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-		if err != nil {
-			t.Fatalf("begin the state snapshot: %v", err)
-		}
-		defer tx.Rollback(ctx)
 		view := &source{
 			store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
 			startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 			reports: func() map[claim.Token]capabilities.Report { return nil },
 		}
-		state, _, err := view.State(ctx, tx)
-		if err != nil {
-			t.Fatalf("State: %v", err)
-		}
 		var tokens []claim.Token
-		for _, c := range state.StrandedClaims {
-			tokens = append(tokens, c.Token)
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			state, _, err := view.State(ctx, tx)
+			if err != nil {
+				return err
+			}
+			for _, c := range state.StrandedClaims {
+				tokens = append(tokens, c.Token)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("State: %v", err)
 		}
 		return tokens
 	}

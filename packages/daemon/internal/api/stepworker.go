@@ -165,4 +165,3 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 		return experiment.DrawAndRecord(ctx, tx, s.records, tree, s.experiments, config.ExperimentTree, s.source, s.now())
 	}
 }
-
