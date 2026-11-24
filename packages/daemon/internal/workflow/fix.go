@@ -31,12 +31,12 @@ func taskHead(pr *record.PullRequest) (repo, head string) {
 }
 
 // failedChecks is each check of head's set that fails there by the rule of a CI check
-// (ciVerdict's ciFailed), in the set's order, with its state. A set not held fails nothing.
+// (record.CIVerdict's CIFailed), in the set's order, with its state. A set not held fails nothing.
 func failedChecks(head record.HeadStates) []record.CheckState {
 	var failed []record.CheckState
 	for _, check := range head.Checks {
 		state, held := head.States[check]
-		if ciVerdict(state, held) == ciFailed {
+		if record.CIVerdict(state, held) == record.CIFailed {
 			failed = append(failed, state)
 		}
 	}
