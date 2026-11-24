@@ -237,6 +237,8 @@ A deployment adds roles of its own in `legion.yaml`: `roles` names each one with
 of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds)
 and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
 `review`, the review App by default.
+A role of the type `review` works as the review App, and the loader refuses one that names
+`implement`.
 A step of such a role reads no pull request, so a plan may put it at any place, except that a role
 of the type implementation stands before the `implementer` step, since Legion's retro is done by
 the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a

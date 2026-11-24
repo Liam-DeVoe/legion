@@ -547,6 +547,7 @@ The `type` of its steps is one of `design`, `planning`, `implementation`, `testi
 The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.
 The `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose.
 The `github_app` is the App the role works as, `implement` or `review`, `review` by default.
+A role of the type `review` works as the review App, and the loader refuses one that names `implement`.
 `role_types` lists the types a deployment adds to Legion's five, each named once.
 The daemon's start reads each role's `prompt_file` and refuses one it cannot read (`roles.<name>.prompt_file <path> cannot be read: <error>`).
 `legion config check` makes the same refusal and prints one line for each role, `roles.<name>: type <type>, model <model>, App <app>, prompt <path>`.
