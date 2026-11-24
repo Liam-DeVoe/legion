@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,6 +108,110 @@ func TestAStartDuringAnAppendWaitsForItAndThenHoldsTheConversation(t *testing.T)
 	}
 	if ran, err := gate.Append(gateToken, "ses_tester", func() error { wrote = true; return nil }); !ran || err != nil || !wrote {
 		t.Fatalf("an append once the claim stopped = %t, %v, wrote %t; want it written", ran, err, wrote)
+	}
+}
+
+// releaseOnce is a channel a blocked write waits on and the func that closes it, safe to call more
+// than once; the test's cleanup calls it too, so a failed run leaves no write blocked.
+func releaseOnce(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	ch := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(release)
+	return ch, release
+}
+
+// Two appends to one claim's conversation (the loop's worker and the hand-off consumer, or the
+// workers of two sessions of one claim) take turns: the second writes only once the first has
+// ended, and a start that came during the first passes its check only while neither writes. Once
+// the first ends, either the second takes its turn and the start waits for it too, or the start
+// passes first and the second, finding the claim started, writes nothing.
+func TestTwoAppendsOnOneClaimTakeTurnsAndAStartWaitsForBoth(t *testing.T) {
+	gate, _, views := newTestGate(t)
+	var writers atomic.Int32
+	write := func(began chan<- struct{}, release <-chan struct{}) func() error {
+		return func() error {
+			if n := writers.Add(1); n > 1 {
+				t.Errorf("%d appends write to the claim's conversation at once", n)
+			}
+			defer writers.Add(-1)
+			close(began)
+			<-release
+			return nil
+		}
+	}
+	type appended struct {
+		ran bool
+		err error
+	}
+	began1, began2 := make(chan struct{}), make(chan struct{})
+	release1, end1 := releaseOnce(t)
+	release2, end2 := releaseOnce(t)
+	appended1, appended2 := make(chan appended, 1), make(chan appended, 1)
+	go func() {
+		ran, err := gate.Append(gateToken, "ses_tester", write(began1, release1))
+		appended1 <- appended{ran, err}
+	}()
+	<-began1
+	go func() {
+		ran, err := gate.Append(gateToken, "ses_tester", write(began2, release2))
+		appended2 <- appended{ran, err}
+	}()
+	select {
+	case <-began2:
+		t.Fatal("the second append began to write while the first still wrote")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// writing is the count of writes in progress as the start's check returned.
+	type launched struct {
+		err     error
+		writing int32
+	}
+	started := make(chan launched, 1)
+	go func() {
+		err := gate.CheckLaunch(context.Background(), views.view.Claim)
+		started <- launched{err, writers.Load()}
+	}()
+	select {
+	case early := <-started:
+		t.Fatalf("the start passed its check (%v) while the first append still wrote", early.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	end1()
+	if a := <-appended1; !a.ran || a.err != nil {
+		t.Fatalf("the first append = %t, %v; want it written", a.ran, a.err)
+	}
+	var l launched
+	select {
+	case <-began2:
+		select {
+		case early := <-started:
+			t.Fatalf("the start passed its check (%v) while the second append wrote", early.err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		end2()
+		if a := <-appended2; !a.ran || a.err != nil {
+			t.Fatalf("the second append = %t, %v; want it written after the first", a.ran, a.err)
+		}
+		l = <-started
+	case l = <-started:
+		if a := <-appended2; a.ran || a.err != nil {
+			t.Fatalf("the second append after the start passed = %t, %v; want nothing written", a.ran, a.err)
+		}
+		select {
+		case <-began2:
+			t.Fatal("the second append wrote though the start passed its check before its turn")
+		default:
+		}
+	}
+	if l.err != nil {
+		t.Fatalf("the start's check after the appends = %v", l.err)
+	}
+	if l.writing != 0 {
+		t.Fatalf("the start's check passed while %d appends wrote", l.writing)
 	}
 }
 

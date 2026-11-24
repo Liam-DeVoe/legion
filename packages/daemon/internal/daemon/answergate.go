@@ -16,11 +16,13 @@ const answerAppendWait = 10 * time.Second
 
 // answerGate keeps the answer loop and a claim's start off one conversation at once (plan 2.8, "One
 // writer"). It wraps the store's CheckLaunch, the check every start makes first (launchAfter), as
-// launchgate.go does, with state of its own per claim token and never the machine's lock: a start
-// waits for an append in progress, at most answerAppendWait, then marks the claim started before it
-// asks the store underneath; the loop appends only under the gate, after checking that the claim
-// has not been started and, from the machine's View (read without the machine's lock), does not
-// run the conversation. It never calls Machine.Claim, which waits out a decision in flight.
+// launchgate.go does, with state of its own per claim token and never the machine's lock. Appends on
+// one claim token take turns, whatever their session (the loop's per-session workers and its
+// hand-off consumer append at once): each waits until no other append on the token writes, then
+// writes only after checking that the claim has not been started and, from the machine's View (read
+// without the machine's lock), does not run the conversation. A start waits until no append on its
+// token writes, at most answerAppendWait, then marks the claim started before it asks the store
+// underneath. It never calls Machine.Claim, which waits out a decision in flight.
 type answerGate struct {
 	supervise.Store
 	// view is the claim's machine's View, false when the daemon supervises no such claim.
@@ -29,13 +31,14 @@ type answerGate struct {
 	log  *slog.Logger
 
 	mu sync.Mutex
-	// changed is closed, and replaced, whenever an append ends: a start waiting on it looks again.
+	// changed is closed, and replaced, whenever an append ends: a start or an append waiting on it
+	// looks again.
 	changed chan struct{}
 	tokens  map[claim.Token]*answerGateState
 }
 
-// answerGateState is one claim's: whether the loop is appending to its current conversation, and
-// whether it was started (since a launch at generation gen passed its check).
+// answerGateState is one claim's: whether an append to any of its conversations writes now (one at
+// a time, Append), and whether it was started (since a launch at generation gen passed its check).
 type answerGateState struct {
 	appending bool
 	started   bool
@@ -55,7 +58,7 @@ func (g *answerGate) state(token claim.Token) *answerGateState {
 	return st
 }
 
-// CheckLaunch is a start's check: it waits for an append to the claim's conversation to end, at
+// CheckLaunch is a start's check: it waits until no append to the claim's conversations writes, at
 // most the gate's wait, marks the claim started, then asks the store underneath. A start the store
 // refuses is not started.
 func (g *answerGate) CheckLaunch(ctx context.Context, c supervise.Claim) error {
@@ -127,17 +130,25 @@ func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 	return view.Released() || !view.RunsNothing()
 }
 
-// Append runs write while no start of the claim can pass its check, unless the claim runs the
-// conversation or was started: then it writes nothing and answers false (answerloop.Gate). A
-// conversation that is not its claim's current one is written under no claim's gate: no start
-// resumes it.
+// Append runs write once no other append on the claim writes, and while no start of the claim can
+// pass its check, unless the claim runs the conversation or was started: then it writes nothing and
+// answers false (answerloop.Gate). Appends on one claim token take turns whatever their session:
+// each waits for the one writing to end and only then checks the claim, since a start may have
+// passed meanwhile. A conversation that is not its claim's current one is written whatever the
+// claim does, since no start resumes it, but it takes its turn with the claim's other appends.
 func (g *answerGate) Append(token claim.Token, session string, write func() error) (bool, error) {
 	g.mu.Lock()
+	st := g.state(token)
+	for st.appending {
+		changed := g.changed
+		g.mu.Unlock()
+		<-changed
+		g.mu.Lock()
+	}
 	if g.runningLocked(token, session) {
 		g.mu.Unlock()
 		return false, nil
 	}
-	st := g.state(token)
 	st.appending = true
 	g.mu.Unlock()
 	defer func() {
