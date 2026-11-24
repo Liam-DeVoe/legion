@@ -565,7 +565,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 	defer releaseMachine()
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(rig.worker(), supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -667,7 +667,7 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 	defer releaseMachine()
 	go func() {
 		m, _ := rig.sup.Machine(architect)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(rig.worker(), supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()

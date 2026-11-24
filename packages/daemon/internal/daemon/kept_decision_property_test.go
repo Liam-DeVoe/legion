@@ -699,7 +699,13 @@ type keptDeparture struct {
 // outbox runner and claim supervisor over a database of its own, the model the generator drives
 // them from, and what each architect was told.
 type keptRun struct {
-	t     *testing.T
+	t *testing.T
+	// ctx is the run's own calls' context — its facts, reads, writes and row runs — with a hold
+	// mark of its own (store.ForConcurrentWorker), so the pool refuses one of them a second
+	// connection while another holds one (store.ErrNestedAcquire). It is the mark of one
+	// sequential flow: a goroutine the run starts beside it takes worker() instead. On an unmarked
+	// context the pool refuses nothing, and a run built on one passes whatever its calls do
+	// (TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext).
 	ctx   context.Context
 	seed  int64
 	rng   *rand.Rand
@@ -972,7 +978,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		slog.New(slog.NewJSONHandler(closeLog, nil)))
 	trees := outboxTreeStore(t, pool, keptRoot)
 	run := &keptRun{
-		t: t, ctx: ctx, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
+		t: t, ctx: store.ForConcurrentWorker(ctx), seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
 		pool: pool, records: records,
 		engine: engine,
 		// Admission runs over the project key the records carry, which is what its own reads of the
@@ -2078,7 +2084,7 @@ func (r *keptRun) runTogether() {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = r.runner.execute(r.ctx, rows[i])
+			errs[i] = r.runner.execute(r.worker(), rows[i])
 		}(i)
 	}
 	wg.Wait()
@@ -3854,6 +3860,46 @@ func (r *keptRun) handle(machine *supervise.Machine, ev supervise.Event) {
 
 func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
+}
+
+// worker is the context of a goroutine the run starts beside its own calls — a row run of the
+// step that runs rows beside each other (runTogether), and the operation a publish races against
+// (keptPublisher.publish) — with a hold mark of its own (store.ForConcurrentWorker), as each lane
+// of the outbox takes in production. On r.ctx they would share one mark: one goroutine's
+// transaction would set it, and the pool would refuse another caller a connection it does not
+// hold (store.ErrNestedAcquire).
+func (r *keptRun) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
+}
+
+// The kept-decision run's own context carries a hold mark, so the pool refuses a second
+// connection to a caller that already holds one: a goroutine started on r.ctx rather than on
+// worker() collides with the run's own reads, as #5396's pod-update tests did. On the unmarked
+// context this run used to take, the pool refused nothing and no run of this property could
+// catch that. Here a planted holder takes a connection on the run's context and the run's own
+// read must be refused; the same read on worker() is not, which is why each goroutine takes one.
+func TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
+	t.Parallel()
+	r := newKeptRun(t, 1, 1)
+	held, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	go func() {
+		_ = store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	// The mark is set when the transaction takes its connection, before the body this waits for.
+	<-held
+
+	if _, err := r.pool.Exec(r.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
+		t.Fatalf("the run's own read while the planted holder holds a connection = %v, want %v: the run's context carries no hold mark, so nothing of this property can catch a goroutine that shares it",
+			err, store.ErrNestedAcquire)
+	}
+	if _, err := r.pool.Exec(r.worker(), "select 1"); err != nil {
+		t.Fatalf("a read on a goroutine's own mark while the holder holds one = %v, want it allowed: each goroutine's mark is its own", err)
+	}
 }
 
 // fatalf ends the run with what broke, the command that replays it, the step it broke at and
