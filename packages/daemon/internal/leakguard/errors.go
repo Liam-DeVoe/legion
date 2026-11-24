@@ -29,10 +29,11 @@ type Refusal struct {
 	What string
 	// By names the check that refused: byRules or bySharedCheck.
 	By RefusedBy
-	// Lines is the report. The rule pass writes one line per finding, naming the record, the
-	// class the deployment's rule gives it, the text that matched and the line it stands on,
-	// within the bounds RuleSet.scan names, with a record about a file named by its path, each
-	// label as shownText shows it. A refusal by the shared check carries that check's own report
+	// Lines is the report. The rule pass writes one line for each distinct finding, to
+	// maxLinesShown lines and one more that counts the matches past them (shownReport), naming the
+	// record, the class the deployment's rule gives it, the text that matched and the line it
+	// stands on, within the bounds RuleSet.scan names, with a record about a file named by its
+	// path, each label as shownText shows it. A refusal by the shared check carries that check's own report
 	// instead, which is the only account of it anyone gets.
 	Lines []string
 }
