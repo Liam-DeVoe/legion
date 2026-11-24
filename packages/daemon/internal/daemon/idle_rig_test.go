@@ -149,8 +149,8 @@ type idleRigIssue struct {
 }
 
 // idleRigOptions is what a test asks of the rig beyond what the idle release's tests run on, each
-// left off by those tests: one daemon on one cluster, on a clock whose timers never fire, whose
-// pods hold no workspace.
+// left off by those tests: one daemon on one cluster, its machines on a clock whose timers never
+// fire, whose pods hold no workspace.
 type idleRigOptions struct {
 	// holdStream gives the worker stream one port every boot binds again, and the API one port
 	// every restart holds again, as a deployment's worker_stream_port and port are fixed in its
@@ -675,14 +675,13 @@ func (r *idleWakeRig) boot() {
 		listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, orphanSweep: r.options.orphanSweep,
 		entrySweep:     r.options.entrySweep,
 		workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.owner()),
+		// The still clock fires no timer, and the pod start gate ends a role's session load on a
+		// timer a settle after its registration (supervise.PodStarts), so on it the second role of
+		// a pod would never start. The gate runs on the wall clock, as in a deployment.
+		podStartClock: supervise.RealClock{},
 	}
 	if r.options.wallClock {
 		o.clock = nil
-	} else {
-		// The still clock fires no timer, and the pod start gate ends a role's session load on a
-		// timer a settle after its registration (supervise.PodStarts), so on it the second role of
-		// a pod would never start. The gate runs on the wall clock instead, as in a deployment.
-		o.podStartClock = supervise.RealClock{}
 	}
 	go func() {
 		done <- run(ctx, r.cfg, logger, o)

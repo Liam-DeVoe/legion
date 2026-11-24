@@ -3302,11 +3302,12 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 // every pod of the project (runtime.ErrProjectReleased): a launch that passed the launch check
 // before the release's mark was set — just before it, before a charged try's backoff (writeTry), or
 // before it waited at its issue pod's gate (askPod), whose grant starts it with no second check
-// (podStartDue) — and met the mark at the runtime instead. It is no fault of the claim's, so nothing is charged and nobody is told, as for
-// a store that could not answer. The process this launch let go is stopped, as after every refused
-// start, and the launch is tried again at the probe interval (relaunchLater), where the launch
-// check refuses it, uncharged again, for as long as the release holds (relaunchRefused). The
-// release stops the claim, or the daemon's next boot starts it.
+// (podStartDue) — and met the mark at the runtime instead. It is no fault of the claim's, so
+// nothing is charged, as for a store that could not answer, and nobody is told. The process this
+// launch let go is stopped, as after every refused start, and the launch is tried again at the
+// probe interval (relaunchLater), where the launch check refuses it, uncharged again, for as long
+// as the release holds (relaunchRefused). The release stops the claim, or the daemon's next boot
+// starts it.
 func (m *Machine) startWaitsForRelease(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.log.Info("supervise: the project release holds every pod of the project; this start charges nothing and waits",

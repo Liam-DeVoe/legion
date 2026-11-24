@@ -173,8 +173,8 @@ func (e podHoldEnd) loadEnd() string {
 // PodStarts is the gate itself (the gate's own file says what it holds to, and why): for each
 // issue pod, the one start it holds, and the starts waiting for it.
 type PodStarts struct {
-	// clock is the machines' clock (Deps.Clock): it stamps each ask, each load's start and its
-	// registration, and it arms each load's bound and settle.
+	// clock is the gate's clock, the machines' own (Deps.Clock) in a deployment: it stamps each ask,
+	// each load's start and its registration, and it arms each load's bound and settle.
 	clock Clock
 
 	// mu guards pods, and every field of every hold a queue holds: the machines of every pod
@@ -311,8 +311,8 @@ type podAsk struct {
 	requested, phaseWorker bool
 }
 
-// NewPodStarts builds the gate of a daemon whose roles run in issue pods, on the machines' clock
-// (internal/daemon's openSupervision, under the Kubernetes runtime alone).
+// NewPodStarts builds the gate of a daemon whose roles run in issue pods, on clock, the machines'
+// own in a deployment (internal/daemon's openSupervision, under the Kubernetes runtime alone).
 func NewPodStarts(clock Clock) *PodStarts {
 	return &PodStarts{clock: clock, pods: map[string]*podQueue{}}
 }
