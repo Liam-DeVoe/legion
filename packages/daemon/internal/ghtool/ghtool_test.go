@@ -2088,3 +2088,39 @@ func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
 		t.Fatalf("Writes =\n%s\nwant\n%s", describe(got), describe(want))
 	}
 }
+
+// A call the model asks for writes, by its arguments as the tool is handed them, exactly when
+// Writes would name it once it ran: a merge, a review, a comment, a close, an edit, a workflow run,
+// a run's rerun, a gh api call of every method but GET and HEAD, and a command the allow list
+// refuses. A read is none (a pr, run or issue read, a search, a gh api GET or HEAD, a GraphQL
+// query), and neither is a call asking for help, one naming no subcommand, nor one whose arguments
+// are no JSON array of strings, which the tool refuses before gh starts. The project's pause
+// refuses the calls that write and runs the rest (internal/answer's toolSet).
+func TestCallWritesIsWritesReadingOfTheModelsArguments(t *testing.T) {
+	for args, writes := range map[string]bool{
+		`["pr","merge","7","-R","acme/widgets","--squash"]`:                    true,
+		`["pr","review","https://github.com/acme/widgets/pull/7","--approve"]`: true,
+		`["-R","acme/widgets","issue","comment","9","--body","On it."]`:        true,
+		`["pr","close","7","-R","acme/widgets","--comment","Superseded."]`:     true,
+		`["pr","edit","7","--add-label","ready"]`:                              true,
+		`["workflow","run","ci.yml","--repo","acme/widgets","-f","level=1"]`:   true,
+		`["run","rerun","41","-R","acme/widgets","--failed"]`:                  true,
+		`["api","-X","PUT","repos/acme/widgets/pulls/7/merge"]`:                true,
+		`["api","repos/acme/widgets/issues/9/comments","-f","body=Done."]`:     true,
+		`["pr","view","7","-R","acme/widgets","--json","title"]`:               false,
+		`["run","view","41","-R","acme/widgets","--log-failed"]`:               false,
+		`["issue","list","-R","acme/widgets"]`:                                 false,
+		`["search","prs","--repo","acme/widgets","leak"]`:                      false,
+		`["api","repos/acme/widgets/pulls/7"]`:                                 false,
+		`["api","-X","HEAD","repos/acme/widgets"]`:                             false,
+		`["api","graphql","-f","query={ viewer { login } }"]`:                  false,
+		`["pr","merge","--help"]`:                                              false,
+		`["pr"]`:                                                               false,
+		`"pr merge 7"`:                                                         false,
+		`["gist","create","notes.md"]`:                                         true,
+	} {
+		if got := CallWrites(args); got != writes {
+			t.Errorf("CallWrites(%s) = %t, want %t", args, got, writes)
+		}
+	}
+}

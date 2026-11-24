@@ -159,3 +159,13 @@ func Writes(calls []store.AnswerToolCall) []Write {
 	}
 	return written
 }
+
+// CallWrites says whether a call the model asks for, by args, its arguments as Call carries them
+// (a JSON array of strings), runs one of WriteCommands, the four writes the tool runs. Every other
+// call writes nothing: a read, and a command the tool does not run or arguments that are no such
+// array, which Run refuses before dispatch starts. The answer refuses each call that writes while
+// the project is paused (internal/answer's toolSet).
+func CallWrites(args string) bool {
+	argv, err := decodeArgs(args)
+	return err == nil && len(argv) > 0 && slices.Contains(WriteCommands, argv[0])
+}

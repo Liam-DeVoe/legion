@@ -10,29 +10,36 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
+	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
 // tool is one of the loop's tools: its name, what the model reads of it and the JSON schema of
 // its input, each built for the request, whether the request offers it (nil: every request does),
-// and what a call runs, given its number among the answer's calls of this tool. A call answers
-// with what the model is told and whether the tool refused or failed.
+// whether a call writes, by its tool's own reading of the call's arguments (nil: no call of the
+// tool writes), and what a call runs, given its number among the answer's calls of this tool. A
+// call answers with what the model is told and whether the tool refused or failed.
 type tool struct {
 	name        string
 	description func(req Request) string
 	schema      func(req Request) json.RawMessage
 	offered     func(req Request) bool
+	writes      func(call agentloop.ToolCall) bool
 	run         func(ctx context.Context, req Request, call agentloop.ToolCall, n int) (output string, isError bool)
 }
 
 // tools are the loop's tools, which the system prompt names and every model call of an answer
 // offers where its request does (Request.offeredTools): gh, dispatch where the daemon found the
-// dispatch command, and web_search where answers.web_search configures it.
+// dispatch command, and web_search where answers.web_search configures it. A gh call writes as
+// the gh tool reads it (ghtool.CallWrites), a dispatch call as the dispatch tool does
+// (dispatchtool.CallWrites), and a web search is a read.
 var tools = []tool{
-	{name: store.ToolGH, description: ghDescription, schema: ghSchema, run: runGH},
+	{name: store.ToolGH, description: ghDescription, schema: ghSchema, run: runGH,
+		writes: func(call agentloop.ToolCall) bool { return ghtool.CallWrites(argsOf(call)) }},
 	{name: store.ToolDispatch, description: dispatchDescription, schema: dispatchSchema, run: runDispatch,
-		offered: func(req Request) bool { return req.Dispatch != nil }},
+		offered: func(req Request) bool { return req.Dispatch != nil },
+		writes:  func(call agentloop.ToolCall) bool { return dispatchtool.CallWrites(argsOf(call)) }},
 	{name: store.ToolWebSearch, description: webSearchDescription, schema: webSearchSchema, run: runWebSearch,
 		offered: func(req Request) bool { return req.WebSearch != nil }},
 }
@@ -203,12 +210,16 @@ type webSearchArgsSchema struct {
 	AdditionalProperties bool     `json:"additionalProperties"`
 }
 
+// pausedRefusal is what the model reads of a gh or dispatch call that writes while the project is
+// paused (toolSet): that it did not run, why, and what to tell the asker.
+const pausedRefusal = "refused: the Legion project is paused, and until it resumes the daemon makes no write in your name, so this call, which writes, did not run. " +
+	"Your reads still run: answer from what they show, and say in your reply that this write was not made because the project is paused."
+
 // toolSet is the loop's tools req offers as agentloop offers and runs them, each call's output
 // given to add as the model reads it (inFront.add). The project's pause is read before each call
-// (Request.Paused): a call it finds paused does not run, and answers a refusal. agentloop runs a
-// step's calls one at a time and finishes the step only once they have all returned, so once the
-// pause comes every call of the step still to run is refused, and OnStep then ends the run before
-// its next model call (answer).
+// that writes (tool.writes, the call's own tool's reading of it): one that finds the project
+// paused does not run, its tool is never handed it, and it answers pausedRefusal as an error
+// result. Every other call runs, a read and a web search while the project is paused among them.
 //
 // Each call is handed its number among the answer's calls of its own tool, from 1, counted on
 // from the calls of that tool an earlier run of the question made (Request.Earlier), which is what
@@ -230,8 +241,8 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 			Description: t.description(req),
 			Schema:      t.schema(req),
 			Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
-				if req.paused() {
-					return "refused: the Legion project is paused, so the call did not run.", true
+				if t.writes != nil && t.writes(call) && req.paused() {
+					return pausedRefusal, true
 				}
 				output, isError := t.run(ctx, req, call, int(made.Add(1)))
 				add(output)
@@ -257,14 +268,7 @@ func toolOf(call store.AnswerToolCall) string {
 // output, with its exit status when it failed; a call gh never ran, or one that failed, is an
 // error result.
 func runGH(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
-	var input struct {
-		Args json.RawMessage `json:"args"`
-	}
-	args := string(call.Input)
-	if json.Unmarshal(call.Input, &input) == nil && len(input.Args) > 0 {
-		args = string(input.Args)
-	}
-	result := req.GH.Run(ctx, call.Index, n, args)
+	result := req.GH.Run(ctx, call.Index, n, argsOf(call))
 	switch {
 	case !result.Ran:
 		return result.Output, true
@@ -284,14 +288,10 @@ func runGH(ctx context.Context, req Request, call agentloop.ToolCall, n int) (st
 // ran, one a signal ended, or one that failed, is an error result.
 func runDispatch(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
 	var input struct {
-		Args  json.RawMessage `json:"args"`
-		Stdin string          `json:"stdin"`
+		Stdin string `json:"stdin"`
 	}
-	args := string(call.Input)
-	if json.Unmarshal(call.Input, &input) == nil && len(input.Args) > 0 {
-		args = string(input.Args)
-	}
-	result := req.Dispatch.Run(ctx, dispatchtool.Call{Seq: call.Index, N: n, Args: args, Stdin: input.Stdin})
+	_ = json.Unmarshal(call.Input, &input)
+	result := req.Dispatch.Run(ctx, dispatchtool.Call{Seq: call.Index, N: n, Args: argsOf(call), Stdin: input.Stdin})
 	switch {
 	case !result.Ran, result.Exit < 0:
 		return result.Output, true
@@ -309,4 +309,16 @@ func runDispatch(ctx context.Context, req Request, call agentloop.ToolCall, n in
 func runWebSearch(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
 	result := req.WebSearch.Run(ctx, websearch.Call{Seq: call.Index, N: n, Input: string(call.Input)})
 	return result.Output, result.IsError
+}
+
+// argsOf is a gh or dispatch call's arguments as its tool is handed them: the input's args, a
+// JSON array of strings, else the whole input, which the tool then refuses as no such array.
+func argsOf(call agentloop.ToolCall) string {
+	var input struct {
+		Args json.RawMessage `json:"args"`
+	}
+	if json.Unmarshal(call.Input, &input) == nil && len(input.Args) > 0 {
+		return string(input.Args)
+	}
+	return string(call.Input)
 }

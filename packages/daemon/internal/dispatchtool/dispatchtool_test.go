@@ -456,3 +456,26 @@ func TestWritesAreTheDispatchCallsThatRanAWrite(t *testing.T) {
 		t.Errorf("Writes = %+v; want %+v", got, want)
 	}
 }
+
+// A call the model asks for writes, by its arguments as the tool is handed them, exactly when its
+// command is one of WriteCommands, the four the tool runs that write. Every read is none, and so
+// is a command the tool does not run and arguments that are no JSON array of strings, which the
+// tool refuses before dispatch starts. The project's pause refuses the calls that write and runs
+// the rest (internal/answer's toolSet).
+func TestCallWritesIsACallOfOneOfTheFourWrites(t *testing.T) {
+	for _, command := range WriteCommands {
+		if args := `["` + command + `","--issue","LEGION-9","--body","x"]`; !CallWrites(args) {
+			t.Errorf("CallWrites(%s) = false, want true", args)
+		}
+	}
+	for _, command := range ReadCommands {
+		if args := `["` + command + `","LEGION-9"]`; CallWrites(args) {
+			t.Errorf("CallWrites(%s) = true, want false", args)
+		}
+	}
+	for _, args := range []string{`["claim","--issue","LEGION-9"]`, `"comment --issue LEGION-9"`, `[]`} {
+		if CallWrites(args) {
+			t.Errorf("CallWrites(%s) = true, want false", args)
+		}
+	}
+}

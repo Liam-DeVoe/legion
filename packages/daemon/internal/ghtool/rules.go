@@ -582,6 +582,22 @@ func Writes(calls []store.AnswerToolCall) []record.AgentQuestionWrite {
 	return written
 }
 
+// CallWrites says whether a call the model asks for, by args, its arguments as Call carries them
+// (a JSON array of strings), writes as Writes reads a recorded call (writeCommand): every command
+// but a read (reads, every search, a gh api GET, HEAD or GraphQL query) and a call asking for
+// help, a command the allow list refuses among them. Arguments that are no such array, or that
+// name no command and subcommand, write nothing: Run refuses them, or gh answers with its help.
+// The answer refuses each call that writes while the project is paused (internal/answer's
+// toolSet).
+func CallWrites(args string) bool {
+	argv, err := decodeArgs(args)
+	if err != nil {
+		return false
+	}
+	_, _, writes := writeCommand(argv)
+	return writes
+}
+
 // writeCommand is the command words and repository of argv, a call the tool ran, and whether it
 // writes (Writes). A call whose arguments parseArgs cannot read is judged by its words alone: it
 // writes unless they name a read, and it names no repository, so no write is left out for want of

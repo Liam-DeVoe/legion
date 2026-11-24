@@ -10,8 +10,9 @@ import (
 // daemon's pause service holds: not paused while the project runs, paused while a pause stands,
 // made through the store's pause transaction and read into the service's flag as the outbox's
 // sweep reads it (pause.Service.Refresh), and not paused once the service's resume has ended it.
-// No proof reaches this wiring, since the rig's tmux daemon cannot pause, and it is what pauses
-// the loop in production.
+// No proof reaches this wiring, since the rig's tmux daemon cannot pause, and it is what has the
+// loop's tools refuse every write, and a model call the provider fails keep its question for the
+// resume, while the project is paused in production.
 func TestTheAnswerLoopReadsTheProjectsPauseFlag(t *testing.T) {
 	r := newPauseRig(t)
 	w := &workflowRuntime{pauses: r.pauses, log: quietLogger()}

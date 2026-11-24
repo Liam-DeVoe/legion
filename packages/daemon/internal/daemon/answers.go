@@ -70,8 +70,10 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 // the conversation store, the outbox rows that wake a released agent (releasedWakes) and the
 // project's pause flag.
 func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision, st *store.Store, client answerloop.Dispatch, tools ghTools) answerloop.Config {
-	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
-	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
+	// The loop reads the flag the machines read (supervise.Deps.Paused): while the project is
+	// paused its answers' tools refuse every write, and a model call the provider fails keeps its
+	// question for the resume, whose poke takes it (projectPause.Resumed). A daemon that holds no
+	// pause leaves it never paused.
 	var paused func() bool
 	if w.pauses != nil {
 		paused = func() bool {

@@ -17,11 +17,11 @@
 // message, the bounds and the endpoint `answers.providers` names, whose key is read again for
 // every call), decides the faults that need no model call
 // (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
-// nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, ends a run the
-// project's pause comes during before its next model call or gh call (ErrPaused), and reads the
-// run back as the agent's reply, the turns to append (an answer's, or those of a run that gave
-// none, for the caller to end with its own reply), a cut call agentloop made again left out, and
-// what the answer cost.
+// nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, refuses each
+// tool call that writes while the project is paused (toolSet), and reads the run back as the
+// agent's reply, the turns to append (an answer's, or those of a run that gave none, for the
+// caller to end with its own reply), a cut call agentloop made again left out, and what the
+// answer cost.
 package answer
 
 import (
@@ -205,10 +205,11 @@ type Request struct {
 	// WebSearch runs the web_search tool's calls; nil is a daemon whose answers configures no
 	// web_search tool (config.Answers.WebSearchOff), whose model is offered none.
 	WebSearch WebSearch
-	// Paused says whether the project is paused; nil is never paused. It is read before the
-	// first model call, before each gh call and as each model call ends, once the gh calls it
-	// asked for have returned, and a run that finds the project paused ends with ErrPaused
-	// before its next model call or gh call.
+	// Paused says whether the project is paused; nil is never paused. It is read before each tool
+	// call: while the project is paused a gh or dispatch call that writes does not run, and
+	// answers a refusal naming the pause, and every other call runs (toolSet). The system prompt
+	// says the project is paused when it is as the run starts. The run itself goes on to its
+	// reply whatever the flag says.
 	Paused func() bool
 	// Log takes the answer's `answers: answered` line and the model loop's warnings
 	// (agentloop.Request.Log); slog.Default() when nil.
@@ -261,18 +262,11 @@ const (
 	openaiResponses   = string(agentloop.OpenAIResponses)
 )
 
-// ErrPaused is the error of an answer its request's pause check stopped (Request.Paused): the
-// project was paused before the first model call, as a model call ended, or before or during a gh
-// call, and the run ended there, with no later model call or gh call. It is no Fault: the question
-// has no answer yet, and is answered once the project resumes, given the gh calls this run made
-// (Request.Earlier).
-var ErrPaused = errors.New("answer: the project is paused")
-
 // Answer answers req's question. Every outcome the question has is a Reply: an answer, the
 // agent's reply that it cannot answer, or no answer with its Fault. The error is for a request
-// the loop cannot run at all (no question, no gh tool, no repository, no bounds), for ctx
-// ending, when the daemon itself stops, and ErrPaused for a run the project's pause stopped; the
-// Reply then still carries what the calls made so far cost.
+// the loop cannot run at all (no question, no gh tool, no repository, no bounds), and for ctx
+// ending, when the daemon itself stops; the Reply then still carries what the calls made so far
+// cost.
 func Answer(ctx context.Context, req Request) (Reply, error) {
 	if err := req.validate(); err != nil {
 		return Reply{}, err
@@ -297,9 +291,6 @@ func Answer(ctx context.Context, req Request) (Reply, error) {
 	}
 	if reply.Detail != "" {
 		attrs = append(attrs, "detail", reply.Detail)
-	}
-	if errors.Is(err, ErrPaused) {
-		attrs = append(attrs, "paused", true)
 	}
 	log.Info("answers: answered", attrs...)
 	return reply, err
@@ -377,9 +368,6 @@ func (r route) agentModel(level string) agentloop.Model {
 }
 
 func answer(ctx context.Context, req Request) (Reply, error) {
-	if req.paused() {
-		return Reply{}, ErrPaused
-	}
 	r, fault, detail := routeOf(req)
 	if fault != "" {
 		return Reply{Fault: fault, Detail: detail}, nil
@@ -428,27 +416,13 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		// The last call, which offers no tool, is told so (lastCall). agentloop puts the
 		// message on that call alone and in no step, so exchange appends nothing of it.
 		LastCall: lastCall,
-		// A model call that ends while the project is paused is the run's last. agentloop
-		// finishes a step once the gh calls it asked for have returned, their results among its
-		// blocks, so this also ends a run the pause came during or before a gh call of, the
-		// step's calls still to run refused (toolSet); and it keeps a reply asked for again, or
-		// a cut call made again, from going on.
-		OnStep: func(agentloop.Step) error {
-			if req.paused() {
-				return ErrPaused
-			}
-			return nil
-		},
-		Log: req.Log,
+		Log:      req.Log,
 	})
 	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price)}
 	reply.WebSearches, reply.WebSearchUSD = spend.spent()
 	reply.CostUSD = result.Usage.CostUSD + reply.WebSearchUSD
 	if runErr != nil && ctx.Err() != nil {
 		return reply, fmt.Errorf("answer: %w", ctx.Err())
-	}
-	if errors.Is(runErr, ErrPaused) {
-		return reply, ErrPaused
 	}
 	reply.Append = exchange(req, r, result, front)
 	switch {

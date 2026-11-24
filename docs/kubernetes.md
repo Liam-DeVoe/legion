@@ -1968,19 +1968,23 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   the reply recorded before that write is then posted and no model is called.
   One appended is posted without being answered again, since its answer is already in the conversation.
 
-- **While the project is paused** ([Pausing a project](#pausing-a-project)), the loop does no work.
+- **While the project is paused** ([Pausing a project](#pausing-a-project)), the loop answers as it does while the project runs.
   It reads the pause's own flag, the one the daemon's launches and task sends read.
-  No answer starts, and an answer in flight when the pause comes stops before its next model call or tool call, its cost so far counted in the day's spend.
-  A question that arrives during the pause, or is in flight when it comes, is kept where it stood (`answers: the project is paused; the question waits for the resume`): nothing is posted for it, and it is not passed to the controller.
-  After the resume the loop answers the questions in the order they arrived, each within its usual bounds, and a run the pause stopped is answered again as one after a restart is, given the tool calls it already made.
-  A daemon that cannot hold a pause, a tmux daemon among them, never pauses its loop.
+  Each answer is posted where it was asked, and its cost counts in the day's spend and toward `daily_usd`.
+  The tools read and do not write: each `gh` call and each `dispatch` call that writes is refused as the call's result, `refused: the Legion project is paused, …`, which says that the daemon makes no write in an agent's name until the resume, and the system prompt says that the project is paused.
+  A `gh` write is every call but a read, as the reply names a fault's writes (above), and a `dispatch` write is one of the tool's four writes (`comment`, `message`, `send-to-agent` and `resolve-comment`); every read and every `web_search` call runs.
+  A model call that ends in the provider's fault (`provider_error`), as a call does while the model gateway refuses the project's calls, keeps its question for the resume (`answers: the model provider failed while the project is paused; the question waits for the resume`).
+  The question goes back to received: nothing is appended to the conversation, nothing is posted, and nothing is passed to the controller.
+  The loop makes no model call for it, or for a later question to the same agent, until the resume, which wakes the loop; the question is then answered again as one after a restart is, given the tool calls the failed run made.
+  The loop holds a kept question in its memory alone, so a daemon restarted during the pause tries each such question once more.
+  The pause still starts no role: the wake row the loop writes for an agent the pause stopped waits in the outbox until the resume, as every row of the project does, and the launch of every role but the controller's waits too.
+  A daemon that cannot hold a pause, a tmux daemon among them, never reads its loop paused.
 
 ### Cost and logs
 
 Every answer logs one line, `answers: answered`, with `question`, `issue`, `role`, `session`, `model`, `kind`, `fault`, `calls`, `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens` and `reasoningTokens`, each summed over every model call of the answer, cache writes included;
 `webSearches`, the searches its `web_search` calls made, and `webSearchUSD`, what those calls cost, their tokens at the search model's `prices` and their searches' fee ([The `web_search` tool](#the-web_search-tool));
 and `costUSD`, the model calls' tokens at `prices` plus `webSearchUSD`, so the line alone recomputes it.
-An answer the project's pause stopped carries `paused` too, set to true.
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
 Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), one `answers: web_search` line per `web_search` call naming the question, the seq, the query, its searches and its `costUSD` (and its error, for a search that failed or that the tool refused), and `answers: question passed to the controller` once per question passed on.

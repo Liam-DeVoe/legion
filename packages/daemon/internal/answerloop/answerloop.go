@@ -33,9 +33,11 @@
 // are told none of these. A question the loop answered wakes nothing; one that came with a
 // decision is answered, appended and posted first, and the decision's row then says where.
 //
-// While the project is paused (Config.Paused) no answer starts, one in flight stops before its
-// next model call or gh call (answer.ErrPaused), and no reply is posted or passed on: every
-// question keeps its state, and is taken in the order it was received once the project resumes.
+// While the project is paused (Config.Paused) the loop answers, posts and passes on as it does
+// while the project runs, and the answer's tools run their reads and refuse every write
+// (internal/answer). A model call the provider fails while the project is paused keeps its
+// question for the resume (keepForResume): the question is received again, nothing is appended,
+// posted or passed on, and no question of its conversation is taken until the project resumes.
 package answerloop
 
 import (
@@ -287,8 +289,9 @@ type Config struct {
 	// Answer generates an answer: answer.Answer.
 	Answer func(ctx context.Context, req answer.Request) (answer.Reply, error)
 	// Paused says whether the project is paused (the daemon's pause flag, pause.Service.Paused);
-	// nil is never paused. While it is, no answer starts and no reply is posted: each question
-	// waits in the state it has, and the first schedule after the resume takes it (Poke).
+	// nil is never paused. While it is, each answer is handed the flag, so its tools refuse every
+	// write (answer.Request.Paused), and a model call the provider fails keeps its question for
+	// the resume (keepForResume), whose Poke answers it.
 	Paused func() bool
 	Now    func() time.Time
 	Log    *slog.Logger
@@ -306,6 +309,11 @@ type Loop struct {
 	running map[string]bool
 	// waiting is whether the last schedule left a conversation for want of a free worker.
 	waiting bool
+	// kept are the sessions whose question a model call the provider failed while the project was
+	// paused left for the resume (keepForResume): schedule starts no worker for one while the
+	// project is paused, and forgets them all once it reads the project running. It is the loop's
+	// memory alone, so a daemon restarted during the pause answers each such question once more.
+	kept    map[string]bool
 	workers sync.WaitGroup
 
 	// leftForSlot is a test hook, nil outside tests: schedule calls it, under mu, with the session
@@ -321,7 +329,7 @@ func New(cfg Config) *Loop {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Loop{cfg: cfg, wake: make(chan struct{}, 1), running: map[string]bool{}}
+	return &Loop{cfg: cfg, wake: make(chan struct{}, 1), running: map[string]bool{}, kept: map[string]bool{}}
 }
 
 // Run works the questions until ctx ends, then waits for the answers in flight to end.
@@ -341,7 +349,8 @@ func (l *Loop) Run(ctx context.Context) {
 }
 
 // Poke wakes the loop to schedule now rather than at its next sweep: a question received, a
-// worker that leaves a conversation waiting for its slot, and the project's resume.
+// worker that leaves a conversation waiting for its slot, and the project's resume, which takes
+// the questions a provider fault during the pause kept (keepForResume).
 func (l *Loop) Poke() {
 	select {
 	case l.wake <- struct{}{}:
@@ -354,11 +363,10 @@ func (l *Loop) paused() bool { return l.cfg.Paused != nil && l.cfg.Paused() }
 
 // schedule starts a worker for each conversation with open questions that has none, oldest
 // question first, while fewer than the bound run. A conversation the bound leaves waiting is
-// scheduled as soon as a worker ends. While the project is paused it starts none.
+// scheduled as soon as a worker ends. While the project is paused it starts none for a
+// conversation whose question a provider fault kept for the resume (kept), and once the project
+// runs it forgets every such conversation, which it schedules as any other.
 func (l *Loop) schedule(ctx context.Context) {
-	if l.paused() {
-		return
-	}
 	open, err := l.cfg.Store.OpenQuestions(ctx, l.cfg.Project)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -368,9 +376,12 @@ func (l *Loop) schedule(ctx context.Context) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if len(l.kept) > 0 && !l.paused() {
+		clear(l.kept)
+	}
 	l.waiting = false
 	for _, q := range open {
-		if l.running[q.Session] {
+		if l.running[q.Session] || l.kept[q.Session] {
 			continue
 		}
 		if len(l.running) >= max(l.cfg.Answers.Bounds.Concurrent, 1) {
@@ -398,12 +409,9 @@ func (l *Loop) schedule(ctx context.Context) {
 
 // work runs session's open questions one after another, in the order they were received, until
 // none is left to work now: a held forward is tried once a pass, and an error ends the pass, which
-// the next sweep tries again. The project's pause ends the pass too, read before each question and
-// answered by a run it stopped (answer.ErrPaused): the question keeps its state and waits, with the
-// ones after it, for the resume. The read before each question stops a worker that was running
-// when the pause came short of its session's next question, whose generate would otherwise read
-// the conversation and the day's spend, mark the question generating, read the issue's facts and
-// open the gh tool, writing the role App's credential, all before its own read of the pause.
+// the next sweep tries again. A question a provider fault kept for the resume ends the pass too
+// (errKeptForResume), and the questions after it wait with it, so its conversation is still
+// answered in the order it was asked.
 func (l *Loop) work(ctx context.Context, session string) {
 	tried := map[string]store.QuestionState{}
 	for ctx.Err() == nil {
@@ -420,28 +428,15 @@ func (l *Loop) work(ctx context.Context, session string) {
 			return
 		}
 		q := open[next]
-		if l.paused() {
-			l.waitsForResume(q)
-			return
-		}
 		tried[q.ID] = q.State
 		if err := l.process(ctx, q); err != nil {
-			switch {
-			case errors.Is(err, answer.ErrPaused):
-				l.waitsForResume(q)
-			case ctx.Err() == nil:
+			if !errors.Is(err, errKeptForResume) && ctx.Err() == nil {
 				l.cfg.Log.Error("answers: question not finished; trying again at the next sweep", "question", q.ID, "issue", q.Issue,
 					"role", q.Role, "session", q.Session, "state", q.State, "error", err)
 			}
 			return
 		}
 	}
-}
-
-// waitsForResume logs q waiting for the project's resume.
-func (l *Loop) waitsForResume(q store.AnswerQuestion) {
-	l.cfg.Log.Info("answers: the project is paused; the question waits for the resume", "question", q.ID, "issue", q.Issue,
-		"role", q.Role, "session", q.Session)
 }
 
 // Receive is the hand-off consumer's handler (intake.HandoffHandler): it finds the conversation the

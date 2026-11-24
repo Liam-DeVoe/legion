@@ -16,7 +16,9 @@ import (
 // description and its refusals carry too: ghtool.Usage.Checkout; dispatch, where the request
 // offers it, named with the session it runs as; and web_search, where the request offers it, with
 // the sources its reply names), the Legion footer and the loop's mark the tools put on what they
-// post, the bounds of each tool's calls, the work it declines, and the reply form.
+// post, the bounds of each tool's calls, and, while the project is paused as the run starts
+// (Request.Paused), that its tools run their reads and refuse every write; then the work it
+// declines, and the reply form.
 func systemPrompt(req Request) string {
 	offered := req.offeredTools()
 	names := make([]string, len(offered))
@@ -48,6 +50,13 @@ func systemPrompt(req Request) string {
 		and = ", and "
 	}
 	fmt.Fprintf(&b, "This answer may make %s%s%d model calls; your last model call offers no tool and must be your reply.\n\n", strings.Join(bounds, ", "), and, req.Bounds.ModelCalls)
+	if req.paused() {
+		writes := "a gh comment, review, merge or other write"
+		if req.Dispatch != nil {
+			writes += ", and a dispatch comment, message or thread resolution"
+		}
+		fmt.Fprintf(&b, "Legion has paused your project, and until it resumes the daemon makes no write in your name: your tools run their reads, and refuse every write (%s) as the call's result. When the message asks for a write, say in your reply that the project is paused and the write was not made.\n\n", writes)
+	}
 	b.WriteString("Decline work your tools cannot do, such as work that needs your working copy or a run of your phase: say plainly that you cannot do it now and what it needs, and do not promise to do it later. Say plainly when you do not know.\n\n")
 	b.WriteString("Your reply is exactly one JSON object and nothing else, no code fence: {\"kind\": ..., \"text\": ..., \"needs\": ...}, all three always there. The kinds:\n")
 	b.WriteString("- \"answered\": text is your answer to the message; needs is \"\".\n")

@@ -58,6 +58,10 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // recorded and neither appended nor posted: the agent is given the message itself through Wakes
 // (post, woken) and answers it once woken. A reply that answers is appended and posted as for
 // any stopped agent.
+//
+// A model call the provider fails while the project is paused keeps q for the resume
+// (keepForResume), whatever the agent: no reply is recorded, and nothing is appended, posted or
+// passed on.
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -153,18 +157,12 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		}
 		webSearch = opened
 	}
-	// The pause is read again before the question's first gh call, a lookup of an earlier call's
-	// outcome, as the answer reads it before its first model call.
-	if l.paused() {
-		return answer.ErrPaused
-	}
 	earlier, err := l.earlierCalls(ctx, q, tool)
 	if err != nil {
 		return err
 	}
-	// An answer the pause stops (answer.ErrPaused) leaves q generating: its cost is the day's all
-	// the same, nothing is appended or posted, and the next run after the resume is handed the tool
-	// calls this one made (earlierCalls).
+	// The answer is handed the project's pause flag, so its tools refuse every write while the
+	// project is paused (answer.Request.Paused).
 	reply, err := l.cfg.Answer(ctx, answer.Request{
 		Conversation:  session.Conversation(),
 		Agent:         answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase, GHUsage: agent.Usage()},
@@ -181,6 +179,9 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	}
 	if err != nil {
 		return err
+	}
+	if reply.Fault == answer.ProviderError && l.paused() {
+		return l.keepForResume(ctx, q, reply)
 	}
 	if reply.Fault != "" && len(reply.Append.Turns) == 0 {
 		return l.decideFault(ctx, q, origin, Reason(reply.Fault))
@@ -233,6 +234,29 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		return l.decideFault(ctx, q, origin, ReasonUnknownFormat)
 	}
 	return l.appended(ctx, q, origin)
+}
+
+// errKeptForResume is the end of a pass at a question keepForResume kept: the question waits for
+// the project's resume, and the ones after it in its conversation wait with it (work).
+var errKeptForResume = errors.New("answers: the question waits for the project's resume")
+
+// keepForResume keeps q for the project's resume: a model call of its answer ended in the
+// provider's fault while the project is paused, which is what every call meets while the model
+// gateway refuses the project's calls, and a pause is how the project waits that out. q is
+// received again, and nothing is appended, posted or passed to the controller; the run's cost is
+// the day's already, and the run after the resume is handed the tool calls this one made
+// (earlierCalls). Its conversation is kept (Loop.kept), so no worker takes it, or a later
+// question of it, until schedule reads the project running, which the resume's Poke has it do.
+func (l *Loop) keepForResume(ctx context.Context, q store.AnswerQuestion, reply answer.Reply) error {
+	if err := l.move(ctx, &q, store.QuestionReceived, store.QuestionGenerating); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	l.kept[q.Session] = true
+	l.mu.Unlock()
+	l.cfg.Log.Info("answers: the model provider failed while the project is paused; the question waits for the resume", "question", q.ID,
+		"issue", q.Issue, "role", q.Role, "session", q.Session, "detail", reply.Detail)
+	return errKeptForResume
 }
 
 // appended takes a question whose exchange is in the agent's conversation on from the reply
@@ -423,8 +447,8 @@ func noAnswerNote(reason Reason, reply string) string {
 // again (a delivery's reply route keeps one reply per attempt, an ask's thread and a comment's
 // thread are read for the question's marker first, an Envoy message carries the question's id as
 // its idempotency key). Then the question is passed on when it must be, and marked done. A post
-// refused for good drops the question and passes it on. While the project is paused nothing is
-// posted or passed on (answer.ErrPaused): q stays appended, and is posted after the resume.
+// refused for good drops the question and passes it on. It posts while the project is paused as
+// while it runs.
 //
 // For an agent whose claim the daemon released, a reply the loop does not post as its answer (one
 // it would pass on, or one that asks nothing: store.AnswerQuestion.Wake) and a post refused for
@@ -439,9 +463,6 @@ func noAnswerNote(reason Reason, reply string) string {
 // reply's reason is written with the reply (generate, decideFault); a refused post writes its own
 // here first.
 func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
-	if l.paused() {
-		return answer.ErrPaused
-	}
 	if q.Wake && (q.PassReason != "" || q.ReplyKind == string(answer.None)) {
 		return l.woken(ctx, q, origin)
 	}

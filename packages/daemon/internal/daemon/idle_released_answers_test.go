@@ -55,7 +55,9 @@ var releasedPerson = intake.DispatchActor{Kind: "user", ID: "person@example.com"
 // session whose Oh My Pi conversation the daemon's history holds, then stopped by stop, beside an
 // idle architect that holds its role; the daemon's answer gate over the implementer's machine; and
 // the answer loop over the outbox's own decisions, pass-ons and wake rows, a Dispatch that takes
-// every post and says the implementer opened the ask, and a listener that takes every send.
+// every post and says the implementer opened the ask, and a listener that takes every send. The
+// machines and the loop read one pause flag, paused, the open pause's id (0 while the project
+// runs), as the daemon's read the pause service's.
 type releasedRig struct {
 	t         *testing.T
 	ctx       context.Context
@@ -73,6 +75,7 @@ type releasedRig struct {
 	launches int
 	cfg      answerloop.Config
 	loop     *answerloop.Loop
+	paused   *atomic.Int64
 
 	mu sync.Mutex
 	// posts are Dispatch's posts and sends the listener's requests, each its path and body.
@@ -103,8 +106,9 @@ func newReleasedRig(t *testing.T, stop stopBy) *releasedRig {
 	holdSlot(t, pool, releasedIssue)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	// The machines read the project's pause flag (supervise.Deps.Paused), which a machine takes
-	// where it is built, so it goes in before the start: a pause's stop names the open pause.
-	var paused atomic.Int64
+	// where it is built, so it goes in before the start: a pause's stop names the open pause. The
+	// loop reads the same flag (answerloop.Config.Paused), as the daemon's does.
+	paused := &atomic.Int64{}
 	sup.deps.Paused = func() (int64, bool) {
 		id := paused.Load()
 		return id, id != 0
@@ -119,7 +123,7 @@ func newReleasedRig(t *testing.T, stop stopBy) *releasedRig {
 		},
 	}
 	r := &releasedRig{t: t, ctx: ctx, pool: pool, st: st, records: records, rt: rt, runner: runner, publisher: publisher,
-		token: mustClaimToken(t, releasedIssue, claim.RoleImplementer)}
+		token: mustClaimToken(t, releasedIssue, claim.RoleImplementer), paused: paused}
 	r.answer = func(req answer.Request) answer.Reply {
 		return releasedReply(req, answer.Answered, "Answered: "+req.Question.Text)
 	}
@@ -224,7 +228,8 @@ func newReleasedRig(t *testing.T, stop stopBy) *releasedRig {
 			}
 			return reply(req), nil
 		},
-		Now: time.Now, Log: quietLogger(),
+		Paused: func() bool { return paused.Load() != 0 },
+		Now:    time.Now, Log: quietLogger(),
 	}
 	r.loop = answerloop.New(r.cfg)
 	return r
