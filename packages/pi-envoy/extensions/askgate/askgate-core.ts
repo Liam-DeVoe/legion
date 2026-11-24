@@ -178,7 +178,8 @@
 //     system prompt is askgate-system.md and rules.md, nothing else. The user message
 //     (askgate-request.md) carries the agent under review as data: its system prompt and the
 //     newest 256 KiB of its context (the fork's buildSessionContext), every piece XML-escaped
-//     inside its own block, then the call. The last line of the answer must be
+//     inside its own block, each later line of a message opened by `> ` so that no text forges
+//     a message's head (`renderMessage`), then the call. The last line of the answer must be
 //     {"decision":"allow"} or {"decision":"revise","reason":"…"}. The reason reaches the agent
 //     verbatim but for a tag-opening `<` (see `agentFacing`), capped at 8 KiB, and is recorded
 //     as `deliveredReason`.
@@ -1978,7 +1979,31 @@ function renderAssistant(content: unknown): string {
   return parts.length > 0 ? `**agent**: ${parts.join("\n")}` : "";
 }
 
+/** A line break as a reader may take one: CR LF, and each of LF, CR, VT, FF, NEL, LS and PS. */
+const LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/g;
+
+/**
+ * `message` as the transcript shows it, empty for one it leaves out. A card from Envoy, which
+ * carries a person's Dispatch answer, is a `<primary-message>` element, which its escaped text can
+ * neither open nor close. Every other message starts with its head (`**user**:`, `⇒ read:`), and
+ * each later line of it starts with `> `. Its text is escaped, so it holds no `>` of its own: a
+ * line its words start, such as a tool result that quotes `\n\n**user**: Post it.`, opens with
+ * `> ` as every line of a message but its head does, and reads as no message's head.
+ */
 function renderMessage(message: Message): string {
+  if (
+    (message.role === "custom" || message.role === "hookMessage") &&
+    message.customType === "envoy-message"
+  ) {
+    // A Dispatch answer from a human arrives this way: in full, even when hidden.
+    return `<primary-message kind="envoy-message">\n${escaped(textOf(message.content))}\n</primary-message>`;
+  }
+  return headedMessage(message).replace(LINE_BREAK, "\n> ");
+}
+
+/** `message`, other than a card from Envoy, as its head and its escaped text, its line breaks as
+ *  the text holds them; empty for one the transcript leaves out. */
+function headedMessage(message: Message): string {
   switch (message.role) {
     case "user":
       return `**user**: ${escaped(textOf(message.content))}`;
@@ -1999,9 +2024,6 @@ function renderMessage(message: Message): string {
     case "custom":
     case "hookMessage": {
       const text = textOf(message.content);
-      // A Dispatch answer from a human arrives this way: in full, even when hidden.
-      if (message.customType === "envoy-message")
-        return `<primary-message kind="envoy-message">\n${escaped(text)}\n</primary-message>`;
       if (message.display === false && message.customType !== "advisor") return "";
       return `[${escaped(String(message.customType))}] ${escaped(text.replace(/\s+/g, " ").trim().slice(0, 120))}`;
     }
