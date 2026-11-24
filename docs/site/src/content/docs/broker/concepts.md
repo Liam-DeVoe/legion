@@ -60,7 +60,9 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A job entry, of `BROKER_EXCHANGE_JOB_ACCOUNTS`, gives it its
 projects and no person: the token names the account as its service and reaches the entry's one
 project, or, for an entry that names `public`, every public project and the private projects the
-entry lists. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
+entry lists. That list is the broker's grant: at this release Dispatch does not read a `public`
+token's list, so such a token writes wherever a token that names no project may. A read entry, of
+`BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
 other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
