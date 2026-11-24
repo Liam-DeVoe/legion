@@ -11,7 +11,7 @@ import { expect, test } from "./test";
 
 const at = (time: string) => `2026-11-16T${time}:00Z`;
 
-// SLOW(>=2s): four runs written through the daemon's route, two issues' tabs read, and one
+// SLOW(>=2s): four writes of three runs through the daemon's route, two issues' tabs read, and one
 // screenshot of the table scrolled to its last columns, which the review of the tab reads.
 test("the Steps tab lists each run of an issue's steps, a running run as running", async ({
   page,

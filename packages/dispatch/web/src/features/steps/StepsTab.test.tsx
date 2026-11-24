@@ -146,7 +146,7 @@ test("the Steps tab names each run's last model, its set model and the models th
 });
 
 // The cell names each model with its calls and its share whole, and a narrow column breaks the
-// list only after a comma, as a model id breaks only at its hyphens and after its slash.
+// list only after a comma, as a model id breaks only at its hyphens and before its slash.
 test("the Steps tab breaks the models that answered only after a comma", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
@@ -289,7 +289,7 @@ test("the Steps tab keeps the step a run returned to whole, with its number", as
   }
 });
 
-// An agent token breaks at its hyphens, and a model id after its slash too, but a number or a
+// An agent token breaks at its hyphens, and a model id before its slash too, but a number or a
 // single letter stays with the part before it: at 1440 px with the margin open, the Agent column
 // put "2-" of `legion-core-core-2-implementer` on a line alone and tore the key `core-2` in two.
 test("the Steps tab never leaves a number or a single letter of an id on a line alone", async () => {

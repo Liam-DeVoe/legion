@@ -93,7 +93,7 @@ function HyphenGroups({ piece }: { piece: string }): ReactNode {
 }
 
 /** An agent token or a model id, or the dash for one the record does not hold. A token breaks at
- *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
+ *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break before each slash,
  *  so neither forces its column wider than its longest part. A number or a single letter keeps
  *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
 function Identifier({ value }: { value: string }): ReactNode {
